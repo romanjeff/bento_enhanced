@@ -1,0 +1,12 @@
+# Never commit 1010music's firmware or copyrighted docs - bring your own
+*.bin
+firmware/
+*.pdf
+
+# Ghidra project artifacts
+*.gpr
+*.rep/
+
+# OS cruft
+.DS_Store
+Thumbs.db
