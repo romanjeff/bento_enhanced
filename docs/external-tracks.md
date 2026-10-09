@@ -37,7 +37,56 @@ This is *not* a generic "register a parameter" loop that a new entry could just 
 
 Early research found `midivol`/`midipan`/`midicc` in a string cluster near the mod-source names (`aftertouch`, `key`, etc.) and wasn't sure whether they belonged to the same table. They don't — they're the **mod-matrix destination list** (see [`mod-matrix.md`](mod-matrix.md)), a separate string cluster from the External page's own MIDI-out fields above.
 
+## Per-pad pressure and the pad→note gap
+
+Jeff's own reasoning drove this thread: Bento's 16 pads each have their
+own physical pressure sensor, so true polyphonic aftertouch output
+(independent pressure per simultaneously-held pad, not one merged
+per-track value) should be achievable regardless of how the stock
+firmware's own mod-matrix happens to use that data.
+
+**Confirmed: the raw per-pad data genuinely is independent, all the way
+through.** The inter-chip link (SPI1 + DMA2, 72-byte packets — cross-
+confirmed against the UI/disk chip's own send side) delivers a direct,
+unindirected 16-entry array (one `u16` per physical pad, no indirection),
+refreshed every audio tick. Pad transitions become tagged events
+(`0xac` press, `0xad` release, `0xae` value-change on every change) that
+each explicitly carry the pad index, pushed into a generic, type-
+agnostic broadcast dispatcher. **These events are never pre-collapsed on
+the way through** — every `0xae` event still carries its own pad index
+and fresh pressure value when it reaches its one subscriber.
+
+**The real finding, and it reframes this feature's actual scope:**
+tracing where pad-indexed events go next found that pad-to-note
+bookkeeping is something **each track type builds for itself**, not a
+shared mechanism External tracks could simply tap into. Slicer has its
+own static pad→note table; Loop/Slice tracks maintain their own live
+active-note list. The shared internal voice-allocator used by
+synthesizing track types never sees pad index at all — only
+`(track, note, velocity)`. External tracks don't do internal synthesis,
+so they never touch that allocator either, and nothing else in the
+firmware reads raw pad pressure except the hardware-scan function itself.
+**External tracks almost certainly have no existing pad-to-note
+bookkeeping today.** This isn't "not found yet" — every place such
+bookkeeping would have to live, by analogy with every other track type,
+demonstrably doesn't exist for this one.
+
+**Practical implication:** building genuine per-note aftertouch output
+for External tracks means adding pad-to-note bookkeeping ourselves,
+following the pattern Slicer/Loop-Slice already establish (not a generic
+mechanism to extend, but not a novel one either — a known, working
+pattern to replicate for a track type that doesn't have it yet).
+
+One open sub-question, blocked by a specific, nameable Ghidra tooling
+limit rather than a dead end: whether the single subsystem that receives
+every pad event ultimately stores pressure per-pad or collapses it
+somewhere downstream — two of its vtable slots were merged into one
+oversized function listing by Ghidra's own analysis, and separating them
+needs a function-boundary split (an analysis-only operation, not
+firmware modification).
+
 ## Open questions
 
 - No existing code was found anywhere in the firmware that builds a Channel Pressure (0xD0) or Polyphonic Key Pressure (0xA0) MIDI *output* message — only the *receive* side exists so far (see [`mod-matrix.md`](mod-matrix.md)). Building an output encoder is new work, though the receive-side byte-packing conventions are a solid template.
+- Whether the pad-event subsystem's stored pressure is per-pad or collapsed (see above) — the one remaining concrete gap for this feature.
 - Whether individual tracks' audio is addressable before the final mix (relevant to sidechain-style features elsewhere in this project) is covered in [`compressor.md`](compressor.md), not here.
