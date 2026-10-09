@@ -6,7 +6,7 @@ Status as of this writing. Research-only — no patches have shipped yet.
 
 **A. External-track pad pressure out over MIDI.** Bento already has a unified internal "Pressure" value (pad sensor + incoming MIDI aftertouch, merged) feeding its mod matrix today, but it never reaches outgoing MIDI for External tracks. Planned: default to Polyphonic Key Pressure (0xA0), configurable to Channel Pressure (0xD0) from the track's INST page. A receive-side MIDI aftertouch parser already exists in the firmware and is the template for this (see [`docs/mod-matrix.md`](docs/mod-matrix.md)).
 
-**B. MIDI note as a mod source, for Multisample and Wavetable tracks.** Granular tracks already offer "Note-on key" as a modulation source (per the official manual); Multisample and Wavetable don't. Investigating whether this is a simple per-track-type gate to open, or requires more.
+**B. MIDI note as a mod source, for Multisample tracks.** Confirmed on real 1.5.32 hardware: `Key` is already available as a mod source on Wavetable and Granular tracks — only Multisample is missing it (the official manual's "Granular-only" claim is outdated for current firmware). Scope narrowed accordingly: find and open whatever currently excludes Multisample specifically.
 
 **C. Project Settings values exposed on PROJ and SEQ pages.** Root Note, Scale, BPM, and Swing currently require navigating into a Project Settings submenu. Plan: surface all four on PROJ's available encoders, and BPM+Swing on SEQ's two rightmost encoders — reading/writing the exact same underlying values (confirmed accessible via one shared accessor function, see [`docs/project-settings.md`](docs/project-settings.md)), not separate copies.
 
