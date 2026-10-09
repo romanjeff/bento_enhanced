@@ -33,6 +33,7 @@ Full detail, with how this was determined, in [`docs/architecture.md`](docs/arch
 
 - [`docs/architecture.md`](docs/architecture.md) — hardware, the two-chip split, firmware identification
 - [`docs/mod-matrix.md`](docs/mod-matrix.md) — the modulation source table, what's confirmed vs. open
+- [`docs/ui-architecture.md`](docs/ui-architecture.md) — the UI widget/event/property framework: the scene graph, SessionMgr, the two parallel property systems, and why SEQ's encoders behave differently from SCENE's/Met-Gain's
 - [`docs/external-tracks.md`](docs/external-tracks.md) — External track type, MIDI-out pipeline
 - [`docs/project-settings.md`](docs/project-settings.md) — global settings storage (BPM/Scale/Root/Swing) and how it's accessed
 - [`docs/compressor.md`](docs/compressor.md) — the master Compressor's current structure
