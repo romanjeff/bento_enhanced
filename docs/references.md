@@ -5,6 +5,10 @@
 - [1010music downloads](https://1010music.com/downloads) — official firmware, the only legitimate source for the `.bin` files this project's patches will apply to.
 - Bento user manual, quick-start guide, and release notes (1.3.17b manual plus 1.47/1.5.30 release notes used in this research) — available from 1010music; not redistributed here, see [`README.md`](../README.md).
 
+## Community prior art (Bento)
+
+- [t4kbsv99sn-source/bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab) (GPL-3.0-or-later; vendored DaisySP under MIT/LGPL-2.1) — the first public firmware-mod project for Bento itself. Targets stock **1.6.1** only. Features: PROJ as a Shift button, TRACKS+pad navigation, held-step inspect, trig conditions, two parameter-lock encoders, DaisySP kick/snare/hi-hat synths, per-pad Euclidean sequencing, a per-track EQ/compressor/soft-clip strip, and an early chord editor. Method: compiled C/C++ hooked into stock 1.6.1 at hash-checked points, with every patch reversible back to the stock image. Testing runs native ARM UI, note and DSP code under Unicorn with real native constructors. Its per-release `docs/releases/*/DESIGN.md` files are the most detailed public account of how Bento's firmware works internally; see [`bento-os.md`](bento-os.md) for what this project takes from them.
+
 ## Community prior art (Blackbox)
 
 Bento's older sibling has an active, independent reverse-engineering and modding community. This project draws on their published methodology, not their addresses (different hardware, different firmware framework — see [`architecture.md`](architecture.md)):
