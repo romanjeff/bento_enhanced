@@ -24,14 +24,15 @@ That's the one rule every patch here follows without exception: **never touch th
 
 Bento runs on **two separate STM32H7 microcontrollers**, not one:
 
-- **STM32H747XIH6** (Cortex-M7 @ 480MHz + Cortex-M4 @ 240MHz) — does the bulk of audio processing and the mod/synthesis engine.
-- **STM32H750XBH6** (single Cortex-M7 @ 480MHz, running from external QSPI flash) — handles UI and disk streaming.
+- **STM32H747XIH6** (Cortex-M7 @ 480MHz + Cortex-M4 @ 240MHz) runs `bento1.bin`. The M7 runs the audio/synthesis engine and sequencer playback; the **M4 runs the UI** (corrected 2026-10-23).
+- **STM32H750XBH6** (single Cortex-M7 @ 480MHz, running from external QSPI flash) runs `bento2.bin`, the "controller". Its exact role is being re-examined.
 
 Full detail, with how this was determined, in [`docs/architecture.md`](docs/architecture.md).
 
 ## Documentation
 
 - [`docs/architecture.md`](docs/architecture.md) — hardware, the two-chip split, firmware identification
+- [`docs/bento-os.md`](docs/bento-os.md) — how Bento's firmware works in 1.6.1: image/core split, memory map, parameter registry, UI framework, note model, audio insert points (largely from bento-community-lab's research)
 - [`docs/mod-matrix.md`](docs/mod-matrix.md) — the modulation source table, what's confirmed vs. open
 - [`docs/ui-architecture.md`](docs/ui-architecture.md) — the UI widget/event/property framework: the scene graph, SessionMgr, the two parallel property systems, and why SEQ's encoders behave differently from SCENE's/Met-Gain's
 - [`docs/external-tracks.md`](docs/external-tracks.md) — External track type, MIDI-out pipeline
@@ -40,6 +41,8 @@ Full detail, with how this was determined, in [`docs/architecture.md`](docs/arch
 - [`docs/references.md`](docs/references.md) — official docs and community projects this work draws on
 
 ## Related projects
+
+- [t4kbsv99sn-source/bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab) — the first Bento-native firmware mod project (1.6.1). Its design records are the main source for [`docs/bento-os.md`](docs/bento-os.md).
 
 This project's methodology and some early hardware cross-checks drew on the Blackbox community's own work:
 

@@ -6,10 +6,10 @@ Confirmed from a direct 1010music developer statement (forum post) plus an indep
 
 | Chip | Cores | Flash | Role | Firmware file |
 |---|---|---|---|---|
-| **STM32H747XIH6** | Cortex-M7 @ 480MHz + Cortex-M4 @ 240MHz | 2MB internal | Audio processing (M7 does the bulk of it; M4 handles reverb) | `bento1.bin` |
-| **STM32H750XBH6** | Cortex-M7 @ 480MHz, single-core | 128KB internal only — too small for a real app, runs from external QSPI | UI and disk streaming | `bento2.bin` (self-identifies as `BENTOCONTROLLER 1.0.10-QSPI`) |
+| **STM32H747XIH6** | Cortex-M7 @ 480MHz + Cortex-M4 @ 240MHz | 2MB internal | M7: audio engine + sequencer playback. M4: the UI (see "Which core owns what" below) | `bento1.bin` |
+| **STM32H750XBH6** | Cortex-M7 @ 480MHz, single-core | 128KB internal only — too small for a real app, runs from external QSPI | "UI and disk streaming" per the developer's post; actual role now an open question (see below) | `bento2.bin` (self-identifies as `BENTOCONTROLLER 1.0.10-QSPI`) |
 
-One correction worth keeping straight: the developer's forum post describes the second core as "a second M7 core." The STM32H747 is a well-documented part and is actually **Cortex-M7 + Cortex-M4**, not M7+M7 — confirmed against ST's own published specs. The functional claim (reverb runs on the lesser core) is almost certainly still accurate; only the core-type wording was imprecise.
+One correction worth keeping straight: the developer's forum post describes the second core as "a second M7 core." The STM32H747 is a well-documented part and is actually **Cortex-M7 + Cortex-M4**, not M7+M7 — confirmed against ST's own published specs. The firmware itself shows the M4 running the **UI application** (see below). Whether the M4 also runs the reverb, as the post says, is unverified.
 
 ### Confirming it from the binaries themselves
 
@@ -30,11 +30,19 @@ Same dev shop (`matrixsw`) and file-naming convention that Blackbox's own firmwa
 
 **Practical consequence:** Blackbox community knowledge (hook techniques, general code shape, peripheral conventions) is a useful starting point to verify, not a source of directly-reusable addresses. Bento's own `MobiusFramework` build has its own layout throughout.
 
-## Which chip owns what
+## Which core owns what (corrected 2026-10-23)
 
-This mattered enough during research to call out explicitly, since it wasn't obvious up front: `bento1.bin` (the audio/M7+M4 chip) owns engine logic, global parameter storage, and the modulation subsystem — confirmed repeatedly by finding real, well-formed data structures for all of that there. It does **not** contain the UI chrome: there's no RTTI in this binary at all (built `-fno-rtti`) and no top-level page-navigation strings (`PROJ`, `SEQ`, etc.) anywhere in it. That logic is expected to live on `bento2.bin` instead, consistent with the "UI and disk streaming" role described above — any research into page layout, button-to-screen dispatch, or per-page encoder assignment should start on `bento2.bin`, not `bento1.bin`.
+**Earlier versions of this document said the UI lives in `bento2.bin`. That was wrong.** `bento1.bin` contains three images, each with its own vector table (checked in both 1.5.32 and 1.6.1):
 
-One more data point worth recording: `bento1.bin` has **zero references anywhere to its own ADC peripherals.** Front-panel pad pressure isn't read on the audio chip — it's almost certainly scanned by the UI/disk chip and relayed over the inter-chip link.
+| Flash range | Image | Initial SP |
+|---|---|---|
+| `0x08040000..0x080E0000` | M7 application: audio engine, sequencer playback, pad input | AXI SRAM (`0x2404CDA0` in 1.6.1) |
+| `0x080E0000..0x08100000` | Disk mode (`MobiusDiskMode`) | `0x24029898` |
+| `0x08100000..` end | **M4 application: the UI**: SessionMgr/model, widgets, pages, parameter registry, project XML, Undo | D2 SRAM (`0x300390F0` in 1.6.1) |
+
+The UI therefore runs on the H747's **Cortex-M4**, and all of this project's UI tracing (functions at `0x0812xxxx`–`0x0818xxxx`, SessionMgr in `0x3002xxxx`) was in that M4 image all along. The earlier conclusion came from not finding page-name strings such as `PROJ`. `SEQ` and `SessionMgr` strings *are* present, and page names are probably built differently. [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab) independently confirms the split: its UI code runs under the M4's MPU, which permits execution only from `0x08100000..0x08200000`. The full map is in [`bento-os.md`](bento-os.md).
+
+This also explains the earlier "no ADC references" finding. Pad events reach `bento1.bin` from outside: the M7 image has a pad input hook that forwards to the M4 UI through a native queue. What `bento2.bin` (the H750 "controller") actually does is now an **open question**. Scanning pads/LEDs and relaying them is a plausible role, but unverified. The "UI and disk streaming" description above comes from the developer's forum post and should be re-read with this in mind.
 
 ## No existing public teardown
 
