@@ -28,8 +28,14 @@ option. Source: [`mods/m1/`](mods/m1/).
 - Next for A: polyphony cap (default 6, max 8; oldest-first stealing with
   forced note-offs, sequencer notes included), then a settings UI (cap,
   linear/exp/log curves for pressure and MIDI-out velocity), pressure for all
-  MIDI-out track types, and recording pressure into the sequencer. A repeated
-  note number retriggers the same voice.
+  MIDI-out track types. A repeated note number retriggers the same voice.
+- **M2 — record poly pressure into the sequencer.** Per-note pressure curves
+  stored as **16 points per sequencer step** (8 acceptable), tempo-relative,
+  interpolated on playback at up to 100 Hz through the same output limits. The
+  curve belongs to its note (follows move/copy/delete/Undo/save). Storage grows
+  with held note length, so: delta compression, a per-project budget that falls
+  back to 8 points/step when full. Channel pressure into an automation lane is
+  an acceptable but not preferred fallback.
 
 **2. F — LFO + envelope + mod matrix with CC destinations for External tracks.**
 Channel-level (per-track) modulation: **2 LFOs and 2 envelopes**.
