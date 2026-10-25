@@ -35,8 +35,8 @@ Channel-level (per-track) modulation: **2 LFOs and 2 envelopes**.
 - Each LFO can optionally retrigger per note.
 - Routed through a mod matrix to outgoing MIDI CCs (later velocity, pitch bend,
   aftertouch), sharing the same DIN output budget as A.
-- **The 4 native automation lanes (A–D) get CC targets** on External tracks. Open approach question: reuse
-the native per-voice modulation engine (see [`docs/bento-os.md`](docs/bento-os.md)
+- **The 4 native automation lanes (A–D) get CC targets** on External tracks.
+- Open approach question: reuse the native per-voice modulation engine (see [`docs/bento-os.md`](docs/bento-os.md)
 §7), or a small dedicated engine clocked by the native sequencer. External tracks
 have no voices, which may make the native route a poor fit.
 - **E — Mod Wheel amount** is planned as a CC1 destination inside F rather than
