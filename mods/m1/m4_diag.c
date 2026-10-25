@@ -51,12 +51,22 @@ static int new_boot(u32 now) {
 static void init(u32 now) {
     u32 gen = (M4H->magic == DIAG_MAGIC) ? M4H->r[0] + 1u : 1u;
     M4H->magic = 0; /* M7 stops logging while we rebuild */
-    u32 cur = BUMP_CUR, end = BUMP_END, buf = 0;
-    /* Preflight exactly like Lab: the native allocator crashes on overflow. */
-    if (end > cur && end - cur >= BUF_BYTES + 32u) {
+    CFG->magic = 0; /* ...and stops using the M1 region */
+    u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, region = 0;
+    /* Preflight exactly like Lab: the native allocator crashes on overflow.
+     * One check covers both allocations (each is rounded up to 32 bytes). */
+    if (end > cur && end - cur >= BUF_BYTES + M1_REGION_BYTES + 64u) {
         u32 got = FN(0x08104C08, u32 (*)(u32))(BUF_BYTES);
         if (got == cur) buf = got;
+        cur = BUMP_CUR;
+        got = FN(0x08104C08, u32 (*)(u32))(M1_REGION_BYTES);
+        if (got == cur) region = got;
     }
+    /* Hand the region to the M7; it initialises and owns it from here on. */
+    CFG->region = region;
+    CFG->region_bytes = region ? M1_REGION_BYTES : 0u;
+    CFG->r[0] = gen;
+    CFG->magic = DIAG_MAGIC;
     M4H->r[0] = gen;
     M4H->r[1] = buf ? buf : 1u; /* 1 = allocation refused; stay disabled this boot */
     M4H->r[2] = 0;
@@ -66,9 +76,10 @@ static void init(u32 now) {
     M4H->rd = (M7H->magic == DIAG_MAGIC) ? M7H->wr : 0u;
     if (buf) {
         Out o = {(char *)buf, 0};
-        puts_(&o, "BENTO M1 poly-AT v1 + diagnostics (CH10 1.6HA), boot gen ");
+        puts_(&o, "BENTO M1b poly-AT + poly cap v2 + diagnostics (CH10 1.6HA), boot gen ");
         dec(&o, gen);
-        puts_(&o, "\r\nfields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)\r\n");
+        puts_(&o, "\r\nfields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)\r\n"
+                  "VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note\r\n");
         M4H->r[2] = o.len;
     }
     M4H->magic = DIAG_MAGIC; /* publish last */
@@ -80,6 +91,7 @@ static const char *kind_name(u32 k) {
     case K_SEND: return "SEND";
     case K_RING: return "RING";
     case K_CONSUME: return "CONS";
+    case K_VOICE: return "VOIC";
     }
     return "????";
 }
@@ -124,6 +136,11 @@ static void poll(void) {
         Out t = o;
         puts_(&t, "# m7 dropped="); dec(&t, M7H->dropped);
         puts_(&t, " dedupe_full="); dec(&t, M7H->dedupe_full);
+        puts_(&t, " | poly sent="); dec(&t, M7H->r[0]);
+        puts_(&t, " budget_drops="); dec(&t, M7H->r[1]);
+        puts_(&t, " stolen="); dec(&t, M7H->r[2] & 0xFFFFu);
+        puts_(&t, " retrig="); dec(&t, M7H->r[2] >> 16);
+        puts_(&t, " swallowed="); dec(&t, M7H->r[3]);
         puts_(&t, " at ms "); dec(&t, now); puts_(&t, "\r\n");
         M4H->r[2] = t.len;
         flush();

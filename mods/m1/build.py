@@ -24,7 +24,7 @@ M7_LIMIT = 0x080DB800
 # Lab's k16_overlay uses up to 0x081BD8C0; CH10 code references 0x081BF6C0.
 M4_CODE = 0x081BE000
 M4_LIMIT = 0x081BF000
-MARKER = b"BENTO_MOD:m1-polyat:v1" + bytes(1)
+MARKER = b"BENTO_MOD:m1-polyat:v2" + bytes(1)
 
 # (name, site, original bytes, displaced instruction(s), resume address, call setup)
 M7_HOOKS = [
@@ -44,6 +44,17 @@ POLY_SITE, POLY_ORIG, POLY_RESUME = 0x08062466, "7ff40bae", 0x08062080
 # case (0x0810509A..0x081050DE) with status 0x90 -> 0xA0.
 JT, JT_5F, JT_DEFAULT, M4_LOOP = 0x08105294, 0x081052A4, 0x081050DF, 0x081050DE
 M4_POLY = 0x081BEC00
+
+# Poly cap: the five `bl msg_send` sites that post External MIDI notes, and the
+# register holding the track object at each (verified unmodified on every path).
+MSG_SEND = 0x08065600
+NOTE_SITES = [  # (site, track register, role)
+    (0x0805F92C, "r4", "sequencer Note On (note_route)"),
+    (0x0805FF50, "r4", "pad Note On (FUN_0805FF00)"),
+    (0x0805FE44, "r4", "sequencer Note Off (FUN_0805FE00)"),
+    (0x08060088, "r4", "pad Note Off (FUN_08060040)"),
+    (0x08061966, "r6", "Note Off, stop/all-off (FUN_080618E0)"),
+]
 
 ks = Ks(KS_ARCH_ARM, KS_MODE_THUMB)
 def asm(src, addr):
@@ -154,6 +165,14 @@ def build(base_img, out):
     if bcond_w("ne", POLY_SITE, POLY_RESUME).hex() != POLY_ORIG:
         raise SystemExit("hand encoder does not reproduce the original bne.w")
     patch(POLY_SITE, new_branch, bytes.fromhex(POLY_ORIG), "M1 poly AT: External handler 0x0E -> h_poly")
+    for site, reg, role in NOTE_SITES:
+        stub = M7_TRAMP + len(tramps)
+        code = asm(f"mov r2, {reg}; b.w {s7['h_note']:#x}", stub)   # h_note(queue, ev, track); returns to site+4
+        tramps += code + bytes(-len(code) % 4)
+        orig = asm(f"bl {MSG_SEND:#x}", site)
+        if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
+            raise SystemExit(f"{site:#x}: not the expected bl msg_send")
+        patch(site, asm(f"bl {stub:#x}", site), orig, f"M1b poly cap: {role} -> h_note")
     if M7_TRAMP + len(tramps) > M7_CODE:
         raise SystemExit("trampolines overrun into M7 code")
     patch(M7_TRAMP, tramps, bytes(len(tramps)), "M1 diag: M7 trampolines")
@@ -214,7 +233,7 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the CH10 base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label="1.6HA+m1-polyat-v1", base_sha256=CH10_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label="1.6HA+m1-polyat-v2", base_sha256=CH10_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")

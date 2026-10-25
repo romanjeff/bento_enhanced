@@ -19,8 +19,12 @@
 
 #define DEDUPE ((volatile u32 *)PRIV_BASE)          /* 32 x {queue, lr} */
 #define DEDUPE_N 16u
-#define FLAGS ((volatile u8 *)(PRIV_BASE + 0x80u)) /* [0] input AE, [1] send AE, [2] send 0x0E armed */
-#define GEN (*(volatile u32 *)(PRIV_BASE + 0x84u)) /* M4 boot generation last seen; flags use +0x80..+0x83 */
+/* M7-private line 0x240485C0: flags[8] | region ptr (C8) | region gen (CC) | GEN (D0) */
+#define FLAGS ((volatile u8 *)(PRIV_BASE + 0x80u)) /* armed "log the first X after a press":
+                                                        [0] input AE, [1] send AE, [2] send 0x0E,
+                                                        [3] send 0x5F, [4] ring 0x5F */
+#define GEN (*(volatile u32 *)(PRIV_BASE + 0x90u)) /* M4 boot generation last seen */
+_Static_assert(PRIV_BASE + 0x88u == M7_REGION_CACHE, "private line layout");
 
 static inline void dsb(void) { __asm volatile("dsb" ::: "memory"); }
 static inline u32 irq_save(void) {
@@ -45,7 +49,7 @@ static int m4_ready(void) {
     if (M7H->magic != DIAG_MAGIC || GEN != M4H->r[0]) {
         /* First call this boot (or M4 rebooted): reset our side. */
         for (u32 i = 0; i < DEDUPE_N * 2; i++) DEDUPE[i] = 0;
-        FLAGS[0] = FLAGS[1] = FLAGS[2] = 0;
+        for (u32 i = 0; i < 8; i++) FLAGS[i] = 0;
         GEN = M4H->r[0];
         M7H->wr = M4H->rd; /* start empty relative to the M4 */
         M7H->dropped = 0;
@@ -86,7 +90,6 @@ static int interesting_send(u32 t) {
     case 0xB9: case 0xBA:                       /* note on/off to an object (seen in FUN_0805d200) */
     case 0xAC: case 0xAD:                       /* pad press/release */
     case 0x02: case 0x03:                       /* internal note on/off to a track (FUN_08062020) */
-    case 0x5F:                                  /* ours: poly pressure MIDI-out event */
         return 1;
     }
     return 0;
@@ -103,12 +106,13 @@ __attribute__((used, retain)) void h_input(u32 engine, const u32 *ev) {
 
 __attribute__((used, retain)) void h_send(u32 queue, const u32 *ev, u32 lr) {
     u32 t = ev[0] & 0xFF;
-    if (t == 0xAC) FLAGS[1] = FLAGS[2] = 1;
-    /* 0xAE raw pressure and 0x0E native poly pressure {target, note, value}
-     * flood at audio-tick rate: log only the first of each after a press. */
-    if (interesting_send(t) || (t == 0xAE && FLAGS[1]) || (t == 0x0E && FLAGS[2])) {
+    if (t == 0xAC) FLAGS[1] = FLAGS[2] = FLAGS[3] = FLAGS[4] = 1;
+    /* Raw pressure 0xAE, native poly pressure 0x0E and our 0x5F flood at up to
+     * audio-tick / 100 Hz rates: log only the first of each after a press. */
+    if (interesting_send(t) || (t == 0xAE && FLAGS[1]) || (t == 0x0E && FLAGS[2]) || (t == 0x5F && FLAGS[3])) {
         if (t == 0xAE) FLAGS[1] = 0;
         if (t == 0x0E) FLAGS[2] = 0;
+        if (t == 0x5F) FLAGS[3] = 0;
         put(K_SEND, lr, queue, ev, 0);
     }
 }
@@ -116,6 +120,10 @@ __attribute__((used, retain)) void h_send(u32 queue, const u32 *ev, u32 lr) {
 __attribute__((used, retain)) void h_ring(u32 obj, const u32 *ev) {
     u32 t = ev[0] & 0xFF;
     if (t >= 0x61 && t <= 0x63) return; /* clock/start/stop: too frequent, not needed */
+    if (t == 0x5F) {                     /* our pressure: first after each press only */
+        if (!FLAGS[4]) return;
+        FLAGS[4] = 0;
+    }
     put(K_RING, 0, obj, ev, 0);
 }
 
@@ -135,4 +143,13 @@ __attribute__((used, retain)) void h_consume(u32 queue, u32 idx, u32 lr) {
     DEDUPE[2 * free_slot] = queue;
     DEDUPE[2 * free_slot + 1] = lr;
     put(K_CONSUME, lr, queue, 0, idx);
+}
+
+/* For m7_polyat.c: voice-action records and counters for the M4 trailer line. */
+void diag_put(u32 kind, u32 lr, u32 obj, const u32 *ev, u32 extra) { put(kind, lr, obj, ev, extra); }
+
+void diag_stat(u32 idx, u32 value) {
+    if (idx >= 4 || M7H->magic != DIAG_MAGIC) return;
+    M7H->r[idx] = value;
+    clean(M7H, sizeof(M7Head));
 }

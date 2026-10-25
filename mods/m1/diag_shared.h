@@ -16,7 +16,8 @@
  *   0x24048520 M4 header   (M4 writes, M7 never reads)
  *   0x24048540 M7 private  diag: dedupe table 16 x 8 B
  *   0x240485C0 M7 private  diag: flags, generation
- *   0x240485E0 M7 private  poly AT: rate-limit table + budget (224 B)
+ *   0x240485E0 config      (M4 writes once at boot, M7 reads): M1 state region
+ *   0x24048600 (unused)
  *   0x240486C0 records     (M7 writes, M4 reads), 17 x 48 bytes
  */
 #ifndef DIAG_SHARED_H
@@ -34,6 +35,7 @@ enum {
     K_SEND = 2,    /* msg_send(queue, event) for an interesting event type */
     K_RING = 3,    /* event posted to the M4 MIDI ring */
     K_CONSUME = 4, /* first time a (queue, consumer) pair reads a queue */
+    K_VOICE = 5,   /* poly cap: lr = 1 retrigger, 2 steal, 3 swallowed Note Off; extra = note */
 };
 
 typedef struct {
@@ -64,8 +66,16 @@ typedef struct {
 #define M4H ((volatile M4Head *)0x24048520u)
 #define PRIV_BASE 0x24048540u
 #define RECS ((volatile Rec *)0x240486C0u)
-#define POLY_BASE 0x240485E0u
-#define POLY_BYTES 0xE0u
+#define M7_REGION_CACHE 0x240485C8u /* M7 private: cached region pointer */
+
+typedef struct {
+    u32 magic;
+    u32 region;        /* M7-owned state region in the M4 SDRAM pool (0 = none yet) */
+    u32 region_bytes;
+    u32 r[5];          /* r[0] = M4 boot generation the region belongs to */
+} Cfg; /* 32 bytes */
+#define CFG ((volatile Cfg *)0x240485E0u)
+#define M1_REGION_BYTES 0x1000u
 _Static_assert(sizeof(Rec) == 48, "record size");
 _Static_assert(0x240486C0u + DIAG_RECORDS * sizeof(Rec) <= 0x24048A00u, "records overrun our slice");
 

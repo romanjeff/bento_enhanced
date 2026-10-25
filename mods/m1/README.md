@@ -1,6 +1,7 @@
 # M1: polyphonic aftertouch out of External tracks
 
-**Status: working on hardware (2026-10-25).** Holding pads on an External track
+**Status:** poly aftertouch working on hardware (2026-10-25). **M1b (polyphony cap)
+is built and passes emulated tests; hardware test pending.** Holding pads on an External track
 sends per-note **Polyphonic Key Pressure** (`0xA0 note value`) on the track's
 MIDI port and channel, alongside the normal notes. It has been verified on a MIDI
 monitor and on a poly-AT synth, with each held note's aftertouch driving its own
@@ -31,11 +32,36 @@ The mod adds that missing case:
 | M4 `0x081BEC00` | Handler for event type `0x5F`: a copy of stock's Note On case with status `0x90` → `0xA0`. The builder checks the copy against the native bytes. |
 | M4 `0x081052A4` | Jump-table slot `0x5F` (unused in stock) → that handler |
 
+**M1b: polyphony cap (per track, hard-wired 6 until the settings UI).** All
+External MIDI notes are posted through five `bl msg_send` sites; each now goes
+through an 8-byte stub that adds the track object (`r4`, or `r6` at the stop/all-off
+site) and calls `h_note`:
+
+| Site | Role |
+|---|---|
+| `0x0805F92C` | sequencer Note On (`note_route`) |
+| `0x0805FF50` | pad Note On |
+| `0x0805FE44` | sequencer Note Off |
+| `0x08060088` | pad Note Off |
+| `0x08061966` | Note Off on stop / all-off |
+
+- A Note On past 6 sounding notes sends a Note Off for the **oldest** first. That
+  note's later native Note Off is **swallowed**, so it can't cut a newer note on the
+  same number.
+- A Note On for a note that's **already sounding retriggers the same voice**
+  (Note Off, then Note On) and owes one native Note Off.
+- Everything else passes through unchanged. Before the state region exists (very
+  early boot), all notes pass through.
+- Pressure is only sent for sounding notes, so stolen notes go quiet.
+- State (voice lists for 16 tracks × 8 voices, 72 pressure entries, per-port
+  budgets) lives in a 4 KB region the M4 allocates once at boot and the M7 owns.
+  The pointer is tied to the M4 boot generation, so nothing stale survives a reset.
+
 **Output control.** DIN MIDI carries ~1,000 messages/s, and the M7 → M4 MIDI ring
 has only 16 slots with no overflow check. So pressure is sent:
 - per note: **changed values only, at most every 10 ms (100 Hz)**. A held-back
   value goes out with the next pressure event for the track;
-- globally: at most **400 messages/s**, in bursts of up to 4.
+- per DIN port: at most **400 messages/s**, in bursts of up to 4 (v1 had one global budget).
 
 Measured on hardware: minimum gap 10.6 ms, no repeated values
 (`logs/M1_run1_polyat.log`).
@@ -64,7 +90,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (15 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (23 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -85,9 +111,6 @@ the card root, hold power, REC). Restore by installing CH10 or stock the same wa
 
 ## Not yet
 
-- **M1b:** polyphony cap (default 6, max 8), oldest-first stealing with forced
-  note-offs, sequencer notes included; the stolen note's later native note-off is
-  swallowed. A repeated note number retriggers the same voice.
 - Pressure for other MIDI-out track types (Granular, Multisample, Wavetable). They
   have their own handlers, so the hook moves to the pad router's `0x0E` emission.
 - Settings UI (poly cap, linear/exp/log curves); recording pressure into the sequencer.
