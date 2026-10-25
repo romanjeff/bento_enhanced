@@ -1,10 +1,10 @@
 # Roadmap
 
-Status as of 2026-10-25. **Target firmware: stock Bento 1.6.1**, building on
+Status as of 2026-10-25 (Milestone 1 reached). **Target firmware: stock Bento 1.6.1**, building on
 [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s
 work. Their CH10 / 1.6HA release reproduces byte for byte with our toolchain
-(see [`tools/lab-build-wsl/`](tools/lab-build-wsl/)). No patches of our own have
-shipped yet. Earlier research was done on 1.5.32 and is being re-located in 1.6.1
+(see [`tools/lab-build-wsl/`](tools/lab-build-wsl/)). Our first feature (poly aftertouch) runs on
+hardware; its source isn't published yet. Earlier research was done on 1.5.32 and is being re-located in 1.6.1
 ([`tools/ghidra-1.6.1/anchors_1532_to_161.txt`](tools/ghidra-1.6.1/anchors_1532_to_161.txt)).
 
 ## Priority order
@@ -24,8 +24,17 @@ option. Known design constraints:
   output is **sent on clock ticks (24 PPQ) while running**, at a fixed equivalent
   rate while stopped (open: confirm), **changed values only**, running status, and
   a global budget where note on/off always win.
-- **Milestone 1:** a working poly-aftertouch External track on hardware
-  (MIDI monitor, plus a synth that responds to poly AT).
+- **Milestone 1: reached 2026-10-25.** Poly aftertouch out of an External
+  track on hardware, verified on a MIDI monitor and a poly-AT synth (per-note
+  LFO rate following each pad). How it works: stock already computes per-note
+  pressure (same curve as velocity, correct note from the keyboard mapping)
+  and delivers it to the External track, which drops it. The mod forwards it
+  as `0xA0 note value` on the track's MIDI port/channel at up to 100 Hz per
+  note (changed values only), under a global output budget.
+- Next for A: polyphony cap (default 6, max 8; oldest-first stealing with
+  forced note-offs, sequencer notes included), then a settings UI (cap,
+  linear/exp/log curves for pressure and MIDI-out velocity), pressure for all
+  MIDI-out track types, and recording pressure into the sequencer.
 - Next step after M1: record pressure into the sequencer.
 
 **2. F — LFO + envelope + mod matrix with CC destinations for External tracks.**
