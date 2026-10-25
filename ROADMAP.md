@@ -1,19 +1,48 @@
 # Roadmap
 
-Status as of this writing. Research-only — no patches have shipped yet.
+Status as of 2026-10-25. **Target firmware: stock Bento 1.6.1**, building on
+[bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s
+work. Their CH10 / 1.6HA release reproduces byte for byte with our toolchain
+(see [`tools/lab-build-wsl/`](tools/lab-build-wsl/)). No patches of our own have
+shipped yet. Earlier research was done on 1.5.32 and is being re-located in 1.6.1
+([`tools/ghidra-1.6.1/anchors_1532_to_161.txt`](tools/ghidra-1.6.1/anchors_1532_to_161.txt)).
 
-## In progress
+## Priority order
 
-**A. External-track pad pressure out over MIDI.** Bento already has a unified internal "Pressure" value (pad sensor + incoming MIDI aftertouch, merged) feeding its mod matrix today, but it never reaches outgoing MIDI for External tracks. Planned: default to Polyphonic Key Pressure (0xA0), configurable to Channel Pressure (0xD0) from the track's INST page. A receive-side MIDI aftertouch parser already exists in the firmware and is the template for this (see [`docs/mod-matrix.md`](docs/mod-matrix.md)).
+**0. Hardware loop (prerequisite).** Flash Lab's CH10 as-is and confirm it boots.
+Then flash a minimal build of our own inside their build system. Stock 1.6.1's
+"Last crash info" page (core, fault address, CFSR) is the first debugging tool.
 
-**B. MIDI note as a mod source, for Multisample tracks.** Confirmed on real 1.5.32 hardware: `Key` is already available as a mod source on Wavetable and Granular tracks — only Multisample is missing it (the official manual's "Granular-only" claim is outdated for current firmware). Scope narrowed accordingly: find and open whatever currently excludes Multisample specifically.
+**1. A — External-track pad pressure out over MIDI.** *Top priority.* Bento's 16
+pads each have an independent pressure sensor, and the raw per-pad values reach
+the audio core unmerged (see [`docs/external-tracks.md`](docs/external-tracks.md)).
+Plan: Polyphonic Key Pressure (0xA0) by default, Channel Pressure (0xD0) as an
+option. Known design constraints:
+- External tracks don't currently record which pad produced which note. This
+  bookkeeping has to be added.
+- DIN MIDI bandwidth (~1,000 messages/s) requires thinning and rate-capping;
+  pressure changes every audio tick.
 
-**C. Project Settings values exposed on PROJ and SEQ pages.** Root Note, Scale, BPM, and Swing currently require navigating into a Project Settings submenu. Plan: surface all four on PROJ's available encoders, and BPM+Swing on SEQ's two rightmost encoders — reading/writing the exact same underlying values (confirmed accessible via one shared accessor function, see [`docs/project-settings.md`](docs/project-settings.md)), not separate copies.
+**2. F — LFO + envelope + mod matrix with CC destinations for External tracks.**
+At least one LFO and one envelope routed through a mod matrix to outgoing MIDI
+CCs (and later velocity, pitch bend, aftertouch). Open approach question: reuse
+the native per-voice modulation engine (see [`docs/bento-os.md`](docs/bento-os.md)
+§7), or a small dedicated engine clocked by the native sequencer. External tracks
+have no voices, which may make the native route a poor fit.
+- **E — Mod Wheel amount** is planned as a CC1 destination inside F rather than
+  a separate control.
 
-**D. Master compressor: sidechain source, HP/LP filter, saturation.** See [`docs/compressor.md`](docs/compressor.md) for current state and the open feasibility question (whether individual tracks are addressable pre-mix for a true sidechain tap).
+**3. D — Saturation.** Stock 1.6 added a native sidechain ducker
+(Source Track / ext input / pad / MIDI note / clock; attack/hold/release/
+depth/threshold), so the sidechain part of D is dropped. The remaining scope is
+saturation. Placement (master vs. per-track) is still to be decided. Lab's
+channel strip already provides a per-track soft clipper.
 
-**E. Mod Wheel amount on the External track's INST page.** A new per-track MIDI-out control, same scope class as (A).
+**4. B — MIDI note (Key) as a mod source for Multisample.** Only if cheap.
+The native voice binding for Key is known (`source 14 → voice+0xBC`).
 
-## Deferred — recorded, not yet started
+## Parked
 
-**F. Full modulation system for External tracks.** The longer-term direction: 2 LFOs, 2 envelopes, and a mod sequencer — the same class of modulation sources Granular tracks already have — available on External tracks, targeting outgoing MIDI CCs as well as velocity, pitch, aftertouch, pitch bend, and bank change. This is essentially porting Granular's internal modulation system to drive MIDI output rather than internal synthesis. Substantial scope; intentionally not started until (A)–(E) are further along.
+**C — Project Settings values on PROJ/SEQ pages.** Research is complete enough to
+build (the SEQ header is the same view Lab's Euclidean bank rewrites), but it's
+deprioritized. Its PROJ half conflicts with Lab's PROJ-as-Shift.

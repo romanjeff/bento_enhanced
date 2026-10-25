@@ -6,7 +6,7 @@ Community firmware research and (eventually) mods for the [1010music Bento](http
 
 ## Status
 
-This repo currently holds **research and documentation only** — no patches have shipped yet. See [`ROADMAP.md`](ROADMAP.md) for what's planned and where each feature stands.
+This repo currently holds **research, documentation and tooling** — no patches have shipped yet. Target firmware is **stock 1.6.1**, building on [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab). See [`ROADMAP.md`](ROADMAP.md) for priorities and where each feature stands.
 
 ## Why this exists
 
