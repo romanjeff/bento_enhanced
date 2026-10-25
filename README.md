@@ -6,7 +6,7 @@ Community firmware research and (eventually) mods for the [1010music Bento](http
 
 ## Status
 
-This repo currently holds **research, documentation and tooling** — no patches have shipped yet. Target firmware is **stock 1.6.1**, building on [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab). See [`ROADMAP.md`](ROADMAP.md) for priorities and where each feature stands.
+This repo holds research, documentation, tooling, and **firmware mods**. The first one, [poly aftertouch out of External tracks](mods/m1/), works on hardware. Target firmware is **stock 1.6.1**, building on [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab). See [`ROADMAP.md`](ROADMAP.md) for priorities and where each feature stands.
 
 ## Why this exists
 
@@ -55,4 +55,4 @@ None of this repository's code is derived from those projects — Bento is diffe
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE). Covers the code and documentation in this repository only.
+GPL-3.0-or-later — see [`LICENSE`](LICENSE). Covers the code and documentation in this repository only (never 1010music's firmware). Relicensed from MIT on 2026-10-25, when the repo started carrying firmware mods built on [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab) (also GPL-3.0-or-later).
