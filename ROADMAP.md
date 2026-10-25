@@ -20,12 +20,22 @@ Plan: Polyphonic Key Pressure (0xA0) by default, Channel Pressure (0xD0) as an
 option. Known design constraints:
 - External tracks don't currently record which pad produced which note. This
   bookkeeping has to be added.
-- DIN MIDI bandwidth (~1,000 messages/s) requires thinning and rate-capping;
-  pressure changes every audio tick.
+- DIN MIDI bandwidth (~1,000 messages/s): pressure changes every audio tick, so
+  output is **sent on clock ticks (24 PPQ) while running**, at a fixed equivalent
+  rate while stopped (open: confirm), **changed values only**, running status, and
+  a global budget where note on/off always win.
+- **Milestone 1:** a working poly-aftertouch External track on hardware
+  (MIDI monitor, plus a synth that responds to poly AT).
+- Next step after M1: record pressure into the sequencer.
 
 **2. F — LFO + envelope + mod matrix with CC destinations for External tracks.**
-At least one LFO and one envelope routed through a mod matrix to outgoing MIDI
-CCs (and later velocity, pitch bend, aftertouch). Open approach question: reuse
+Channel-level (per-track) modulation: **2 LFOs and 2 envelopes**.
+- Each envelope can optionally retrigger per note, and optionally loop with a
+  repeat count (1–32 or infinite).
+- Each LFO can optionally retrigger per note.
+- Routed through a mod matrix to outgoing MIDI CCs (later velocity, pitch bend,
+  aftertouch), sharing the same DIN output budget as A.
+- **The 4 native automation lanes (A–D) get CC targets** on External tracks. Open approach question: reuse
 the native per-voice modulation engine (see [`docs/bento-os.md`](docs/bento-os.md)
 §7), or a small dedicated engine clocked by the native sequencer. External tracks
 have no voices, which may make the native route a poor fit.
@@ -35,8 +45,11 @@ have no voices, which may make the native route a poor fit.
 **3. D — Saturation.** Stock 1.6 added a native sidechain ducker
 (Source Track / ext input / pad / MIDI note / clock; attack/hold/release/
 depth/threshold), so the sidechain part of D is dropped. The remaining scope is
-saturation. Placement (master vs. per-track) is still to be decided. Lab's
-channel strip already provides a per-track soft clipper.
+a **master saturator next to the compressor**, with character-setting
+parameters (drive and tone/character controls, to be designed). Lab's per-track
+soft clipper doesn't cover this. Registry IDs must avoid Lab's
+`0x128–0x12D` (chord editor), which overlap the compressor-range gap we
+found in 1.5.32.
 
 **4. B — MIDI note (Key) as a mod source for Multisample.** Only if cheap.
 The native voice binding for Key is known (`source 14 → voice+0xBC`).
