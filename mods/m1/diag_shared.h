@@ -76,6 +76,7 @@ typedef struct {
 } Cfg; /* 32 bytes */
 #define CFG ((volatile Cfg *)0x240485E0u)
 #define M1_REGION_BYTES 0x1000u
+#define RETRIG_BYTES 512u          /* 16 bursts x 32 B, inside the M1 region */
 
 typedef struct {
     u32 max_fill;  /* highest M7->M4 MIDI ring fill seen when posting (16 slots) */

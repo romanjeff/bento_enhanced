@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (127 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (136 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -276,3 +276,24 @@ the label.
 - **`BENTO_CRASHES.log`** lines now carry `fw=` and `rtc=`.
 - **Layout:** one table in `build.py` (logger 10 KB, hold-step, controls, poly handler);
   linker-script ORIGIN/LENGTH and the tests' addresses come from it (manifest `layout`).
+
+## Retrigger scheduler (R2 prototype, v3.2)
+
+`m7_retrig.c`. Stock posts each accepted note once through `note_route`
+(`0x0805F8E0`) with a sample offset into the current block; its event queues are per
+block, so extra hits can't be posted ahead of time. Instead:
+- **accept:** a stub replaces `bl note_route` at `0x08060B9A`: stock's call runs
+  unchanged, then the note's 64-bit tick (caller `sp+0x20`) queues a burst of N hits at
+  `tick + k × division` (playback ticks, 960 per quarter). A new note on the same track +
+  pad cancels a pending burst.
+- **emit:** at the entry of the timed-note processor (`0x08060820`, once per track per
+  block) each due hit goes through `note_route` with its offset from stock's own tick →
+  sample conversion (`0x080A2200`), so tempo is followed; > 50 ms late = dropped.
+- Velocity of hit k of N: `vel × (1 + ramp% × k / N)`, clamped 1–127.
+- Burst table (16 × 32 B) lives in the M1 region (validated per boot, zeroed with it).
+- **Prototype scope:** fixed settings on **pad 16** of every track (3 hits, 1/16T,
+  −60 %) until per-note storage and the encoders exist; internal sound only (MIDI-out
+  is masked while a hit is posted; MIDI ratchets need their own note-offs).
+- `test_retrig.py` drives the real patched sites (accept stub with a stock-shaped caller
+  frame, processor-entry trampoline): block placement and ramp, cut-off by the next hit
+  on the pad, other pads/tracks untouched, late drop, MIDI masked and restored.

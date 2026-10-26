@@ -72,9 +72,17 @@ typedef struct {
     Bucket b[PORTS];
     Voices v[TRACKS];
     PEnt p[PENT];
+    u32 bursts[RETRIG_BYTES / 4]; /* m7_retrig.c burst table (zeroed with the region) */
 } Region;
 
 #define REGION_MAGIC 0x31424D31u /* "1MB1" */
+
+static volatile Region *region(void);
+/* m7_retrig.c: the burst table, valid only for this boot's region (0 if none). */
+void *m1_retrig_table(void) {
+    volatile Region *r = region();
+    return r ? (void *)r->bursts : 0;
+}
 _Static_assert(sizeof(Region) <= M1_REGION_BYTES, "region larger than the M4 allocates");
 
 static volatile Region *region(void) {

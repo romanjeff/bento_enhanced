@@ -38,7 +38,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.1"                       # bump for every build that goes on the device
+VERSION = "3.2"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -73,6 +73,9 @@ NOTE_SITES = [  # (site, track register, role)
     (0x08060088, "r4", "pad Note Off (FUN_08060040)"),
     (0x08061966, "r6", "Note Off, stop/all-off (FUN_080618E0)"),
 ]
+
+# Retrigger (m7_retrig.c).
+NOTE_ROUTE, RETRIG_ACCEPT_SITE, RETRIG_EMIT_SITE = 0x0805F8E0, 0x08060B9A, 0x08060820
 
 # Audio stall snapshot (idle-restart investigation): the M7 main audio loop
 # FUN_0808DF00 refreshes the watchdog only on audio progress.
@@ -256,7 +259,7 @@ def build(base_img, out):
               "M1: lower M7 heap end to reserve our RAM slice + condition counters (stack unchanged)")
 
     # --- M7: compile, place, trampolines, entry patches
-    m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c", HERE / "m7_conditions.c", HERE / "m7_stall.c"],
+    m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c", HERE / "m7_conditions.c", HERE / "m7_stall.c", HERE / "m7_retrig.c"],
                          "cortex_m7", HERE / "m7.ld", out / "m7.elf", M7_CODE, M7_LIMIT)
     va, code7, s7 = elf_load(m7_elf, M7_CODE, M7_LIMIT)
     if va != M7_CODE or M7_CODE + len(code7) > M7_LIMIT:
@@ -297,6 +300,28 @@ def build(base_img, out):
         if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
             raise SystemExit(f"{site:#x}: not the expected bl msg_send")
         patch(site, asm(f"bl {stub:#x}", site), orig, f"M1b poly cap: {role} -> h_note")
+    # Retrigger (m7_retrig.c): accept = stub around stock's bl note_route;
+    # emit = entry trampoline of the timed-note processor.
+    stub = M7_TRAMP + len(tramps)
+    code = asm("push {r3, r4, r5, r6, r7, lr}; mov r4, r0; mov r5, r1; mov r6, r2; mov r7, r3; "
+               "ldr r0, [sp, #24]; ldr r1, [sp, #28]; sub sp, #8; str r0, [sp]; str r1, [sp, #4]; "   # pad, router
+               f"mov r0, r4; mov r1, r5; mov r2, r6; mov r3, r7; bl {NOTE_ROUTE:#x}; "
+               "str r6, [sp]; mov r0, r4; mov r1, r5; add r2, sp, #32; ldr r3, [sp, #20]; "          # vel; caller sp; caller r6 (clock)
+               f"bl {s7['retrig_accept']:#x}; add sp, #8; pop {{r3, r4, r5, r6, r7, pc}}", stub)
+    check_branches(code, stub, {NOTE_ROUTE, s7["retrig_accept"]}, "retrigger accept stub")
+    tramps += code + bytes(-len(code) % 4)
+    orig = asm(f"bl {NOTE_ROUTE:#x}", RETRIG_ACCEPT_SITE)
+    patch(RETRIG_ACCEPT_SITE, asm(f"bl {stub:#x}", RETRIG_ACCEPT_SITE), orig, "Retrigger: accepted note -> note_route, then queue the burst")
+    t = M7_TRAMP + len(tramps)
+    code = asm("push.w {r0, r1, r2, r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
+               "ldr r12, [sp, #32]; sub sp, #8; str r12, [sp]; "                                       # 5th argument (router)
+               f"bl {s7['retrig_emit']:#x}; add sp, #8; "
+               "pop.w {r12, lr}; msr apsr_nzcvq, r12; pop.w {r0, r1, r2, r3, r12, lr}; "
+               f"push.w {{r4, r5, r6, r7, r8, r9, r10, r11, lr}}; b.w {RETRIG_EMIT_SITE + 4:#x}", t)
+    check_branches(code, t, {s7["retrig_emit"], RETRIG_EMIT_SITE + 4}, "retrigger emit trampoline")
+    tramps += code + bytes(-len(code) % 4)
+    patch(RETRIG_EMIT_SITE, asm(f"b.w {t:#x}", RETRIG_EMIT_SITE), bytes.fromhex("2de9f04f"),
+          "Retrigger: timed-note processor entry -> post due hits")
     # Audio stall snapshot: the main audio loop's two calls (see m7_stall.c).
     for site, target, fn, why in STALL_SITES:
         stub = M7_TRAMP + len(tramps)
