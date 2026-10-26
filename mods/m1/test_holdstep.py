@@ -171,5 +171,39 @@ class Tests(unittest.TestCase):
         for a, n in ((0x0815b9c0, 6), (0x0815bab0, 4), (0x0815d22e, 4), (0x0815d2ea, 4)):
             self.assertEqual(IMG[a - BASE:a - BASE + n], stock[a - BASE:a - BASE + n], hex(a))
 
+class MultiHold(unittest.TestCase):
+    """Several held steps + our Condition/Retrig encoders (m4_step.c) through the real
+    drum encoder hook, with stock's own press handling."""
+    KEYS = (0x1F2, 0x1F1, 0x1F0, 0x1EF)
+
+    def probe(self):
+        p = Probe()
+        # step UI state as claim() leaves it: magic, boot gen 1, ok, four keys
+        p.u.mem_write(0x24048C80, struct.pack("<3I4H3I", 0x31505453, 1, 1, *self.KEYS, 0, 0, 0))
+        return p
+
+    def encoder(self, p, which, value):
+        p.u.reg_write(UC_ARM_REG_SP, 0x2003f000)
+        for i, v in enumerate((p.view, self.KEYS[which], value)):
+            p.u.reg_write(UC_ARM_REG_R0 + i, v)
+        p.u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        p.u.emu_start(0x0815CAA0 | 1, SENT, count=200000)
+
+    def word(self, p, i): return p.word(p.container + i * 24 + 20)
+
+    def test_condition_and_retrig_reach_every_held_step(self):
+        p = self.probe()
+        p.press(0); p.press(8)                                       # two steps held on pad 2
+        self.encoder(p, 0, 6)                                        # Condition -> list index 6
+        self.encoder(p, 1, 3)                                        # Retrig 3
+        w0, w1, w2 = self.word(p, 0), self.word(p, 1), self.word(p, 2)
+        self.assertEqual(w0, w1, "both held steps got the same settings")
+        self.assertEqual(w0 >> 24, 0xB6)
+        self.assertEqual((w0 >> 13) & 0xF, 3)
+        self.assertNotEqual((w0 >> 17) & 0x7F, 0)
+        self.assertEqual(w2, 0, "the note on another pad is untouched")
+        p.time(5100); p.release(0); p.release(8)
+        self.assertFalse(any(x[0] == "toggle" for x in p.log), "edited held steps stay on")
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])
