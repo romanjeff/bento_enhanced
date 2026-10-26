@@ -76,6 +76,14 @@ class Image(unittest.TestCase):
         self.assertEqual(len(DIAG) % 4, 0)
         self.assertEqual(DIAG[:len(CH10)][:0x100], CH10[:0x100], "stock vector table untouched")
 
+    def test_visible_version_label(self):
+        man = json.loads((OUT / "manifest.json").read_text())
+        label = man["display"].encode()
+        self.assertTrue(label.startswith(b"BE") and len(label) <= 6, label)
+        self.assertEqual(DIAG[0x0818BAD4 - BASE:0x0818BAD4 - BASE + 8], label.ljust(8, bytes(1)),
+                         "boot screen copies the first 6 bytes of this 8-byte slot")
+        self.assertEqual(CH10[0x0818BAD4 - BASE:0x0818BAD4 - BASE + 8], b"1.6.1" + bytes(3), "stock string")
+
     def test_heap_end_lowered_only_at_the_three_literals(self):
         for a in (0x08040588, 0x080A3BDC, 0x080A3E94):
             self.assertEqual(struct.unpack_from("<I", DIAG, a - BASE)[0], 0x24048400)

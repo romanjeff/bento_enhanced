@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (123 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (124 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -249,3 +249,13 @@ line shows whether each stream has been seen running.
 
 Layout change: the M4 poly-AT handler moved to its own block `0x081B8000`; the logger
 slot is now `0x081B5000–0x081B6C00`; inspect-a-step wrappers `0x081B6C00`, code `0x081B6D00`.
+
+## Version label (since v3.0)
+
+Builds show **`BE<version>`** (Bento Enhanced) where stock shows `1.6.1`: on the boot
+screen and in the `<version>-cont-<n>` info string. One `VERSION` constant in
+`build.py` drives the label, the binary marker and the manifest; kits are packaged as
+`flash/bento_enhanced-v<version>/`. The boot screen copies only the first 6 bytes of
+stock's 8-byte version slot (`0x0818BAD4`, used by `FUN_08162950` and
+`FUN_08131024`), so the label is at most 6 characters (`BE3.10` fits). v3.0 = v2.9 +
+the label.

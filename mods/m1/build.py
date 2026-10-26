@@ -37,7 +37,12 @@ M7_LIMIT = 0x080DB800
 APPEND_FROM = 0x081B4000
 M4_CODE = 0x081B5000
 M4_LIMIT = 0x081B6C00
-MARKER = b"BENTO_MOD:m1-polyat:v2.9-stock+conditions(not,1st,pre)+inspect+holds+dmamon" + bytes(1)
+VERSION = "3.0"                       # bump for every build that goes on the device
+DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
+MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
+# Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
+# (FUN_08162950 copies only the first 6 bytes) and "%s-cont-%d" (FUN_08131024).
+VERSION_STR, VERSION_ORIG = 0x0818BAD4, b"1.6.1\0\0\0"
 
 # (name, site, original bytes, displaced instruction(s), resume address, call setup)
 M7_HOOKS = [
@@ -491,6 +496,11 @@ def build(base_img, out):
     patch(M4_BL_SITE, asm(f"bl {s4['m4_tick']:#x}", M4_BL_SITE), bytes.fromhex(M4_BL_ORIG),
           "M1 diag: defaultTask loop BL -> m4_tick (calls the original first)")
 
+    # --- visible version label
+    if not 1 <= len(DISPLAY) <= 6 or not DISPLAY.isascii():
+        raise SystemExit(f"display label {DISPLAY!r}: the boot screen shows at most 6 ASCII characters")
+    patch(VERSION_STR, DISPLAY.encode().ljust(8, b"\0"), VERSION_ORIG, f"Visible version label {DISPLAY}")
+
     # --- invariants
     if len(img) > PROVEN_MAX_SIZE or BASE + len(img) > FORBIDDEN_FROM:
         raise SystemExit(f"image of {len(img):#x} bytes exceeds the size proven on the device ({PROVEN_MAX_SIZE:#x})")
@@ -507,7 +517,7 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the stock base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label="1.6.1+m1+conditions+inspect+holds-v2.9", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label=f"{DISPLAY} (bento_enhanced v{VERSION} on stock 1.6.1)", version=VERSION, display=DISPLAY, base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
