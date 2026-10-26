@@ -17,7 +17,7 @@
  *   0x24048540 M7 private  diag: dedupe table 16 x 8 B
  *   0x240485C0 M7 private  diag: flags, generation
  *   0x240485E0 config      (M4 writes once at boot, M7 reads): M1 state region
- *   0x24048600 (unused)
+ *   0x24048600 M7 stats    (M7 writes, M4 reads): MIDI ring fill / overflows
  *   0x240486C0 records     (M7 writes, M4 reads), 17 x 48 bytes
  */
 #ifndef DIAG_SHARED_H
@@ -76,6 +76,15 @@ typedef struct {
 } Cfg; /* 32 bytes */
 #define CFG ((volatile Cfg *)0x240485E0u)
 #define M1_REGION_BYTES 0x1000u
+
+typedef struct {
+    u32 max_fill;  /* highest M7->M4 MIDI ring fill seen when posting (16 slots) */
+    u32 overflows; /* posts made while 16 entries were still unread (overwrites) */
+    u32 posts;
+    u32 r[5];
+} RingStat; /* 32 bytes */
+#define RINGSTAT ((volatile RingStat *)0x24048600u)
+#define MIDI_RING_SLOTS 16u
 _Static_assert(sizeof(Rec) == 48, "record size");
 _Static_assert(0x240486C0u + DIAG_RECORDS * sizeof(Rec) <= 0x24048A00u, "records overrun our slice");
 

@@ -54,6 +54,9 @@ static int m4_ready(void) {
         M7H->wr = M4H->rd; /* start empty relative to the M4 */
         M7H->dropped = 0;
         M7H->dedupe_full = 0;
+        for (u32 i = 0; i < 4; i++) M7H->r[i] = 0;
+        RINGSTAT->max_fill = RINGSTAT->overflows = RINGSTAT->posts = 0;
+        clean(RINGSTAT, sizeof(RingStat));
         M7H->magic = DIAG_MAGIC;
         clean(M7H, sizeof(M7Head));
     }
@@ -119,12 +122,29 @@ __attribute__((used, retain)) void h_send(u32 queue, const u32 *ev, u32 lr) {
 
 __attribute__((used, retain)) void h_ring(u32 obj, const u32 *ev) {
     u32 t = ev[0] & 0xFF;
+    /* Ring fill before this post. rd (obj+0x2340) is written only by the M4 and
+     * sits alone in its cache line (entries end at +0x2340, wr is at +0x2360),
+     * so invalidating that line is safe. The native writer has no full check:
+     * posting with 16 unread entries overwrites the oldest. */
+    DCIMVAC = (obj + 0x2340u) & ~31u;
+    dsb();
+    u32 fill = *(volatile u32 *)(obj + 0x2360u) - *(volatile u32 *)(obj + 0x2340u);
+    if (m4_ready()) { /* also initialises our side on the first call each boot */
+        RINGSTAT->posts++;
+        if (fill > RINGSTAT->max_fill) RINGSTAT->max_fill = fill;
+        if (fill >= MIDI_RING_SLOTS) RINGSTAT->overflows++;
+        clean(RINGSTAT, sizeof(RingStat));
+    }
+    if (fill >= MIDI_RING_SLOTS) {       /* always log an overwrite, whatever the type */
+        put(K_RING, 0, obj, ev, 0x100u | fill);
+        return;
+    }
     if (t >= 0x61 && t <= 0x63) return; /* clock/start/stop: too frequent, not needed */
     if (t == 0x5F) {                     /* our pressure: first after each press only */
         if (!FLAGS[4]) return;
         FLAGS[4] = 0;
     }
-    put(K_RING, 0, obj, ev, 0);
+    put(K_RING, 0, obj, ev, fill);
 }
 
 __attribute__((used, retain)) void h_consume(u32 queue, u32 idx, u32 lr) {

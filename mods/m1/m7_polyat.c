@@ -132,7 +132,33 @@ static void note_off(u32 q, const u32 *like, u32 note) {
 }
 
 /* Called from the five redirected post sites: (queue, event, track). */
+static void note_body(u32 q, const u32 *ev, u32 track);
+static void poly_body(u32 track, const u32 *ev, u32 engine);
+
+/* Voice lists and pressure state are shared by every caller; if any of the
+ * five post sites (e.g. stop/all-off) runs in another M7 context, an
+ * interleaved update could corrupt a list. Mask interrupts for the (short)
+ * body; msg_send and diag_put are safe with interrupts masked. */
+static inline u32 irq_save(void) {
+    u32 p;
+    __asm volatile("mrs %0, primask\n cpsid i" : "=r"(p)::"memory");
+    return p;
+}
+static inline void irq_restore(u32 p) { __asm volatile("msr primask, %0" ::"r"(p) : "memory"); }
+
 __attribute__((used, retain)) void h_note(u32 q, const u32 *ev, u32 track) {
+    u32 p = irq_save();
+    note_body(q, ev, track);
+    irq_restore(p);
+}
+
+__attribute__((used, retain)) void h_poly(u32 track, const u32 *ev, u32 engine) {
+    u32 p = irq_save();
+    poly_body(track, ev, engine);
+    irq_restore(p);
+}
+
+static void note_body(u32 q, const u32 *ev, u32 track) {
     volatile Region *r = region();
     u32 type = ev[0] & 0xFF, note = ev[4] & 0x7F;
     if (!r || (type != 0x5B && type != 0x5C)) { MSG_SEND(q, ev); return; }
@@ -227,7 +253,7 @@ static void flush(volatile Region *r, u32 engine, u32 now) {
 }
 
 /* Called from the 0x08062466 trampoline: (track r6, event at sp+0x20, engine r8). */
-__attribute__((used, retain)) void h_poly(u32 track, const u32 *ev, u32 engine) {
+static void poly_body(u32 track, const u32 *ev, u32 engine) {
     if ((ev[0] & 0xFF) != 0x0E) return;
     volatile Region *r = region();
     if (!r) return;

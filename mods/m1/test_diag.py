@@ -22,6 +22,8 @@ STACK = 0x2407F000
 LOG_LO, LOG_HI = 0x24048500, 0x24048A00
 M7H, M4H, RECS = 0x24048500, 0x24048520, 0x240486C0
 MAGIC = 0x31474144
+RINGSTAT = 0x24048600
+RTC_BKP = 0x58004050
 REGS = [UC_ARM_REG_R0 + i for i in range(13)] + [UC_ARM_REG_SP, UC_ARM_REG_LR]
 
 CH10 = Path(sys.argv[1]).read_bytes()
@@ -37,7 +39,8 @@ def emu(img):
     u.mem_map(0x08000000, 0x200000)
     u.mem_write(BASE, img)
     u.mem_write(SENT, b"\xfe\xe7")           # b .
-    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC6000000, 0x200000), (0xE0000000, 0x100000)):
+    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC6000000, 0x200000), (0xE0000000, 0x100000),
+                 (0x58000000, 0x10000)):  # RTC (backup registers hold stock's crash record)
         u.mem_map(a, n)
     return u
 
@@ -155,6 +158,21 @@ class NativeFunctions(unittest.TestCase):
         call(b, 0x08082640, obj, ev)
         self.assertEqual(len(records(b)), 1)
 
+    def test_ring_fill_and_overflow(self):
+        a, b = self.pair()
+        obj, ev = 0x24050000, 0x24070000
+        b.mem_write(ev, bytes([0x61]) + bytes(23))       # a clock tick: normally not logged
+        w32(b, obj + 0x2360, 20); w32(b, obj + 0x2340, 9)  # 11 unread
+        call(b, 0x08082640, obj, ev)
+        self.assertEqual(len(records(b)), 0)
+        self.assertEqual(r32(b, RINGSTAT), 11)            # max_fill
+        w32(b, obj + 0x2340, 5)                           # 16 unread: this post overwrites
+        call(b, 0x08082640, obj, ev)
+        recs = records(b)
+        self.assertEqual(len(recs), 1, "an overwrite is always logged")
+        self.assertEqual(recs[0][10], 0x110)              # extra = 0x100 | fill
+        self.assertEqual((r32(b, RINGSTAT), r32(b, RINGSTAT + 4), r32(b, RINGSTAT + 8)), (16, 1, 2))
+
     def test_consume_dedupe(self):
         a, b = self.pair()
         q, out = 0x24060000, 0x24070100
@@ -165,24 +183,53 @@ class NativeFunctions(unittest.TestCase):
         self.assertEqual(len(records(b)), 1)
         self.assertEqual(records(b)[0][1] & 0xFFFF, 4)
 
+LOG, PREV = "\\BENTO_DIAG.log", "\\BENTO_DIAG_prev.log"
+
 class M4EndToEnd(unittest.TestCase):
-    def setUp(self):
+    """M4 flush path against a tiny emulated FatFS (path -> bytes, modes honoured)."""
+    def setUp(self, previous=None):
         u = self.u = emu(DIAG)
         w32(u, 0x3000004C, 0xC6000000); w32(u, 0x30000048, 0xC6200000)
-        self.files = []
+        self.fs = {} if previous is None else {LOG: previous}
+        self.open = {}      # FIL address -> [path, position]
+        self.writes = []    # (path, mode, bytes written in that open)
+        def cstr(uc, a):
+            s = b""
+            while True:
+                c = bytes(uc.mem_read(a, 1))
+                if c == b"\0": return s.decode()
+                s += c; a += 1
         def hook(uc, addr, size, _):
+            r = lambda i: uc.reg_read(UC_ARM_REG_R0 + i)
             ret = None
             if addr == 0x08101C78: ret = 0                       # original loop function: no-op
-            elif addr == 0x08120148: self.cur = []; ret = 0       # f_open
+            elif addr == 0x08120148:                              # f_open(fil, path, mode)
+                path, mode = cstr(uc, r(1)), r(2)
+                if mode == 0x01:
+                    ret = 0 if path in self.fs else 4             # FR_NO_FILE
+                elif mode == 0x0A: self.fs[path] = b""; ret = 0   # create always
+                elif mode == 0x32: self.fs.setdefault(path, b""); ret = 0   # append
+                else: ret = 19                                    # anything else: invalid parameter
+                if ret == 0:
+                    self.open[r(0)] = [path, 0]
+                    self.writes.append([path, mode, b""])
+            elif addr == 0x08120464:                              # f_read(fil, buf, n, &got)
+                f = self.open[r(0)]; data = self.fs[f[0]][f[1]:f[1] + r(2)]
+                uc.mem_write(r(1), data); w32(uc, r(3), len(data)); f[1] += len(data); ret = 0
             elif addr == 0x08120604:                              # f_write(fil, buf, n, &done)
-                buf, n, done = (uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2), uc.reg_read(UC_ARM_REG_R3))
-                self.cur.append(bytes(uc.mem_read(buf, n))); w32(uc, done, n); ret = 0
-            elif addr == 0x08120974: self.files.append(b"".join(self.cur)); ret = 0  # f_close
+                f = self.open[r(0)]; data = bytes(uc.mem_read(r(1), r(2)))
+                self.fs[f[0]] += data; self.writes[-1][2] += data; w32(uc, r(3), len(data)); ret = 0
+            elif addr == 0x08120974: self.open.pop(r(0), None); ret = 0   # f_close
             if ret is not None:
                 uc.reg_write(UC_ARM_REG_R0, ret)
                 uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
-        for a in (0x08101C78, 0x08120148, 0x08120604, 0x08120974):
+        for a in (0x08101C78, 0x08120148, 0x08120464, 0x08120604, 0x08120974):
             u.hook_add(UC_HOOK_CODE, hook, begin=a, end=a)
+
+    @property
+    def files(self):
+        """Contents written to the log in each open (what each flush wrote)."""
+        return [w[2] for w in self.writes if w[0] == LOG and w[1] != 0x01]
 
     def tick(self, ms):
         w32(self.u, 0x3001FE2C, ms)
@@ -204,13 +251,42 @@ class M4EndToEnd(unittest.TestCase):
         self.tick(2700)                                  # idle >= 1500 ms -> flush
         self.assertEqual(len(self.files), 1)
         text = self.files[0].decode()
-        self.assertIn("BENTO M1b poly-AT + poly cap v2", text)
+        self.assertIn("BENTO M1b poly-AT + poly cap v2.1", text)
         self.assertIn("| poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0", text)
+        self.assertIn("| midi ring max_fill=0 overflows=0", text)
         self.assertEqual(text.count(" SEND "), 2)
         self.assertIn("lr=0805d5a1", text)
         self.assertIn("# m7 dropped=0", text)
-        self.tick(5000)                                  # nothing new -> no rewrite
+        self.tick(5000)                                  # nothing new -> no write at all
         self.assertEqual(len(self.files), 1)
+
+    def test_later_flushes_append_only_new_text(self):
+        self.tick(1000); self.send(0x5B); self.tick(1100); self.tick(2700)
+        first = self.files[0]
+        self.send(0x5C); self.tick(2800); self.tick(4400)
+        self.assertEqual(len(self.files), 2)
+        self.assertEqual([w[1] for w in self.writes if w[0] == LOG], [0x0A, 0x32], "create, then append")
+        second = self.files[1].decode()
+        self.assertNotIn("BENTO M1b", second, "header not rewritten")
+        self.assertEqual(second.count(" SEND "), 1)
+        self.assertEqual(self.fs[LOG], first + self.files[1], "file = first write + appended text")
+
+    def test_crash_record_in_header(self):
+        for i, v in {24: 3, 25: 5, 31: 0x080DA2B1, 27: 2, 8: 0x2404CC00}.items():
+            w32(self.u, RTC_BKP + 4 * i, v)
+        self.tick(1000); self.send(0x5B); self.tick(1100); self.tick(2700)   # drain, then idle-gated write
+        text = self.files[0].decode()
+        self.assertIn("stock crash record: count=3 cause=00000005 pc=080da2b1 core=00000002", text)
+        self.assertIn("msp=2404cc00", text)
+        self.assertEqual(text.count("rtc_bkp0..31:"), 1)
+
+    def test_previous_log_preserved(self):
+        old = b"BENTO session before the crash\r\n" + bytes(range(32, 127)) * 30   # > 512 B: several chunks
+        self.setUp(previous=old)
+        self.tick(1000)
+        self.assertEqual(self.fs.get(PREV), old, "previous boot's log copied before anything is written")
+        self.send(0x5B); self.tick(1100); self.tick(2700)
+        self.assertNotIn(b"before the crash", self.fs[LOG])
 
     def test_overflow_and_reboot(self):
         self.tick(1000)

@@ -24,12 +24,14 @@
 
 typedef void (*orig_fn)(u32, u32);
 
-static void zero(void *p, u32 n) { for (u32 i = 0; i < n; i++) ((u8 *)p)[i] = 0; }
+static void zero(void *p, u32 n) { for (u32 i = 0; i < n; i++) ((volatile u8 *)p)[i] = 0; }
 
 typedef struct { char *buf; u32 len; } Out;
 
+#define SCRATCH_BYTES 512u /* tail of the log buffer: file-copy scratch, never text */
+
 static void puts_(Out *o, const char *s) {
-    while (*s && o->len < BUF_BYTES - 1) o->buf[o->len++] = *s++;
+    while (*s && o->len < BUF_BYTES - SCRATCH_BYTES - 64u) o->buf[o->len++] = *s++;
 }
 static void hex(Out *o, u32 v, u32 digits) {
     char t[9];
@@ -42,6 +44,34 @@ static void dec(Out *o, u32 v) {
     do { t[n++] = (char)('0' + v % 10); v /= 10; } while (v && n < 10);
     char r[11]; for (u32 i = 0; i < n; i++) r[i] = t[n - 1 - i];
     r[n] = 0; puts_(o, r);
+}
+
+/* Stock FatFS (same entry points Lab's K6/K7 diagnostics used). */
+#define F_OPEN(f, p, m) FN(0x08120148, u32 (*)(void *, const char *, u32))((f), (p), (m))
+#define F_READ(f, b, n, d) FN(0x08120464, u32 (*)(void *, void *, u32, u32 *))((f), (b), (n), (d))
+#define F_WRITE(f, b, n, d) FN(0x08120604, u32 (*)(void *, const void *, u32, u32 *))((f), (b), (n), (d))
+#define F_CLOSE(f) FN(0x08120974, u32 (*)(void *))((f))
+#define FA_READ 0x01u
+#define FA_CREATE_WRITE 0x0Au /* FA_CREATE_ALWAYS | FA_WRITE */
+#define FA_APPEND_WRITE 0x32u /* FA_OPEN_APPEND | FA_WRITE: stock f_open honours the seek-end bit */
+static const char LOG[] = "\\BENTO_DIAG.log";
+static const char PREV[] = "\\BENTO_DIAG_prev.log";
+
+/* Keep the previous boot's log: after a crash/restart, that is the evidence. */
+static void preserve_previous(u8 *scratch) {
+    u32 src[22], dst[22];
+    zero(src, sizeof(src));
+    zero(dst, sizeof(dst));
+    if (F_OPEN(src, LOG, FA_READ)) return; /* no log yet */
+    if (!F_OPEN(dst, PREV, FA_CREATE_WRITE)) {
+        for (u32 guard = 0; guard < 256; guard++) { /* logs are <= 64 KB */
+            u32 got = 0, put = 0;
+            if (F_READ(src, scratch, SCRATCH_BYTES, &got) || !got) break;
+            if (F_WRITE(dst, scratch, got, &put) || put != got) break;
+        }
+        F_CLOSE(dst);
+    }
+    F_CLOSE(src);
 }
 
 static int new_boot(u32 now) {
@@ -76,8 +106,22 @@ static void init(u32 now) {
     M4H->rd = (M7H->magic == DIAG_MAGIC) ? M7H->wr : 0u;
     if (buf) {
         Out o = {(char *)buf, 0};
-        puts_(&o, "BENTO M1b poly-AT + poly cap v2 + diagnostics (CH10 1.6HA), boot gen ");
+        puts_(&o, "BENTO M1b poly-AT + poly cap v2.1 + diagnostics (CH10 1.6HA), boot gen ");
         dec(&o, gen);
+        /* Stock's crash record: RTC backup registers, written by the M7 fault
+         * handlers (UsageFault vector 6, WWDG IRQ 0) and kept across reset. */
+        volatile u32 *bkp = (volatile u32 *)0x58004050u; /* RTC_BKP0R..BKP31R */
+        puts_(&o, "\r\nstock crash record: count="); dec(&o, bkp[24]);
+        puts_(&o, " cause="); hex(&o, bkp[25], 8);
+        puts_(&o, " pc="); hex(&o, bkp[31], 8);
+        puts_(&o, " core="); hex(&o, bkp[27], 8);
+        puts_(&o, " tick="); hex(&o, bkp[26], 8);
+        puts_(&o, " x23="); hex(&o, bkp[23], 8);
+        puts_(&o, " msp="); hex(&o, bkp[8], 8);
+        puts_(&o, " psp="); hex(&o, bkp[9], 8);
+        puts_(&o, "\r\nrtc_bkp0..31:");
+        for (u32 i = 0; i < 32; i++) { puts_(&o, " "); hex(&o, bkp[i], 8); }
+        preserve_previous((u8 *)buf + BUF_BYTES - SCRATCH_BYTES);
         puts_(&o, "\r\nfields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)\r\n"
                   "VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note\r\n");
         M4H->r[2] = o.len;
@@ -96,14 +140,19 @@ static const char *kind_name(u32 k) {
     return "????";
 }
 
+/* Write only what is new since the last flush: the first write this boot
+ * creates the file, later ones append. No full rewrite of up to 64 KB on the
+ * UI thread. */
 static void flush(void) {
+    u32 saved = M4H->r[4], len = M4H->r[2];
+    if (len <= saved) return;
     u32 file[22];
     zero(file, sizeof(file));
-    if (FN(0x08120148, u32 (*)(void *, const char *, u32))(file, "\\BENTO_DIAG.log", 10)) return;
+    if (F_OPEN(file, LOG, saved ? FA_APPEND_WRITE : FA_CREATE_WRITE)) return;
     u32 done = 0;
-    FN(0x08120604, u32 (*)(void *, const void *, u32, u32 *))(file, (const void *)M4H->r[1], M4H->r[2], &done);
-    FN(0x08120974, u32 (*)(void *))(file);
-    M4H->r[4] = M4H->r[2];
+    F_WRITE(file, (const char *)M4H->r[1] + saved, len - saved, &done);
+    F_CLOSE(file);
+    M4H->r[4] = len;
 }
 
 static void poll(void) {
@@ -141,6 +190,8 @@ static void poll(void) {
         puts_(&t, " stolen="); dec(&t, M7H->r[2] & 0xFFFFu);
         puts_(&t, " retrig="); dec(&t, M7H->r[2] >> 16);
         puts_(&t, " swallowed="); dec(&t, M7H->r[3]);
+        puts_(&t, " | midi ring max_fill="); dec(&t, RINGSTAT->max_fill);
+        puts_(&t, " overflows="); dec(&t, RINGSTAT->overflows);
         puts_(&t, " at ms "); dec(&t, now); puts_(&t, "\r\n");
         M4H->r[2] = t.len;
         flush();

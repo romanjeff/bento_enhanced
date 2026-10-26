@@ -68,6 +68,21 @@ Measured on hardware: minimum gap 10.6 ms, no repeated values
 
 ## Diagnostics (development builds)
 
+**v2.1 (crash evidence).** After one unexplained instant reboot during M1b
+testing (not reproducible), the logger was extended:
+- every boot's log header carries **stock's crash record** from the RTC backup
+  registers (written by the M7 fault handlers and kept across reset): crash count,
+  cause, **faulting PC**, core, timestamp, stack pointers, plus all 32 raw registers;
+- the previous boot's log is copied to `\BENTO_DIAG_prev.log` before anything
+  is written, so a crashed session survives the reboot;
+- writes append only new text (stock FatFS honours `FA_OPEN_APPEND`) instead of
+  rewriting up to 64 KB on the UI thread;
+- every post to the 16-slot M7→M4 MIDI ring measures its fill. The summary line
+  reports `max_fill` and `overflows`, and any overwrite is always logged. Leading
+  hypothesis for the reboot: ring overflow during note bursts;
+- the voice and pressure updates run with interrupts masked (re-entrancy guard).
+
+
 `m7_diag.c` / `m4_diag.c` log the pad → MIDI path. The M7 writes records to a
 RAM ring; the M4's UI thread writes `\BENTO_DIAG.log` to the SD card after the
 pads have been idle for 1.5 s. The logs in `logs/` are the device runs that
@@ -80,7 +95,11 @@ logged; M1b will sample instead.
 - RAM `0x24048500–0x24048A00`: not claimed by any CH10 source; outside the native
   heap since Lab moved its end; inside the M4's MPU window.
 - M7 code `0x080DA000–0x080DB800`: inside CH10's untouched zero gap.
-- M4 code `0x081BE000–0x081BF000`: inside CH10's zero gap `0x081BD8A8–0x081C0000`.
+- M4 code `0x081BE000–0x081BF000`: inside CH10's zero gap `0x081BD8A8–0x081C0000`
+  (diagnostics from `0x081BE000`, the `0x5F` handler at `0x081BEF80`).
+- **Never touch `0x081E0000`+.** The M7's MPU maps it as a 128 KB read-only data
+  region, most likely persistent storage, and the bootloader refused an image
+  reaching it.
   This stays clear of Lab's overlay (≤ `0x081BD8C0`) and of a word CH10 references
   at `0x081BF6C0`.
 - **The image must stay exactly CH10-sized.** The bootloader rejected a 0x1A0800-byte
@@ -90,7 +109,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (23 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (27 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
