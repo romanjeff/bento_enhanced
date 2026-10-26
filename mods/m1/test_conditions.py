@@ -31,11 +31,28 @@ LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]          # s
 STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]  # list order
 SHOWN = ["1ST", "!1ST", "PRE", "!PRE"] + [l for x in LABELS for l in (x, "!" + x)]
 
-def step_make(cond=0, hits=0, div=3, ramp=0):
+def step_make(cond=0, hits=0, div=3, ramp=0, locks=0):
+    """v2 per-step word (diag_shared.h)."""
     f = 0 if div == 3 else div + 1
-    if not cond and not hits and not f and not ramp:
+    r = 0 if ramp == 0 else int(ramp / 5) + 21
+    if not cond and not hits and not f and not r and not locks:
         return 0
-    return (0xB5 << 24) | ((cond & 0x7F) << 17) | ((hits & 0xF) << 13) | ((f & 0xF) << 9) | (ramp & 0xFF)
+    return (0xB6 << 24) | ((cond & 0x7F) << 17) | ((hits & 0xF) << 13) | ((f & 0xF) << 9) | (r << 3) | (locks & 7)
+
+def fields(w):
+    """(condition, hits, division, ramp) from a v1 or v2 word."""
+    tag = w >> 24
+    if tag not in (0xB5, 0xB6):
+        return (0, 0, 3, 0)
+    f = (w >> 9) & 0xF
+    if tag == 0xB5:
+        r = w & 0xFF; ramp = r - 256 if r > 127 else r
+    else:
+        r = (w >> 3) & 0x3F; ramp = (r - 21) * 5 if 1 <= r <= 41 else 0
+    return ((w >> 17) & 0x7F, (w >> 13) & 0xF, f - 1 if 1 <= f <= 11 else 3, ramp)
+
+def locks(w):
+    return w & 7 if w >> 24 == 0xB6 else 0
 
 def emu(img, cfg_gen=1):
     u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)

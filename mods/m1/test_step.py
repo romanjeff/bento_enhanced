@@ -35,18 +35,28 @@ STOCK_DRUM_HEADER, STOCK_PIANO_HEADER = 0x0815C280, 0x081599C0   # our replays c
 STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]
 DIVS = ["1/8", "1/8T", "1/8.", "1/16", "1/16T", "1/16.", "1/32", "1/32T", "1/32.", "1/64", "1/64T"]
 
-def step_make(cond=0, hits=0, div=3, ramp=0):
+def step_make(cond=0, hits=0, div=3, ramp=0, locks=0):
+    """v2 per-step word (diag_shared.h)."""
     f = 0 if div == 3 else div + 1
-    if not cond and not hits and not f and not ramp:
+    r = 0 if ramp == 0 else int(ramp / 5) + 21
+    if not cond and not hits and not f and not r and not locks:
         return 0
-    return (0xB5 << 24) | ((cond & 0x7F) << 17) | ((hits & 0xF) << 13) | ((f & 0xF) << 9) | (ramp & 0xFF)
+    return (0xB6 << 24) | ((cond & 0x7F) << 17) | ((hits & 0xF) << 13) | ((f & 0xF) << 9) | (r << 3) | (locks & 7)
 
 def fields(w):
-    if w >> 24 != 0xB5:
+    """(condition, hits, division, ramp) from a v1 or v2 word."""
+    tag = w >> 24
+    if tag not in (0xB5, 0xB6):
         return (0, 0, 3, 0)
     f = (w >> 9) & 0xF
-    r = w & 0xFF
-    return ((w >> 17) & 0x7F, (w >> 13) & 0xF, f - 1 if 1 <= f <= 11 else 3, r - 256 if r > 127 else r)
+    if tag == 0xB5:
+        r = w & 0xFF; ramp = r - 256 if r > 127 else r
+    else:
+        r = (w >> 3) & 0x3F; ramp = (r - 21) * 5 if 1 <= r <= 41 else 0
+    return ((w >> 17) & 0x7F, (w >> 13) & 0xF, f - 1 if 1 <= f <= 11 else 3, ramp)
+
+def locks(w):
+    return w & 7 if w >> 24 == 0xB6 else 0
 
 def w32(u, a, v): u.mem_write(a, struct.pack("<I", v & 0xFFFFFFFF))
 def r32(u, a): return struct.unpack("<I", u.mem_read(a, 4))[0]
@@ -184,7 +194,7 @@ class SaveLoad(unittest.TestCase):
             self.assertEqual((rec[0] >> 8) & 0xFF, 0, "probability -> Always")
             self.assertEqual(fields(rec[5])[0], v - 99, "condition moved to the word")
         rec = self.run_load(note(0, prob=50), {})
-        self.assertEqual(((rec[0] >> 8) & 0xFF, rec[5]), (50, 0), "plain probability untouched")
+        self.assertEqual(((rec[0] >> 8) & 0xFF, locks(rec[5])), (50, 2), "probability kept; legacy lock rule locks it")
         rec = self.run_load(note(0, prob=120), {"be_step_v1": step_make(hits=2)})
         self.assertEqual(fields(rec[5]), (21, 2, 3, 0), "migration keeps retrigger settings")
 
@@ -290,6 +300,82 @@ class Piano(unittest.TestCase):
         g.u.reg_write(UC_ARM_REG_R0, VIEW); g.u.reg_write(UC_ARM_REG_R1, ev)
         g.u.emu_start(PIANO_EVENT | 1, PIANO_EVENT + 4, count=200000)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 20 - 0x174, "replayed push + sub")
+
+class LegacyLocks(unittest.TestCase):
+    def load(self, rec, attrs=None):
+        return SaveLoad.run_load(SaveLoad(), rec, attrs or {})
+
+    def test_values_off_stock_defaults_load_locked(self):
+        self.assertEqual(self.load(note(0))[5], 0, "stock-default note stays plain")
+        self.assertEqual(locks(self.load(note(0, vel=80))[5]), 1)
+        self.assertEqual(locks(self.load(note(0, prob=30))[5]), 2)
+        r = note(0); r[1] += 40
+        self.assertEqual(locks(self.load(r)[5]), 4)
+        self.assertEqual(self.load(note(0, vel=0))[5], 0, "velocity 0 means 100 to stock")
+
+    def test_v1_words_keep_settings_and_get_legacy_locks(self):
+        v1 = (0xB5 << 24) | (5 << 17) | (3 << 13) | ((4 + 1) << 9) | ((-60) & 0xFF)
+        w = self.load(note(0, vel=70), {"be_step_v1": v1})[5]
+        self.assertEqual(w >> 24, 0xB6)
+        self.assertEqual((fields(w), locks(w)), ((5, 3, 4, -60), 1))
+
+    def test_v2_lock_bits_survive_a_round_trip(self):
+        w = step_make(hits=2, locks=1)
+        self.assertEqual(self.load(note(0), {"be_step_v1": w})[5], w, "saved locks win over the legacy rule")
+
+class Defaults(unittest.TestCase):
+    VEL, PROB, OFFSET = 0x0815C7C4, 0x0815C8AC, 0x0815C990
+
+    def rig(self, notes, selected=()):
+        g = Rig(); g.notes = notes; g.selected_steps = set(selected)
+        w32(g.u, VIEW + 0x114C0, 100); w32(g.u, VIEW + 0x114C4, 0); w32(g.u, VIEW + 0x114C8, 0)
+        return g
+
+    def vel(self, n): return n[4] >> 16
+
+    def test_default_change_moves_unlocked_notes_only(self):
+        g = self.rig([note(0, nid=1), note(1, nid=2), note(2, vel=80, nid=3),
+                      note(3, vel=60, word=step_make(locks=1), nid=4), note(4, pad=3, nid=5)])
+        g.call(self.VEL, VIEW, 90)
+        self.assertEqual(r32(g.u, VIEW + 0x114C0), 90, "stock set the default")
+        self.assertEqual([self.vel(n) for n in g.notes], [90, 90, 80, 60, 100])
+        self.assertEqual([locks(n[5]) for n in g.notes], [0, 0, 1, 1, 0], "recorded 80 got locked, other pad untouched")
+        self.assertIn("publish", g.log)
+
+    def test_editing_a_held_step_locks_it_and_back_to_default_unlocks(self):
+        g = self.rig([note(0, nid=1), note(1, nid=2)], selected={1})
+        g.call(self.VEL, VIEW, 70)
+        self.assertEqual((self.vel(g.notes[1]), locks(g.notes[1][5])), (70, 1))
+        g.call(self.VEL, VIEW, 100)
+        self.assertEqual((self.vel(g.notes[1]), g.notes[1][5]), (100, 0), "back to default: plain note again")
+        g.selected_steps = set(); g.call(self.VEL, VIEW, 110)
+        self.assertEqual([self.vel(n) for n in g.notes], [110, 110])
+
+    def test_locked_note_keeps_value_through_default_changes(self):
+        g = self.rig([note(0, nid=1), note(1, nid=2)], selected={1})
+        g.call(self.VEL, VIEW, 70)
+        g.selected_steps = set()
+        g.call(self.VEL, VIEW, 70); g.call(self.VEL, VIEW, 40)
+        self.assertEqual([self.vel(n) for n in g.notes], [40, 70], "a lock is a lock even if it once matched")
+
+    def test_probability_and_offset_defaults(self):
+        g = self.rig([note(0, nid=1), note(1, prob=20, nid=2)])
+        g.call(self.PROB, VIEW, 49)                                  # list index 49 -> stored 50
+        self.assertEqual([(n[0] >> 8) & 0xFF for n in g.notes], [50, 20])
+        self.assertEqual(locks(g.notes[1][5]), 2)
+        g.call(self.OFFSET, VIEW, 12)                                # 120 ticks
+        self.assertEqual([n[1] for n in g.notes], [120, 960 + 120])
+
+    def test_switching_pad_loads_its_defaults(self):
+        g = self.rig([note(0, vel=80, nid=1), note(1, vel=80, nid=2), note(2, vel=50, nid=3),
+                      note(3, vel=30, word=step_make(locks=1), nid=4), note(0, pad=5, vel=64, nid=5)])
+        g.drum_header()
+        self.assertEqual(r32(g.u, VIEW + 0x114C0), 80, "most common unlocked value on pad 2")
+        w32(g.u, VIEW + 0x11400, 5); g.drum_header()
+        self.assertEqual(r32(g.u, VIEW + 0x114C0), 64)
+        w32(g.u, VIEW + 0x114C0, 99); g.drum_header()
+        self.assertEqual(r32(g.u, VIEW + 0x114C0), 99, "same pad and clip: the default is left alone")
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

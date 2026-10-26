@@ -80,26 +80,42 @@ typedef struct {
 
 /* Per-step word: the native note record's +20 word (notes, kind 1, only;
  * stock uses +20 for automation/XY/scene items). Saved as XML attribute
- * "be_step_v1". Layout:
- *   [31:24] tag 0xB5   [23:17] condition (0 none, 1..74 = stored value - 99)
+ * "be_step_v1" (the value carries its own format tag). Common to both:
+ *   [23:17] condition (0 none, 1..74 = stored value - 99)
  *   [16:13] retrig hits 0..15   [12:9] division index + 1 (0 = default 1/16)
- *   [8] spare   [7:0] ramp, signed percent -100..100
+ * v1 (tag 0xB5, v3.3):  [8] spare   [7:0] ramp, signed percent
+ * v2 (tag 0xB6, v3.4+): [8:3] ramp index (0 = 0 %, else ramp/5 + 21: 1..41)
+ *                       [2:0] locks: bit0 velocity, bit1 probability, bit2 offset
  * Every field at its default -> the word is 0 (a stock-identical note). */
-#define STEP_TAG 0xB5u
+#define STEP_TAG_V1 0xB5u
+#define STEP_TAG 0xB6u
 #define STEP_DIV_DEFAULT 3u   /* 1/16 in DIV order: 1/8 1/8T 1/8. 1/16 1/16T 1/16. 1/32 1/32T 1/32. 1/64 1/64T */
 #define STEP_DIVS 11u
-static inline int step_valid(u32 w) { return (w >> 24) == STEP_TAG; }
+#define LOCK_VEL 1u
+#define LOCK_PROB 2u
+#define LOCK_OFFSET 4u
+static inline int step_valid(u32 w) { return (w >> 24) == STEP_TAG || (w >> 24) == STEP_TAG_V1; }
 static inline u32 step_cond(u32 w) { return step_valid(w) ? (w >> 17) & 0x7Fu : 0u; }
 static inline u32 step_hits(u32 w) { return step_valid(w) ? (w >> 13) & 0xFu : 0u; }
 static inline u32 step_div(u32 w) {
     u32 f = step_valid(w) ? (w >> 9) & 0xFu : 0u;
     return f && f <= STEP_DIVS ? f - 1u : STEP_DIV_DEFAULT;
 }
-static inline int step_ramp(u32 w) { return step_valid(w) ? (int)(signed char)(w & 0xFFu) : 0; }
-static inline u32 step_make(u32 cond, u32 hits, u32 div, int ramp) {
+static inline int step_ramp(u32 w) {
+    if ((w >> 24) == STEP_TAG_V1) return (int)(signed char)(w & 0xFFu);
+    if ((w >> 24) != STEP_TAG) return 0;
+    u32 f = (w >> 3) & 0x3Fu;
+    return f && f <= 41u ? ((int)f - 21) * 5 : 0;
+}
+static inline u32 step_locks(u32 w) { return (w >> 24) == STEP_TAG ? w & 7u : 0u; }
+static inline u32 step_make(u32 cond, u32 hits, u32 div, int ramp, u32 locks) {
     u32 f = div == STEP_DIV_DEFAULT ? 0u : div + 1u;
-    if (!cond && !hits && !f && !ramp) return 0;
-    return (STEP_TAG << 24) | ((cond & 0x7Fu) << 17) | ((hits & 0xFu) << 13) | ((f & 0xFu) << 9) | ((u32)ramp & 0xFFu);
+    if (ramp < -100) ramp = -100;
+    if (ramp > 100) ramp = 100;
+    u32 r = ramp ? (u32)(ramp / 5 + 21) : 0u;
+    if (!cond && !hits && !f && !r && !(locks & 7u)) return 0;
+    return (STEP_TAG << 24) | ((cond & 0x7Fu) << 17) | ((hits & 0xFu) << 13) | ((f & 0xFu) << 9) | (r << 3) |
+           (locks & 7u);
 }
 
 typedef struct {

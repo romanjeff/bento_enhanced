@@ -38,7 +38,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.3"                       # bump for every build that goes on the device
+VERSION = "3.4"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -420,16 +420,7 @@ def build(base_img, out):
         check_branches(code, a, exits, "hold-step wrapper")
         wrap.extend(code)
         return a
-    save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; ldr r0, [sp, #8]; "   # r0 = view
-    restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
-    for site in HOLD_EDIT_SITES:
-        a = wrap_block(save + f"bl {sh['step_edit']:#x}; " + restore + f"push.w {{r4-r11, lr}}; b.w {site + 4:#x}",
-                       {sh["step_edit"], site + 4})
-        patch(site, asm(f"b.w {a:#x}", site), bytes.fromhex("2de9f04f"),
-              "Inspect a step (Lab T2): encoder edit suppresses the release toggle")
-    if HOLD_WRAP + len(wrap) > HOLD_CODE:
-        raise SystemExit("hold-step wrappers overlap the C code")
-    patch(HOLD_WRAP, bytes(wrap), b"\xff" * len(wrap), "Inspect a step (Lab T2): wrappers")
+    # (the three edit sites are wrapped in the per-step block: protection + defaults/locks)
     hold_marker = b"BENTO_MOD:step-edit-keeps-step(from Lab T2)\0"
     if HOLD_CODE + len(codeh) + len(hold_marker) > HOLD_LIMIT:
         raise SystemExit("hold-step code overruns its slice")
@@ -555,6 +546,17 @@ def build(base_img, out):
                "stock: " + restore + f"push {{r4, r5, r6, r7, lr}}; sub sp, #0x174; b.w {PIANO_EVENT + 4:#x}",
                {ss["piano_event"], PIANO_EVENT + 4}, "piano event")
     patch(PIANO_EVENT, asm(f"b.w {a:#x}", PIANO_EVENT), bytes.fromhex("f0b5ddb0"), "Per-step: piano events -> ours first")
+    # stock's velocity / probability / offset edits (view, value): keep the step on
+    # release (hold-step), then defaults + locks around stock's own edit
+    for f, site in enumerate(HOLD_EDIT_SITES):
+        orig_edit = sblock(f"push.w {{r4, r5, r6, r7, r8, r9, r10, r11, lr}}; b.w {site + 4:#x}", {site + 4}, "edit replay")
+        a = sblock(f"push {{r4, r5, r6, lr}}; mov r4, r0; mov r5, r1; bl {sh['step_edit']:#x}; "
+                   f"mov r0, r4; movs r1, #{f}; bl {ss['param_pre']:#x}; mov r6, r0; "
+                   f"mov r0, r4; mov r1, r5; bl {orig_edit:#x}; "
+                   f"mov r0, r4; movs r1, #{f}; mov r2, r6; bl {ss['param_post']:#x}; pop {{r4, r5, r6, pc}}",
+                   {sh["step_edit"], ss["param_pre"], orig_edit, ss["param_post"]}, "edit wrapper")
+        patch(site, asm(f"b.w {a:#x}", site), bytes.fromhex("2de9f04f"),
+              f"Step edit {('velocity', 'probability', 'offset')[f]}: keep step on release + defaults/locks")
     if STEP_WRAP + len(wrap) > STEP_CODE:
         raise SystemExit("step wrappers overlap the step code")
     patch(STEP_WRAP, bytes(wrap), b"\xff" * len(wrap), "Per-step: wrappers")

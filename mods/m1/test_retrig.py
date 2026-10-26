@@ -140,6 +140,11 @@ class Retrig(unittest.TestCase):
         g.emit(g.t1, 0, 2000)
         self.assertEqual(g.hits(), [])
 
+    def test_v2_words_and_lock_bits_dont_matter_to_playback(self):
+        w = (0xB6 << 24) | (2 << 13) | ((4 + 1) << 9) | ((-20 // 5 + 21) << 3) | 5     # 2 x 1/16T, -20 %, locks
+        g = Rig(); g.accept(g.t1, pad=3, tick=1000, word=w); g.emit(g.t1, 0, 2000)
+        self.assertEqual(g.hits(), [(160, 90), (320, 80)])
+
     def test_no_region_no_bursts(self):
         g = Rig(region=False); g.accept(g.t1, pad=15, tick=1000); g.emit(g.t1, 0, 2000)
         self.assertEqual(len(g.calls), 1)

@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (151 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (160 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -329,3 +329,20 @@ condition passes *and* its probability roll passes.
   clamping, clear-to-stock, nothing selected), stock keys pass through, piano slot 7 and
   edit/commit, other piano events pass through. `test_conditions` / `test_retrig` /
   `test_holdstep` updated (word conditions vs byte conditions agree for every value).
+
+## Defaults and locks for velocity / probability / offset (v3.4)
+
+Drum step sequencer. **With no step held**, turning Velocity/Probability/Offset sets
+the **pad default (per clip)** and every step on that pad that isn't locked follows it.
+**Editing a held step locks** that parameter for the step; **setting it back to the
+default unlocks** it. Steps whose value differs from the default without a lock (e.g.
+recorded live) are locked when the default changes, never overwritten. Switching pad or
+clip loads that pad's default (the most common value among its unlocked steps).
+
+- Lock bits live in the per-step word, **format v2** (tag `0xB6`: ramp as a 6-bit index
+  in 5 % steps, 3 lock bits); v1 words (v3.3) are still read and rewrite as v2 on edit.
+- Projects without lock data load with a lock wherever a value differs from stock's
+  default (velocity 100, probability Always, offset 0), so hand-set values survive.
+- Notes keep their concrete values: stock firmware plays them exactly the same.
+- Stock's three edit functions are wrapped (hold-step release protection, `param_pre`,
+  stock's edit, `param_post`). `test_step.py` drives stock's real edit functions.

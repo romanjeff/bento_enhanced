@@ -50,6 +50,38 @@
 
 static const char ATTR[] = "be_step_v1";
 
+/* ---- note fields (velocity / probability / offset) ----------------------- */
+/* rec: [0] kind | prob << 8 | pad << 16, [1] time (960 per step), [4] pitch | vel << 16 */
+enum { F_VEL, F_PROB, F_OFFSET };
+static const u32 LOCK_BIT[3] = {LOCK_VEL, LOCK_PROB, LOCK_OFFSET};
+static const u32 STOCK_DEFAULT[3] = {100u, 0u, 0u};   /* velocity 100, probability Always, offset 0 */
+
+static int offset_of(u32 t) { int q = (int)(t % 960u); return q > 480 ? q - 960 : q; }
+static u32 note_val(const u32 *e, u32 f) {
+    if (f == F_VEL) { u32 v = e[4] >> 16; return v ? v : 100u; }
+    if (f == F_PROB) return (e[0] >> 8) & 0xFFu;
+    return (u32)offset_of(e[1]);
+}
+static void note_set(u32 *e, u32 f, u32 v) {
+    if (f == F_VEL) e[4] = (e[4] & 0xFFFFu) | (v << 16);
+    else if (f == F_PROB) e[0] = (e[0] & ~0xFF00u) | ((v & 0xFFu) << 8);
+    else {
+        int o = (int)v;
+        if (o > 470) o = 470;
+        if (o < -470) o = -470;
+        e[1] = (u32)((int)e[1] - offset_of(e[1]) + o);
+    }
+}
+static u32 legacy_locks(const u32 *e) {   /* no lock data: anything not at stock's default is a lock */
+    u32 l = 0;
+    for (u32 f = 0; f < 3; f++)
+        if (note_val(e, f) != STOCK_DEFAULT[f]) l |= LOCK_BIT[f];
+    return l;
+}
+static u32 with_locks(u32 w, u32 locks) {
+    return step_make(step_cond(w), step_hits(w), step_div(w), step_ramp(w), locks);
+}
+
 /* ---- project save / load ------------------------------------------------ */
 
 __attribute__((used, retain)) void step_save(void *node, const void *rec) {
@@ -65,12 +97,14 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
     u32 w = 0, x = 0;
     void *a = FN(XML_FIND, void *(*)(void *, const char *))(node, ATTR);
     if (a && !FN(XML_GET_U32, int (*)(void *, u32 *))(a, &x) && step_valid(x)) w = x;
-    u32 prob = B(rec, 1);
+    u32 prob = B(rec, 1), cond = step_cond(w);
     if (prob >= 100 && prob <= 173) {               /* v2.4..v3.2 condition in the probability byte */
-        if (!step_cond(w)) w = step_make(prob - 99, step_hits(w), step_div(w), step_ramp(w));
+        if (!cond) cond = prob - 99;
         B(rec, 1) = 0;                              /* probability: Always */
     }
-    W(rec, 20) = w;
+    u32 locks = step_locks(w);
+    if ((w >> 24) != STEP_TAG) locks = legacy_locks((const u32 *)rec);   /* no lock data saved yet */
+    W(rec, 20) = step_make(cond, step_hits(w), step_div(w), step_ramp(w), locks);
 }
 
 /* ---- registry keys -------------------------------------------------------- */
@@ -89,7 +123,7 @@ static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
 /* Claim four empty registry keys (from the top), once per boot. */
 static int claim(void) {
     if (SU->magic != SU_MAGIC || SU->gen != boot_gen()) {
-        SU->ok = 0; SU->gen = boot_gen(); SU->magic = SU_MAGIC;
+        SU->ok = 0; SU->r[0] = SU->r[1] = SU->r[2] = 0; SU->gen = boot_gen(); SU->magic = SU_MAGIC;
     }
     if (SU->ok) return 1;
     u32 r = REGISTRY;
@@ -135,16 +169,93 @@ static u32 with_field(u32 w, u32 which, u32 v) {
     case 2: div = v; break;
     default: ramp = (int)v * RAMP_STEP - 100; break;
     }
-    return step_make(cond, hits, div, ramp);
+    return step_make(cond, hits, div, ramp, step_locks(w));
 }
 
 /* ---- drum step sequencer header and encoders ---------------------------- */
 
 static int drum_step_view(void *v) { return v && !B(v, 0x113E0) && W(v, 0x113E4) && W(v, 0x113DC); }
 
+/* ---- defaults + locks (velocity / probability / offset) ------------------
+ * A pad's default (per clip) is the value its unlocked notes share; stock's
+ * "new step" values (view +0x114C0/C4/C8) hold it while editing. Stock's three
+ * edit functions (0x0815C7C4/8AC/990) are wrapped: param_pre reads the old
+ * default, stock runs, param_post then
+ *   - nothing selected (stock changed the default): unlocked notes that had
+ *     the old default take the new one; an unlocked note with another value
+ *     (e.g. recorded live) is locked instead of overwritten;
+ *   - steps selected (stock edited them): lock each where it now differs from
+ *     the default, unlock where it equals it. */
+static int matches(void *v, const u32 *e);
+static const u32 DEFAULT_AT[3] = {0x114C0u, 0x114C4u, 0x114C8u};
+
+static void publish(void *v) {
+    FN(PUBLISH, void (*)(void *, void *, void *))(MODEL, (u8 *)v + 0x113E4, (void *)W(v, 0x113DC));
+    FN(GRID, void (*)(void *))(v);
+}
+
+__attribute__((used, retain)) u32 param_pre(void *v, u32 f) { return f < 3 ? W(v, DEFAULT_AT[f]) : 0u; }
+
+__attribute__((used, retain)) void param_post(void *v, u32 f, u32 old) {
+    if (f >= 3 || !drum_step_view(v)) return;
+    void *container = (void *)W(v, 0x113DC);
+    u32 pad = W(v, 0x11400), dflt = W(v, DEFAULT_AT[f]), bit = LOCK_BIT[f], e[6], changed = 0;
+    int selected = FN(ANY_SELECTED, int (*)(void *))(v);
+    if (!selected && dflt == old) return;
+    for (u32 j = 0; j < 511; j++) {
+        if (!FN(NOTE_GET, int (*)(void *, u32, u32 *))(container, j, e)) break;
+        if ((e[0] & 0xFFu) != 1u || (e[0] >> 16) != pad) continue;
+        u32 locks = step_locks(e[5]), val = note_val(e, f), w = e[5];
+        if (selected) {
+            if (!matches(v, e)) continue;
+            w = with_locks(e[5], val != dflt ? locks | bit : locks & ~bit);
+        } else if (!(locks & bit)) {
+            if (val == old) note_set(e, f, dflt);
+            else w = with_locks(e[5], locks | bit);     /* an individual value: keep it */
+        } else {
+            continue;
+        }
+        if (w == e[5] && !(!selected && val == old)) continue;
+        e[5] = w;
+        FN(NOTE_PUT, void (*)(void *, u32 *))(container, e);
+        changed = 1;
+    }
+    if (changed) publish(v);
+}
+
+/* On switching clip or pad: stock's single "new step" defaults become this
+ * pad's, i.e. the most common value among its unlocked notes. */
+static void load_defaults(void *v) {
+    void *container = (void *)W(v, 0x113DC);
+    u32 pad = W(v, 0x11400), e[6];
+    for (u32 f = 0; f < 3; f++) {
+        u8 count[128];
+        for (u32 i = 0; i < 128; i++) count[i] = 0;
+        u32 any = 0;
+        for (u32 j = 0; j < 511; j++) {
+            if (!FN(NOTE_GET, int (*)(void *, u32, u32 *))(container, j, e)) break;
+            if ((e[0] & 0xFFu) != 1u || (e[0] >> 16) != pad || (step_locks(e[5]) & LOCK_BIT[f])) continue;
+            int x = (int)note_val(e, f);
+            u32 bin = f == F_OFFSET ? (u32)((x + 470) / 10) : (u32)x;
+            if (bin < 128 && count[bin] < 255) count[bin]++;
+            any = 1;
+        }
+        if (!any) continue;
+        u32 best = 0;
+        for (u32 i = 1; i < 128; i++)
+            if (count[i] > count[best]) best = i;
+        W(v, DEFAULT_AT[f]) = f == F_OFFSET ? (u32)((int)best * 10 - 470) : best;
+    }
+}
+
 __attribute__((used, retain)) void step_header_before(void *v) {
     if (!drum_step_view(v) || !claim()) return;
     for (u32 i = 0; i < 4; i++) DRUM_KEYS[4 + i] = SU->key[i];
+    u32 seq = W(v, 0x113E4), pad = W(v, 0x11400);
+    if (SU->r[0] != seq || SU->r[1] != pad || SU->r[2] != (u32)v) {
+        SU->r[0] = seq; SU->r[1] = pad; SU->r[2] = (u32)v;
+        load_defaults(v);
+    }
 }
 
 __attribute__((used, retain)) void step_header_after(void *v) {

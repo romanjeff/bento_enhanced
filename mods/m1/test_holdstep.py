@@ -146,9 +146,13 @@ class Tests(unittest.TestCase):
         for hold in (100, 1500):
             p = Probe(); p.press(8); p.call(0x0815c8ac, p.view, 46); p.time(5000 + hold); p.release(8)
             self.assertEqual(p.selected(), 0, hold); self.assertEqual(p.snapshot()[0], 0, hold)
-            before = bytes(p.u.mem_read(p.container, 0x3004))
-            p.call(0x0815c8ac, p.view, 107)                       # encoder turn with nothing held
-            self.assertEqual(bytes(p.u.mem_read(p.container, 0x3004)), before, "no note edited after release")
+            def values():   # every note's record except the +20 word (lock bits may change)
+                raw = bytes(p.u.mem_read(p.container, 0x3004))
+                return [raw[i:i + 20] for i in range(0, 24 * 3, 24)]
+            before = values()
+            p.call(0x0815c8ac, p.view, 47)                        # encoder turn with nothing held
+            self.assertEqual(values(), before, "no note value edited after release")
+            self.assertEqual(p.word(p.view + 0x114c4), 48, "it changed the pad default instead (v3.4)")
 
     def test_after_touch_release_no_step_is_selected(self):
         p = Probe(); xy = 0x2002e000; p.w(xy, 100); p.w(xy + 4, 100)
