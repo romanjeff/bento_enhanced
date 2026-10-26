@@ -184,7 +184,7 @@ static void init(u32 now) {
     u32 len = 0;
     if (buf) {
         Out o = {(char *)buf, 0};
-        puts_(&o, "BENTO M1b poly-AT + poly cap v2.2 black box (CH10 1.6HA), boot gen ");
+        puts_(&o, "BENTO M1 poly-AT + poly cap v2.3 black box (stock 1.6.1), boot gen ");
         dec(&o, gen);
         puts_(&o, "\r\n");
         crash_record(&o);

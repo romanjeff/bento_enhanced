@@ -67,9 +67,19 @@ def records(u):
     return out
 
 class Image(unittest.TestCase):
-    def test_same_size_as_ch10(self):
-        # The bootloader rejected an image grown to 0x1A0800 bytes; CH10's size is known to install.
-        self.assertEqual(len(DIAG), len(CH10))
+    def test_size_within_what_the_bootloader_accepted(self):
+        # The bootloader rejected a 0x1A0800-byte image reaching 0x081E0000 (an M7
+        # read-only data region); Lab's CH10 at 0x18D334 bytes installs fine.
+        self.assertLessEqual(len(DIAG), 0x18D334)
+        self.assertLess(BASE + len(DIAG), 0x081E0000)
+        self.assertEqual(len(DIAG) % 4, 0)
+        self.assertEqual(DIAG[:len(CH10)][:0x100], CH10[:0x100], "stock vector table untouched")
+
+    def test_heap_end_lowered_only_at_the_three_literals(self):
+        for a in (0x08040588, 0x080A3BDC, 0x080A3E94):
+            self.assertEqual(struct.unpack_from("<I", DIAG, a - BASE)[0], 0x24048400)
+        for a in (0x08040514, 0x0808E19C, 0x080A547C):   # stack bottom / sentinels: unchanged
+            self.assertEqual(struct.unpack_from("<I", DIAG, a - BASE)[0], 0x24048DA0)
 
 class Trampolines(unittest.TestCase):
     HOOKS = [  # site, resume, r1 points at an event of this type
@@ -269,7 +279,7 @@ class M4EndToEnd(unittest.TestCase):
         self.tick(2700)                                  # idle >= 1500 ms -> flush
         self.assertEqual(len(self.files), 1)
         text = self.files[0].decode()
-        self.assertIn("BENTO M1b poly-AT + poly cap v2.2 black box", text)
+        self.assertIn("BENTO M1 poly-AT + poly cap v2.3 black box (stock 1.6.1)", text)
         self.assertIn("# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0"
                       " | midi ring max_fill=0 overflows=0 | m7 stack min_msp=", text)
         self.assertEqual(text.count(" SEND "), 2)

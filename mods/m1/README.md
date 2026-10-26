@@ -1,15 +1,16 @@
 # M1: polyphonic aftertouch out of External tracks
 
-**Status:** poly aftertouch working on hardware (2026-10-25). **M1b (polyphony cap)
-is built and passes emulated tests; hardware test pending.** Holding pads on an External track
-sends per-note **Polyphonic Key Pressure** (`0xA0 note value`) on the track's
-MIDI port and channel, alongside the normal notes. It has been verified on a MIDI
-monitor and on a poly-AT synth, with each held note's aftertouch driving its own
-LFO rate.
+**Status:** poly aftertouch and the per-track polyphony cap work on hardware. **Since
+v2.3 M1 is built directly on stock Bento 1.6.1.** Earlier builds sat on top of
+[bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s
+CH10, but CH10 crashed on the device without any of this code (an M7 HardFault in
+`HAL_DMA_IRQHandler`) and showed a sequencer/snap-mode problem. Lab's trigger
+conditions are being ported separately (S2).
 
-Built on top of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)
-**CH10 / 1.6HA**, which is built on stock Bento **1.6.1**. The builder refuses any
-other base image.
+Holding pads on an External track sends per-note **Polyphonic Key Pressure**
+(`0xA0 note value`) on the track's MIDI port and channel, alongside the normal notes.
+It has been verified on a MIDI monitor and on a poly-AT synth, with each held note's
+aftertouch driving its own LFO rate.
 
 ## How it works
 
@@ -105,14 +106,18 @@ located the path (`diag_run1_v2.log`, `diag_run2_v3.log`) and the first
 poly-AT session. The 64 KB buffer fills quickly when every pressure message is
 logged; M1b will sample instead.
 
-## Memory and code placement (on top of CH10)
+## Memory and code placement (stock 1.6.1)
 
-- RAM `0x24048500–0x24048A00`: not claimed by any CH10 source; outside the native
-  heap since Lab moved its end; inside the M4's MPU window.
-- M7 code `0x080DA000–0x080DB800`: inside CH10's untouched zero gap.
-- M4 code `0x081BE000–0x081BF000`: inside CH10's zero gap `0x081BD8A8–0x081C0000`
-  (diagnostics from `0x081BE000`, the `0x5F` handler at `0x081BF580`; CH10 reads a
-  zero word at `0x081BF6C0`, kept clear).
+- **M7 heap end lowered** from `0x24048DA0` to `0x24048400` (three literals:
+  `0x08040588`, `0x080A3BDC`, `0x080A3E94`; the other occurrences are the stack
+  bottom and its sentinels, untouched). This reserves `0x24048400–0x24048DA0`, below
+  the M7 stack and inside the M4's MPU window: our slice `0x24048500–0x24048A00`, and
+  `0x24048A60+` for the trigger-condition counters.
+- M7 code `0x080DA000–0x080DB800`: inside stock's zero gap after the M7 image's data.
+- M4 code **appended** after stock's end (`0x081B3F3C`): `0x081B4000–0x081B5000`
+  reserved for the condition UI, black box from `0x081B5000`, `0x5F` handler at
+  `0x081B6580`. The image is `0x176600` bytes, under the largest size the bootloader
+  has accepted (`0x18D334`).
 - **Never touch `0x081E0000`+.** The M7's MPU maps it as a 128 KB read-only data
   region, most likely persistent storage, and the bootloader refused an image
   reaching it.
@@ -125,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (31 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (32 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>

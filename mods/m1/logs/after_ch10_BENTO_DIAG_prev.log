@@ -1,0 +1,13 @@
+BENTO M1b poly-AT + poly cap v2.2 black box (CH10 1.6HA), boot gen 1
+stock crash record: count=79 cause=00000001 pc=080415ee core=00000002 | frame r0-r3,r12,lr,pc,xpsr (bkp6-13): 2401bcb4 2404cbe4 00000000 24000154 00000000 ffffffe9 080415ee 61000056
+rtc_bkp0..31: 00000003 00000dc0 00000340 00000000 00000000 00000400 2401bcb4 2404cbe4 00000000 24000154 00000000 ffffffe9 080415ee 61000056 2401dcec 000025eb 000025eb 24048da0 1c908000 00000000 00004bd6 00000400 2404cb40 fffffff1 0000004f 00000001 0006211f 00000002 0000bd29 000003b2 000008fe 080415ee
+previous boot (from RAM): m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=0 overflows=0 | m7 stack min_msp=00000000 min_sp=00000000 heartbeat=0
+(no M7 trace in RAM)
+fields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)
+VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note
+# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=0 overflows=0 | m7 stack min_msp=00000000 min_sp=00000000 heartbeat=0 at ms 2472
+16752 daba8159 RING 0000 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000000
+16752 db9066e1 RING 0001 lr=00000000 obj=10040000 ev=000000a4,00000000,000000c6,0000f000,00000000,00000000 x=00000000
+16752 ec170cfb RING 0002 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000000
+16752 ec171022 RING 0003 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000001
+# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=1 overflows=0 | m7 stack min_msp=2404c998 (15352 B above bottom) min_sp=2404c998 heartbeat=36737 at ms 18361

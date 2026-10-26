@@ -1,5 +1,5 @@
 /* M1 diagnostic m4 code: text + read-only data only; any RAM data is a build error. */
-MEMORY { CODE (rx) : ORIGIN = 0x081BE000, LENGTH = 0x1580 }
+MEMORY { CODE (rx) : ORIGIN = 0x081B5000, LENGTH = 0x1580 }
 SECTIONS {
   .text : { KEEP(*(.text.h_* .text.m4_tick)) *(.text*) *(.rodata*) } > CODE
   .data : { *(.data*) } > CODE

@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Build M1 (poly aftertouch out of External tracks + diagnostics) on an exact Lab CH10 / 1.6HA image.
+"""Build M1 (poly aftertouch + per-track poly cap for External tracks, with
+black-box diagnostics) on stock Bento 1.6.1.
 
-    python build.py --base <CH10 bento1.bin> --out <new dir>
+    python build.py --base <stock 1.6.1 bento1.bin> --out <new dir>
 
-Refuses any base except CH10 (SHA-256 below), checks original bytes at every
-patch site, writes bento1.bin + manifest.json, and proves that undoing every
-write reproduces the base exactly. Run with Lab's venv (ziglang + keystone).
+Refuses any base except stock 1.6.1 (SHA-256 below), checks original bytes at
+every patch site, writes bento1.bin + manifest.json, and proves that undoing
+every write reproduces the base exactly. Run with Lab's venv (ziglang +
+keystone). Earlier versions (<= v2.2) were built on Lab's CH10; CH10 itself
+crashed on the device without any of this code, so M1 moved to stock.
 """
 import argparse, hashlib, json, struct, subprocess, sys
 from pathlib import Path
@@ -13,18 +16,28 @@ from keystone import Ks, KS_ARCH_ARM, KS_MODE_THUMB
 
 HERE = Path(__file__).resolve().parent
 BASE = 0x08040000
-CH10_SHA = "0e85070685cb451ade4e3cf5adfc62fb1ab95483f7fcdcbf506ae67bc4ca2c76"
+STOCK_SHA = "14475e9d5068f5659d0fe0b00fc1278c1479c43ed9fda3d40654d5f3a7a6bbb3"
+# Largest main image the bootloader has accepted on the device (Lab CH10). A
+# 0x1A0800-byte image reaching 0x081E0000 was refused; the M7 MPU maps
+# 0x081E0000.. as a read-only data region (persistent storage).
+PROVEN_MAX_SIZE = 0x18D334
+FORBIDDEN_FROM = 0x081E0000
 
-M7_TRAMP = 0x080DA000   # inside CH10's untouched zero gap 0x080D8C20..0x080DC000
+# M7 heap: stock ends it at 0x24048DA0 (three literals, identified by Lab).
+# Lowering it frees 0x24048400..0x24048DA0 (below the M7 stack bottom, inside
+# the M4's MPU window) for our RAM slice and the trigger-condition counters.
+HEAP_LITERALS = (0x08040588, 0x080A3BDC, 0x080A3E94)
+HEAP_END_STOCK, HEAP_END_NEW = 0x24048DA0, 0x24048400
+
+M7_TRAMP = 0x080DA000   # inside stock's zero gap after the M7 image's data (0x080CF49C..0x080E0000)
 M7_CODE = 0x080DA100
 M7_LIMIT = 0x080DB800
-# In-place, inside CH10's zero run 0x081BD8A8..0x081C0000. Not appended: the
-# bootloader rejected an image grown to 0x1A0800 bytes ("unable to program /
-# verify main firmware"), so the image must not exceed CH10's size.
-# Lab's k16_overlay uses up to 0x081BD8C0; CH10 code references 0x081BF6C0.
-M4_CODE = 0x081BE000
-M4_LIMIT = 0x081BF600   # CH10 reads a (zero) word at 0x081BF6C0: keep a 0xC0 margin
-MARKER = b"BENTO_MOD:m1-polyat:v2.2" + bytes(1)
+# M4 code is appended after stock's image end (0x081B3F3C). 0x081B4000..0x081B5000
+# is reserved for the trigger-condition UI (S2).
+APPEND_FROM = 0x081B4000
+M4_CODE = 0x081B5000
+M4_LIMIT = 0x081B6600
+MARKER = b"BENTO_MOD:m1-polyat:v2.3-stock" + bytes(1)
 
 # (name, site, original bytes, displaced instruction(s), resume address, call setup)
 M7_HOOKS = [
@@ -43,7 +56,7 @@ POLY_SITE, POLY_ORIG, POLY_RESUME = 0x08062466, "7ff40bae", 0x08062080
 # (falls through to the loop at 0x081050DE). Our handler copies stock's Note On
 # case (0x0810509A..0x081050DE) with status 0x90 -> 0xA0.
 JT, JT_5F, JT_DEFAULT, M4_LOOP = 0x08105294, 0x081052A4, 0x081050DF, 0x081050DE
-M4_POLY = 0x081BF580   # end of our M4 slice (handler is 72 B); diag code grows below it
+M4_POLY = 0x081B6580   # end of our M4 slice (handler is 72 B); diag code grows below it
 
 # Poly cap: the five `bl msg_send` sites that post External MIDI notes, and the
 # register holding the track object at each (verified unmodified on every path).
@@ -118,8 +131,8 @@ def elf_load(e, lo, hi):
     return va, data, syms
 
 def build(base_img, out):
-    if hashlib.sha256(base_img).hexdigest() != CH10_SHA:
-        raise SystemExit("base is not Lab CH10 1.6HA; refusing")
+    if hashlib.sha256(base_img).hexdigest() != STOCK_SHA:
+        raise SystemExit("base is not stock Bento 1.6.1; refusing")
     out.mkdir(parents=True, exist_ok=False)
     img = bytearray(base_img)
     writes = []
@@ -131,6 +144,11 @@ def build(base_img, out):
             raise SystemExit(f"{why}: original bytes at {addr:#x} are {old.hex()}, expected {expect.hex()}")
         img[o:o + len(new)] = new
         writes.append(dict(address=addr, size=len(new), original_hex=old.hex(), replacement_hex=new.hex(), purpose=why))
+
+    # --- M7 heap: reserve 0x24048400..0x24048DA0
+    for a in HEAP_LITERALS:
+        patch(a, struct.pack("<I", HEAP_END_NEW), struct.pack("<I", HEAP_END_STOCK),
+              "M1: lower M7 heap end to reserve our RAM slice + condition counters (stack unchanged)")
 
     # --- M7: compile, place, trampolines, entry patches
     m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c"], "cortex_m7", HERE / "m7.ld", out / "m7.elf")
@@ -183,9 +201,16 @@ def build(base_img, out):
     va4, code4, s4 = elf_load(m4_elf, M4_CODE, M4_LIMIT)
     if va4 != M4_CODE or M4_CODE + len(code4) > M4_LIMIT:
         raise SystemExit(f"M4 code placement {va4:#x}+{len(code4)} outside our slice")
-    if any(base_img[M4_CODE - BASE:M4_LIMIT - BASE]):
-        raise SystemExit("our M4 slice is not all zero in the base image")
-    patch(M4_CODE, code4 + MARKER, None, "M1 diag: M4 flush code (in CH10 zero gap)")
+    # Append: pad from stock's end to the end of our slice with 0xFF (erased
+    # flash); the reversal check deletes this tail again.
+    stock_end = BASE + len(img)
+    if stock_end > APPEND_FROM:
+        raise SystemExit("base image already reaches our append area")
+    pad = b"\xff" * (M4_LIMIT - stock_end)
+    img += pad
+    writes.append(dict(address=stock_end, size=len(pad), original_hex="", replacement_hex=pad.hex(),
+                       purpose="M1: extend image with erased (0xFF) flash for appended M4 code"))
+    patch(M4_CODE, code4 + MARKER, None, "M1 diag: M4 black-box code (appended)")
     if M4_CODE + len(code4) + 20 > M4_LIMIT:
         raise SystemExit("M4 code + marker overrun")
     if M4_CODE + len(code4) + len(MARKER) > M4_POLY:
@@ -208,7 +233,7 @@ def build(base_img, out):
             "mov r0, r5; bl 0x08105c4c; mov r1, r0; mov r0, r6; bl 0x08105b74"), 0x0810509A)
     if ours_as_native != native:
         raise SystemExit("our copy of the Note On case does not match the native bytes")
-    patch(M4_POLY, h, bytes(len(h)), "M1 poly AT: M4 0x5F handler (Note On case copy, status 0xA0)")
+    patch(M4_POLY, h, b"\xff" * len(h), "M1 poly AT: M4 0x5F handler (Note On case copy, status 0xA0)")
     old = struct.pack("<I", JT_DEFAULT)
     patch(JT_5F, struct.pack("<I", M4_POLY | 1), old, "M1 poly AT: MIDI task jump table slot 0x5F -> handler")
     bl_check = asm(f"bl {M4_BL_ORIG_TARGET:#x}", M4_BL_SITE)
@@ -218,10 +243,10 @@ def build(base_img, out):
           "M1 diag: defaultTask loop BL -> m4_tick (calls the original first)")
 
     # --- invariants
-    if len(img) != len(base_img):
-        raise SystemExit("image size changed; the bootloader only accepted CH10-sized images")
-    if len(img) % 4 or BASE + len(img) > 0x08200000:
-        raise SystemExit("image alignment/size")
+    if len(img) > PROVEN_MAX_SIZE or BASE + len(img) > FORBIDDEN_FROM:
+        raise SystemExit(f"image of {len(img):#x} bytes exceeds the size proven on the device ({PROVEN_MAX_SIZE:#x})")
+    if len(img) % 4:
+        raise SystemExit("image not word aligned (a misaligned image fails to program)")
     undo = bytearray(img)
     for w in reversed(writes):
         o = w["address"] - BASE
@@ -230,16 +255,16 @@ def build(base_img, out):
         else:
             del undo[o:o + w["size"]]
     if bytes(undo) != base_img:
-        raise SystemExit("reversal does not reproduce the CH10 base")
+        raise SystemExit("reversal does not reproduce the stock base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label="1.6HA+m1-polyat-v2.2", base_sha256=CH10_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label="1.6.1+m1-polyat-v2.3", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
     print(f"built {man['label']} sha256={man['sha256']}")
     print(f"  M7 code {len(code7)} B at {M7_CODE:#x}, trampolines {len(tramps)} B; M4 code {len(code4)} B at {M4_CODE:#x}")
-    print(f"  {len(writes)} writes, reversal to CH10 verified")
+    print(f"  image {len(img):#x} bytes (proven max {PROVEN_MAX_SIZE:#x}); {len(writes)} writes, reversal to stock verified")
     return img, man
 
 if __name__ == "__main__":
