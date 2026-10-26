@@ -48,6 +48,7 @@
 
 void diag_put(u32 kind, u32 lr, u32 obj, const u32 *ev, u32 extra); /* m7_diag.c */
 void diag_stat(u32 idx, u32 value);                                  /* m7_diag.c */
+void diag_sp(void);                                                  /* m7_diag.c: stack-depth probe */
 
 typedef struct {
     u32 track;
@@ -147,12 +148,14 @@ static inline u32 irq_save(void) {
 static inline void irq_restore(u32 p) { __asm volatile("msr primask, %0" ::"r"(p) : "memory"); }
 
 __attribute__((used, retain)) void h_note(u32 q, const u32 *ev, u32 track) {
+    diag_sp();
     u32 p = irq_save();
     note_body(q, ev, track);
     irq_restore(p);
 }
 
 __attribute__((used, retain)) void h_poly(u32 track, const u32 *ev, u32 engine) {
+    diag_sp();
     u32 p = irq_save();
     poly_body(track, ev, engine);
     irq_restore(p);

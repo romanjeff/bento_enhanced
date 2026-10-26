@@ -81,8 +81,13 @@ typedef struct {
     u32 max_fill;  /* highest M7->M4 MIDI ring fill seen when posting (16 slots) */
     u32 overflows; /* posts made while 16 entries were still unread (overwrites) */
     u32 posts;
-    u32 r[5];
+    u32 min_msp;   /* lowest SP seen in our hooks while on the M7 main stack */
+    u32 min_sp;    /* lowest SP seen anywhere in our hooks (any stack) */
+    u32 heartbeat; /* bumped on every queue read: stops when the M7 stops */
+    u32 r[2];
 } RingStat; /* 32 bytes */
+#define M7_STACK_TOP 0x2404CDA0u    /* initial M7 MSP */
+#define M7_STACK_BOTTOM 0x24048DA0u /* below it: Lab's state, then our slice */
 #define RINGSTAT ((volatile RingStat *)0x24048600u)
 #define MIDI_RING_SLOTS 16u
 _Static_assert(sizeof(Rec) == 48, "record size");

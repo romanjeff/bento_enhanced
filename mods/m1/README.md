@@ -68,6 +68,21 @@ Measured on hardware: minimum gap 10.6 ms, no repeated values
 
 ## Diagnostics (development builds)
 
+**v2.2 (black box).** Device logs from v2.1 showed crashes outside our code: two
+M7 faults on floating-point instructions in stock code (`vmul.f32` in DSP, `vpop`
+in the M7 message loop, the latter leaving the audio engine parked while the UI kept
+running) and one M4 fault in the USART1 interrupt. MIDI ring overflow was ruled out
+(peak 4/16). v2.2 adds:
+- **live crash capture:** the UI thread watches the stock crash counter and an M7
+  heartbeat; a new crash or a stopped audio core immediately writes the crash record,
+  counters and the last trace records;
+- **stack-depth probe:** every hook records the lowest M7 stack pointer (the M7 stack
+  bottom at `0x24048DA0` sits directly above Lab's state and our slice);
+- **post-mortem:** the previous boot's last trace records and counters (they survive
+  reset in RAM) go into the next boot's header;
+- the previous-log copy moved to the first real write (on the device it ran before
+  the SD card was mounted); 256 KB buffer; leaner logging.
+
 **v2.1 (crash evidence).** After one unexplained instant reboot during M1b
 testing (not reproducible), the logger was extended:
 - every boot's log header carries **stock's crash record** from the RTC backup
@@ -96,7 +111,8 @@ logged; M1b will sample instead.
   heap since Lab moved its end; inside the M4's MPU window.
 - M7 code `0x080DA000–0x080DB800`: inside CH10's untouched zero gap.
 - M4 code `0x081BE000–0x081BF000`: inside CH10's zero gap `0x081BD8A8–0x081C0000`
-  (diagnostics from `0x081BE000`, the `0x5F` handler at `0x081BEF80`).
+  (diagnostics from `0x081BE000`, the `0x5F` handler at `0x081BF580`; CH10 reads a
+  zero word at `0x081BF6C0`, kept clear).
 - **Never touch `0x081E0000`+.** The M7's MPU maps it as a 128 KB read-only data
   region, most likely persistent storage, and the bootloader refused an image
   reaching it.
@@ -109,7 +125,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (27 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (31 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>

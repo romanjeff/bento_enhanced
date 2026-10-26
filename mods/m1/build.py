@@ -23,8 +23,8 @@ M7_LIMIT = 0x080DB800
 # verify main firmware"), so the image must not exceed CH10's size.
 # Lab's k16_overlay uses up to 0x081BD8C0; CH10 code references 0x081BF6C0.
 M4_CODE = 0x081BE000
-M4_LIMIT = 0x081BF000
-MARKER = b"BENTO_MOD:m1-polyat:v2.1" + bytes(1)
+M4_LIMIT = 0x081BF600   # CH10 reads a (zero) word at 0x081BF6C0: keep a 0xC0 margin
+MARKER = b"BENTO_MOD:m1-polyat:v2.2" + bytes(1)
 
 # (name, site, original bytes, displaced instruction(s), resume address, call setup)
 M7_HOOKS = [
@@ -43,7 +43,7 @@ POLY_SITE, POLY_ORIG, POLY_RESUME = 0x08062466, "7ff40bae", 0x08062080
 # (falls through to the loop at 0x081050DE). Our handler copies stock's Note On
 # case (0x0810509A..0x081050DE) with status 0x90 -> 0xA0.
 JT, JT_5F, JT_DEFAULT, M4_LOOP = 0x08105294, 0x081052A4, 0x081050DF, 0x081050DE
-M4_POLY = 0x081BEF80   # end of our M4 slice (handler is 72 B); diag code grows below it
+M4_POLY = 0x081BF580   # end of our M4 slice (handler is 72 B); diag code grows below it
 
 # Poly cap: the five `bl msg_send` sites that post External MIDI notes, and the
 # register holding the track object at each (verified unmodified on every path).
@@ -233,7 +233,7 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the CH10 base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label="1.6HA+m1-polyat-v2.1", base_sha256=CH10_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label="1.6HA+m1-polyat-v2.2", base_sha256=CH10_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")

@@ -56,11 +56,26 @@ static int m4_ready(void) {
         M7H->dedupe_full = 0;
         for (u32 i = 0; i < 4; i++) M7H->r[i] = 0;
         RINGSTAT->max_fill = RINGSTAT->overflows = RINGSTAT->posts = 0;
+        RINGSTAT->min_msp = RINGSTAT->min_sp = 0xFFFFFFFFu;
+        RINGSTAT->heartbeat = 0;
         clean(RINGSTAT, sizeof(RingStat));
         M7H->magic = DIAG_MAGIC;
         clean(M7H, sizeof(M7Head));
     }
     return 1;
+}
+
+/* Stack-depth probe: our hooks add stack on top of stock code, sometimes in
+ * interrupts, and the M7 main stack's bottom (0x24048DA0) sits directly above
+ * Lab's state and our slice. Record the lowest SP we ever see. */
+void diag_sp(void) {
+    u32 sp;
+    __asm volatile("mov %0, sp" : "=r"(sp));
+    if (RINGSTAT->min_sp == 0) return; /* not initialised yet this boot */
+    int changed = 0;
+    if (sp < RINGSTAT->min_sp) { RINGSTAT->min_sp = sp; changed = 1; }
+    if (sp >= M7_STACK_BOTTOM && sp < M7_STACK_TOP && sp < RINGSTAT->min_msp) { RINGSTAT->min_msp = sp; changed = 1; }
+    if (changed) clean(RINGSTAT, sizeof(RingStat));
 }
 
 static void put(u32 kind, u32 lr, u32 obj, const u32 *ev, u32 extra) {
@@ -91,8 +106,8 @@ static int interesting_send(u32 t) {
     switch (t) {
     case 0x5B: case 0x5C: case 0x5D: case 0x5E: /* MIDI-out note on/off, bend, CC */
     case 0xB9: case 0xBA:                       /* note on/off to an object (seen in FUN_0805d200) */
-    case 0xAC: case 0xAD:                       /* pad press/release */
     case 0x02: case 0x03:                       /* internal note on/off to a track (FUN_08062020) */
+    /* (pad 0xAC/0xAD are covered by the PAD records; their 3-4 queue copies are not logged) */
         return 1;
     }
     return 0;
@@ -100,6 +115,7 @@ static int interesting_send(u32 t) {
 
 __attribute__((used, retain)) void h_input(u32 engine, const u32 *ev) {
     u32 t = ev[0] & 0xFF;
+    diag_sp();
     if (t == 0xAC) FLAGS[0] = 1;
     if (t == 0xAC || t == 0xAD || (t == 0xAE && FLAGS[0])) {
         if (t == 0xAE) FLAGS[0] = 0; /* only the first pressure event after a press */
@@ -109,6 +125,7 @@ __attribute__((used, retain)) void h_input(u32 engine, const u32 *ev) {
 
 __attribute__((used, retain)) void h_send(u32 queue, const u32 *ev, u32 lr) {
     u32 t = ev[0] & 0xFF;
+    diag_sp();
     if (t == 0xAC) FLAGS[1] = FLAGS[2] = FLAGS[3] = FLAGS[4] = 1;
     /* Raw pressure 0xAE, native poly pressure 0x0E and our 0x5F flood at up to
      * audio-tick / 100 Hz rates: log only the first of each after a press. */
@@ -126,9 +143,10 @@ __attribute__((used, retain)) void h_ring(u32 obj, const u32 *ev) {
      * sits alone in its cache line (entries end at +0x2340, wr is at +0x2360),
      * so invalidating that line is safe. The native writer has no full check:
      * posting with 16 unread entries overwrites the oldest. */
+    diag_sp();
     DCIMVAC = (obj + 0x2340u) & ~31u;
     dsb();
-    u32 fill = *(volatile u32 *)(obj + 0x2360u) - *(volatile u32 *)(obj + 0x2340u);
+    u32 fill =*(volatile u32 *)(obj + 0x2360u) - *(volatile u32 *)(obj + 0x2340u);
     if (m4_ready()) { /* also initialises our side on the first call each boot */
         RINGSTAT->posts++;
         if (fill > RINGSTAT->max_fill) RINGSTAT->max_fill = fill;
@@ -147,22 +165,15 @@ __attribute__((used, retain)) void h_ring(u32 obj, const u32 *ev) {
     put(K_RING, 0, obj, ev, fill);
 }
 
+/* Queue reads happen every audio block on the M7: a cheap heartbeat for the M4's
+ * "M7 stopped" watch, and a frequent stack-depth sample. (Consumer discovery,
+ * used to map the pad path, is no longer logged.) */
 __attribute__((used, retain)) void h_consume(u32 queue, u32 idx, u32 lr) {
-    if (idx != 0) return;
-    u32 free_slot = DEDUPE_N;
-    for (u32 i = 0; i < DEDUPE_N; i++) {
-        u32 q = DEDUPE[2 * i], l = DEDUPE[2 * i + 1];
-        if (q == queue && l == lr) return; /* pair already logged */
-        if (q == 0 && free_slot == DEDUPE_N) free_slot = i;
-    }
-    if (free_slot == DEDUPE_N) {
-        M7H->dedupe_full++;
-        return;
-    }
-    if (!m4_ready()) return; /* don't burn a dedupe slot before the M4 can log it */
-    DEDUPE[2 * free_slot] = queue;
-    DEDUPE[2 * free_slot + 1] = lr;
-    put(K_CONSUME, lr, queue, 0, idx);
+    (void)queue; (void)lr;
+    if (idx != 0 || M7H->magic != DIAG_MAGIC) return;
+    diag_sp();
+    RINGSTAT->heartbeat++;
+    if ((RINGSTAT->heartbeat & 63u) == 0) clean(RINGSTAT, sizeof(RingStat));
 }
 
 /* For m7_polyat.c: voice-action records and counters for the M4 trailer line. */

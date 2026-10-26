@@ -114,7 +114,7 @@ class Trampolines(unittest.TestCase):
                     self.assertEqual(a[2][o2:dead], b[2][o2:dead], "RAM above our slice differs")
                     self.assertEqual(a[2][sp:], b[2][sp:], "live stack differs")
                     n = len(records(b[3])) if ready else 0
-                    self.assertEqual(n, 1 if ready and t is not None or (ready and site == 0x080655A0) else 0)
+                    self.assertEqual(n, 1 if ready and t is not None else 0)  # queue reads: heartbeat only
 
 class NativeFunctions(unittest.TestCase):
     def pair(self):
@@ -173,15 +173,33 @@ class NativeFunctions(unittest.TestCase):
         self.assertEqual(recs[0][10], 0x110)              # extra = 0x100 | fill
         self.assertEqual((r32(b, RINGSTAT), r32(b, RINGSTAT + 4), r32(b, RINGSTAT + 8)), (16, 1, 2))
 
-    def test_consume_dedupe(self):
+    def test_queue_reads_are_a_heartbeat(self):
         a, b = self.pair()
-        q, out = 0x24060000, 0x24070100
+        q, out, ev = 0x24060000, 0x24070100, 0x24070000
+        b.mem_write(ev, bytes([0x5B]) + bytes(23))
+        call(b, 0x08065600, q, ev)        # any logged event initialises the M7 side
         w32(b, q + 0x600, 0)
-        call(b, 0x080655A0, q, 0, out)
-        call(b, 0x080655A0, q, 0, out)    # same queue, same caller -> no new record
-        call(b, 0x080655A0, q, 1, out)    # idx != 0 -> ignored
-        self.assertEqual(len(records(b)), 1)
-        self.assertEqual(records(b)[0][1] & 0xFFFF, 4)
+        for _ in range(3):
+            call(b, 0x080655A0, q, 0, out)
+        call(b, 0x080655A0, q, 1, out)    # idx != 0: not a new pass
+        self.assertEqual(r32(b, RINGSTAT + 20), 3)
+        self.assertEqual(len(records(b)), 1, "queue reads are not logged")
+
+    def test_stack_minimums(self):
+        a, b = self.pair()
+        ev = 0x24070000
+        b.mem_write(ev, bytes([0x5B]) + bytes(23))
+        call(b, 0x08065600, 0x24060000, ev)                 # first call initialises the counters...
+        call(b, 0x08065600, 0x24060000, ev)                 # ...later calls sample SP (outside the MSP range)
+        self.assertEqual(r32(b, RINGSTAT + 12), 0xFFFFFFFF)  # min_msp untouched
+        self.assertLess(r32(b, RINGSTAT + 16), STACK)        # min_sp recorded
+        for i, v in enumerate((0x24060000, ev)):
+            b.reg_write(UC_ARM_REG_R0 + i, v)
+        b.reg_write(UC_ARM_REG_SP, 0x2404A000)               # on the M7 main stack
+        b.reg_write(UC_ARM_REG_LR, SENT | 1)
+        b.emu_start(0x08065600 | 1, SENT, count=200000)
+        msp = r32(b, RINGSTAT + 12)
+        self.assertTrue(0x24048DA0 <= msp < 0x2404A000, hex(msp))
 
 LOG, PREV = "\\BENTO_DIAG.log", "\\BENTO_DIAG_prev.log"
 
@@ -251,12 +269,12 @@ class M4EndToEnd(unittest.TestCase):
         self.tick(2700)                                  # idle >= 1500 ms -> flush
         self.assertEqual(len(self.files), 1)
         text = self.files[0].decode()
-        self.assertIn("BENTO M1b poly-AT + poly cap v2.1", text)
-        self.assertIn("| poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0", text)
-        self.assertIn("| midi ring max_fill=0 overflows=0", text)
+        self.assertIn("BENTO M1b poly-AT + poly cap v2.2 black box", text)
+        self.assertIn("# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0"
+                      " | midi ring max_fill=0 overflows=0 | m7 stack min_msp=", text)
         self.assertEqual(text.count(" SEND "), 2)
         self.assertIn("lr=0805d5a1", text)
-        self.assertIn("# m7 dropped=0", text)
+        self.assertNotIn("!!!", text, "no alarms in a normal session")
         self.tick(5000)                                  # nothing new -> no write at all
         self.assertEqual(len(self.files), 1)
 
@@ -277,16 +295,52 @@ class M4EndToEnd(unittest.TestCase):
         self.tick(1000); self.send(0x5B); self.tick(1100); self.tick(2700)   # drain, then idle-gated write
         text = self.files[0].decode()
         self.assertIn("stock crash record: count=3 cause=00000005 pc=080da2b1 core=00000002", text)
-        self.assertIn("msp=2404cc00", text)
+        self.assertIn(" 2404cc00", text)                 # bkp8, part of the stacked frame
         self.assertEqual(text.count("rtc_bkp0..31:"), 1)
 
-    def test_previous_log_preserved(self):
+    def test_previous_log_preserved_at_first_write(self):
         old = b"BENTO session before the crash\r\n" + bytes(range(32, 127)) * 30   # > 512 B: several chunks
         self.setUp(previous=old)
         self.tick(1000)
-        self.assertEqual(self.fs.get(PREV), old, "previous boot's log copied before anything is written")
+        self.assertNotIn(PREV, self.fs, "not at the first UI-loop pass (card may not be mounted yet)")
         self.send(0x5B); self.tick(1100); self.tick(2700)
+        self.assertEqual(self.fs.get(PREV), old, "copied right before the first write")
         self.assertNotIn(b"before the crash", self.fs[LOG])
+
+    def test_new_crash_record_is_written_immediately(self):
+        self.tick(1000)                                  # baseline: count 0
+        w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)
+        self.tick(1050)                                  # no idle wait
+        text = self.files[-1].decode()
+        self.assertIn("!!! NEW CRASH RECORD at ms 1050", text)
+        self.assertIn("count=1", text)
+        self.assertIn("pc=0808cc5a", text)
+        self.tick(1100)
+        self.assertEqual(text.count("!!!"), 1, "reported once")
+
+    def test_heartbeat_stall_is_reported(self):
+        self.tick(1000)
+        self.send(0x5B)                                  # M7 side live
+        for _ in range(5):
+            call(self.u, 0x080655A0, 0x24060000, 0, 0x24070100)
+        self.tick(1100)                                  # heartbeat seen moving
+        self.tick(3000)                                  # 1.9 s quiet: not yet
+        self.assertFalse(any(b"HEARTBEAT" in f for f in self.files))
+        self.tick(4200)                                  # 3.1 s quiet: audio core presumed stopped
+        self.assertTrue(any(b"!!! M7 HEARTBEAT STOPPED" in f for f in self.files))
+        n = len(self.files); self.tick(9000)
+        self.assertFalse(any(b"HEARTBEAT" in f for f in self.files[n:]), "reported once")
+
+    def test_post_mortem_tail_in_next_boot_header(self):
+        self.tick(1000)
+        self.send(0x5B); self.send(0x5C)
+        self.tick(1100)                                  # drained (no file yet: never idle)
+        self.tick(50)                                    # reset: new boot
+        self.send(0x5D); self.tick(100); self.tick(1700)
+        text = self.files[-1].decode()
+        self.assertIn("previous boot (from RAM):", text)
+        tail = [l for l in text.splitlines() if l.startswith("  T ")]
+        self.assertEqual([l.split("ev=")[1][6:8] for l in tail], ["5b", "5c"], "previous boot's final records")
 
     def test_overflow_and_reboot(self):
         self.tick(1000)
