@@ -38,7 +38,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.8"                       # bump for every build that goes on the device
+VERSION = "3.9"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -118,7 +118,7 @@ CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (b
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x24048CA0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
-STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x200; STEP_LIMIT = STEP_WRAP + 0x1800   # m4_step.c
+STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x2000   # m4_step.c
 M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
 # Per-step Condition / Retrigger (m4_step.c)
 STEP_SAVE_SITE, STEP_LOAD_SITE = 0x0812F4F0, 0x0812FBB4
@@ -126,6 +126,8 @@ DRUM_HEADER, DRUM_ENCODER = 0x0815C27C, 0x0815CAA0
 PIANO_HEADER, PIANO_EVENT = 0x081599BC, 0x0815A598
 # Strike velocity: drum step pad press / step toggle (always on since v3.8)
 STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
+HEADER_GEN, DRUM_EVENT = 0x08134800, 0x0815D600   # header description generator; drum view events
+STRIKE_ACTION = 0x10F0
 LAYOUT = dict(M7_TRAMP=M7_TRAMP, M7_CODE=M7_CODE, M4_CODE=M4_CODE, HOLD_WRAP=HOLD_WRAP, HOLD_CODE=HOLD_CODE,
               CTRL_WRAP=CTRL_WRAP, CTRL_CODE=CTRL_CODE, STEP_WRAP=STEP_WRAP, STEP_CODE=STEP_CODE,
               M4_POLY=M4_POLY, IMAGE_END=M4_POLY_LIMIT)
@@ -572,6 +574,15 @@ def build(base_img, out):
                f"mov r0, r4; mov r1, r5; mov r2, r6; bl {ss['toggle_post']:#x}; pop {{r4, r5, r6, pc}}",
                {ss["toggle_pre"], orig_toggle, ss["toggle_post"]}, "toggle wrapper")
     patch(STEP_TOGGLE, asm(f"b.w {a:#x}", STEP_TOGGLE), bytes.fromhex("38b51f29"), "Strike velocity: step toggle")
+    # "Strike Vel" header button: inject after stock's header generator; catch its action
+    orig_gen = sblock(f"push.w {{r4, r5, r6, r7, r8, r9, r10, lr}}; b.w {HEADER_GEN + 4:#x}", {HEADER_GEN + 4}, "header replay")
+    a = sblock(f"push {{r4, r5, r6, lr}}; mov r4, r0; mov r5, r1; bl {orig_gen:#x}; mov r2, r0; mov r0, r4; mov r1, r5; "
+               f"bl {ss['strike_toolbar']:#x}; pop {{r4, r5, r6, pc}}", {orig_gen, ss["strike_toolbar"]}, "header wrapper")
+    patch(HEADER_GEN, asm(f"b.w {a:#x}", HEADER_GEN), bytes.fromhex("2de9f047"), "Strike Vel: header button (slot left of Undo)")
+    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['strike_event']:#x}; cmp r0, #0; beq stock; "
+               + restore + "movs r0, #0; bx lr; stock: " + restore + f"push {{lr}}; sub sp, #0x6c; b.w {DRUM_EVENT + 4:#x}",
+               {ss["strike_event"], DRUM_EVENT + 4}, "drum event")
+    patch(DRUM_EVENT, asm(f"b.w {a:#x}", DRUM_EVENT), bytes.fromhex("00b59bb0"), "Strike Vel: button action in the drum view")
     if STEP_WRAP + len(wrap) > STEP_CODE:
         raise SystemExit("step wrappers overlap the step code")
     patch(STEP_WRAP, bytes(wrap), b"\xff" * len(wrap), "Per-step: wrappers")

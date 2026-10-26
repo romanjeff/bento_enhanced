@@ -181,6 +181,7 @@ static int drum_step_view(void *v) { return v && !B(v, 0x113E0) && W(v, 0x113E4)
  *   - steps selected (stock edited them): lock each where it now differs from
  *     the default, unlock where it equals it. */
 static int matches(void *v, const u32 *e);
+static void strike_init(void);
 static const u32 DEFAULT_AT[3] = {0x114C0u, 0x114C4u, 0x114C8u};
 
 static void publish(void *v) {
@@ -260,6 +261,7 @@ static void sync_defaults(void *v) {
 
 __attribute__((used, retain)) void step_header_before(void *v) {
     if (!drum_step_view(v) || !claim()) return;
+    strike_init(); STRIKE_SET->view = 1;          /* the drum step view is the active SEQ view */
     for (u32 i = 0; i < 4; i++) DRUM_KEYS[4 + i] = SU->key[i];
     sync_defaults(v);
 }
@@ -330,10 +332,18 @@ __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
 #define STEP_HAS_NOTE 0x0815BCB4u   /* (view, visible index) */
 #define STRIKE_WINDOW_MS 3000u
 
+static void strike_init(void) {
+    if (STRIKE_SET->magic == STRIKE_SET_MAGIC) return;
+    STRIKE_SET->off = 0;          /* on by default */
+    STRIKE_SET->view = 0;
+    STRIKE_SET->magic = STRIKE_SET_MAGIC;
+}
+static int strike_off(void) { strike_init(); return STRIKE_SET->off != 0; }
+
 __attribute__((used, retain)) void strike_press(void *v, u32 pad) {
     (void)pad;
     SU->r[1] = 0;
-    if (!drum_step_view(v)) return;
+    if (!drum_step_view(v) || strike_off()) return;
     if (STRIKE->magic != STRIKE_MAGIC || STRIKE->seq == SU->r[0]) return;   /* no new press seen */
     SU->r[0] = STRIKE->seq;
     SU->r[1] = STRIKE->vel;
@@ -387,6 +397,7 @@ static int piano_selected(void *v, u32 *rec) {
 }
 
 __attribute__((used, retain)) void piano_header_after(void *v) {
+    strike_init(); STRIKE_SET->view = 0;          /* piano roll: no Strike Vel button */
     if (!piano_note_view(v) || !claim()) return;
     if (H(v, 0x11BCC0 + PIANO_SLOT * 2)) return;           /* slot taken (stock changed?): leave it */
     u32 rec[6];
@@ -419,5 +430,78 @@ __attribute__((used, retain)) int piano_event(void *v, const u32 *ev) {
     }
     if (changed) FN(PIANO_COMMIT, void (*)(void *))(v);
     FN(PIANO_HEADER, void (*)(void *))(v);
+    return 1;
+}
+
+/* ---- "Strike Vel" button in the header bar (drum step / sequence view) ----
+ * From bento-community-lab's header_actions.c (GPL-3.0-or-later), which put
+ * its Select toggle in the same place. Stock's header description (0x1C4 B,
+ * generated each UI tick by 0x08134800) holds six 48-byte action records at
+ * +0x74: +0x00 label, +0x20 empty, +0x21 active (lit outline), +0x22 tab group,
+ * +0x2C action id. On SEQ page 0x27 the free slots are 3 and 4 (between
+ * Sequence and Undo); we take the rightmost free normal slot, left of Undo.
+ * Stock applies a slot's visibility only while the header root's layout flag
+ * (+0x117C) is armed (page change), so header_sync re-arms it when our button
+ * differs from the applied header (root+0x34). The button's action id arrives
+ * at the drum view's event handler (0x0815D600). */
+#define HEADER_ROOT ((volatile u8 *)0x30034D48u)
+#define HEADER_ROOT_VTABLE 0x081B3680u
+#define REC(p, i) ((volatile u8 *)(p) + 0x74u + (u32)(i) * 48u)
+#define MODEL_PAGE (*(volatile u8 *)((u8 *)MODEL + 0x12C))
+static const char STRIKE_LABEL[] = "Strike Vel";
+
+static u32 rid(volatile const u8 *r) { return (u32)r[44] | ((u32)r[45] << 8); }
+
+/* Put (or update) our lit/unlit button; 1 if the description changed. */
+static int header_action_lit(void *out, u32 id, const char *label, int lit) {
+    for (u32 i = 0; i < 6; i++) {
+        volatile u8 *d = REC(out, i);
+        if (rid(d) != id) continue;
+        int change = d[0x20] != 0 || d[0x21] != (lit ? 1 : 0);
+        d[0x20] = 0; d[0x21] = lit ? 1 : 0;
+        u32 n = 0;
+        do { if (d[n] != (u8)label[n]) change = 1; d[n] = (u8)label[n]; } while (label[n++] && n < 31);
+        d[31] = 0;
+        return change;
+    }
+    for (int i = 5; i >= 0; i--) {                   /* rightmost free normal slot */
+        volatile u8 *d = REC(out, i);
+        if (rid(d) || d[0] || d[0x22]) continue;
+        for (u32 j = 0; j < 48; j++) d[j] = 0;
+        u32 n = 0;
+        do { d[n] = (u8)label[n]; } while (label[n++] && n < 31);
+        d[31] = 0; d[0x21] = lit ? 1 : 0; d[44] = (u8)id; d[45] = (u8)(id >> 8);
+        return 1;
+    }
+    return 0;
+}
+
+static void header_sync(void *out) {
+    if (*(volatile u32 *)HEADER_ROOT != HEADER_ROOT_VTABLE) return;
+    for (u32 i = 0; i < 6; i++) {
+        volatile u8 *a = REC(out, i), *b = REC(HEADER_ROOT + 0x34, i);
+        if (rid(a) != STRIKE_ACTION && rid(b) != STRIKE_ACTION) continue;
+        if (rid(a) != rid(b) || a[0x20] != b[0x20] || a[0x21] != b[0x21] || a[0x22] != b[0x22]) {
+            HEADER_ROOT[0x117C] = 1;
+            return;
+        }
+    }
+}
+
+/* After stock generated the header description (0x08134800 returns "changed"). */
+__attribute__((used, retain)) int strike_toolbar(void *model, void *out, int changed) {
+    (void)model;
+    if (MODEL_PAGE == 0x27 && STRIKE_SET->magic == STRIKE_SET_MAGIC && STRIKE_SET->view)
+        changed |= header_action_lit(out, STRIKE_ACTION, STRIKE_LABEL, !STRIKE_SET->off);
+    header_sync(out);
+    return changed;
+}
+
+/* Drum view event handler entry (0x0815D600). 1 = handled. */
+__attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
+    if (ev[0] != STRIKE_ACTION || !drum_step_view(v)) return 0;
+    strike_init();
+    STRIKE_SET->off = !STRIKE_SET->off;
+    SU->r[1] = 0;                                     /* drop any pending strike */
     return 1;
 }

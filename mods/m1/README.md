@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (168 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (172 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -351,23 +351,25 @@ clip loads that pad's default (the most common value among its unlocked steps).
 - Stock's three edit functions are wrapped (hold-step release protection, `param_pre`,
   stock's edit, `param_post`). `test_step.py` drives stock's real edit functions.
 
-## Strike velocity (v3.6)
+## Strike velocity (v3.6; header button since v3.9)
 
 Drum step sequencer (step and sequence views): **a step you tap in takes the velocity
-of the hit** (locked if it differs from the pad default). Touchscreen taps still get the
-default. **On/off: 5th item in the hamburger menu, "Strike Vel: On/Off"** (default on;
-kept across warm reboots, not power-off).
+of the hit** (locked if it differs from the pad default). Touchscreen taps get the
+default. **On/off: the "Strike Vel" button in the bottom bar between Sequence and Undo**,
+outlined while on (default on; kept across warm reboots, not power-off).
 
 - M7: `h_input` records each pad press (`0xAC`) with stock's velocity formula
   (`min(raw, 0xD000) × 127 / 0xD000`, 0 → 100) in an M7-written line `0x24048D60`.
 - M4: the drum step pad-press handler (`0x0815D1EC`) takes a fresh strike as pending;
   stock's toggle (`0x0815D114`) is wrapped and, when it creates a step, gives the new
   note that velocity. A strike is used once and only within 3 s.
-- Menu: the drum step menu (id `0xFA`) is registered from a 10-slot table with count 4
-  (`0x081415F8`); count → 5 and slot 5 (`0x08198E00`) = `{0x10F0, label in RAM
-  0x24048D50, 0, 0, 1}`. Stock copies the label *pointer*, so the text can change. The
-  selection bubbles up (`FUN_0816FC34`) to the UI consumer, where `controls_dispatch`
-  toggles the setting. Stock copies label text into the menu buttons only when a
-  *different* menu opens (`FUN_0817FFF8` caches the menu index at `+0xFE0` of the static
-  header widget `0x30034D48`); the toggle clears that cache so the new label shows (v3.7).
-- Velocity curve unchanged (stock's), as decided; tapped steps match live playing.
+- Button: after stock generates the header description (`0x08134800`, six 48-byte
+  action records at `+0x74`), our record goes into the rightmost free normal slot (left of
+  Undo) with `+0x21` lit while on; the header root's layout flag (`0x30034D48+0x117C`) is
+  re-armed when our record differs from the applied header, because stock only applies a
+  slot's visibility at page change. Its action id `0x10F0` is caught at the drum view's
+  event handler (`0x0815D600`). Shown only while the drum step view is the active SEQ view
+  (page `0x27` is shared with the piano roll). Method and helpers from Lab's
+  `header_actions.c` (their Select button).
+- v3.6/v3.7 used a hamburger-menu item instead; it couldn't show its state reliably and
+  was removed in v3.8.

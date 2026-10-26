@@ -140,6 +140,18 @@ class Rig:
             self.log.append(("set", step, r(2))); self.ret()
         elif a == 0x0815D1F0:                                     # rest of stock's press handler
             self.log.append(("press", r(1))); self.ret()
+        elif a == 0x08134804:                                     # stock header generator body
+            out = r(1)
+            u.mem_write(out + 0x74, bytes(6 * 48))
+            for slot, label, tab, aid in ((1, b"Step", 1, 0x1046), (2, b"Sequence", 1, 0x1047), (5, b"Undo", 0, 0x1032)):
+                rec = out + 0x74 + slot * 48
+                u.mem_write(rec, label); u.mem_write(rec + 0x22, bytes([tab])); u.mem_write(rec + 44, struct.pack("<H", aid))
+            sp = u.reg_read(UC_ARM_REG_SP)
+            for i, reg in enumerate((UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7,
+                                     UC_ARM_REG_R8, UC_ARM_REG_R9, UC_ARM_REG_R10)):
+                u.reg_write(reg, r32(u, sp + 4 * i))
+            u.reg_write(UC_ARM_REG_R0, 0)
+            u.reg_write(UC_ARM_REG_SP, sp + 32); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 28))
         elif a in (STOCK_DRUM_HEADER, STOCK_PIANO_HEADER):
             # stand-in for stock's header body: return from the replayed prologue's frame
             self.log.append("stock-header")
@@ -441,6 +453,54 @@ class StrikeVelocity(unittest.TestCase):
         stock = Path(sys.argv[1]).read_bytes()
         for a, n in ((0x081415F8, 2), (0x08198E00, 20)):
             self.assertEqual(IMG[a - BASE:a - BASE + n], stock[a - BASE:a - BASE + n], hex(a))
+
+class StrikeButton(unittest.TestCase):
+    OUT, ROOT = 0x20180000, 0x30034D48
+
+    def rig(self):
+        g = Rig()
+        g.u.mem_write(0x30024B00 + 0x12C, bytes([0x27]))           # SEQ page
+        w32(g.u, self.ROOT, 0x081B3680)                             # header root vtable
+        return g
+
+    def generate(self, g):
+        changed = g.call(0x08134800, 0x30024B00, self.OUT, 0x20190000, 1)
+        recs = []
+        for i in range(6):
+            raw = bytes(g.u.mem_read(self.OUT + 0x74 + i * 48, 48))
+            recs.append((raw[:raw.index(b"\0")].decode(), raw[0x21], struct.unpack_from("<H", raw, 44)[0]))
+        return changed, recs
+
+    def test_button_left_of_undo_lit_while_on(self):
+        g = self.rig(); g.drum_header()
+        changed, recs = self.generate(g)
+        self.assertEqual(changed, 1)
+        self.assertEqual(recs[4], ("Strike Vel", 1, 0x10F0))
+        self.assertEqual([r[0] for r in recs], ["", "Step", "Sequence", "", "Strike Vel", "Undo"])
+        self.assertEqual(bytes(g.u.mem_read(self.ROOT + 0x117C, 1))[0], 1, "layout re-armed so the slot shows")
+
+    def test_no_button_in_the_piano_roll(self):
+        g = self.rig(); g.drum_header(); g.call(0x081599BC, VIEW)   # piano header ran last
+        changed, recs = self.generate(g)
+        self.assertNotIn(0x10F0, [r[2] for r in recs])
+
+    def test_button_toggles_lit_and_the_behaviour(self):
+        g = self.rig(); g.drum_header()
+        ev = 0x20100000; g.u.mem_write(ev, struct.pack("<HH4I", 0x10F0, 0, 0, 0, 0, 0))
+        self.assertEqual(g.call(0x0815D600, VIEW, ev), 0, "handled")
+        self.assertEqual(self.generate(g)[1][4], ("Strike Vel", 0, 0x10F0), "outline off")
+        sv = StrikeVelocity(); sv.STRIKE = 0x24048D60
+        w32(g.u, VIEW + 0x114C0, 100); sv.strike(g, 1, 37); sv.tap(g, 4)
+        self.assertEqual(g.notes[-1][4] >> 16, 100, "off: tapped step gets the default")
+        g.call(0x0815D600, VIEW, ev)
+        self.assertEqual(self.generate(g)[1][4][1], 1, "on again")
+
+    def test_other_drum_events_go_to_stock(self):
+        g = self.rig()
+        ev = 0x20100000; g.u.mem_write(ev, struct.pack("<HH4I", 0xCE, 0, 0, 0, 0, 0))
+        g.u.reg_write(UC_ARM_REG_SP, STACK); g.u.reg_write(UC_ARM_REG_R0, VIEW); g.u.reg_write(UC_ARM_REG_R1, ev)
+        g.u.emu_start(0x0815D600 | 1, 0x0815D604, count=200000)
+        self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 4 - 0x6C, "replayed push {lr}; sub sp, #0x6c")
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

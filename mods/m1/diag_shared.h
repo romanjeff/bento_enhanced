@@ -124,6 +124,12 @@ static inline u32 step_make(u32 cond, u32 hits, u32 div, int ramp, u32 locks) {
 typedef struct { u32 magic, seq, pad, vel, raw, r[3]; } Strike;
 #define STRIKE ((volatile Strike *)0x24048D60u)
 #define STRIKE_MAGIC 0x4B525453u /* "STRK" */
+/* The on/off setting (header button "Strike Vel", m4_step.c); M4-only.
+ * view: 1 while the drum step view is the active SEQ view, 0 for piano roll. */
+typedef struct { u32 magic, off, view, r[3]; } StrikeSet;
+#define STRIKE_SET ((volatile StrikeSet *)0x24048D48u)
+#define STRIKE_SET_MAGIC 0x32455653u /* "SVE2" */
+#define STRIKE_ACTION 0x10F0u        /* header button action id (unused by stock) */
 
 typedef struct {
     u32 max_fill;  /* highest M7->M4 MIDI ring fill seen when posting (16 slots) */
