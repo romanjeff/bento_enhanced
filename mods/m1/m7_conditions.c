@@ -6,9 +6,13 @@
  * self-initialisation (Lab zeroed the counters from its startup hook).
  *
  * Data: the native per-note probability byte. Values below 100 keep their
- * native meaning; 100..134 are A:B conditions in the order 1:2, 2:2, 1:3, 2:3,
- * 3:3, ..., 8:8 (35 values). A note with condition A:B plays on pass A of every
- * B passes of its sequence (passes counted per sequence, from launch/restart).
+ * native meaning. Ours (stable, so saved projects keep their meaning):
+ *   100..134 A:B in the order 1:2, 2:2, 1:3, 2:3, 3:3, ..., 8:8 (Lab T2)
+ *   135..169 !A:B (same order), 170 1ST, 171 !1ST, 172 PRE, 173 !PRE.
+ * A:B plays on pass A of every B passes of its sequence (passes counted per
+ * sequence, from launch/restart); !A:B on every other pass. 1ST plays on the
+ * first pass only. PRE plays if the most recent A:B / !A:B / 1ST / !1ST
+ * decision on the sequence passed. The UI shows its own order (build.py).
  *
  * Hooks (see build.py):
  *   cond_decide(seq, value)  probability gate 0x08060B64: 0 skip, 1 play,
@@ -53,14 +57,14 @@ static volatile Counter *entry(u32 seq) {
         volatile Counter *c = &COUNTERS[i];
         if (c->sequence == seq) {
             if (c->owner != owner || c->row != row) {
-                c->owner = owner; c->row = row; c->loop = 0; c->boundaries = 0;
+                c->owner = owner; c->row = row; c->loop = 0; c->boundaries = 0; c->r[0] = 0;
             }
             return c;
         }
         if (!c->sequence && !free_c) free_c = c;
     }
     if (!free_c) return 0;
-    free_c->owner = owner; free_c->row = row; free_c->loop = 0; free_c->boundaries = 0;
+    free_c->owner = owner; free_c->row = row; free_c->loop = 0; free_c->boundaries = 0; free_c->r[0] = 0;
     free_c->sequence = seq;
     return free_c;
 }
@@ -74,12 +78,25 @@ __attribute__((used, retain)) void cond_loop(u32 seq) {
     c->boundaries = 1;
 }
 
-/* 0 = skip, 1 = play, 2 = original probability decision. */
+/* 0 = skip, 1 = play, 2 = original probability decision.
+ * Stored values (kept stable so saved projects keep their meaning):
+ *   100..134 A:B, 135..169 !A:B (same order), 170 1ST, 171 !1ST, 172 PRE, 173 !PRE.
+ * PRE = result of the most recent A:B / !A:B / 1ST / !1ST decision on this
+ * sequence (false until there is one); PRE steps do not change it. */
+#define PRE(c) ((c)->r[0])
 __attribute__((used, retain)) u32 cond_decide(u32 seq, u32 value) {
-    if (value < 100 || value >= 135) return 2;
-    u32 i = value - 100, b = 2;
-    while (i >= b) { i -= b; b++; }
+    if (value < 100 || value > 173) return 2;
     volatile Counter *c = entry(seq);
     if (!c) return 1; /* counter table full: behave like native "always" */
-    return c->loop % b == i;
+    if (value >= 172) return (PRE(c) != 0) ^ (value == 173);
+    u32 pass;
+    if (value >= 170) {
+        pass = (c->loop == 0) ^ (value == 171);
+    } else {
+        u32 i = value - (value >= 135 ? 135u : 100u), b = 2;
+        while (i >= b) { i -= b; b++; }
+        pass = (c->loop % b == i) ^ (value >= 135);
+    }
+    PRE(c) = pass;
+    return pass;
 }

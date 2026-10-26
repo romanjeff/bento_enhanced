@@ -37,7 +37,7 @@ M7_LIMIT = 0x080DB800
 APPEND_FROM = 0x081B4000
 M4_CODE = 0x081B5000
 M4_LIMIT = 0x081B6C00
-MARKER = b"BENTO_MOD:m1-polyat:v2.8-stock+conditions+inspect+holds+dmamon" + bytes(1)
+MARKER = b"BENTO_MOD:m1-polyat:v2.9-stock+conditions(not,1st,pre)+inspect+holds+dmamon" + bytes(1)
 
 # (name, site, original bytes, displaced instruction(s), resume address, call setup)
 M7_HOOKS = [
@@ -81,7 +81,14 @@ COND_UI = 0x081B4000
 COND_TABLE = 0x081B4400
 COND_UI_LIMIT = 0x081B5000
 NATIVE_LABELS = 0x0819F30C
-COND_LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]
+AB_LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]      # stored 100..134 (Lab T2)
+# Stored values stay stable (saved projects keep their meaning): A:B 100..134,
+# !A:B 135..169, 1ST 170, !1ST 171, PRE 172, !PRE 173. The list shows them as
+# 1ST, !1ST, PRE, !PRE, then each A:B followed by its NOT.
+COND_STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]
+COND_LABELS = ["1ST", "!1ST", "PRE", "!PRE"] + [l for x in AB_LABELS for l in (x, "!" + x)]
+COND_N = len(COND_STORED)                                                    # 74 -> list of 174
+COND_D2S, COND_S2D = 0x081B4300, 0x081B4380   # display index -> stored; stored-100 -> display index
 COND_COUNT_SITE, COND_COUNT_ORIG = 0x08165D40, "cdf80080"
 COND_TABLE_PTR_SITE = 0x08165F8C
 COND_UI_SITES = [  # (site, helper, original bytes)
@@ -110,20 +117,28 @@ CTRL_SYMBOLS = dict(STATE=hex(CTRL_STATE), STATE_MAGIC="0x31534d42", EVENT_MAGIC
                     MODIFIERS_MASK="0x3400")             # Lab: 0x3500 (incl. PROJ 0x100)
 
 def cond_ui_helpers():
-    """Lab T2's editor value conversions (native probability byte <-> list index)."""
-    def show(store, back):
-        return f"cmp r3,#100; blo dec; cmp r3,#134; bls store; movs r3,#99; b store; dec: subs r3,#1; store: str r3,[{store}]; b.w {back}"
+    """Lab T2's editor value conversions (native probability byte <-> list entry),
+    extended to the full condition list through the COND_D2S/COND_S2D tables."""
+    s2d = f"push {{r2}}; ldr r2, ={COND_S2D:#x}; subs r3, #100; ldrb r3, [r2, r3]; pop {{r2}}; "
+    def show(store, back):   # stored byte r3 -> list index (0-based) in [store]
+        return (f"cmp r3, #100; blo dec; cmp r3, #173; bhi always; {s2d}adds r3, #100; b store; "
+                f"always: movs r3, #99; b store; dec: subs r3, #1; store: str r3, [{store}]; b.w {back}")
     return [
         ("show_piano", show("r6", "0x08159b84")),
         ("show_drum", show("r1", "0x0815c3d6")),
-        ("set_drum", "cmp r1,#134; bhi unknown; cmp r1,#100; bhs direct; cmp r1,#99; beq unknown; adds r6,r1,#1; b done; "
-                     "direct: mov r6,r1; b done; unknown: movs r6,#0; done: b.w 0x0815c8be"),
-        ("piano_reference", "ldrb.w r3,[sp,#0x25]; cbz r3,always; cmp r3,#135; bhs always; cmp r3,#100; blo done; adds r3,#1; "
-                            "b done; always: movs r3,#100; done: b.w 0x08158f26"),
-        ("piano_edit", "ldrb.w r3,[sp,#0x19]; cbz r3,always; cmp r3,#135; bhs always; cmp r3,#100; blo add; adds r3,#1; b add; "
-                       "always: movs r3,#100; add: ldr r2,[sp,#0x84]; adds r3,r3,r2; cmp r3,#1; bge minok; movs r3,#1; "
-                       "minok: cmp r3,#135; ble maxok; movs r3,#135; maxok: cmp r3,#100; beq zero; blo store; subs r3,#1; "
-                       "b store; zero: movs r3,#0; store: strb.w r3,[sp,#0x31]; b.w 0x08158aac"),
+        ("set_drum", "cmp r1, #173; bhi unknown; cmp r1, #100; bhs direct; cmp r1, #99; beq unknown; adds r6, r1, #1; b done; "
+                     f"direct: push {{r2}}; ldr r2, ={COND_D2S:#x}; subs r6, r1, #100; ldrb r6, [r2, r6]; pop {{r2}}; b done; "
+                     "unknown: movs r6, #0; done: b.w 0x0815c8be"),
+        # piano roll works in 1-based list values: 1..99 = %, 100 = Always, 101.. = conditions
+        ("piano_reference", f"ldrb.w r3, [sp, #0x25]; cbz r3, always; cmp r3, #173; bhi always; cmp r3, #100; blo done; "
+                            f"{s2d}adds r3, #101; b done; always: movs r3, #100; done: b.w 0x08158f26"),
+        ("piano_edit", f"ldrb.w r3, [sp, #0x19]; cbz r3, always; cmp r3, #173; bhi always; cmp r3, #100; blo add; "
+                       f"{s2d}adds r3, #101; b add; always: movs r3, #100; "
+                       f"add: ldr r2, [sp, #0x84]; adds r3, r3, r2; cmp r3, #1; bge minok; movs r3, #1; "
+                       f"minok: cmp r3, #{100 + COND_N}; ble maxok; movs r3, #{100 + COND_N}; "
+                       f"maxok: cmp r3, #100; beq zero; blo store; "
+                       f"ldr r2, ={COND_D2S:#x}; subs r3, #101; ldrb r3, [r2, r3]; b store; "
+                       "zero: movs r3, #0; store: strb.w r3, [sp, #0x31]; b.w 0x08158aac"),
     ]
 
 def check_branches(code, addr, allowed, what):
@@ -312,24 +327,30 @@ def build(base_img, out):
         check_branches(code, a, {back}, f"condition UI helper {name}")
         ui_syms[name] = a
         ui += code
-    if COND_UI + len(ui) > COND_TABLE:
-        raise SystemExit("condition UI helpers overrun the label table")
+    if COND_UI + len(ui) > COND_D2S:
+        raise SystemExit("condition UI helpers overrun the lookup tables")
+    d2s = bytes(COND_STORED)
+    s2d = bytes(COND_STORED.index(v) for v in range(100, 100 + COND_N))
+    if sorted(COND_STORED) != list(range(100, 100 + COND_N)) or len(d2s) > 0x80:
+        raise SystemExit("condition lookup tables")
     native_ptrs = bytes(base_img[NATIVE_LABELS - BASE:NATIVE_LABELS - BASE + 100 * 4])
     strings = b""; new_ptrs = b""
     for label in COND_LABELS:
-        new_ptrs += struct.pack("<I", COND_TABLE + 135 * 4 + len(strings))
+        new_ptrs += struct.pack("<I", COND_TABLE + (100 + COND_N) * 4 + len(strings))
         strings += label.encode() + b"\0"
     table = native_ptrs + new_ptrs + strings + b"BENTO_MOD:trigger-conditions(Lab T2 port)\0"
-    if len(COND_LABELS) != 35 or COND_TABLE + len(table) > COND_UI_LIMIT:
+    if len(COND_LABELS) != COND_N or COND_TABLE + len(table) > COND_UI_LIMIT:
         raise SystemExit("condition label table layout")
     patch(COND_UI, bytes(ui), b"\xff" * len(ui), "Conditions (Lab T2): editor value conversion helpers")
-    patch(COND_TABLE, table, b"\xff" * len(table), "Conditions (Lab T2): 100 native + 35 A:B labels")
+    patch(COND_D2S, d2s, b"\xff" * len(d2s), "Conditions: list index -> stored value table")
+    patch(COND_S2D, s2d, b"\xff" * len(s2d), "Conditions: stored value -> list index table")
+    patch(COND_TABLE, table, b"\xff" * len(table), f"Conditions: 100 native + {COND_N} condition labels")
     for site, name, orig in COND_UI_SITES:
         patch(site, asm(f"b.w {ui_syms[name]:#x}", site), bytes.fromhex(orig), f"Conditions (Lab T2): {name}")
-    count = asm("movs r3, #135; str r3, [sp]", COND_COUNT_SITE)
+    count = asm(f"movs r3, #{100 + COND_N}; str r3, [sp]", COND_COUNT_SITE)
     if len(count) != 4:
         raise SystemExit("condition count patch is not 4 bytes")
-    patch(COND_COUNT_SITE, count, bytes.fromhex(COND_COUNT_ORIG), "Conditions (Lab T2): probability list 100 -> 135 entries")
+    patch(COND_COUNT_SITE, count, bytes.fromhex(COND_COUNT_ORIG), f"Conditions: probability list 100 -> {100 + COND_N} entries")
     patch(COND_TABLE_PTR_SITE, struct.pack("<I", COND_TABLE), struct.pack("<I", NATIVE_LABELS),
           "Conditions (Lab T2): probability list labels -> extended table")
 
@@ -486,7 +507,7 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the stock base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label="1.6.1+m1+conditions+inspect+holds-v2.8", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label="1.6.1+m1+conditions+inspect+holds-v2.9", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")

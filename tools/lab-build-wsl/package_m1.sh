@@ -1,6 +1,6 @@
 set -euo pipefail
 O=$(ls -d ~/bento/out/m1-* | tail -1)
-K=/mnt/c/Users/rjrom/bento_mods/flash/m1-stock-v2.8; rm -rf "$K"; mkdir -p "$K"/{01_TEST_FIRMWARE,03_RESTORE_STOCK}
+K=/mnt/c/Users/rjrom/bento_mods/flash/m1-stock-v2.9; rm -rf "$K"; mkdir -p "$K"/{01_TEST_FIRMWARE,03_RESTORE_STOCK}
 cp "$O/bento1.bin" "$K/01_TEST_FIRMWARE/"; cp ~/bento/stock-1.6.1/bento2.bin "$K/01_TEST_FIRMWARE/"
 cp ~/bento/stock-1.6.1/bento1.bin ~/bento/stock-1.6.1/bento2.bin "$K/03_RESTORE_STOCK/"
 cp "$O/manifest.json" "$K/"

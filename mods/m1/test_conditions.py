@@ -27,7 +27,9 @@ STOCK = Path(sys.argv[1]).read_bytes()
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
 SYM7 = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["m7_symbols"].items()}
-LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]
+LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]          # stored 100..134
+STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]  # list order
+SHOWN = ["1ST", "!1ST", "PRE", "!PRE"] + [l for x in LABELS for l in (x, "!" + x)]
 
 def emu(img, cfg_gen=1):
     u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
@@ -70,7 +72,7 @@ class Decide(unittest.TestCase):
 
     def test_native_values_are_left_to_stock(self):
         u = emu(IMG)
-        for v in (0, 1, 50, 99, 135, 200, 255):
+        for v in (0, 1, 50, 99, 174, 200, 255):
             self.assertEqual(call(u, SYM7["cond_decide"], SEQ, v), 2, v)
 
     def test_restart_and_clip_change_reset_the_count(self):
@@ -147,19 +149,19 @@ class Hooks(unittest.TestCase):
 class M4UI(unittest.TestCase):
     def test_label_table(self):
         ptr = struct.unpack_from("<I", IMG, 0x08165F8C - BASE)[0]
-        ptrs = [struct.unpack_from("<I", IMG, ptr - BASE + 4 * i)[0] for i in range(135)]
+        ptrs = [struct.unpack_from("<I", IMG, ptr - BASE + 4 * i)[0] for i in range(174)]
         native = [struct.unpack_from("<I", STOCK, 0x0819F30C - BASE + 4 * i)[0] for i in range(100)]
         self.assertEqual(ptrs[:100], native)
         def cstr(a):
             o = a - BASE; return IMG[o:IMG.index(b"\0", o)].decode()
-        self.assertEqual([cstr(p) for p in ptrs[100:]], LABELS)
+        self.assertEqual([cstr(p) for p in ptrs[100:]], SHOWN)
         self.assertEqual(cstr(ptrs[99]), "Always")
 
     def test_count_patch(self):
         from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB as CT, CS_MODE_MCLASS
         md = Cs(CS_ARCH_ARM, CT | CS_MODE_MCLASS)
         ins = [f"{i.mnemonic} {i.op_str}" for i in md.disasm(IMG[0x08165D40 - BASE:0x08165D44 - BASE], 0x08165D40)]
-        self.assertEqual(ins, ["movs r3, #0x87", "str r3, [sp]"])
+        self.assertEqual(ins, ["movs r3, #0xae", "str r3, [sp]"])
 
     def helper(self, site, regs, stop):
         """Run the patched editor site until it returns to stock code at `stop`."""
@@ -178,11 +180,90 @@ class M4UI(unittest.TestCase):
         def set_(i):    # list index (r1) -> stored byte (r6)
             u = self.helper(0x0815C8B4, {UC_ARM_REG_R1: i}, 0x0815C8BE)
             return u.reg_read(UC_ARM_REG_R6)
-        for v in list(range(1, 100)) + list(range(100, 135)):
+        for v in list(range(1, 100)) + list(range(100, 174)):
             with self.subTest(value=v):
                 self.assertEqual(set_(show(v)), v)
+        for i, v in enumerate(STORED):
+            self.assertEqual(show(v), 100 + i, f"stored {v} shows as {SHOWN[i]}")
         self.assertEqual(set_(99), 0, "'Always' entry stores native 0")
         self.assertEqual(set_(200), 0, "out-of-range index stores native 0")
+
+class Extended(unittest.TestCase):
+    def run_passes(self, value, passes, b=4):
+        u = emu(IMG); out = []
+        for _ in range(passes):
+            call(u, SYM7["cond_loop"], SEQ)
+            out.append(call(u, SYM7["cond_decide"], SEQ, value))
+        return u, out
+
+    def test_not_conditions_are_the_inverse(self):
+        for k, label in enumerate(LABELS):
+            a, b = map(int, label.split(":"))
+            _, plain = self.run_passes(100 + k, 2 * b)
+            _, inv = self.run_passes(135 + k, 2 * b)
+            with self.subTest(label=label):
+                self.assertEqual(inv, [1 - x for x in plain])
+
+    def test_first_and_not_first(self):
+        self.assertEqual(self.run_passes(170, 4)[1], [1, 0, 0, 0])
+        self.assertEqual(self.run_passes(171, 4)[1], [0, 1, 1, 1])
+
+    def test_first_again_after_restart(self):
+        u, _ = self.run_passes(170, 3)
+        seq(u, restart=True); call(u, SYM7["cond_loop"], SEQ); seq(u)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 170), 1)
+
+    def test_pre_follows_the_last_condition_and_is_not_updated_by_itself(self):
+        u = emu(IMG); call(u, SYM7["cond_loop"], SEQ)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 0, "PRE false before any condition")
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 173), 1)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 100), 1)          # 1:2 on pass 1 -> played
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 1)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 173), 0)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 1, "PRE/!PRE did not change the state")
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 135), 0)          # !1:2 on pass 1 -> skipped
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 0)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 2), 2, "native % untouched")
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 174), 2, "unknown values left to stock")
+
+    def test_pre_resets_with_the_clip(self):
+        u = emu(IMG); call(u, SYM7["cond_loop"], SEQ)
+        call(u, SYM7["cond_decide"], SEQ, 100)
+        seq(u, row=5)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 0)
+
+    # piano roll: 1-based list values (1..99 %, 100 Always, 101.. conditions)
+    def piano_reference(self, stored):
+        u = emu(IMG); sp = STACK - 0x300
+        u.mem_write(sp, bytes(0x100)); u.mem_write(sp + 0x25, bytes([stored]))
+        u.reg_write(UC_ARM_REG_SP, sp); u.emu_start(0x08158F1C | 1, 0x08158F26, count=1000)
+        self.assertEqual(u.reg_read(UC_ARM_REG_SP), sp)
+        return u.reg_read(UC_ARM_REG_R3)
+
+    def piano_edit(self, stored, delta):
+        u = emu(IMG); sp = STACK - 0x300
+        u.mem_write(sp, bytes(0x100)); u.mem_write(sp + 0x19, bytes([stored]))
+        u.mem_write(sp + 0x84, struct.pack("<i", delta))
+        u.reg_write(UC_ARM_REG_SP, sp); u.emu_start(0x08158A7C | 1, 0x08158AAC, count=1000)
+        self.assertEqual(u.reg_read(UC_ARM_REG_SP), sp)
+        return bytes(u.mem_read(sp + 0x31, 1))[0]
+
+    def test_piano_reference_maps_into_list_order(self):
+        self.assertEqual(self.piano_reference(0), 100)
+        self.assertEqual(self.piano_reference(50), 50)
+        for i, v in enumerate(STORED):
+            self.assertEqual(self.piano_reference(v), 101 + i, SHOWN[i])
+        self.assertEqual(self.piano_reference(200), 100)
+
+    def test_piano_edit_steps_through_the_list(self):
+        order = [0] + STORED                                   # Always, then the list
+        for i, v in enumerate(order[:-1]):
+            self.assertEqual(self.piano_edit(v, +1), order[i + 1], f"after {v}")
+            self.assertEqual(self.piano_edit(order[i + 1], -1), v, f"back from {order[i + 1]}")
+        self.assertEqual(self.piano_edit(173 if STORED[-1] == 173 else STORED[-1], +5), STORED[-1], "clamped at the end")
+        self.assertEqual(self.piano_edit(99, +1), 0, "99% -> Always")
+        self.assertEqual(self.piano_edit(1, -3), 1, "clamped at 1%")
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

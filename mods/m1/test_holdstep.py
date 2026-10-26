@@ -20,6 +20,9 @@ CFG = 0x240485E0
 MAGIC = 0x31474144
 REGS = [UC_ARM_REG_R0 + i for i in range(4)]
 IMG = (Path(sys.argv[2]) / "bento1.bin").read_bytes()
+# Condition encoder list index -> stored byte (list order differs from stored values since v2.9)
+_STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]
+def cond(index): return _STORED[index - 100]
 
 class Probe:
     def __init__(self, gen=1):
@@ -101,9 +104,9 @@ class Tests(unittest.TestCase):
     # --- ours: an edit while held keeps the step on release
     def test_condition_edit_changes_only_held_hit_and_short_release_does_not_toggle(self):
         p = Probe(); p.press(0); p.time(5100); p.call(0x0815c8ac, p.view, 104)
-        self.assertEqual(p.value(0, 1), 104); self.assertEqual(p.value(1, 1), 100); self.assertEqual(p.value(2, 1), 102)
+        self.assertEqual(p.value(0, 1), cond(104)); self.assertEqual(p.value(1, 1), 100); self.assertEqual(p.value(2, 1), 102)
         self.assertIn(("publish",), p.log); p.release(0); self.assertNotIn(("toggle", 0), p.log)
-        self.assertEqual(p.value(0, 1), 104)
+        self.assertEqual(p.value(0, 1), cond(104))
 
     def test_velocity_edit_protects_short_release(self):
         p = Probe(); p.press(0); p.time(5100); p.call(0x0815c7c4, p.view, 85)
@@ -117,7 +120,7 @@ class Tests(unittest.TestCase):
 
     def test_multiple_held_steps_keep_native_multi_edit(self):
         p = Probe(); p.press(0); p.press(8); p.call(0x0815c8ac, p.view, 103)
-        self.assertEqual(p.value(0, 1), 103); self.assertEqual(p.value(1, 1), 103); self.assertEqual(p.value(2, 1), 102)
+        self.assertEqual(p.value(0, 1), cond(103)); self.assertEqual(p.value(1, 1), cond(103)); self.assertEqual(p.value(2, 1), 102)
         p.time(5100); p.release(0); p.release(8)
         self.assertFalse(any(x[0] == "toggle" for x in p.log))
 
@@ -125,7 +128,7 @@ class Tests(unittest.TestCase):
         p = Probe(); xy = 0x2002e000; p.w(xy, 100); p.w(xy + 4, 100)
         p.call(0x0815d29c, p.view, xy); self.assertEqual(p.snapshot()[1][1], 100)
         p.time(5100); p.call(0x0815c8ac, p.view, 105); p.call(0x0815d444, p.view)
-        self.assertNotIn(("toggle", 8), p.log); self.assertEqual(p.value(1, 1), 105)
+        self.assertNotIn(("toggle", 8), p.log); self.assertEqual(p.value(1, 1), cond(105))
 
     def test_edit_release_protection_handles_clock_wrap_and_zero(self):
         for tick in [0, 1, 1001, 0xffffffff]:

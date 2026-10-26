@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (116 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (123 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -155,23 +155,37 @@ the card root, hold power, REC). Restore by installing CH10 or stock the same wa
   have their own handlers, so the hook moves to the pad router's `0x0E` emission.
 - Settings UI (poly cap, linear/exp/log curves); recording pressure into the sequencer.
 
-## Trigger conditions (since v2.4)
+## Trigger conditions (since v2.4; NOT, 1ST, PRE since v2.9)
 
 A port of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s
 T2 trigger conditions (GPL-3.0-or-later), on stock 1.6.1, for **every sequencer track
-type**. Turn a note's **probability** clockwise past "Always" to reach `1:2`, `2:2`,
-`1:3` … `8:8` (35 values): `A:B` plays on pass A of every B passes of the clip,
-counted from launch. Values are stored in the native probability byte (100–134), so
-a project opened on stock shows those notes with plain probability.
+type**, extended. Turn a note's **probability** clockwise past "Always":
+
+`1ST, !1ST, PRE, !PRE, 1:2, !1:2, 2:2, !2:2, 1:3, !1:3, … 8:8, !8:8` (74 conditions)
+
+- `A:B` plays on pass A of every B passes of the clip (counted from launch/restart);
+  `!A:B` on every other pass.
+- `1ST` plays only on the first pass after launch/restart; `!1ST` on every later pass.
+- `PRE` plays if the most recent `A:B`/`!A:B`/`1ST`/`!1ST` decision on the same
+  sequence passed (false until there is one); `!PRE` the opposite. PRE steps don't
+  change that state; plain % probability doesn't count (stock rolls it after us).
+
+Stored in the native probability byte, with **stable values** so projects saved by
+earlier versions keep their meaning: `A:B` 100–134 (as Lab), `!A:B` 135–169, `1ST`
+170, `!1ST` 171, `PRE` 172, `!PRE` 173. The list order is a separate display mapping
+(two 74-byte lookup tables). Stock firmware shows these notes as plain probability.
 
 - M7: `m7_conditions.c` (`cond_decide` at the probability gate `0x08060B64`,
-  `cond_loop` at the sequence loop boundary `0x08061740`); counters `16 × 32 B` at
-  `0x24048A60`, re-initialised each boot (Lab cleared them from its startup hook).
-- M4: probability list 100 → 135 entries, label table at `0x081B4400`, and Lab's five
-  piano-roll/drum editor value conversions (helpers at `0x081B4000`).
-- `test_conditions.py`: all 35 conditions over two cycles, restart/clip-change reset,
-  per-boot reinit, native probability path identical to stock, loop hook frame
-  identical to stock, label table, and a drum-editor round trip for every value.
+  `cond_loop` at the loop boundary `0x08061740`); counters `16 × 32 B` at `0x24048A60`
+  (`r[0]` = PRE state), re-initialised each boot.
+- M4: probability list 100 → 174 entries, labels at `0x081B4400`, lookup tables at
+  `0x081B4300`/`0x081B4380`, Lab's five piano-roll/drum editor conversions rewritten to
+  use them (`0x081B4000`).
+- Planned: Condition and Probability as **separate encoders** (both editors), together
+  with the retrigger groundwork (per-note storage + XML).
+- `test_conditions.py`: every condition over two cycles, NOT = inverse, 1ST across a
+  restart, PRE semantics and reset, labels, drum and piano-roll conversions for every
+  value including stepping through the list one click at a time.
 
 ## Inspect a step (since v2.5; reworked in v2.7)
 
