@@ -508,6 +508,18 @@ class StrikeButton(unittest.TestCase):
         self.assertEqual([r[0] for r in recs], ["", "Step", "Sequence", "", "Strike Vel", "Undo"])
         self.assertEqual(bytes(g.u.mem_read(self.ROOT + 0x117C, 1))[0], 1, "layout re-armed so the slot shows")
 
+    def test_survives_v3_11_leftovers_in_reserved_ram(self):
+        """Reserved RAM survives a reset: v3.11 left StrikeSet {'SVE2', off, view=UI ms}.
+        v3.12 read that field as a pointer and faulted on every boot (boot loop)."""
+        for stale in (2204624, 1, 0xDEADBEE0):
+            g = self.rig(); g.drum_header()
+            g.u.mem_write(0x24048D48, struct.pack("<6I", 0x32455653, 0, stale, 0, 0, 0))
+            changed, recs = self.generate(g)                        # must not fault
+            self.assertEqual(recs[4], ("Strike Vel", 1, 0x10F0))
+        g = self.rig(); g.drum_header()                             # same layout, unchecked pointer
+        g.u.mem_write(0x24048D48, struct.pack("<6I", 0x33455653, 0, 0xDEADBEE0, 0, 0, 0))
+        self.assertEqual(self.generate(g)[1][4], ("Strike Vel", 1, 0x10F0))
+
     def test_no_button_for_a_pitched_track(self):
         g = self.rig(kind=0x10); g.drum_header()                    # piano roll (pitched instrument)
         changed, recs = self.generate(g)

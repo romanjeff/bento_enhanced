@@ -128,11 +128,13 @@ typedef struct { u8 seq[16]; u8 vel[16]; } Strikes;
 #define STRIKE_PEAK ((volatile u8 *)0x24048490u)   /* M7-private countdown per pad (stall line spare) */
 #define STRIKE_PEAK_SAMPLES 8u
 /* The on/off setting (header button "Strike Vel", m4_step.c); M4-only.
- * pads: per-pad UI state block (bump-allocated once per boot, m4_step.c);
- * r[0], r[1]: header-button diagnostics. */
+ * pads: per-pad UI state block (bump-allocated once per boot, m4_step.c), trusted
+ * only while r[2] == ~pads; r[0], r[1]: header-button diagnostics.
+ * Reserved RAM survives resets: change the magic whenever this layout changes
+ * (v3.12 kept v3.11's magic, read its old tick field as a pointer: boot loop). */
 typedef struct { u32 magic, off, pads, r[3]; } StrikeSet;
 #define STRIKE_SET ((volatile StrikeSet *)0x24048D48u)
-#define STRIKE_SET_MAGIC 0x32455653u /* "SVE2" */
+#define STRIKE_SET_MAGIC 0x33455653u /* "SVE3" */
 #define STRIKE_ACTION 0x10F0u        /* header button action id (unused by stock) */
 
 typedef struct {

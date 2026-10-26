@@ -349,7 +349,7 @@ typedef struct {
 static void strike_init(void) {
     if (STRIKE_SET->magic == STRIKE_SET_MAGIC) return;
     STRIKE_SET->off = 0;          /* on by default */
-    STRIKE_SET->pads = 0;
+    STRIKE_SET->pads = 0; STRIKE_SET->r[2] = ~0u;
     STRIKE_SET->magic = STRIKE_SET_MAGIC;
 }
 static int strike_off(void) { strike_init(); return STRIKE_SET->off != 0; }
@@ -358,7 +358,7 @@ static int strike_off(void) { strike_init(); return STRIKE_SET->off != 0; }
 static volatile PadState *pads(void) {
     strike_init();
     volatile PadState *ps = (volatile PadState *)STRIKE_SET->pads;
-    if (ps && ps->gen == boot_gen()) return ps;
+    if (ps && STRIKE_SET->r[2] == ~(u32)ps && ps->gen == boot_gen()) return ps;   /* never follow an unchecked pointer */
     u32 cur = BUMP_CUR, end = BUMP_END;
     if (end <= cur || end - cur < sizeof(PadState) + 64u) return 0;   /* the native allocator faults on overflow */
     u32 got = FN(BUMP_ALLOC, u32 (*)(u32))(sizeof(PadState));
@@ -367,7 +367,7 @@ static volatile PadState *pads(void) {
     for (u32 i = 0; i < sizeof(PadState); i++) ((volatile u8 *)ps)[i] = 0;
     for (u32 p = 0; p < 16; p++) ps->used[p] = ps->seen[p] = STRIKES->seq[p];   /* old presses don't count */
     ps->gen = boot_gen();
-    STRIKE_SET->pads = (u32)ps;
+    STRIKE_SET->pads = (u32)ps; STRIKE_SET->r[2] = ~(u32)ps;
     return ps;
 }
 
