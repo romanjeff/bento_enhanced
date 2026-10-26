@@ -30,14 +30,14 @@ HEAP_LITERALS = (0x08040588, 0x080A3BDC, 0x080A3E94)
 HEAP_END_STOCK, HEAP_END_NEW = 0x24048DA0, 0x24048400
 
 M7_TRAMP = 0x080DA000   # inside stock's zero gap after the M7 image's data (0x080CF49C..0x080E0000)
-M7_CODE = 0x080DA100
+M7_CODE = 0x080DA200
 M7_LIMIT = 0x080DB800
 # M4 code is appended after stock's image end (0x081B3F3C). 0x081B4000..0x081B5000
 # is reserved for the trigger-condition UI (S2).
 APPEND_FROM = 0x081B4000
 M4_CODE = 0x081B5000
 M4_LIMIT = 0x081B6600
-MARKER = b"BENTO_MOD:m1-polyat:v2.3-stock" + bytes(1)
+MARKER = b"BENTO_MOD:m1-polyat:v2.4-stock+conditions" + bytes(1)
 
 # (name, site, original bytes, displaced instruction(s), resume address, call setup)
 M7_HOOKS = [
@@ -68,6 +68,57 @@ NOTE_SITES = [  # (site, track register, role)
     (0x08060088, "r4", "pad Note Off (FUN_08060040)"),
     (0x08061966, "r6", "Note Off, stop/all-off (FUN_080618E0)"),
 ]
+
+# Trigger conditions (port of bento-community-lab T2, GPL-3.0-or-later).
+# M7: probability gate and loop counter. Trampolines are Lab's, unchanged
+# except for our function names.
+COND_GATE_SITE, COND_GATE_ORIG, COND_GATE_RESUME, COND_SKIP = 0x08060B64, "9df82930", 0x08060B68, 0x080609E2
+COND_LOOP_SITE, COND_LOOP_ORIG, COND_LOOP_RESUME = 0x08061740, "2de9f043", 0x08061744
+# M4: extend the native probability list (100 labels "1%%".."99%%","Always" at
+# 0x0819F30C) with 35 A:B labels, and convert values in the piano-roll and drum
+# step editors. Helpers and the new label table live in our reserved block.
+COND_UI = 0x081B4000
+COND_TABLE = 0x081B4400
+COND_UI_LIMIT = 0x081B5000
+NATIVE_LABELS = 0x0819F30C
+COND_LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]
+COND_COUNT_SITE, COND_COUNT_ORIG = 0x08165D40, "cdf80080"
+COND_TABLE_PTR_SITE = 0x08165F8C
+COND_UI_SITES = [  # (site, helper, original bytes)
+    (0x08159B80, "show_piano", "013b3360"),
+    (0x0815C3D2, "show_drum", "013b0b60"),
+    (0x0815C8B4, "set_drum", "63291abf"),
+    (0x08158F1C, "piano_reference", "9df82530"),
+    (0x08158A7C, "piano_edit", "9df81930"),
+]
+
+def cond_ui_helpers():
+    """Lab T2's editor value conversions (native probability byte <-> list index)."""
+    def show(store, back):
+        return f"cmp r3,#100; blo dec; cmp r3,#134; bls store; movs r3,#99; b store; dec: subs r3,#1; store: str r3,[{store}]; b.w {back}"
+    return [
+        ("show_piano", show("r6", "0x08159b84")),
+        ("show_drum", show("r1", "0x0815c3d6")),
+        ("set_drum", "cmp r1,#134; bhi unknown; cmp r1,#100; bhs direct; cmp r1,#99; beq unknown; adds r6,r1,#1; b done; "
+                     "direct: mov r6,r1; b done; unknown: movs r6,#0; done: b.w 0x0815c8be"),
+        ("piano_reference", "ldrb.w r3,[sp,#0x25]; cbz r3,always; cmp r3,#135; bhs always; cmp r3,#100; blo done; adds r3,#1; "
+                            "b done; always: movs r3,#100; done: b.w 0x08158f26"),
+        ("piano_edit", "ldrb.w r3,[sp,#0x19]; cbz r3,always; cmp r3,#135; bhs always; cmp r3,#100; blo add; adds r3,#1; b add; "
+                       "always: movs r3,#100; add: ldr r2,[sp,#0x84]; adds r3,r3,r2; cmp r3,#1; bge minok; movs r3,#1; "
+                       "minok: cmp r3,#135; ble maxok; movs r3,#135; maxok: cmp r3,#100; beq zero; blo store; subs r3,#1; "
+                       "b store; zero: movs r3,#0; store: strb.w r3,[sp,#0x31]; b.w 0x08158aac"),
+    ]
+
+def check_branches(code, addr, allowed, what):
+    """Keystone can mis-encode conditional branches: every branch in an assembled
+    block must land inside the block or on an expected exit."""
+    from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB as CT, CS_MODE_MCLASS
+    md = Cs(CS_ARCH_ARM, CT | CS_MODE_MCLASS)
+    for i in md.disasm(code, addr):
+        if i.mnemonic.startswith(("b", "cb")) and i.op_str.startswith("#") and i.mnemonic not in ("bic", "bics", "bfi", "bfc"):
+            t = int(i.op_str[1:], 16)
+            if not (addr <= t < addr + len(code) or t in allowed):
+                raise SystemExit(f"{what}: branch at {i.address:#x} to {t:#x} is outside the block and not an expected exit")
 
 ks = Ks(KS_ARCH_ARM, KS_MODE_THUMB)
 def asm(src, addr):
@@ -151,7 +202,8 @@ def build(base_img, out):
               "M1: lower M7 heap end to reserve our RAM slice + condition counters (stack unchanged)")
 
     # --- M7: compile, place, trampolines, entry patches
-    m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c"], "cortex_m7", HERE / "m7.ld", out / "m7.elf")
+    m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c", HERE / "m7_conditions.c"],
+                         "cortex_m7", HERE / "m7.ld", out / "m7.elf")
     va, code7, s7 = elf_load(m7_elf, M7_CODE, M7_LIMIT)
     if va != M7_CODE or M7_CODE + len(code7) > M7_LIMIT:
         raise SystemExit(f"M7 code placement {va:#x}+{len(code7)} outside our slice")
@@ -191,6 +243,26 @@ def build(base_img, out):
         if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
             raise SystemExit(f"{site:#x}: not the expected bl msg_send")
         patch(site, asm(f"bl {stub:#x}", site), orig, f"M1b poly cap: {role} -> h_note")
+    # Trigger conditions (Lab T2 trampolines): save r0-r12, lr, flags (64 B).
+    save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; "
+    restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
+    t = M7_TRAMP + len(tramps)
+    gate = asm(save + f"mov r0, r8; ldrb.w r1, [sp, #105]; bl {s7['cond_decide']:#x}; "   # value was at sp+0x29
+               "cmp r0, #0; beq skip; cmp r0, #1; beq play; "
+               + restore + f"ldrb.w r3, [sp, #0x29]; b.w {COND_GATE_RESUME:#x}; "         # native probability
+               "play: " + restore + f"movs r3, #0; b.w {COND_GATE_RESUME:#x}; "          # always
+               "skip: " + restore + f"b.w {COND_SKIP:#x}", t)
+    check_branches(gate, t, {COND_GATE_RESUME, COND_SKIP, s7["cond_decide"]}, "condition gate")
+    tramps += gate + bytes(-len(gate) % 4)
+    patch(COND_GATE_SITE, asm(f"b.w {t:#x}", COND_GATE_SITE), bytes.fromhex(COND_GATE_ORIG),
+          "Conditions (Lab T2): probability gate -> cond_decide")
+    t = M7_TRAMP + len(tramps)
+    loop = asm(save + f"ldr r0, [sp, #8]; bl {s7['cond_loop']:#x}; " + restore     # r0 = the sequence
+               + f"push.w {{r4, r5, r6, r7, r8, r9, lr}}; b.w {COND_LOOP_RESUME:#x}", t)
+    check_branches(loop, t, {COND_LOOP_RESUME, s7["cond_loop"]}, "condition loop hook")
+    tramps += loop + bytes(-len(loop) % 4)
+    patch(COND_LOOP_SITE, asm(f"b.w {t:#x}", COND_LOOP_SITE), bytes.fromhex(COND_LOOP_ORIG),
+          "Conditions (Lab T2): sequence loop boundary -> cond_loop")
     if M7_TRAMP + len(tramps) > M7_CODE:
         raise SystemExit("trampolines overrun into M7 code")
     patch(M7_TRAMP, tramps, bytes(len(tramps)), "M1 diag: M7 trampolines")
@@ -211,6 +283,38 @@ def build(base_img, out):
     writes.append(dict(address=stock_end, size=len(pad), original_hex="", replacement_hex=pad.hex(),
                        purpose="M1: extend image with erased (0xFF) flash for appended M4 code"))
     patch(M4_CODE, code4 + MARKER, None, "M1 diag: M4 black-box code (appended)")
+
+    # --- Trigger conditions, M4 UI (Lab T2): helpers, extended label table, patches
+    ui = bytearray(); ui_syms = {}
+    for name, src in cond_ui_helpers():
+        while len(ui) % 4:
+            ui.append(0)
+        a = COND_UI + len(ui)
+        code = asm(src, a)
+        back = int(src.rsplit("b.w ", 1)[1], 16)
+        check_branches(code, a, {back}, f"condition UI helper {name}")
+        ui_syms[name] = a
+        ui += code
+    if COND_UI + len(ui) > COND_TABLE:
+        raise SystemExit("condition UI helpers overrun the label table")
+    native_ptrs = bytes(base_img[NATIVE_LABELS - BASE:NATIVE_LABELS - BASE + 100 * 4])
+    strings = b""; new_ptrs = b""
+    for label in COND_LABELS:
+        new_ptrs += struct.pack("<I", COND_TABLE + 135 * 4 + len(strings))
+        strings += label.encode() + b"\0"
+    table = native_ptrs + new_ptrs + strings + b"BENTO_MOD:trigger-conditions(Lab T2 port)\0"
+    if len(COND_LABELS) != 35 or COND_TABLE + len(table) > COND_UI_LIMIT:
+        raise SystemExit("condition label table layout")
+    patch(COND_UI, bytes(ui), b"\xff" * len(ui), "Conditions (Lab T2): editor value conversion helpers")
+    patch(COND_TABLE, table, b"\xff" * len(table), "Conditions (Lab T2): 100 native + 35 A:B labels")
+    for site, name, orig in COND_UI_SITES:
+        patch(site, asm(f"b.w {ui_syms[name]:#x}", site), bytes.fromhex(orig), f"Conditions (Lab T2): {name}")
+    count = asm("movs r3, #135; str r3, [sp]", COND_COUNT_SITE)
+    if len(count) != 4:
+        raise SystemExit("condition count patch is not 4 bytes")
+    patch(COND_COUNT_SITE, count, bytes.fromhex(COND_COUNT_ORIG), "Conditions (Lab T2): probability list 100 -> 135 entries")
+    patch(COND_TABLE_PTR_SITE, struct.pack("<I", COND_TABLE), struct.pack("<I", NATIVE_LABELS),
+          "Conditions (Lab T2): probability list labels -> extended table")
     if M4_CODE + len(code4) + 20 > M4_LIMIT:
         raise SystemExit("M4 code + marker overrun")
     if M4_CODE + len(code4) + len(MARKER) > M4_POLY:
@@ -258,7 +362,7 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the stock base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label="1.6.1+m1-polyat-v2.3", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label="1.6.1+m1-polyat+conditions-v2.4", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")

@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (32 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (42 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -154,3 +154,21 @@ the card root, hold power, REC). Restore by installing CH10 or stock the same wa
 - Pressure for other MIDI-out track types (Granular, Multisample, Wavetable). They
   have their own handlers, so the hook moves to the pad router's `0x0E` emission.
 - Settings UI (poly cap, linear/exp/log curves); recording pressure into the sequencer.
+
+## Trigger conditions (since v2.4)
+
+A port of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s
+T2 trigger conditions (GPL-3.0-or-later), on stock 1.6.1, for **every sequencer track
+type**. Turn a note's **probability** clockwise past "Always" to reach `1:2`, `2:2`,
+`1:3` … `8:8` (35 values): `A:B` plays on pass A of every B passes of the clip,
+counted from launch. Values are stored in the native probability byte (100–134), so
+a project opened on stock shows those notes with plain probability.
+
+- M7: `m7_conditions.c` (`cond_decide` at the probability gate `0x08060B64`,
+  `cond_loop` at the sequence loop boundary `0x08061740`); counters `16 × 32 B` at
+  `0x24048A60`, re-initialised each boot (Lab cleared them from its startup hook).
+- M4: probability list 100 → 135 entries, label table at `0x081B4400`, and Lab's five
+  piano-roll/drum editor value conversions (helpers at `0x081B4000`).
+- `test_conditions.py`: all 35 conditions over two cycles, restart/clip-change reset,
+  per-boot reinit, native probability path identical to stock, loop hook frame
+  identical to stock, label table, and a drum-editor round trip for every value.
