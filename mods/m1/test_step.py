@@ -613,10 +613,19 @@ class StrikeInsert(unittest.TestCase):
         g = self.rig(); self.press(g, 5, 44, 10000, tick=False)
         self.assertEqual(self.insert(g, note(2, nid=0), 10010)[4] >> 16, 44)
 
+    def test_sequence_page_pads_are_steps(self):
+        g = self.rig(); self.press(g, 3, 20, 10000, pad=5); self.press(g, 4, 110, 10000, pad=9)
+        self.assertEqual(self.insert(g, note(9, pad=2, nid=0), 10100)[4] >> 16, 110, "step 9 <- pad 9")
+        self.assertEqual(self.insert(g, note(21, pad=2, nid=0), 10100)[4] >> 16, 20, "step 21 <- pad 5 (page 2)")
+
+    def test_any_fresh_pad_when_the_position_doesnt_match(self):
+        g = self.rig(); self.press(g, 3, 77, 10000, pad=11)
+        self.assertEqual(self.insert(g, note(4, pad=2, nid=0), 10100)[4] >> 16, 77)
+
     def test_insert_uses_the_note_s_own_pad(self):
         g = self.rig(); self.press(g, 5, 44, 10000, pad=2); self.press(g, 7, 99, 10000, pad=6)
-        self.assertEqual(self.insert(g, note(2, pad=6, nid=0), 10100)[4] >> 16, 99)
-        self.assertEqual(self.insert(g, note(2, pad=2, nid=0), 10100)[4] >> 16, 44)
+        self.assertEqual(self.insert(g, note(12, pad=6, nid=0), 10100)[4] >> 16, 99, "no pad at step 12: drum's pad")
+        self.assertEqual(self.insert(g, note(12, pad=2, nid=0), 10100)[4] >> 16, 44)
 
     def test_off_means_off(self):
         g = self.rig(); self.press(g, 5, 44, 10000)

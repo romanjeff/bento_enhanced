@@ -588,15 +588,33 @@ __attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
  * has seen it yet) and not already used by the Step view's path, so bulk
  * inserts (Double Seq, Paste) and late touchscreen entries keep their velocity.
  * Locked (the view and its pad default aren't known here). */
+/* Pad p's strike if usable here: unused, and fresh (unseen by any UI tick yet,
+ * or first seen < 500 ms ago). Returns its velocity, or 0. */
+static u32 fresh_vel(volatile PadState *ps, u32 p) {
+    u32 seq = STRIKES->seq[p];
+    if (seq == ps->used[p] || !STRIKES->vel[p]) return 0;
+    if (seq == ps->seen[p] && UI_TICK_MS - ps->seen_ms[p] > STRIKE_FRESH_MS) return 0;
+    return STRIKES->vel[p];
+}
+
 __attribute__((used, retain)) void strike_insert(u32 *rec) {
     volatile PadState *ps;
-    u32 pad = rec[0] >> 16;
-    if ((rec[0] & 0xFFu) != 1u || pad >= 16 || strike_off() || !(ps = pads())) return;
-    u32 seq = STRIKES->seq[pad], vel = STRIKES->vel[pad];
-    if (seq == ps->used[pad] || !vel) return;
-    if (seq == ps->seen[pad] && UI_TICK_MS - ps->seen_ms[pad] > STRIKE_FRESH_MS) return;
-    if (!drum_track_selected()) return;
-    ps->used[pad] = (u8)seq;
+    if ((rec[0] & 0xFFu) != 1u || strike_off() || !(ps = pads()) || !drum_track_selected()) return;
+    /* Which pad made this note? The Sequence page's pads are the 16 steps of the
+     * shown page (as in the Step view); live entry uses the drum's own pad;
+     * otherwise the freshest unused strike of any pad (one hit, any layout). */
+    int t = (int)rec[1];
+    u32 cand[2] = {((u32)((t - offset_of(rec[1])) / 960)) & 15u, rec[0] >> 16}, pad = 16, vel = 0;
+    for (u32 k = 0; k < 2 && !vel; k++)
+        if (cand[k] < 16 && (vel = fresh_vel(ps, cand[k]))) pad = cand[k];
+    for (u32 p = 0, best = 0; !vel && p < 16; p++) {
+        if (!fresh_vel(ps, p)) continue;
+        u32 age = STRIKES->seq[p] == ps->seen[p] ? UI_TICK_MS - ps->seen_ms[p] + 1u : 0u;   /* unseen = newest */
+        if (pad == 16 || age < best) { pad = p; best = age; }
+    }
+    if (pad < 16 && !vel) vel = fresh_vel(ps, pad);
+    if (!vel) return;
+    ps->used[pad] = STRIKES->seq[pad];
     rec[4] = (rec[4] & 0xFFFFu) | (vel << 16);
     rec[5] = with_locks(rec[5], step_locks(rec[5]) | LOCK_VEL);
 }
