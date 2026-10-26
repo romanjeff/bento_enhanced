@@ -194,7 +194,7 @@ class SaveLoad(unittest.TestCase):
             self.assertEqual((rec[0] >> 8) & 0xFF, 0, "probability -> Always")
             self.assertEqual(fields(rec[5])[0], v - 99, "condition moved to the word")
         rec = self.run_load(note(0, prob=50), {})
-        self.assertEqual(((rec[0] >> 8) & 0xFF, locks(rec[5])), (50, 2), "probability kept; legacy lock rule locks it")
+        self.assertEqual(((rec[0] >> 8) & 0xFF, rec[5]), (50, 0), "plain probability untouched, no lock data invented")
         rec = self.run_load(note(0, prob=120), {"be_step_v1": step_make(hits=2)})
         self.assertEqual(fields(rec[5]), (21, 2, 3, 0), "migration keeps retrigger settings")
 
@@ -302,26 +302,23 @@ class Piano(unittest.TestCase):
         self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 20 - 0x174, "replayed push + sub")
 
 class LegacyLocks(unittest.TestCase):
+    """Notes without lock data load unlocked (v3.4's 100/Always/0 rule locked
+    typical steps whose value simply wasn't 100; it is gone)."""
     def load(self, rec, attrs=None):
         return SaveLoad.run_load(SaveLoad(), rec, attrs or {})
 
-    def test_values_off_stock_defaults_load_locked(self):
-        self.assertEqual(self.load(note(0))[5], 0, "stock-default note stays plain")
-        self.assertEqual(locks(self.load(note(0, vel=80))[5]), 1)
-        self.assertEqual(locks(self.load(note(0, prob=30))[5]), 2)
-        r = note(0); r[1] += 40
-        self.assertEqual(locks(self.load(r)[5]), 4)
-        self.assertEqual(self.load(note(0, vel=0))[5], 0, "velocity 0 means 100 to stock")
+    def test_no_lock_data_means_unlocked(self):
+        for rec in (note(0), note(0, vel=80), note(0, prob=30)):
+            self.assertEqual(self.load(rec)[5], 0)
 
-    def test_v1_words_keep_settings_and_get_legacy_locks(self):
+    def test_v1_words_keep_settings(self):
         v1 = (0xB5 << 24) | (5 << 17) | (3 << 13) | ((4 + 1) << 9) | ((-60) & 0xFF)
         w = self.load(note(0, vel=70), {"be_step_v1": v1})[5]
-        self.assertEqual(w >> 24, 0xB6)
-        self.assertEqual((fields(w), locks(w)), ((5, 3, 4, -60), 1))
+        self.assertEqual((fields(w), locks(w)), ((5, 3, 4, -60), 0))
 
     def test_v2_lock_bits_survive_a_round_trip(self):
         w = step_make(hits=2, locks=1)
-        self.assertEqual(self.load(note(0), {"be_step_v1": w})[5], w, "saved locks win over the legacy rule")
+        self.assertEqual(self.load(note(0), {"be_step_v1": w})[5], w)
 
 class Defaults(unittest.TestCase):
     VEL, PROB, OFFSET = 0x0815C7C4, 0x0815C8AC, 0x0815C990
@@ -358,6 +355,14 @@ class Defaults(unittest.TestCase):
         g.call(self.VEL, VIEW, 70); g.call(self.VEL, VIEW, 40)
         self.assertEqual([self.vel(n) for n in g.notes], [40, 70], "a lock is a lock even if it once matched")
 
+    def test_stock_field_reset_does_not_lock_the_steps(self):
+        # the v3.4 device bug: steps at 80, stock reset its field to 100, encoder turned
+        g = self.rig([note(0, vel=80, nid=1), note(1, vel=80, nid=2), note(2, vel=50, nid=3)])
+        w32(g.u, VIEW + 0x114C0, 100)
+        g.call(self.VEL, VIEW, 90)
+        self.assertEqual([self.vel(n) for n in g.notes], [90, 90, 50])
+        self.assertEqual([locks(n[5]) for n in g.notes], [0, 0, 1])
+
     def test_probability_and_offset_defaults(self):
         g = self.rig([note(0, nid=1), note(1, prob=20, nid=2)])
         g.call(self.PROB, VIEW, 49)                                  # list index 49 -> stored 50
@@ -373,8 +378,8 @@ class Defaults(unittest.TestCase):
         self.assertEqual(r32(g.u, VIEW + 0x114C0), 80, "most common unlocked value on pad 2")
         w32(g.u, VIEW + 0x11400, 5); g.drum_header()
         self.assertEqual(r32(g.u, VIEW + 0x114C0), 64)
-        w32(g.u, VIEW + 0x114C0, 99); g.drum_header()
-        self.assertEqual(r32(g.u, VIEW + 0x114C0), 99, "same pad and clip: the default is left alone")
+        w32(g.u, VIEW + 0x114C0, 100); g.drum_header()
+        self.assertEqual(r32(g.u, VIEW + 0x114C0), 64, "stock's reset of its field is corrected from the notes")
 
 
 if __name__ == "__main__":

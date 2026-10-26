@@ -1,0 +1,10 @@
+boot gen=6 ms=2508 count=89 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot gen=7 ms=2525 count=89 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot gen=8 ms=3435 count=90 cause=00000005 pc=080816e6 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot gen=9 ms=2508 count=90 cause=00000005 pc=080816e6 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot gen=10 ms=2506 count=91 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.1 rtc=730120-163145 gen=11 ms=2508 count=91 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.1 rtc=730120-170729 gen=12 ms=3415 count=92 cause=00000005 pc=080816c0 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.2 rtc=730120-170844 gen=13 ms=2508 count=92 cause=00000005 pc=080816c0 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.2 rtc=730120-182655 gen=14 ms=2739 count=93 cause=00000005 pc=080da160 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.3 rtc=730120-182813 gen=15 ms=2511 count=93 cause=00000005 pc=080da160 core=00000002 lr=00000000 frame_pc=0808cc5a
