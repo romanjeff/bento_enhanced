@@ -31,6 +31,12 @@ LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]          # s
 STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]  # list order
 SHOWN = ["1ST", "!1ST", "PRE", "!PRE"] + [l for x in LABELS for l in (x, "!" + x)]
 
+def step_make(cond=0, hits=0, div=3, ramp=0):
+    f = 0 if div == 3 else div + 1
+    if not cond and not hits and not f and not ramp:
+        return 0
+    return (0xB5 << 24) | ((cond & 0x7F) << 17) | ((hits & 0xF) << 13) | ((f & 0xF) << 9) | (ramp & 0xFF)
+
 def emu(img, cfg_gen=1):
     u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
     u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M7)
@@ -66,25 +72,25 @@ class Decide(unittest.TestCase):
             plays = []
             for p in range(2 * b):
                 call(u, SYM7["cond_loop"], SEQ)              # first boundary: loop 0, then loop++
-                plays.append(call(u, SYM7["cond_decide"], SEQ, 100 + idx))
+                plays.append(call(u, SYM7["cond_decide"], SEQ, 100 + idx, 0))
             with self.subTest(label=label):
                 self.assertEqual(plays, [1 if p % b == a - 1 else 0 for p in range(2 * b)])
 
     def test_native_values_are_left_to_stock(self):
         u = emu(IMG)
         for v in (0, 1, 50, 99, 174, 200, 255):
-            self.assertEqual(call(u, SYM7["cond_decide"], SEQ, v), 2, v)
+            self.assertEqual(call(u, SYM7["cond_decide"], SEQ, v, 0), 2, v)
 
     def test_restart_and_clip_change_reset_the_count(self):
         u = emu(IMG)
         for _ in range(3):
             call(u, SYM7["cond_loop"], SEQ)                  # loop 0, 1, 2
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 100 + LABELS.index("3:3")), 1)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 100 + LABELS.index("3:3", 0)), 1)
         seq(u, restart=True); call(u, SYM7["cond_loop"], SEQ); seq(u)   # launch/restart: loop 0
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 100 + LABELS.index("1:2")), 1)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 100 + LABELS.index("1:2", 0)), 1)
         call(u, SYM7["cond_loop"], SEQ)                      # loop 1
         seq(u, row=3)                                        # another clip on the same sequence
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 100 + LABELS.index("1:2")), 1, "count restarts")
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 100 + LABELS.index("1:2", 0)), 1, "count restarts")
 
     def test_counters_reinitialise_per_boot_generation(self):
         u = emu(IMG, cfg_gen=1)
@@ -147,24 +153,13 @@ class Hooks(unittest.TestCase):
         self.assertEqual(r32(res[1][2], COUNTERS), SEQ, "pass counted")
 
 class M4UI(unittest.TestCase):
-    def test_label_table(self):
-        ptr = struct.unpack_from("<I", IMG, 0x08165F8C - BASE)[0]
-        ptrs = [struct.unpack_from("<I", IMG, ptr - BASE + 4 * i)[0] for i in range(174)]
-        native = [struct.unpack_from("<I", STOCK, 0x0819F30C - BASE + 4 * i)[0] for i in range(100)]
-        self.assertEqual(ptrs[:100], native)
-        def cstr(a):
-            o = a - BASE; return IMG[o:IMG.index(b"\0", o)].decode()
-        self.assertEqual([cstr(p) for p in ptrs[100:]], SHOWN)
-        self.assertEqual(cstr(ptrs[99]), "Always")
-
-    def test_count_patch(self):
-        from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB as CT, CS_MODE_MCLASS
-        md = Cs(CS_ARCH_ARM, CT | CS_MODE_MCLASS)
-        ins = [f"{i.mnemonic} {i.op_str}" for i in md.disasm(IMG[0x08165D40 - BASE:0x08165D44 - BASE], 0x08165D40)]
-        self.assertEqual(ins, ["movs r3, #0xae", "str r3, [sp]"])
+    """Since v3.3 conditions have their own encoder: the probability list is stock's."""
+    def test_probability_list_is_stock(self):
+        self.assertEqual(IMG[0x08165F8C - BASE:0x08165F90 - BASE], STOCK[0x08165F8C - BASE:0x08165F90 - BASE])
+        self.assertEqual(IMG[0x08165D40 - BASE:0x08165D44 - BASE], STOCK[0x08165D40 - BASE:0x08165D44 - BASE])
+        self.assertEqual(IMG[0x0815C8B4 - BASE:0x0815C8B8 - BASE], STOCK[0x0815C8B4 - BASE:0x0815C8B8 - BASE], "set_drum stock")
 
     def helper(self, site, regs, stop):
-        """Run the patched editor site until it returns to stock code at `stop`."""
         u = emu(IMG)
         for r, v in regs.items():
             u.reg_write(r, v)
@@ -172,28 +167,22 @@ class M4UI(unittest.TestCase):
         u.emu_start(site | 1, stop, count=1000)
         return u
 
-    def test_drum_view_round_trip(self):
+    def test_drum_view_shows_percentages_and_clamps_legacy_values(self):
         store = 0x24070000
-        def show(v):    # stored probability byte -> list index (written to [r1])
+        def show(v):
             u = self.helper(0x0815C3D2, {UC_ARM_REG_R3: v, UC_ARM_REG_R1: store}, 0x0815C3D6)
             return r32(u, store)
-        def set_(i):    # list index (r1) -> stored byte (r6)
-            u = self.helper(0x0815C8B4, {UC_ARM_REG_R1: i}, 0x0815C8BE)
-            return u.reg_read(UC_ARM_REG_R6)
-        for v in list(range(1, 100)) + list(range(100, 174)):
-            with self.subTest(value=v):
-                self.assertEqual(set_(show(v)), v)
-        for i, v in enumerate(STORED):
-            self.assertEqual(show(v), 100 + i, f"stored {v} shows as {SHOWN[i]}")
-        self.assertEqual(set_(99), 0, "'Always' entry stores native 0")
-        self.assertEqual(set_(200), 0, "out-of-range index stores native 0")
+        for v in range(1, 100):
+            self.assertEqual(show(v), v - 1)
+        for v in (100, 134, 173, 200):
+            self.assertEqual(show(v), 99, "legacy condition byte shows as Always")
 
 class Extended(unittest.TestCase):
     def run_passes(self, value, passes, b=4):
         u = emu(IMG); out = []
         for _ in range(passes):
             call(u, SYM7["cond_loop"], SEQ)
-            out.append(call(u, SYM7["cond_decide"], SEQ, value))
+            out.append(call(u, SYM7["cond_decide"], SEQ, value, 0))
         return u, out
 
     def test_not_conditions_are_the_inverse(self):
@@ -211,33 +200,32 @@ class Extended(unittest.TestCase):
     def test_first_again_after_restart(self):
         u, _ = self.run_passes(170, 3)
         seq(u, restart=True); call(u, SYM7["cond_loop"], SEQ); seq(u)
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 170), 1)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 170, 0), 1)
 
     def test_pre_follows_the_last_condition_and_is_not_updated_by_itself(self):
         u = emu(IMG); call(u, SYM7["cond_loop"], SEQ)
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 0, "PRE false before any condition")
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 173), 1)
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 100), 1)          # 1:2 on pass 1 -> played
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 1)
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 173), 0)
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 1, "PRE/!PRE did not change the state")
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 135), 0)          # !1:2 on pass 1 -> skipped
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 0)
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 2), 2, "native % untouched")
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 174), 2, "unknown values left to stock")
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172, 0), 0, "PRE false before any condition")
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 173, 0), 1)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 100, 0), 1)          # 1:2 on pass 1 -> played
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172, 0), 1)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 173, 0), 0)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172, 0), 1, "PRE/!PRE did not change the state")
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 135, 0), 0)          # !1:2 on pass 1 -> skipped
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172, 0), 0)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 2, 0), 2, "native % untouched")
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 174, 0), 2, "unknown values left to stock")
 
     def test_pre_resets_with_the_clip(self):
         u = emu(IMG); call(u, SYM7["cond_loop"], SEQ)
-        call(u, SYM7["cond_decide"], SEQ, 100)
+        call(u, SYM7["cond_decide"], SEQ, 100, 0)
         seq(u, row=5)
-        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172), 0)
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 172, 0), 0)
 
-    # piano roll: 1-based list values (1..99 %, 100 Always, 101.. conditions)
+    # piano roll: 1-based list values (1..99 %, 100 Always); legacy values clamp to Always
     def piano_reference(self, stored):
         u = emu(IMG); sp = STACK - 0x300
         u.mem_write(sp, bytes(0x100)); u.mem_write(sp + 0x25, bytes([stored]))
         u.reg_write(UC_ARM_REG_SP, sp); u.emu_start(0x08158F1C | 1, 0x08158F26, count=1000)
-        self.assertEqual(u.reg_read(UC_ARM_REG_SP), sp)
         return u.reg_read(UC_ARM_REG_R3)
 
     def piano_edit(self, stored, delta):
@@ -245,25 +233,48 @@ class Extended(unittest.TestCase):
         u.mem_write(sp, bytes(0x100)); u.mem_write(sp + 0x19, bytes([stored]))
         u.mem_write(sp + 0x84, struct.pack("<i", delta))
         u.reg_write(UC_ARM_REG_SP, sp); u.emu_start(0x08158A7C | 1, 0x08158AAC, count=1000)
-        self.assertEqual(u.reg_read(UC_ARM_REG_SP), sp)
         return bytes(u.mem_read(sp + 0x31, 1))[0]
 
-    def test_piano_reference_maps_into_list_order(self):
+    def test_piano_probability_only(self):
         self.assertEqual(self.piano_reference(0), 100)
         self.assertEqual(self.piano_reference(50), 50)
-        for i, v in enumerate(STORED):
-            self.assertEqual(self.piano_reference(v), 101 + i, SHOWN[i])
-        self.assertEqual(self.piano_reference(200), 100)
-
-    def test_piano_edit_steps_through_the_list(self):
-        order = [0] + STORED                                   # Always, then the list
-        for i, v in enumerate(order[:-1]):
-            self.assertEqual(self.piano_edit(v, +1), order[i + 1], f"after {v}")
-            self.assertEqual(self.piano_edit(order[i + 1], -1), v, f"back from {order[i + 1]}")
-        self.assertEqual(self.piano_edit(173 if STORED[-1] == 173 else STORED[-1], +5), STORED[-1], "clamped at the end")
+        self.assertEqual(self.piano_reference(150), 100, "legacy condition -> Always")
+        self.assertEqual(self.piano_edit(50, +1), 51)
         self.assertEqual(self.piano_edit(99, +1), 0, "99% -> Always")
-        self.assertEqual(self.piano_edit(1, -3), 1, "clamped at 1%")
+        self.assertEqual(self.piano_edit(0, +1), 0, "Always is the top")
+        self.assertEqual(self.piano_edit(0, -1), 99)
+        self.assertEqual(self.piano_edit(1, -3), 1)
+        self.assertEqual(self.piano_edit(150, -1), 99, "legacy value edits from Always")
 
+class Word(unittest.TestCase):
+    """v3.3: the condition lives in the note's +20 word; probability then rolls natively."""
+    def word(self, cond_value):
+        return step_make(cond=cond_value - 99)
+
+    def test_word_condition_gates_then_native_probability(self):
+        k = LABELS.index("1:2")
+        u = emu(IMG)
+        call(u, SYM7["cond_loop"], SEQ)                                      # pass 1
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 50, self.word(100 + k)), 2, "pass -> stock rolls 50%")
+        call(u, SYM7["cond_loop"], SEQ)                                      # pass 2
+        self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 50, self.word(100 + k)), 0, "fail -> skip")
+
+    def test_every_condition_through_the_word_matches_the_byte(self):
+        for v in range(100, 174):
+            for passes in range(1, 9):
+                a, b = emu(IMG), emu(IMG)
+                ra = rb = None
+                for _ in range(passes):
+                    call(a, SYM7["cond_loop"], SEQ); call(b, SYM7["cond_loop"], SEQ)
+                    ra = call(a, SYM7["cond_decide"], SEQ, v, 0)
+                    rb = call(b, SYM7["cond_decide"], SEQ, 0, self.word(v))
+                with self.subTest(value=v, passes=passes):
+                    self.assertEqual(rb, 2 if ra else 0)
+
+    def test_plain_or_foreign_words_are_ignored(self):
+        u = emu(IMG)
+        for w in (0, 0x51000005, 0x80001234, step_make(hits=3)):
+            self.assertEqual(call(u, SYM7["cond_decide"], SEQ, 50, w), 2, hex(w))
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

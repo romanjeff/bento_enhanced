@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Emulated checks for the retrigger scheduler (R2 prototype: pad 16 = 3 hits, 1/16T, -60%).
+"""Emulated checks for the retrigger scheduler (settings from the per-step word).
 
     python test_retrig.py <stock 1.6.1 bento1.bin> <build dir>
 
@@ -25,6 +25,8 @@ ACCEPT, AFTER_ACCEPT, EMIT, AFTER_EMIT = 0x08060B9A, 0x08060B9E, 0x08060820, 0x0
 
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
+
+WORD = (0xB5 << 24) | (3 << 13) | ((4 + 1) << 9) | ((-60) & 0xFF)   # 3 hits, 1/16T, -60 %
 
 def w32(u, a, v): u.mem_write(a, struct.pack("<I", v & 0xFFFFFFFF))
 def r32(u, a): return struct.unpack("<I", u.mem_read(a, 4))[0]
@@ -57,11 +59,12 @@ class Rig:
             return
         u.reg_write(UC_ARM_REG_PC, u.reg_read(UC_ARM_REG_LR))
 
-    def accept(self, track, pad, tick, note=36, vel=100, clock0=1000):
+    def accept(self, track, pad, tick, note=36, vel=100, clock0=1000, word=None):
         u = self.u
         w32(u, CLOCK, clock0)
         u.mem_write(S, bytes(0x90))
         w32(u, S, pad); w32(u, S + 4, ROUTER); w32(u, S + 0x20, tick); w32(u, S + 0x24, 0)
+        w32(u, S + 0x3C, (WORD if pad == 15 else 0) if word is None else word)
         for i, v in enumerate((track, note, vel, tick - clock0)):
             u.reg_write(UC_ARM_REG_R0 + i, v)
         u.reg_write(UC_ARM_REG_R6, CLOCK); u.reg_write(UC_ARM_REG_SP, S)
@@ -85,7 +88,7 @@ class Retrig(unittest.TestCase):
         g = Rig(); g.accept(g.t1, pad=3, tick=1000)
         self.assertEqual(g.calls, [dict(track=g.t1, note=36, vel=100, timing=0, pad=3, router=ROUTER, midi=1)])
 
-    def test_pad16_burst_lands_in_the_right_blocks_with_the_ramp(self):
+    def test_burst_lands_in_the_right_blocks_with_the_ramp(self):
         g = Rig(); g.accept(g.t1, pad=15, tick=1000)
         g.emit(g.t1, 0, 100); self.assertEqual(g.hits(), [])
         g.emit(g.t1, 100, 100); self.assertEqual(g.hits(), [(160, 80)])
@@ -128,6 +131,14 @@ class Retrig(unittest.TestCase):
         g = Rig(); g.accept(g.t1, pad=15, tick=1000)
         g.emit(g.t1, 170, 100)                              # hit 1 (160) is 10 samples late
         self.assertEqual(g.hits()[0], (170, 80))
+
+    def test_settings_come_from_the_word(self):
+        g = Rig(); g.accept(g.t1, pad=3, tick=1000, word=(0xB5 << 24) | (2 << 13) | ((0 + 1) << 9) | 20)   # 2 x 1/8, +20 %
+        g.emit(g.t1, 0, 2000)
+        self.assertEqual(g.hits(), [(480, 110), (960, 120)])
+        g = Rig(); g.accept(g.t1, pad=15, tick=1000, word=0x51000005)   # Lab lock word: not ours
+        g.emit(g.t1, 0, 2000)
+        self.assertEqual(g.hits(), [])
 
     def test_no_region_no_bursts(self):
         g = Rig(region=False); g.accept(g.t1, pad=15, tick=1000); g.emit(g.t1, 0, 2000)

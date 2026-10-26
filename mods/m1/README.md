@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (136 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (151 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -297,3 +297,35 @@ block, so extra hits can't be posted ahead of time. Instead:
 - `test_retrig.py` drives the real patched sites (accept stub with a stock-shaped caller
   frame, processor-entry trampoline): block placement and ramp, cut-off by the next hit
   on the pad, other pads/tracks untouched, late drop, MIDI masked and restored.
+
+## Per-step Condition and Retrigger encoders (v3.3)
+
+**Drum step sequencer:** encoders 5–8 = **Condition, Retrig, Division, Ramp** for the
+held/selected step(s). **Piano roll:** encoder 7 = **Condition** for the selected
+note(s). **Probability is plain percentages again**; a step plays only if its
+condition passes *and* its probability roll passes.
+
+- **Storage:** the note record's `+20` word (notes only; stock uses `+20` for
+  automation/XY/scene items): tag `0xB5`, condition (7 bits), retrigger hits (4),
+  division index + 1 (4, 0 = 1/16), ramp (signed 8 bits, %). All defaults → word 0, a
+  stock-identical note. Saved as XML attribute `be_step_v1` (save hook `0x0812F4F0`,
+  load hook `0x0812FBB4`, where stock has just parsed `cond` and is about to insert the
+  record). **Migration:** conditions saved by v2.4–v3.2 in the probability byte
+  (100–173) move into the word on load and probability becomes Always.
+- **Encoders:** four empty parameter-registry keys (`*0x30031484`, 499 × 32 B) are
+  claimed per boot from the top (`0x1F2` down) and registered as lists (labels generated
+  from `build.py` into `step_tables.h`). Drum: keys go into stock's step-view slot table
+  `0x300000BC` entries 5–8 before stock's header builder (`0x0815C27C`); values and titles
+  are set after it; encoder events (`0x0815CAA0`) edit the matching held/selected steps
+  (stock's matcher), publish and redraw. Piano: slot 7 (empty in stock's flash key table
+  `0x0819E7FC`) is bound after stock's header (`0x081599BC`); events (`0x0815A598`) edit
+  the selection list and commit through stock's `FUN_08157860`.
+- **Playback:** the condition gate reads the word (`cond_decide(seq, prob, word)`): a
+  condition there gates, then stock rolls the probability. The retrigger scheduler takes
+  hits/division/ramp from the word (pad-16 prototype removed). Legacy byte conditions
+  still play if any remain.
+- `test_step.py` (13): XML round trip, foreign/automation words ignored, migration,
+  key claiming and labels, header slots, drum edits (selected steps, this pad only,
+  clamping, clear-to-stock, nothing selected), stock keys pass through, piano slot 7 and
+  edit/commit, other piano events pass through. `test_conditions` / `test_retrig` /
+  `test_holdstep` updated (word conditions vs byte conditions agree for every value).

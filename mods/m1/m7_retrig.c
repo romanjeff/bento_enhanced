@@ -52,12 +52,14 @@ static u32 ramp_vel(u32 vel, int ramp, u32 k, u32 n) {
     return v < 1 ? 1u : v > 127 ? 127u : (u32)v;
 }
 
-/* Prototype source of settings; R3 replaces this with the note's own word. */
+/* Settings from the note's per-step word (diag_shared.h, written by m4_step.c). */
 static int settings(u32 pad, const u32 *rec_word, u32 *n, u32 *div, int *ramp) {
-    (void)rec_word;
-    if (pad != 15u) return 0;
-    *n = 3; *div = DIV_TICKS[4]; *ramp = -60;
-    return 1;
+    (void)pad;
+    u32 w = *rec_word;
+    *n = step_hits(w);
+    *div = DIV_TICKS[step_div(w)];
+    *ramp = step_ramp(w);
+    return *n != 0;
 }
 
 /* csp = the caller's stack: [0] pad, [1] router, +0x20 tick64, +0x3C note word. */

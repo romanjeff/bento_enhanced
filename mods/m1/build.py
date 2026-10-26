@@ -38,7 +38,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.2"                       # bump for every build that goes on the device
+VERSION = "3.3"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -93,9 +93,7 @@ COND_LOOP_SITE, COND_LOOP_ORIG, COND_LOOP_RESUME = 0x08061740, "2de9f043", 0x080
 # 0x0819F30C) with 35 A:B labels, and convert values in the piano-roll and drum
 # step editors. Helpers and the new label table live in our reserved block.
 COND_UI = 0x081B4000
-COND_TABLE = 0x081B4400
-COND_UI_LIMIT = 0x081B5000
-NATIVE_LABELS = 0x0819F30C
+COND_UI_LIMIT = 0x081B5000   # probability clamp helpers (block reserved for the original condition UI)
 AB_LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]      # stored 100..134 (Lab T2)
 # Stored values stay stable (saved projects keep their meaning): A:B 100..134,
 # !A:B 135..169, 1ST 170, !1ST 171, PRE 172, !PRE 173. The list shows them as
@@ -103,13 +101,9 @@ AB_LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]      # st
 COND_STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]
 COND_LABELS = ["1ST", "!1ST", "PRE", "!PRE"] + [l for x in AB_LABELS for l in (x, "!" + x)]
 COND_N = len(COND_STORED)                                                    # 74 -> list of 174
-COND_D2S, COND_S2D = 0x081B4300, 0x081B4380   # display index -> stored; stored-100 -> display index
-COND_COUNT_SITE, COND_COUNT_ORIG = 0x08165D40, "cdf80080"
-COND_TABLE_PTR_SITE = 0x08165F8C
 COND_UI_SITES = [  # (site, helper, original bytes)
     (0x08159B80, "show_piano", "013b3360"),
     (0x0815C3D2, "show_drum", "013b0b60"),
-    (0x0815C8B4, "set_drum", "63291abf"),
     (0x08158F1C, "piano_reference", "9df82530"),
     (0x08158A7C, "piano_edit", "9df81930"),
 ]
@@ -124,9 +118,15 @@ CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (b
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x24048CA0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
-M4_POLY = CTRL_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
+STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x200; STEP_LIMIT = STEP_WRAP + 0x1800   # m4_step.c
+M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
+# Per-step Condition / Retrigger (m4_step.c)
+STEP_SAVE_SITE, STEP_LOAD_SITE = 0x0812F4F0, 0x0812FBB4
+DRUM_HEADER, DRUM_ENCODER = 0x0815C27C, 0x0815CAA0
+PIANO_HEADER, PIANO_EVENT = 0x081599BC, 0x0815A598
 LAYOUT = dict(M7_TRAMP=M7_TRAMP, M7_CODE=M7_CODE, M4_CODE=M4_CODE, HOLD_WRAP=HOLD_WRAP, HOLD_CODE=HOLD_CODE,
-              CTRL_WRAP=CTRL_WRAP, CTRL_CODE=CTRL_CODE, M4_POLY=M4_POLY, IMAGE_END=M4_POLY_LIMIT)
+              CTRL_WRAP=CTRL_WRAP, CTRL_CODE=CTRL_CODE, STEP_WRAP=STEP_WRAP, STEP_CODE=STEP_CODE,
+              M4_POLY=M4_POLY, IMAGE_END=M4_POLY_LIMIT)
 CTRL_CONSUMER_SITE, CTRL_DISPATCH_STOCK, CTRL_DISPATCH_NEXT = 0x0813F98C, 0x0813F990, 0x0813F2FC
 CTRL_SELECTION_SITE, CTRL_MIXER_VT = 0x0813BD10, 0x0819DD20
 CTRL_SYMBOLS = dict(STATE=hex(CTRL_STATE), STATE_MAGIC="0x31534d42", EVENT_MAGIC="0x314d5442", EVENT_TAIL="0x31525442",
@@ -135,28 +135,22 @@ CTRL_SYMBOLS = dict(STATE=hex(CTRL_STATE), STATE_MAGIC="0x31534d42", EVENT_MAGIC
                     MODIFIERS_MASK="0x3400")             # Lab: 0x3500 (incl. PROJ 0x100)
 
 def cond_ui_helpers():
-    """Lab T2's editor value conversions (native probability byte <-> list entry),
-    extended to the full condition list through the COND_D2S/COND_S2D tables."""
-    s2d = f"push {{r2}}; ldr r2, ={COND_S2D:#x}; subs r3, #100; ldrb r3, [r2, r3]; pop {{r2}}; "
+    """Editor value conversions for the probability byte (Lab T2 sites). Since
+    v3.3 conditions have their own encoder, so these only clamp: a legacy
+    condition value (100..173) still in the byte shows as "Always" instead of
+    indexing past stock's 100-entry list."""
     def show(store, back):   # stored byte r3 -> list index (0-based) in [store]
-        return (f"cmp r3, #100; blo dec; cmp r3, #173; bhi always; {s2d}adds r3, #100; b store; "
-                f"always: movs r3, #99; b store; dec: subs r3, #1; store: str r3, [{store}]; b.w {back}")
+        return f"cmp r3, #100; blo dec; movs r3, #99; b store; dec: subs r3, #1; store: str r3, [{store}]; b.w {back}"
     return [
         ("show_piano", show("r6", "0x08159b84")),
         ("show_drum", show("r1", "0x0815c3d6")),
-        ("set_drum", "cmp r1, #173; bhi unknown; cmp r1, #100; bhs direct; cmp r1, #99; beq unknown; adds r6, r1, #1; b done; "
-                     f"direct: push {{r2}}; ldr r2, ={COND_D2S:#x}; subs r6, r1, #100; ldrb r6, [r2, r6]; pop {{r2}}; b done; "
-                     "unknown: movs r6, #0; done: b.w 0x0815c8be"),
-        # piano roll works in 1-based list values: 1..99 = %, 100 = Always, 101.. = conditions
-        ("piano_reference", f"ldrb.w r3, [sp, #0x25]; cbz r3, always; cmp r3, #173; bhi always; cmp r3, #100; blo done; "
-                            f"{s2d}adds r3, #101; b done; always: movs r3, #100; done: b.w 0x08158f26"),
-        ("piano_edit", f"ldrb.w r3, [sp, #0x19]; cbz r3, always; cmp r3, #173; bhi always; cmp r3, #100; blo add; "
-                       f"{s2d}adds r3, #101; b add; always: movs r3, #100; "
-                       f"add: ldr r2, [sp, #0x84]; adds r3, r3, r2; cmp r3, #1; bge minok; movs r3, #1; "
-                       f"minok: cmp r3, #{100 + COND_N}; ble maxok; movs r3, #{100 + COND_N}; "
-                       f"maxok: cmp r3, #100; beq zero; blo store; "
-                       f"ldr r2, ={COND_D2S:#x}; subs r3, #101; ldrb r3, [r2, r3]; b store; "
-                       "zero: movs r3, #0; store: strb.w r3, [sp, #0x31]; b.w 0x08158aac"),
+        # piano roll works in 1-based list values: 1..99 = %, 100 = Always
+        ("piano_reference", "ldrb.w r3, [sp, #0x25]; cbz r3, always; cmp r3, #100; blo done; "
+                            "always: movs r3, #100; done: b.w 0x08158f26"),
+        ("piano_edit", "ldrb.w r3, [sp, #0x19]; cbz r3, always; cmp r3, #100; blo add; always: movs r3, #100; "
+                       "add: ldr r2, [sp, #0x84]; adds r3, r3, r2; cmp r3, #1; bge minok; movs r3, #1; "
+                       "minok: cmp r3, #100; blt store; movs r3, #0; "
+                       "store: strb.w r3, [sp, #0x31]; b.w 0x08158aac"),
     ]
 
 def check_branches(code, addr, allowed, what):
@@ -189,6 +183,23 @@ def bcond_w(cond, src, dst):
     hw2 = 0x8000 | (J1 << 13) | (J2 << 11) | imm11
     return struct.pack("<HH", hw1, hw2)
 
+DIV_LABELS = ["1/8", "1/8T", "1/8.", "1/16", "1/16T", "1/16.", "1/32", "1/32T", "1/32.", "1/64", "1/64T"]
+RAMP_STEP = 5   # percent per encoder click: -100..+100 = 41 values
+
+def write_step_tables(path):
+    """Generated C tables for m4_step.c (single source: the lists above)."""
+    def strs(name, items):
+        return f"static const char *const {name}[{len(items)}] = {{" + ", ".join(f'"{x}"' for x in items) + "};\n"
+    ramp = [f"{v:+d}%" if v else "0%" for v in range(-100, 101, RAMP_STEP)]
+    text = ("/* Generated by build.py (write_step_tables); do not edit. */\n"
+            f"#define COND_N {COND_N}\n#define RAMP_N {len(ramp)}\n#define RAMP_STEP {RAMP_STEP}\n"
+            + strs("COND_LABELS", ["Off"] + COND_LABELS)
+            + strs("HITS_LABELS", ["Off"] + [str(i) for i in range(1, 16)])
+            + strs("DIV_LABELS", DIV_LABELS)
+            + strs("RAMP_LABELS", ramp)
+            + f"static const unsigned char COND_STORED[{COND_N}] = {{" + ", ".join(map(str, COND_STORED)) + "};\n")
+    path.write_text(text)
+
 def compile_elf(srcs, cpu, ld, out, origin, limit):
     """ld's MEMORY ORIGIN/LENGTH are replaced by this build's layout (written next to the ELF)."""
     text, n = re.subn(r"ORIGIN = 0x[0-9A-Fa-f]+, LENGTH = 0x[0-9A-Fa-f]+",
@@ -197,10 +208,11 @@ def compile_elf(srcs, cpu, ld, out, origin, limit):
         raise SystemExit(f"{ld}: expected one MEMORY line")
     ld = out.with_suffix(".ld")
     ld.write_text(text)
+    write_step_tables(out.parent / "step_tables.h")
     cmd = [sys.executable, "-m", "ziglang", "cc", "-target", "thumb-freestanding-eabi", f"-mcpu={cpu}",
            "-mfloat-abi=soft", "-Os", "-g", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-nostdlib",
            "-ffunction-sections", "-fdata-sections", "-Wall", "-Werror",
-           "-Wl,--gc-sections", f"-Wl,--script={ld}", "-Wl,--entry=0", *map(str, srcs), "-o", str(out)]
+           "-Wl,--gc-sections", f"-I{out.parent}", f"-Wl,--script={ld}", "-Wl,--entry=0", *map(str, srcs), "-o", str(out)]
     subprocess.run(cmd, check=True)
     return out.read_bytes()
 
@@ -336,7 +348,7 @@ def build(base_img, out):
     save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; "
     restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
     t = M7_TRAMP + len(tramps)
-    gate = asm(save + f"mov r0, r8; ldrb.w r1, [sp, #105]; bl {s7['cond_decide']:#x}; "   # value was at sp+0x29
+    gate = asm(save + f"mov r0, r8; ldrb.w r1, [sp, #105]; ldr r2, [sp, #124]; bl {s7['cond_decide']:#x}; "   # value sp+0x29, word sp+0x3C
                "cmp r0, #0; beq skip; cmp r0, #1; beq play; "
                + restore + f"ldrb.w r3, [sp, #0x29]; b.w {COND_GATE_RESUME:#x}; "         # native probability
                "play: " + restore + f"movs r3, #0; b.w {COND_GATE_RESUME:#x}; "          # always
@@ -373,7 +385,7 @@ def build(base_img, out):
                        purpose="M1: extend image with erased (0xFF) flash for appended M4 code"))
     patch(M4_CODE, code4 + MARKER, None, "M1 diag: M4 black-box code (appended)")
 
-    # --- Trigger conditions, M4 UI (Lab T2): helpers, extended label table, patches
+    # --- Probability editor conversions (Lab T2 sites, clamp only since v3.3)
     ui = bytearray(); ui_syms = {}
     for name, src in cond_ui_helpers():
         while len(ui) % 4:
@@ -384,32 +396,11 @@ def build(base_img, out):
         check_branches(code, a, {back}, f"condition UI helper {name}")
         ui_syms[name] = a
         ui += code
-    if COND_UI + len(ui) > COND_D2S:
-        raise SystemExit("condition UI helpers overrun the lookup tables")
-    d2s = bytes(COND_STORED)
-    s2d = bytes(COND_STORED.index(v) for v in range(100, 100 + COND_N))
-    if sorted(COND_STORED) != list(range(100, 100 + COND_N)) or len(d2s) > 0x80:
-        raise SystemExit("condition lookup tables")
-    native_ptrs = bytes(base_img[NATIVE_LABELS - BASE:NATIVE_LABELS - BASE + 100 * 4])
-    strings = b""; new_ptrs = b""
-    for label in COND_LABELS:
-        new_ptrs += struct.pack("<I", COND_TABLE + (100 + COND_N) * 4 + len(strings))
-        strings += label.encode() + b"\0"
-    table = native_ptrs + new_ptrs + strings + b"BENTO_MOD:trigger-conditions(Lab T2 port)\0"
-    if len(COND_LABELS) != COND_N or COND_TABLE + len(table) > COND_UI_LIMIT:
-        raise SystemExit("condition label table layout")
-    patch(COND_UI, bytes(ui), b"\xff" * len(ui), "Conditions (Lab T2): editor value conversion helpers")
-    patch(COND_D2S, d2s, b"\xff" * len(d2s), "Conditions: list index -> stored value table")
-    patch(COND_S2D, s2d, b"\xff" * len(s2d), "Conditions: stored value -> list index table")
-    patch(COND_TABLE, table, b"\xff" * len(table), f"Conditions: 100 native + {COND_N} condition labels")
+    if COND_UI + len(ui) > COND_UI_LIMIT:
+        raise SystemExit("probability conversion helpers overrun their block")
+    patch(COND_UI, bytes(ui), b"\xff" * len(ui), "Probability editor conversions (clamp legacy condition values)")
     for site, name, orig in COND_UI_SITES:
-        patch(site, asm(f"b.w {ui_syms[name]:#x}", site), bytes.fromhex(orig), f"Conditions (Lab T2): {name}")
-    count = asm(f"movs r3, #{100 + COND_N}; str r3, [sp]", COND_COUNT_SITE)
-    if len(count) != 4:
-        raise SystemExit("condition count patch is not 4 bytes")
-    patch(COND_COUNT_SITE, count, bytes.fromhex(COND_COUNT_ORIG), f"Conditions: probability list 100 -> {100 + COND_N} entries")
-    patch(COND_TABLE_PTR_SITE, struct.pack("<I", COND_TABLE), struct.pack("<I", NATIVE_LABELS),
-          "Conditions (Lab T2): probability list labels -> extended table")
+        patch(site, asm(f"b.w {ui_syms[name]:#x}", site), bytes.fromhex(orig), f"Probability: {name} clamp")
 
     # --- Inspect a step: encoder-edit wrappers at HOLD_WRAP, C at HOLD_CODE
     hold_elf = compile_elf([HERE / "m4_holdstep.c"], "cortex_m4", HERE / "m4_holdstep.ld", out / "m4_holdstep.elf", HOLD_CODE, HOLD_LIMIT)
@@ -513,6 +504,65 @@ def build(base_img, out):
     patch(CTRL_MIXER_VT, struct.pack("<I", sc["mixer_render"] | 1), struct.pack("<I", 0x0814B631),
           "Hold shortcuts (Lab K16): mixer render shows Solo/Mute while MIXER is held")
     s4.update({f"controls.{k}": v for k, v in sc.items()})
+
+    # --- Per-step Condition / Retrigger UI (m4_step.c)
+    st_elf = compile_elf([HERE / "m4_step.c"], "cortex_m4", HERE / "m4_step.ld", out / "m4_step.elf", STEP_CODE, STEP_LIMIT)
+    vas, codes, ss = elf_load(st_elf, STEP_CODE, STEP_LIMIT)
+    if vas != STEP_CODE:
+        raise SystemExit(f"step code placement {vas:#x}")
+    pad = b"\xff" * (STEP_LIMIT - (BASE + len(img)))
+    writes.append(dict(address=BASE + len(img), size=len(pad), original_hex="", replacement_hex=pad.hex(),
+                       purpose="Per-step UI: extend image with erased (0xFF) flash"))
+    img += pad
+    wrap = bytearray()
+    def sblock(src, exits, what):
+        while len(wrap) % 4:
+            wrap.append(0)
+        a = STEP_WRAP + len(wrap)
+        code = asm(src, a)
+        check_branches(code, a, exits, what)
+        wrap.extend(code)
+        return a
+    save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; "
+    restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
+    # project save / load: node in r4, record on the caller's stack (+64 after our save)
+    a = sblock(save + f"mov r0, r4; add r1, sp, #72; bl {ss['step_save']:#x}; " + restore
+               + f"ldrb.w r3, [sp, #8]; b.w {STEP_SAVE_SITE + 4:#x}", {ss["step_save"], STEP_SAVE_SITE + 4}, "step save")
+    patch(STEP_SAVE_SITE, asm(f"b.w {a:#x}", STEP_SAVE_SITE), bytes.fromhex("9df80830"), "Per-step: note XML save -> be_step_v1")
+    a = sblock(save + f"mov r0, r4; add r1, sp, #100; bl {ss['step_load']:#x}; " + restore
+               + f"add r1, sp, #0x24; ldr r0, [sp, #0x3c]; b.w {STEP_LOAD_SITE + 4:#x}", {ss["step_load"], STEP_LOAD_SITE + 4}, "step load")
+    patch(STEP_LOAD_SITE, asm(f"b.w {a:#x}", STEP_LOAD_SITE), bytes.fromhex("09a90f98"),
+          "Per-step: note XML load -> be_step_v1 + migrate conditions out of the probability byte")
+    # drum step sequencer header: before/after stock's builder
+    orig_drum = sblock(f"push.w {{r4, r5, r6, r7, r8, r9, lr}}; b.w {DRUM_HEADER + 4:#x}", {DRUM_HEADER + 4}, "drum header replay")
+    a = sblock(f"push {{r4, lr}}; mov r4, r0; bl {ss['step_header_before']:#x}; mov r0, r4; bl {orig_drum:#x}; "
+               f"mov r0, r4; bl {ss['step_header_after']:#x}; pop {{r4, pc}}",
+               {ss["step_header_before"], orig_drum, ss["step_header_after"]}, "drum header")
+    patch(DRUM_HEADER, asm(f"b.w {a:#x}", DRUM_HEADER), bytes.fromhex("2de9f043"), "Per-step: drum step header -> encoders 5-8")
+    # drum encoder events (view, key, value)
+    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; ldr r2, [sp, #16]; bl {ss['step_encoder']:#x}; "
+               "cmp r0, #0; beq stock; " + restore + "movs r0, #0; bx lr; "
+               "stock: " + restore + f"add.w r3, r0, #0x11000; b.w {DRUM_ENCODER + 4:#x}",
+               {ss["step_encoder"], DRUM_ENCODER + 4}, "drum encoder")
+    patch(DRUM_ENCODER, asm(f"b.w {a:#x}", DRUM_ENCODER), bytes.fromhex("00f58833"), "Per-step: drum encoder events -> ours first")
+    # piano roll header (after stock's builder) and events
+    orig_piano = sblock(f"push.w {{r4, r5, r6, r7, r8, r9, r10, r11, lr}}; b.w {PIANO_HEADER + 4:#x}", {PIANO_HEADER + 4}, "piano header replay")
+    a = sblock(f"push {{r4, lr}}; mov r4, r0; bl {orig_piano:#x}; mov r0, r4; bl {ss['piano_header_after']:#x}; pop {{r4, pc}}",
+               {orig_piano, ss["piano_header_after"]}, "piano header")
+    patch(PIANO_HEADER, asm(f"b.w {a:#x}", PIANO_HEADER), bytes.fromhex("2de9f04f"), "Per-step: piano header -> Condition on encoder 7")
+    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['piano_event']:#x}; "
+               "cmp r0, #0; beq stock; " + restore + "movs r0, #0; bx lr; "
+               "stock: " + restore + f"push {{r4, r5, r6, r7, lr}}; sub sp, #0x174; b.w {PIANO_EVENT + 4:#x}",
+               {ss["piano_event"], PIANO_EVENT + 4}, "piano event")
+    patch(PIANO_EVENT, asm(f"b.w {a:#x}", PIANO_EVENT), bytes.fromhex("f0b5ddb0"), "Per-step: piano events -> ours first")
+    if STEP_WRAP + len(wrap) > STEP_CODE:
+        raise SystemExit("step wrappers overlap the step code")
+    patch(STEP_WRAP, bytes(wrap), b"\xff" * len(wrap), "Per-step: wrappers")
+    step_marker = b"BENTO_MOD:per-step-condition-retrig\0"
+    if STEP_CODE + len(codes) + len(step_marker) > STEP_LIMIT:
+        raise SystemExit("step code overruns its slice")
+    patch(STEP_CODE, codes + step_marker, b"\xff" * (len(codes) + len(step_marker)), "Per-step: UI code")
+    s4.update({f"step.{k}": v for k, v in ss.items()})
     if M4_CODE + len(code4) + 20 > M4_LIMIT:
         raise SystemExit("M4 code + marker overrun")
     if M4_CODE + len(code4) + len(MARKER) > M4_LIMIT:

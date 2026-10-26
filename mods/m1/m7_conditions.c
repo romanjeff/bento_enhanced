@@ -84,10 +84,26 @@ __attribute__((used, retain)) void cond_loop(u32 seq) {
  * PRE = result of the most recent A:B / !A:B / 1ST / !1ST decision on this
  * sequence (false until there is one); PRE steps do not change it. */
 #define PRE(c) ((c)->r[0])
-__attribute__((used, retain)) u32 cond_decide(u32 seq, u32 value) {
+static u32 decide(volatile Counter *c, u32 value);
+
+/* value = the probability byte; word = the note's +20 word (m4_step.c).
+ * A condition in the word gates the step and stock's probability then rolls
+ * as usual (condition AND probability). A legacy condition in the byte
+ * (projects not yet migrated) plays without a probability roll, as before. */
+__attribute__((used, retain)) u32 cond_decide(u32 seq, u32 value, u32 word) {
+    u32 wc = step_cond(word);
+    if (wc) {
+        volatile Counter *c = entry(seq);
+        if (!c) return 2;
+        return decide(c, 99u + wc) ? 2u : 0u;
+    }
     if (value < 100 || value > 173) return 2;
     volatile Counter *c = entry(seq);
     if (!c) return 1; /* counter table full: behave like native "always" */
+    return decide(c, value);
+}
+
+static u32 decide(volatile Counter *c, u32 value) {
     if (value >= 172) return (PRE(c) != 0) ^ (value == 173);
     u32 pass;
     if (value >= 170) {
