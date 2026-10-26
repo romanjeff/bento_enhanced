@@ -509,6 +509,10 @@ static int drum_track_selected(void) {
 __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int changed) {
     (void)model;
     strike_init();
+    if (STRIKE->magic == STRIKE_MAGIC && STRIKE->seq != STRIKE_SET->r[2]) {
+        STRIKE_SET->r[2] = STRIKE->seq;           /* newest press seen ... */
+        STRIKE_SET->view = UI_TICK_MS;            /* ... at this UI time */
+    }
     if (MODEL_PAGE == 0x27) {
         int drum = drum_track_selected(), ins = 0;
         if (drum) ins = header_action_lit(out, STRIKE_ACTION, STRIKE_LABEL, !STRIKE_SET->off);
@@ -535,4 +539,20 @@ __attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
     STRIKE_SET->off = !STRIKE_SET->off;
     SU->r[1] = 0;                                     /* drop any pending strike */
     return 1;
+}
+
+/* Any view's new note (stock's insert, 0x0812E070: model, sequence, record):
+ * covers the drum Sequence page, which adds steps through the piano-roll view
+ * object rather than the drum toggle. A strike applies once, only if it is
+ * < 500 ms old and not already used by the Step view's own path (SU->r[0]),
+ * so bulk inserts (Double Seq, Paste) and late touchscreen entries keep their
+ * velocity. Applied strikes are locked (the pad default is not known here). */
+#define STRIKE_FRESH_MS 500u
+__attribute__((used, retain)) void strike_insert(u32 *rec) {
+    if ((rec[0] & 0xFFu) != 1u || strike_off() || STRIKE->magic != STRIKE_MAGIC) return;
+    if (STRIKE->seq == SU->r[0] || STRIKE->seq != STRIKE_SET->r[2]) return;   /* used, or not yet seen */
+    if (UI_TICK_MS - STRIKE_SET->view > STRIKE_FRESH_MS || !drum_track_selected()) return;
+    SU->r[0] = STRIKE->seq;
+    rec[4] = (rec[4] & 0xFFFFu) | (STRIKE->vel << 16);
+    rec[5] = with_locks(rec[5], step_locks(rec[5]) | LOCK_VEL);
 }

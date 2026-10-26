@@ -38,7 +38,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.10"                       # bump for every build that goes on the device
+VERSION = "3.11"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -127,6 +127,9 @@ PIANO_HEADER, PIANO_EVENT = 0x081599BC, 0x0815A598
 # Strike velocity: drum step pad press / step toggle (always on since v3.8)
 STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
 HEADER_GEN, DRUM_EVENT = 0x08134800, 0x0815D600   # header description generator; drum view events
+NOTE_INSERT = 0x0812E070                            # stock: assign ID + insert (model, seq, record)
+HOLD_TAP_SITES = (0x0815D284, 0x0815D484)          # pad release / touch release: "< 1000 ms = tap"
+HOLD_TAP_MS = 400
 STRIKE_ACTION = 0x10F0
 LAYOUT = dict(M7_TRAMP=M7_TRAMP, M7_CODE=M7_CODE, M4_CODE=M4_CODE, HOLD_WRAP=HOLD_WRAP, HOLD_CODE=HOLD_CODE,
               CTRL_WRAP=CTRL_WRAP, CTRL_CODE=CTRL_CODE, STEP_WRAP=STEP_WRAP, STEP_CODE=STEP_CODE,
@@ -583,6 +586,14 @@ def build(base_img, out):
                + restore + "movs r0, #0; bx lr; stock: " + restore + f"push {{lr}}; sub sp, #0x6c; b.w {DRUM_EVENT + 4:#x}",
                {ss["strike_event"], DRUM_EVENT + 4}, "drum event")
     patch(DRUM_EVENT, asm(f"b.w {a:#x}", DRUM_EVENT), bytes.fromhex("00b59bb0"), "Strike Vel: button action in the drum view")
+    # strike velocity for notes created by any view (drum Sequence page)
+    a = sblock(save + f"ldr r0, [sp, #16]; bl {ss['strike_insert']:#x}; " + restore
+               + f"push {{r4, r5, r6, lr}}; sub sp, #0x20; b.w {NOTE_INSERT + 4:#x}", {ss["strike_insert"], NOTE_INSERT + 4}, "note insert")
+    patch(NOTE_INSERT, asm(f"b.w {a:#x}", NOTE_INSERT), bytes.fromhex("70b588b0"), "Strike velocity: notes created by any view")
+    # shorter tap/hold boundary for step inspection (Jeff: 400 ms)
+    for site in HOLD_TAP_SITES:
+        patch(site, asm(f"cmp.w r3, #{HOLD_TAP_MS}", site), bytes.fromhex("b3f57a7f"),
+              f"Step inspection: hold > {HOLD_TAP_MS} ms (stock 1000) keeps the step on release")
     if STEP_WRAP + len(wrap) > STEP_CODE:
         raise SystemExit("step wrappers overlap the step code")
     patch(STEP_WRAP, bytes(wrap), b"\xff" * len(wrap), "Per-step: wrappers")

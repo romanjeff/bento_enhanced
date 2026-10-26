@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (177 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (183 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -187,12 +187,13 @@ earlier versions keep their meaning: `A:B` 100–134 (as Lab), `!A:B` 135–169,
   restart, PRE semantics and reset, labels, drum and piano-roll conversions for every
   value including stepping through the list one click at a time.
 
-## Inspect a step (since v2.5; reworked in v2.7)
+## Inspect a step (since v2.5; reworked in v2.7; 400 ms hold since v3.11)
 
 Stock already selects a held step (pad or touch): while you hold it, the encoders show
 and edit that step. But releasing a step held for under a second toggles it, so a quick
 hold-and-edit also deleted it. **Now any encoder edit while holding keeps the step on
-release.** After release, the encoders show the defaults for new steps again, as on
+release**, and since v3.11 a hold of **400 ms** (stock: 1000) counts as a hold, not a tap
+(`cmp.w r3, #0x3E8` → `#400` at `0x0815D284` pad release and `0x0815D484` touch release). After release, the encoders show the defaults for new steps again, as on
 stock (v2.5 kept the last step selected after release, as Lab does; Jeff preferred
 stock's behaviour). One-shot (drum) step sequencer only; the piano roll selects notes
 by touch natively.
@@ -363,6 +364,10 @@ outlined while on (default on; kept across warm reboots, not power-off).
 - M4: the drum step pad-press handler (`0x0815D1EC`) takes a fresh strike as pending;
   stock's toggle (`0x0815D114`) is wrapped and, when it creates a step, gives the new
   note that velocity. A strike is used once and only within 3 s.
+- Notes created by **any** view go through stock's insert (`0x0812E070`), hooked so the
+  drum **Sequence** page (drawn by the piano-roll view object, with its own step entry)
+  gets strike velocity too: a strike < 500 ms old, not already used, on a drum track,
+  locked (v3.11). Bulk inserts (Double Seq, Paste) are never touched.
 - Button: after stock generates the header description (`0x08134800`, six 48-byte
   action records at `+0x74`), our record goes into the rightmost free normal slot (left of
   Undo) with `+0x21` lit while on; the header root's layout flag (`0x30034D48+0x117C`) is

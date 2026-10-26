@@ -532,5 +532,54 @@ class StrikeButton(unittest.TestCase):
         g.u.emu_start(0x0815D600 | 1, 0x0815D604, count=200000)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 4 - 0x6C, "replayed push {lr}; sub sp, #0x6c")
 
+class StrikeInsert(unittest.TestCase):
+    """Notes created by any view (drum Sequence page) through stock's insert 0x0812E070."""
+    def rig(self, kind=0x0E):
+        g = StrikeButton().rig(kind)
+        return g
+
+    def press(self, g, seq, vel, ms):
+        g.u.mem_write(0x24048D60, struct.pack("<8I", 0x4B525453, seq, 3, vel, 0, 0, 0, 0))
+        w32(g.u, 0x30035F40, ms)
+        StrikeButton().generate(g)                    # a UI tick sees the strike (stamp)
+
+    def insert(self, g, rec, ms):
+        w32(g.u, 0x30035F40, ms)
+        at = 0x20110000; g.u.mem_write(at, struct.pack("<6I", *rec))
+        g.u.reg_write(UC_ARM_REG_SP, STACK)
+        for i, v in enumerate((0x30024B00, 0x1234, at)):
+            g.u.reg_write(UC_ARM_REG_R0 + i, v)
+        g.u.emu_start(0x0812E070 | 1, 0x0812E074, count=200000)
+        self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 16 - 0x20, "replayed push + sub")
+        return list(struct.unpack("<6I", g.u.mem_read(at, 24)))
+
+    def test_fresh_strike_sets_velocity_and_locks_once(self):
+        g = self.rig(); self.press(g, 5, 44, 10000)
+        rec = self.insert(g, note(2, nid=0), 10200)
+        self.assertEqual((rec[4] >> 16, locks(rec[5])), (44, 1))
+        rec = self.insert(g, note(3, nid=0), 10250)
+        self.assertEqual((rec[4] >> 16, rec[5]), (100, 0), "a strike is used once")
+
+    def test_stale_strike_is_ignored(self):
+        g = self.rig(); self.press(g, 5, 44, 10000)
+        self.assertEqual(self.insert(g, note(2, nid=0), 10600)[4] >> 16, 100)
+
+    def test_pitched_tracks_and_non_notes_untouched(self):
+        g = self.rig(kind=0x10); self.press(g, 5, 44, 10000)
+        self.assertEqual(self.insert(g, note(2, nid=0), 10100)[4] >> 16, 100)
+        g = self.rig(); self.press(g, 5, 44, 10000)
+        auto = note(2, nid=0); auto[0] = (auto[0] & ~0xFF) | 2
+        self.assertEqual(self.insert(g, auto, 10100), auto)
+
+    def test_step_view_path_is_not_applied_twice(self):
+        g = self.rig(); self.press(g, 5, 44, 10000)
+        w32(g.u, 0x24048C80 + 20, 5)                  # SU->r[0]: the Step view's press consumed seq 5
+        self.assertEqual(self.insert(g, note(2, nid=0), 10100)[4] >> 16, 100)
+
+    def test_off_means_off(self):
+        g = self.rig(); self.press(g, 5, 44, 10000)
+        w32(g.u, 0x24048D48 + 4, 1)                   # StrikeSet.off
+        self.assertEqual(self.insert(g, note(2, nid=0), 10100)[4] >> 16, 100)
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

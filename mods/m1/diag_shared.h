@@ -125,7 +125,8 @@ typedef struct { u32 magic, seq, pad, vel, raw, r[3]; } Strike;
 #define STRIKE ((volatile Strike *)0x24048D60u)
 #define STRIKE_MAGIC 0x4B525453u /* "STRK" */
 /* The on/off setting (header button "Strike Vel", m4_step.c); M4-only.
- * view: 1 while the drum step view is the active SEQ view, 0 for piano roll. */
+ * view: UI time (ms) the newest strike was first seen; r[2]: its sequence number.
+ * r[0], r[1]: header-button diagnostics. */
 typedef struct { u32 magic, off, view, r[3]; } StrikeSet;
 #define STRIKE_SET ((volatile StrikeSet *)0x24048D48u)
 #define STRIKE_SET_MAGIC 0x32455653u /* "SVE2" */
