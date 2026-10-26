@@ -341,8 +341,12 @@ class StrikeMenu(unittest.TestCase):
     def test_menu_event_toggles_the_setting_and_label(self):
         f = Fixture(); f.event(180, 3)                 # any event: setting initialised (on)
         self.assertEqual(self.label(f), "Strike Vel: On")
+        model_before = bytes(f.u.mem_read(f.m + 0xFE0, 2))
+        f.u.mem_write(0x30035D28, struct.pack("<H", 10))       # header widget's "last applied menu" cache
         f.event(0x10F0, 0)
         self.assertEqual(self.label(f), "Strike Vel: Off")
+        self.assertEqual(struct.unpack("<H", f.u.mem_read(0x30035D28, 2))[0], 0xFFFF, "menu re-applies on next open")
+        self.assertEqual(bytes(f.u.mem_read(f.m + 0xFE0, 2)), model_before, "the model is not touched")
         self.assertEqual(bytes(f.u.mem_read(0x24048D4C, 1))[0], 0)
         f.event(0x10F0, 0)
         self.assertEqual(self.label(f), "Strike Vel: On")

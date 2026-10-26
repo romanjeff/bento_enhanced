@@ -46,6 +46,7 @@ typedef void *Ptr;
 #define NATIVE_FLUSH_PAD_LIGHTS 0x081257f0u
 #define NATIVE_CLEAR_PAD_HIGHLIGHTS 0x081257ccu
 #define ENGINE (*(Ptr *)0x3000f650u)
+#define HEADER_WIDGET 0x30034D48u   /* static header widget (menus live at +0xFDC) */
 
 typedef struct { u32 code, context, key, value, extra; } Event;
 typedef struct { u32 magic, button, used, await_press, page, track, previous, ctx[4], generation; } State;
@@ -233,6 +234,12 @@ __attribute__((used, retain)) int controls_dispatch(Ptr m, u32 code, u32 context
     if (code == STRIKE_TOGGLE_EVENT) {
         STRIKE_SET->on = !STRIKE_SET->on;
         strike_label();
+        /* Stock re-applies a menu (copying its labels into the buttons) only when
+         * opening a different menu than last time: FUN_0817FFF8 compares the menu
+         * index cached in the header widget (static object 0x30034D48, built by
+         * the static constructor 0x0816E391) at +0xFE0. Forget it so the next
+         * open re-applies and shows the new label. */
+        *(volatile u16 *)(HEADER_WIDGET + 0xFE0u) = 0xFFFFu;
         return 1;
     }
     /* CH8: an encoder turn (0xAB) while holding LAUNCH or MIXER counts as use. */

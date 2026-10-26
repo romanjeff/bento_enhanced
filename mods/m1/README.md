@@ -367,5 +367,7 @@ kept across warm reboots, not power-off).
   (`0x081415F8`); count → 5 and slot 5 (`0x08198E00`) = `{0x10F0, label in RAM
   0x24048D50, 0, 0, 1}`. Stock copies the label *pointer*, so the text can change. The
   selection bubbles up (`FUN_0816FC34`) to the UI consumer, where `controls_dispatch`
-  toggles the setting.
+  toggles the setting. Stock copies label text into the menu buttons only when a
+  *different* menu opens (`FUN_0817FFF8` caches the menu index at `+0xFE0` of the static
+  header widget `0x30034D48`); the toggle clears that cache so the new label shows (v3.7).
 - Velocity curve unchanged (stock's), as decided; tapped steps match live playing.
