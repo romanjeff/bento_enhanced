@@ -118,16 +118,19 @@ static inline u32 step_make(u32 cond, u32 hits, u32 div, int ramp, u32 locks) {
            (locks & 7u);
 }
 
-/* Strike velocity (programming drum steps by hit strength).
- * Strike: the M7 records the latest pad press (input event 0xAC) with stock's
- * velocity formula; one line, M7-written and cleaned, read by the M4. */
-typedef struct { u32 magic, seq, pad, vel, raw, r[3]; } Strike;
-#define STRIKE ((volatile Strike *)0x24048D60u)
-#define STRIKE_MAGIC 0x4B525453u /* "STRK" */
+/* Strike velocity (programming drum steps by hit strength), per pad.
+ * The M7 counts each press of pad p (input event 0xAC) in seq[p] and keeps
+ * vel[p] = the peak of stock's velocity formula over the press and its first
+ * STRIKE_PEAK_SAMPLES pressure samples (0xAE), so a quick hit isn't read at
+ * first contact. One line, M7-written and cleaned, read by the M4 (v3.12). */
+typedef struct { u8 seq[16]; u8 vel[16]; } Strikes;
+#define STRIKES ((volatile Strikes *)0x24048D60u)
+#define STRIKE_PEAK ((volatile u8 *)0x24048490u)   /* M7-private countdown per pad (stall line spare) */
+#define STRIKE_PEAK_SAMPLES 8u
 /* The on/off setting (header button "Strike Vel", m4_step.c); M4-only.
- * view: UI time (ms) the newest strike was first seen; r[2]: its sequence number.
+ * pads: per-pad UI state block (bump-allocated once per boot, m4_step.c);
  * r[0], r[1]: header-button diagnostics. */
-typedef struct { u32 magic, off, view, r[3]; } StrikeSet;
+typedef struct { u32 magic, off, pads, r[3]; } StrikeSet;
 #define STRIKE_SET ((volatile StrikeSet *)0x24048D48u)
 #define STRIKE_SET_MAGIC 0x32455653u /* "SVE2" */
 #define STRIKE_ACTION 0x10F0u        /* header button action id (unused by stock) */

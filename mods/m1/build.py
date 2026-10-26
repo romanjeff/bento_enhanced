@@ -38,7 +38,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.11"                       # bump for every build that goes on the device
+VERSION = "3.12"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -129,7 +129,7 @@ STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
 HEADER_GEN, DRUM_EVENT = 0x08134800, 0x0815D600   # header description generator; drum view events
 NOTE_INSERT = 0x0812E070                            # stock: assign ID + insert (model, seq, record)
 HOLD_TAP_SITES = (0x0815D284, 0x0815D484)          # pad release / touch release: "< 1000 ms = tap"
-HOLD_TAP_MS = 400
+HOLD_TAP_MS = 150   # Jeff: 400 -> 150 ms (100 risks quick taps counting as holds)
 STRIKE_ACTION = 0x10F0
 LAYOUT = dict(M7_TRAMP=M7_TRAMP, M7_CODE=M7_CODE, M4_CODE=M4_CODE, HOLD_WRAP=HOLD_WRAP, HOLD_CODE=HOLD_CODE,
               CTRL_WRAP=CTRL_WRAP, CTRL_CODE=CTRL_CODE, STEP_WRAP=STEP_WRAP, STEP_CODE=STEP_CODE,

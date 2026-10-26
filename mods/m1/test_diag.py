@@ -135,6 +135,35 @@ class Trampolines(unittest.TestCase):
                     n = len(records(b[3])) if ready else 0
                     self.assertEqual(n, 1 if ready and t is not None else 0)  # queue reads: heartbeat only
 
+class StrikePeak(unittest.TestCase):
+    """h_input keeps a per-pad strike: press counter + peak of the first pressure samples."""
+    def ev(self, u, t, pad, raw):
+        at = 0x24070200
+        u.mem_write(at, struct.pack("<6I", t, 0, 0xFFFFFFFE, pad, raw, 0))
+        call(u, SYM7["h_input"], 0x24071000, at)
+
+    def strikes(self, u):
+        raw = bytes(u.mem_read(0x24048D60, 32))
+        return list(raw[:16]), list(raw[16:])
+
+    def test_peak_over_the_first_samples_per_pad(self):
+        u = emu(DIAG)
+        self.ev(u, 0xAC, 4, 0x0800)                    # contact: low (~4)
+        self.ev(u, 0xAE, 4, 0x6800)                    # pressure rises (~63)
+        self.ev(u, 0xAC, 9, 0xD000)                    # another pad, full
+        self.ev(u, 0xAE, 4, 0x3000)                    # lower again: peak kept
+        seq, vel = self.strikes(u)
+        self.assertEqual((seq[4], vel[4]), (1, 0x6800 * 127 // 0xD000))
+        self.assertEqual((seq[9], vel[9]), (1, 127))
+        for _ in range(6):
+            self.ev(u, 0xAE, 4, 0x0100)                # the rest of the 8-sample window (low)
+        for _ in range(4):
+            self.ev(u, 0xAE, 4, 0xD000)                # past the window: ignored
+        self.assertLess(self.strikes(u)[1][4], 127)
+        self.ev(u, 0xAC, 4, 0x1000)                    # next press of pad 4: new count, new peak
+        seq, vel = self.strikes(u)
+        self.assertEqual((seq[4], vel[4]), (2, 0x1000 * 127 // 0xD000))
+
 class NativeFunctions(unittest.TestCase):
     def pair(self):
         a, b = emu(CH10), emu(DIAG)

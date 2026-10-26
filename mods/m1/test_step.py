@@ -78,6 +78,7 @@ class Rig:
         for a, n in ((0x20000000, 0x400000), (0x24000000, 0x80000), (0x30000000, 0x48000), (0xE0000000, 0x100000)):
             u.mem_map(a, n)
         w32(u, CFG, MAGIC); w32(u, CFG + 12, 1)            # M4 boot generation 1
+        w32(u, 0x3000004C, 0x20380000); w32(u, 0x30000048, 0x203C0000)   # native bump allocator range
         w32(u, 0x30031484, REG)
         for k in (0x1F2, 0x1F0):                           # some keys at the top are taken natively
             u.mem_write(REG + k * 32, struct.pack("<H", k))
@@ -135,8 +136,11 @@ class Rig:
             self.ret(1 if any(n[1] // 960 == step and (n[0] >> 16) == r32(u, VIEW + 0x11400) for n in self.notes) else 0)
         elif a == 0x0815CE98:                                     # stock set step (view, idx, on)
             step = r32(u, VIEW + 0x113F4) + r(1)
+            pad = r32(u, VIEW + 0x11400)
             if r(2):
-                self.notes.append(note(step, pad=r32(u, VIEW + 0x11400), vel=r32(u, VIEW + 0x114C0), nid=100 + step))
+                self.notes.append(note(step, pad=pad, vel=r32(u, VIEW + 0x114C0), nid=100 + step))
+            else:
+                self.notes = [n for n in self.notes if not (n[1] // 960 == step and (n[0] >> 16) == pad)]
             self.log.append(("set", step, r(2))); self.ret()
         elif a == 0x0815D1F0:                                     # rest of stock's press handler
             self.log.append(("press", r(1))); self.ret()
@@ -418,10 +422,13 @@ class StrikeVelocity(unittest.TestCase):
 
     def rig(self, base=0):
         g = Rig(); w32(g.u, VIEW + 0x114C0, 100); w32(g.u, VIEW + 0x113F4, base)
+        g.u.mem_write(0x30024B00 + 0x12C, bytes([0x27])); w32(g.u, 0x30034D48, 0x081B3680)
+        StrikeButton().generate(g)                    # first UI tick: per-pad state exists before any press
         return g
 
     def strike(self, g, seq, vel, pad=4):
-        g.u.mem_write(self.STRIKE, struct.pack("<8I", 0x4B525453, seq, pad, vel, 0, 0, 0, 0))
+        g.u.mem_write(self.STRIKE + pad, bytes([seq & 0xFF]))        # per-pad press counter
+        g.u.mem_write(self.STRIKE + 16 + pad, bytes([vel]))          # per-pad peak velocity
 
     def tap(self, g, pad, ms=5000):
         w32(g.u, 0x30035F40, ms)
@@ -444,17 +451,29 @@ class StrikeVelocity(unittest.TestCase):
         g.call(0x0815D114, VIEW, 6)                   # touchscreen toggle: no press
         self.assertEqual([n[4] >> 16 for n in g.notes], [37, 100], "touch = default")
         g = self.rig(); self.strike(g, 1, 37); self.tap(g, 4)
-        self.tap(g, 7)                                # no new pad press seen by the M7 (same seq)
-        self.assertEqual([n[4] >> 16 for n in g.notes], [37, 100], "a strike is used once")
+        self.tap(g, 4); self.tap(g, 4)                # off, on again: no new press of pad 4
+        self.assertEqual([n[4] >> 16 for n in g.notes][-1], 100, "a strike is used once")
+
+    def test_pads_hit_together_each_get_their_own_velocity(self):
+        g = self.rig()
+        for pad, vel in ((2, 30), (5, 90), (9, 61)):
+            self.strike(g, 1, vel, pad=pad)
+        w32(g.u, 0x30035F40, 5000)
+        for pad in (2, 5, 9):
+            g.call(0x0815D1EC, VIEW, pad)             # all three pressed
+        for pad in (9, 2, 5):
+            g.call(0x0815D114, VIEW, pad)             # released in another order
+        self.assertEqual(sorted((n[1] // 960, n[4] >> 16) for n in g.notes), [(2, 30), (5, 90), (9, 61)])
 
     def test_removing_a_step_changes_nothing(self):
         g = self.rig(); g.notes = [note(4, vel=90, nid=1)]; self.strike(g, 1, 37)
         self.tap(g, 4)
         self.assertIn(("set", 4, 0), g.log)
-        self.assertEqual(g.notes[0][4] >> 16, 90)
+        self.assertEqual(g.notes, [], "removed, and the strike didn't create anything")
 
     def test_scrolled_view_uses_the_absolute_step(self):
-        g = self.rig(base=16); self.strike(g, 1, 64)
+        g = self.rig(base=16); w32(g.u, VIEW + 0x11404, 16)          # bank 16 shown (pads = steps 16..31)
+        self.strike(g, 1, 64, pad=3)
         self.tap(g, 3)
         self.assertEqual([(n[1] // 960, n[4] >> 16) for n in g.notes], [(19, 64)])
 
@@ -538,10 +557,12 @@ class StrikeInsert(unittest.TestCase):
         g = StrikeButton().rig(kind)
         return g
 
-    def press(self, g, seq, vel, ms):
-        g.u.mem_write(0x24048D60, struct.pack("<8I", 0x4B525453, seq, 3, vel, 0, 0, 0, 0))
+    def press(self, g, seq, vel, ms, pad=2, tick=True):
+        StrikeButton().generate(g)                    # per-pad state exists (old presses don't count)
+        g.u.mem_write(0x24048D60 + pad, bytes([seq])); g.u.mem_write(0x24048D70 + pad, bytes([vel]))
         w32(g.u, 0x30035F40, ms)
-        StrikeButton().generate(g)                    # a UI tick sees the strike (stamp)
+        if tick:
+            StrikeButton().generate(g)                # a UI tick sees the strike (stamp)
 
     def insert(self, g, rec, ms):
         w32(g.u, 0x30035F40, ms)
@@ -573,8 +594,17 @@ class StrikeInsert(unittest.TestCase):
 
     def test_step_view_path_is_not_applied_twice(self):
         g = self.rig(); self.press(g, 5, 44, 10000)
-        w32(g.u, 0x24048C80 + 20, 5)                  # SU->r[0]: the Step view's press consumed seq 5
+        w32(g.u, 0x30035F40, 10050); g.call(0x0815D1EC, VIEW, 2)   # the Step view's press used pad 2's strike
         self.assertEqual(self.insert(g, note(2, nid=0), 10100)[4] >> 16, 100)
+
+    def test_insert_before_any_ui_tick_still_counts_as_fresh(self):
+        g = self.rig(); self.press(g, 5, 44, 10000, tick=False)
+        self.assertEqual(self.insert(g, note(2, nid=0), 10010)[4] >> 16, 44)
+
+    def test_insert_uses_the_note_s_own_pad(self):
+        g = self.rig(); self.press(g, 5, 44, 10000, pad=2); self.press(g, 7, 99, 10000, pad=6)
+        self.assertEqual(self.insert(g, note(2, pad=6, nid=0), 10100)[4] >> 16, 99)
+        self.assertEqual(self.insert(g, note(2, pad=2, nid=0), 10100)[4] >> 16, 44)
 
     def test_off_means_off(self):
         g = self.rig(); self.press(g, 5, 44, 10000)

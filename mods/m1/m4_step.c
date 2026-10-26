@@ -261,7 +261,6 @@ static void sync_defaults(void *v) {
 
 __attribute__((used, retain)) void step_header_before(void *v) {
     if (!drum_step_view(v) || !claim()) return;
-    strike_init(); STRIKE_SET->view = 1;          /* the drum step view is the active SEQ view */
     for (u32 i = 0; i < 4; i++) DRUM_KEYS[4 + i] = SU->key[i];
     sync_defaults(v);
 }
@@ -322,32 +321,72 @@ __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
     return 1;
 }
 
-/* ---- strike velocity: a tapped-in step takes the hit's velocity ----------
- * The M7 records each pad press (STRIKE, stock's velocity formula). When the
- * drum step view handles a pad press (0x0815D1EC) a fresh strike is kept as
- * pending; when stock's toggle (0x0815D114) then creates a step there, the
- * new note gets that velocity (locked if it differs from the pad default).
- * Touchscreen taps have no fresh strike and get the default, as before.
- * Always on (v3.8): the menu toggle of v3.6/v3.7 was removed. */
+/* ---- strike velocity: a new step takes its pad's hit velocity ------------
+ * The M7 keeps a per-pad strike (STRIKES: press counter + peak velocity).
+ * Step view: the pad press (0x0815D1EC) marks that pad pending; when stock's
+ * toggle (0x0815D114) then creates the step, the note gets that pad's peak
+ * velocity. Several pads pressed together each use their own strike.
+ * Any view (drum Sequence page): stock's insert (0x0812E070, strike_insert)
+ * applies the strike of the note's pad if it is fresh and unused.
+ * Applied strikes are locked if they differ from the pad default. */
 #define STEP_HAS_NOTE 0x0815BCB4u   /* (view, visible index) */
 #define STRIKE_WINDOW_MS 3000u
+#define STRIKE_FRESH_MS 500u
+#define BUMP_CUR (*(volatile u32 *)0x3000004Cu)
+#define BUMP_END (*(volatile u32 *)0x30000048u)
+#define BUMP_ALLOC 0x08104C08u
+
+typedef struct {
+    u32 gen;
+    u8 used[16];        /* press counter last used to set a velocity, per pad */
+    u8 seen[16];        /* press counter last seen by a UI tick, per pad */
+    u32 seen_ms[16];    /* ... and when */
+    u32 pend_ms;        /* time of the latest pending Step-view press */
+    u16 pend;           /* Step view: pads pressed, awaiting their toggle */
+    u16 r_;
+} PadState;
 
 static void strike_init(void) {
     if (STRIKE_SET->magic == STRIKE_SET_MAGIC) return;
     STRIKE_SET->off = 0;          /* on by default */
-    STRIKE_SET->view = 0;
+    STRIKE_SET->pads = 0;
     STRIKE_SET->magic = STRIKE_SET_MAGIC;
 }
 static int strike_off(void) { strike_init(); return STRIKE_SET->off != 0; }
 
+/* This boot's per-pad state (0 if the native allocator has no room). */
+static volatile PadState *pads(void) {
+    strike_init();
+    volatile PadState *ps = (volatile PadState *)STRIKE_SET->pads;
+    if (ps && ps->gen == boot_gen()) return ps;
+    u32 cur = BUMP_CUR, end = BUMP_END;
+    if (end <= cur || end - cur < sizeof(PadState) + 64u) return 0;   /* the native allocator faults on overflow */
+    u32 got = FN(BUMP_ALLOC, u32 (*)(u32))(sizeof(PadState));
+    if (got != cur) return 0;
+    ps = (volatile PadState *)got;
+    for (u32 i = 0; i < sizeof(PadState); i++) ((volatile u8 *)ps)[i] = 0;
+    for (u32 p = 0; p < 16; p++) ps->used[p] = ps->seen[p] = STRIKES->seq[p];   /* old presses don't count */
+    ps->gen = boot_gen();
+    STRIKE_SET->pads = (u32)ps;
+    return ps;
+}
+
+static void apply_strike(void *v, u32 *e, u32 vel) {
+    u32 dflt;
+    if (!v || !pad_default(v, F_VEL, &dflt)) dflt = v ? W(v, 0x114C0) : 0u;
+    note_set(e, F_VEL, vel);
+    u32 locks = step_locks(e[5]);
+    e[5] = with_locks(e[5], vel != dflt ? locks | LOCK_VEL : locks & ~LOCK_VEL);
+}
+
 __attribute__((used, retain)) void strike_press(void *v, u32 pad) {
-    (void)pad;
-    SU->r[1] = 0;
-    if (!drum_step_view(v) || strike_off()) return;
-    if (STRIKE->magic != STRIKE_MAGIC || STRIKE->seq == SU->r[0]) return;   /* no new press seen */
-    SU->r[0] = STRIKE->seq;
-    SU->r[1] = STRIKE->vel;
-    SU->r[2] = UI_TICK_MS;
+    volatile PadState *ps;
+    if (pad >= 16 || !drum_step_view(v) || strike_off() || !(ps = pads())) return;
+    u32 seq = STRIKES->seq[pad];
+    if (seq == ps->used[pad]) return;                         /* no new press of this pad */
+    ps->used[pad] = (u8)seq;
+    ps->pend |= (u16)(1u << pad);
+    ps->pend_ms = UI_TICK_MS;
 }
 
 __attribute__((used, retain)) u32 toggle_pre(void *v, u32 idx) {
@@ -356,20 +395,22 @@ __attribute__((used, retain)) u32 toggle_pre(void *v, u32 idx) {
 
 static int pad_default(void *v, u32 f, u32 *out);
 __attribute__((used, retain)) void toggle_post(void *v, u32 idx, u32 had) {
-    u32 vel = SU->r[1];
-    SU->r[1] = 0;
-    if (had || !vel || UI_TICK_MS - SU->r[2] > STRIKE_WINDOW_MS || !drum_step_view(v)) return;
+    volatile PadState *ps = pads();
+    if (!ps || !drum_step_view(v)) return;
+    u32 step = W(v, 0x113F4) + idx, pad = step - W(v, 0x11404), bit = 1u << (pad & 15u);
+    if (pad >= 16 || !(ps->pend & bit)) return;
+    ps->pend &= (u16)~bit;
+    if (had || UI_TICK_MS - ps->pend_ms > STRIKE_WINDOW_MS) return;
+    u32 vel = STRIKES->vel[pad];
+    if (!vel) return;
     void *container = (void *)W(v, 0x113DC);
-    u32 pad = W(v, 0x11400), step = W(v, 0x113F4) + idx, e[6], dflt;
-    if (!pad_default(v, F_VEL, &dflt)) dflt = W(v, 0x114C0);
+    u32 drum = W(v, 0x11400), e[6];
     for (u32 j = 0; j < 511; j++) {
         if (!FN(NOTE_GET, int (*)(void *, u32, u32 *))(container, j, e)) break;
-        if ((e[0] & 0xFFu) != 1u || (e[0] >> 16) != pad) continue;
+        if ((e[0] & 0xFFu) != 1u || (e[0] >> 16) != drum) continue;
         int t = (int)e[1], q = offset_of(e[1]);
         if ((u32)((t - q) / 960) != step) continue;
-        note_set(e, F_VEL, vel);
-        u32 locks = step_locks(e[5]);
-        e[5] = with_locks(e[5], vel != dflt ? locks | LOCK_VEL : locks & ~LOCK_VEL);
+        apply_strike(v, e, vel);
         FN(NOTE_PUT, void (*)(void *, u32 *))(container, e);
         publish(v);
         return;
@@ -397,7 +438,6 @@ static int piano_selected(void *v, u32 *rec) {
 }
 
 __attribute__((used, retain)) void piano_header_after(void *v) {
-    strike_init(); STRIKE_SET->view = 0;          /* piano roll: no Strike Vel button */
     if (!piano_note_view(v) || !claim()) return;
     if (H(v, 0x11BCC0 + PIANO_SLOT * 2)) return;           /* slot taken (stock changed?): leave it */
     u32 rec[6];
@@ -509,10 +549,9 @@ static int drum_track_selected(void) {
 __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int changed) {
     (void)model;
     strike_init();
-    if (STRIKE->magic == STRIKE_MAGIC && STRIKE->seq != STRIKE_SET->r[2]) {
-        STRIKE_SET->r[2] = STRIKE->seq;           /* newest press seen ... */
-        STRIKE_SET->view = UI_TICK_MS;            /* ... at this UI time */
-    }
+    volatile PadState *ps = pads();
+    for (u32 p = 0; ps && p < 16; p++)
+        if (STRIKES->seq[p] != ps->seen[p]) { ps->seen[p] = STRIKES->seq[p]; ps->seen_ms[p] = UI_TICK_MS; }
     if (MODEL_PAGE == 0x27) {
         int drum = drum_track_selected(), ins = 0;
         if (drum) ins = header_action_lit(out, STRIKE_ACTION, STRIKE_LABEL, !STRIKE_SET->off);
@@ -537,22 +576,27 @@ __attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
     if (ev[0] != STRIKE_ACTION || !drum_track_selected()) return 0;
     strike_init();
     STRIKE_SET->off = !STRIKE_SET->off;
-    SU->r[1] = 0;                                     /* drop any pending strike */
+    volatile PadState *ps = pads();
+    if (ps) ps->pend = 0;                             /* drop pending strikes */
     return 1;
 }
 
 /* Any view's new note (stock's insert, 0x0812E070: model, sequence, record):
  * covers the drum Sequence page, which adds steps through the piano-roll view
- * object rather than the drum toggle. A strike applies once, only if it is
- * < 500 ms old and not already used by the Step view's own path (SU->r[0]),
- * so bulk inserts (Double Seq, Paste) and late touchscreen entries keep their
- * velocity. Applied strikes are locked (the pad default is not known here). */
-#define STRIKE_FRESH_MS 500u
+ * object rather than the drum toggle. The note's pad (its drum index) strike
+ * applies once, if fresh (pressed < 500 ms ago, or so recently that no UI tick
+ * has seen it yet) and not already used by the Step view's path, so bulk
+ * inserts (Double Seq, Paste) and late touchscreen entries keep their velocity.
+ * Locked (the view and its pad default aren't known here). */
 __attribute__((used, retain)) void strike_insert(u32 *rec) {
-    if ((rec[0] & 0xFFu) != 1u || strike_off() || STRIKE->magic != STRIKE_MAGIC) return;
-    if (STRIKE->seq == SU->r[0] || STRIKE->seq != STRIKE_SET->r[2]) return;   /* used, or not yet seen */
-    if (UI_TICK_MS - STRIKE_SET->view > STRIKE_FRESH_MS || !drum_track_selected()) return;
-    SU->r[0] = STRIKE->seq;
-    rec[4] = (rec[4] & 0xFFFFu) | (STRIKE->vel << 16);
+    volatile PadState *ps;
+    u32 pad = rec[0] >> 16;
+    if ((rec[0] & 0xFFu) != 1u || pad >= 16 || strike_off() || !(ps = pads())) return;
+    u32 seq = STRIKES->seq[pad], vel = STRIKES->vel[pad];
+    if (seq == ps->used[pad] || !vel) return;
+    if (seq == ps->seen[pad] && UI_TICK_MS - ps->seen_ms[pad] > STRIKE_FRESH_MS) return;
+    if (!drum_track_selected()) return;
+    ps->used[pad] = (u8)seq;
+    rec[4] = (rec[4] & 0xFFFFu) | (vel << 16);
     rec[5] = with_locks(rec[5], step_locks(rec[5]) | LOCK_VEL);
 }

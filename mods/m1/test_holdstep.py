@@ -92,11 +92,11 @@ class Tests(unittest.TestCase):
         p = Probe(); p.press(0); p.time(5100); p.release(0)
         self.assertIn(("toggle", 0), p.log)
 
-    def test_hold_boundary_is_400_ms(self):
-        p = Probe(); p.press(0); p.time(5000 + 450); p.release(0)
-        self.assertNotIn(("toggle", 0), p.log, "450 ms is a hold (stock needed 1000)")
-        p = Probe(); p.press(0); p.time(5000 + 300); p.release(0)
-        self.assertIn(("toggle", 0), p.log, "300 ms is still a tap")
+    def test_hold_boundary_is_150_ms(self):
+        p = Probe(); p.press(0); p.time(5000 + 200); p.release(0)
+        self.assertNotIn(("toggle", 0), p.log, "200 ms is a hold (stock needed 1000)")
+        p = Probe(); p.press(0); p.time(5000 + 100); p.release(0)
+        self.assertIn(("toggle", 0), p.log, "100 ms is still a tap")
 
     def test_long_hold_release_does_not_toggle(self):
         p = Probe(); p.press(0); p.time(6500); p.release(0)
