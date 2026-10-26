@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x3000   # 12 KB since v3.17 (stall profile printer)
-VERSION = "3.17"                       # bump for every build that goes on the device
+VERSION = "3.18"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -84,6 +84,7 @@ NOTE_ROUTE, RETRIG_ACCEPT_SITE, RETRIG_EMIT_SITE = 0x0805F8E0, 0x08060B9A, 0x080
 # Audio stall snapshot (idle-restart investigation): the M7 main audio loop
 # FUN_0808DF00 refreshes the watchdog only on audio progress.
 SYSTICK_HANDLER, HAL_INCTICK = 0x0804BD40, 0x08044280   # M7 SysTick vector target: `b.w HAL_IncTick`
+M4_WD_SITE, M4_WD_SUPERVISOR = 0x08107ADC, 0x08108354   # M4 IRQ30: bl to the Main/PcmThread heartbeat supervisor
 STALL_SITES = [  # (bl site, original target, our function, purpose)
     (0x0808DF54, 0x080A0460, "stall_progress", "Stall snapshot: main audio loop progress (watchdog refresh)"),
     (0x0808DFB4, 0x080816C0, "stall_check", "Stall snapshot: main audio loop waiting (message pump)"),
@@ -410,6 +411,21 @@ def build(base_img, out):
     writes.append(dict(address=stock_end, size=len(pad), original_hex="", replacement_hex=pad.hex(),
                        purpose="M1: extend image with erased (0xFF) flash for appended M4 code"))
     patch(M4_CODE, code4 + MARKER, None, "M1 diag: M4 black-box code (appended)")
+    # M4 main-task watchdog profile (v3.18): the IRQ30 handler's `bl` to stock's
+    # heartbeat supervisor goes through a stub that first calls main_prof(msp, psp).
+    # Keystone cannot assemble `mrs r1, psp`: emit F3EF 8109.
+    stub = (M4_CODE + len(code4) + len(MARKER) + 3) & ~3
+    sup = asm("mov r0, sp", stub) + bytes.fromhex("eff30981")
+    sup += asm(f"push {{r3, lr}}; bl {s4['main_prof']:#x}; pop {{r3, lr}}; b.w {M4_WD_SUPERVISOR:#x}", stub + len(sup))
+    check_branches(sup, stub, {s4["main_prof"], M4_WD_SUPERVISOR}, "M4 watchdog profile stub")
+    if stub + len(sup) > M4_LIMIT:
+        raise SystemExit("M4 watchdog profile stub overruns the black-box block")
+    patch(stub, sup, None, "M4 watchdog profile: stub before the heartbeat supervisor")
+    orig = asm(f"bl {M4_WD_SUPERVISOR:#x}", M4_WD_SITE)
+    if bytes(base_img[M4_WD_SITE - BASE:M4_WD_SITE - BASE + 4]) != orig:
+        raise SystemExit(f"{M4_WD_SITE:#x}: not the expected bl to the heartbeat supervisor")
+    patch(M4_WD_SITE, asm(f"bl {stub:#x}", M4_WD_SITE), orig,
+          "M4 watchdog profile: IRQ30 -> main_prof, then stock's heartbeat supervisor")
 
     # --- Probability editor conversions (Lab T2 sites, clamp only since v3.3)
     ui = bytearray(); ui_syms = {}

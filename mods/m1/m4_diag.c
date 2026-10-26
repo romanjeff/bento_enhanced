@@ -265,6 +265,21 @@ static int audio_watch(Out *o, u32 now) {
  * section uses. Fill the 1.5 KB above it once with a known pattern (it
  * survives resets) and report any word that changes: nonzero = something in
  * stock uses this area after all. */
+#define WD ((volatile u32 *)0x3000F624u)
+#define MP_START 1000u
+#define MP_EVERY 100u
+#define MP_STACK 2500u
+typedef struct {
+    u32 magic, gen, events, n, gap, stack_gap, frame, from_psp;
+    u32 max_main, max_pcm, r_[6];
+    u32 pc[40], lr[40];
+    u16 at[40];
+    u32 stack[64];
+} MProf;
+#define MPROF ((volatile MProf *)0x3003D400u)
+#define MPROF_MAGIC 0x3150524Du /* "MRP1" */
+_Static_assert(0x3003D400u + sizeof(MProf) <= 0x3003D800u, "M4 profile past its 1 KB");
+
 #define CANARY ((volatile u32 *)0x3003CA00u)
 #define CANARY_WORDS ((0x3003D000u - 0x3003CA00u) / 4u)
 #define CANARY_MAGIC 0x59524E43u /* "CNRY" */
@@ -282,6 +297,8 @@ static void ram(Out *o) {
     if (CANARY[0] != CANARY_MAGIC) bad = CANARY_WORDS;
     else for (u32 i = 1; i < CANARY_WORDS; i++) bad += CANARY[i] != canary_word(i);
     puts_(o, " d2 canary changed="); dec(o, bad);
+    puts_(o, " | wd worst gap main="); dec(o, MPROF->max_main);
+    puts_(o, "/3333 pcm="); dec(o, MPROF->max_pcm); puts_(o, "/6249");
 }
 
 static void counters(Out *o) {
@@ -372,6 +389,57 @@ static void prof_print(Out *o) {
     puts_(o, "\r\n");
 }
 
+/* M4 main-task watchdog profile (v3.18). Stock feeds the M4 watchdog (WWDG2,
+ * ~0.28 s) from a timer interrupt (IRQ30, FUN_081082F8) only while two
+ * heartbeats are fresh: "Main" (wd[1], stale after 3333 ticks) and
+ * "PcmThread" (wd[0], 6249); wd[2] is the tick counter. Stock kicks them from
+ * 21 places inside its long operations. Our stub before that check (build.py)
+ * calls main_prof: it keeps this boot's worst gaps and, once Main is >= 1000
+ * ticks stale, samples the interrupted task's PC/LR every 100 ticks plus one
+ * stack copy, so a reset names what kept the UI task from checking in. */
+
+__attribute__((used, retain)) void main_prof(const u32 *msp, const u32 *psp) {
+    volatile MProf *p = MPROF;
+    if (!(WD[3] & 0xFFu)) return;                      /* supervisor not enabled yet */
+    u32 now = WD[2], gap = now - WD[1], pgap = now - WD[0];
+    if (gap > p->max_main) p->max_main = gap;
+    if (pgap > p->max_pcm) p->max_pcm = pgap;
+    if (gap < MP_START) return;
+    int task = (msp[1] & 4u) != 0;                     /* EXC_RETURN saved by the handler's push {r3, lr} */
+    const u32 *frame = task ? psp : msp + 2;
+    if (gap == MP_START || p->magic != MPROF_MAGIC || gap < p->gap) {   /* a new stale stretch */
+        p->magic = MPROF_MAGIC; p->gen = CFG->r[0]; p->events++;
+        p->n = 0; p->stack_gap = 0;
+    }
+    p->gap = gap;
+    u32 i = p->n;
+    if (i < 40 && gap >= MP_START + MP_EVERY * i) {
+        p->pc[i] = frame[6]; p->lr[i] = frame[5]; p->at[i] = (u16)gap; p->n = i + 1;
+    }
+    if (!p->stack_gap && gap >= MP_STACK) {
+        for (u32 k = 0; k < 64; k++) p->stack[k] = frame[k];
+        p->stack_gap = gap; p->frame = (u32)frame; p->from_psp = (u32)task;
+    }
+}
+
+static void mprof_print(Out *o) {
+    volatile MProf *p = MPROF;
+    u32 n = p->n < 40 ? p->n : 40;
+    puts_(o, "M4 main-task stall (from RAM): gen "); dec(o, p->gen);
+    puts_(o, ", Main heartbeat stale "); dec(o, p->gap); puts_(o, " ticks (limit 3333)");
+    puts_(o, "\r\n  samples ticks:pc/lr");
+    for (u32 i = 0; i < n; i++) {
+        puts_(o, i % 6 ? " " : "\r\n   "); dec(o, p->at[i]); puts_(o, ":");
+        hex(o, p->pc[i], 8); puts_(o, "/"); hex(o, p->lr[i], 8);
+    }
+    if (p->stack_gap) {
+        puts_(o, "\r\n  stack at "); dec(o, p->stack_gap); puts_(o, p->from_psp ? " ticks, task frame " : " ticks, irq frame ");
+        hex(o, p->frame, 8);
+        for (u32 k = 0; k < 64; k++) { puts_(o, k % 8 ? " " : "\r\n   "); hex(o, p->stack[k], 8); }
+    }
+    puts_(o, "\r\n");
+}
+
 static void init(u32 now) {
     u32 gen = (M4H->magic == DIAG_MAGIC) ? M4H->r[0] + 1u : 1u;
     u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, region = 0;
@@ -406,6 +474,10 @@ static void init(u32 now) {
             stall7_print(&o);
             ST7->magic = 0;              /* the M7 never rewrites magic until its next stall */
         }
+        if (MPROF->magic == MPROF_MAGIC && MPROF->n) {   /* what kept the M4 UI task from checking in */
+            mprof_print(&o);
+        }
+        MPROF->magic = 0; MPROF->max_main = MPROF->max_pcm = 0;   /* this boot's worst gaps start here */
         if (PROF->magic == PROF_MAGIC && PROF->n) {   /* where the M7 was while audio stalled */
             prof_print(&o);
             PROF->magic = 0;

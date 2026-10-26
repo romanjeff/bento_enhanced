@@ -28,6 +28,11 @@
 #define NVIC_IABR ((volatile u32 *)0xE000E300u)
 #define DMA2 ((volatile u32 *)0x40020400u)
 #define STALL_MS 100u
+/* Stock HAL tick (ms since this M7 boot; .bss, zeroed at reset). Our tracking
+ * line survives resets, so without this guard the normal ~1.4 s display
+ * bring-up of the NEXT boot looked like a stall (v3.1-v3.17 records). */
+#define UWTICK (*(volatile u32 *)0x2401EDB8u)
+#define BOOT_GUARD_MS 5000u
 #define MS_CYC 480000u
 
 typedef struct {
@@ -60,7 +65,7 @@ __attribute__((used, retain)) void stall_progress(void) {
 
 /* No audio progress on this pass: snapshot once if it has lasted STALL_MS. */
 __attribute__((used, retain)) void stall_check(void) {
-    if (!ST->armed || ST->snapped) return;
+    if (!ST->armed || ST->snapped || UWTICK < BOOT_GUARD_MS) return;
     u32 dt = CYCCNT - ST->last;
     if (dt < STALL_MS * MS_CYC) return;
     u32 v;
@@ -105,7 +110,7 @@ static void prof_clean(volatile const void *p, u32 n) {
 
 __attribute__((used, retain)) void prof_sample(const u32 *frame) {
     volatile Prof *p = PROF;
-    if (!ST->armed) return;                   /* no audio progress seen yet this boot */
+    if (!ST->armed || UWTICK < BOOT_GUARD_MS) return;   /* booting: not a stall */
     if (p->magic != PROF_MAGIC || p->gen != ST->gen) {   /* first use this boot */
         p->magic = 0; p->gen = ST->gen; p->stalls = 0; p->n = 0; p->idle_ms = 0; p->stack_ms = 0;
         p->seen_last = ST->last; p->magic = PROF_MAGIC;

@@ -17,6 +17,7 @@ from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
 from unicorn.arm_const import *
 
 BASE = 0x08040000
+UWTICK = 0x2401EDB8       # stock M7 HAL tick (ms since boot)
 SENT = 0x08000100           # return sentinel (never executed: emu stops on reaching it)
 STACK = 0x2407F000
 LOG_LO, LOG_HI = 0x3003C000, 0x3003C9A0   # our reserved block (unlinked top of D2 SRAM2, v3.16): logger, monitors, strike line
@@ -174,6 +175,7 @@ class StallProfile(unittest.TestCase):
 
     def test_samples_the_stalled_code_and_keeps_counting_ticks(self):
         u = emu(DIAG)
+        w32(u, UWTICK, 10000)                                  # 10 s after the M7 booted
         w32(u, self.ST, 1000); w32(u, self.ST + 4, 1); w32(u, self.ST + 8, 7)   # last, armed, gen 7
         for ms in range(1, 401):
             self.tick(u, 0x0809F000 + ms * 2)
@@ -195,12 +197,70 @@ class StallProfile(unittest.TestCase):
         self.assertEqual(r32(u, self.PROF + 16), 0, "idle reset by progress")
         self.assertEqual(r32(u, self.PROF + 12), 18, "previous capture kept until a new stall")
 
+    def test_boot_is_not_a_stall(self):
+        """The tracking line survives resets: right after one, the M7's ~1.4 s display
+        bring-up has no audio progress yet. v3.1-v3.17 recorded that as a stall."""
+        u = emu(DIAG)
+        w32(u, self.ST, 1000); w32(u, self.ST + 4, 1); w32(u, self.ST + 8, 7)   # stale: previous boot
+        for ms in range(1, 1500):                              # uwTick counts up from 0 (HAL_IncTick)
+            self.tick(u, 0x080439C0)
+        self.assertEqual(r32(u, self.PROF + 12), 0, "no samples during boot")
+
     def test_hal_inctick_still_runs(self):
         a = emu(CH10); b = emu(DIAG)
         for u in (a, b):
             call(u, self.TICK)
         self.assertEqual(bytes(a.mem_read(0x24000000, 0x20000)), bytes(b.mem_read(0x24000000, 0x20000)),
                          "SysTick has the same effect on M7 RAM as stock (HAL_IncTick)")
+
+class MainTaskProfile(unittest.TestCase):
+    """v3.18: main_prof (M4 IRQ30, before stock's heartbeat supervisor)."""
+    WD, MP = 0x3000F624, 0x3003D400
+
+    def setUp(self):
+        self.u = emu(DIAG)
+        w32(self.u, self.WD + 12, 1)                           # supervisor enabled
+        w32(self.u, 0x3003C1E0 + 12, 5)                        # CFG->r[0]: boot gen 5
+        # handler stack: pushed {r3, EXC_RETURN=thread/PSP}; task frame on PSP
+        self.msp, self.psp = 0x2407E000, 0x2407D000
+        w32(self.u, self.msp + 4, 0xFFFFFFFD)
+        self.u.mem_write(self.psp, struct.pack("<8I", 0, 1, 2, 3, 12, 0x08120001, 0x0811CDA0, 0x01000000)
+                         + bytes(range(224)))
+
+    def run_ticks(self, main_kick, upto, start=0):
+        for t in range(start, upto + 1):
+            w32(self.u, self.WD + 8, t); w32(self.u, self.WD + 4, main_kick); w32(self.u, self.WD, t)
+            call(self.u, SYM4["main_prof"], self.msp, self.psp)
+
+    def test_worst_gaps_and_a_stale_main_profile(self):
+        self.run_ticks(main_kick=0, upto=2600)
+        u, mp = self.u, self.MP
+        self.assertEqual(r32(u, mp + 32), 2600, "worst Main gap")
+        self.assertEqual(r32(u, mp + 36), 0, "PcmThread kicked every tick")
+        self.assertEqual(r32(u, mp), 0x3150524D, "magic")
+        self.assertEqual(r32(u, mp + 4), 5, "boot gen")
+        self.assertEqual(r32(u, mp + 12), 17, "samples at 1000, 1100, ... 2600")
+        self.assertEqual(r32(u, mp + 64), 0x0811CDA0, "interrupted task pc")
+        self.assertEqual(r32(u, mp + 64 + 160), 0x08120001, "lr")
+        self.assertEqual(r32(u, mp + 20), 2500, "stack copied at 2500")
+        self.assertEqual(r32(u, mp + 28), 1, "from the task (PSP)")
+
+    def test_irq_frame_when_an_interrupt_was_interrupted(self):
+        w32(self.u, self.msp + 4, 0xFFFFFFF1)                  # EXC_RETURN: handler mode, MSP
+        self.u.mem_write(self.msp + 8, struct.pack("<8I", 0, 0, 0, 0, 0, 0x08100003, 0x08107000, 0))
+        self.run_ticks(main_kick=0, upto=1000)
+        self.assertEqual(r32(self.u, self.MP + 64), 0x08107000, "frame above the handler's push")
+
+    def test_fresh_main_records_nothing(self):
+        for t in range(0, 3000):
+            w32(self.u, self.WD + 8, t); w32(self.u, self.WD + 4, t - (t % 500)); w32(self.u, self.WD, t)
+            call(self.u, SYM4["main_prof"], self.msp, self.psp)
+        self.assertEqual(r32(self.u, self.MP + 32), 499, "worst gap")
+        self.assertNotEqual(r32(self.u, self.MP), 0x3150524D, "no capture below 1000")
+
+    def test_irq30_bl_goes_through_the_stub(self):
+        ins = struct.unpack_from("<HH", DIAG, 0x08107ADC - BASE)
+        self.assertNotEqual(DIAG[0x08107ADC - BASE:0x08107AE0 - BASE], CH10[0x08107ADC - BASE:0x08107AE0 - BASE])
 
 class NativeFunctions(unittest.TestCase):
     def pair(self):
@@ -503,6 +563,8 @@ class M4EndToEnd(unittest.TestCase):
         self.assertIn("boot gen 2, rtc 261026-153000", boot)
 
     def m7(self, fn, cyc):
+        if r32(self.u, UWTICK) < 10000:
+            w32(self.u, UWTICK, 10000)                   # well after the M7 booted (boot guard)
         w32(self.u, 0xE0001004, cyc)
         call(self.u, SYM7[fn], 0)
 
