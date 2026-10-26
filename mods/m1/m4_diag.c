@@ -354,6 +354,24 @@ static void stall7_print(Out *o) {
     puts_(o, "\r\n");
 }
 
+/* M7 stall profile (m7_stall.c prof_sample): interrupted PC/LR every 20 ms of
+ * a stall, and one raw stack copy (exception frame first: r0-r3 r12 lr pc xpsr). */
+static void prof_print(Out *o) {
+    u32 n = PROF->n < PROF_SAMPLES ? PROF->n : PROF_SAMPLES;
+    puts_(o, "M7 stall profile (from RAM): gen "); dec(o, PROF->gen);
+    puts_(o, ", stall #"); dec(o, PROF->stalls); puts_(o, " of that boot, idle "); dec(o, PROF->idle_ms);
+    puts_(o, " ms (SysTick)\r\n  samples ms:pc/lr");
+    for (u32 i = 0; i < n; i++) {
+        puts_(o, i % 6 ? " " : "\r\n   "); dec(o, PROF->at_ms[i]); puts_(o, ":");
+        hex(o, PROF->pc[i], 8); puts_(o, "/"); hex(o, PROF->lr[i], 8);
+    }
+    if (PROF->stack_ms) {
+        puts_(o, "\r\n  stack at "); dec(o, PROF->stack_ms); puts_(o, " ms, frame "); hex(o, PROF->frame, 8);
+        for (u32 k = 0; k < PROF_STACK_WORDS; k++) { puts_(o, k % 8 ? " " : "\r\n   "); hex(o, PROF->stack[k], 8); }
+    }
+    puts_(o, "\r\n");
+}
+
 static void init(u32 now) {
     u32 gen = (M4H->magic == DIAG_MAGIC) ? M4H->r[0] + 1u : 1u;
     u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, region = 0;
@@ -387,6 +405,10 @@ static void init(u32 now) {
         if (ST7->magic == STALL7_MAGIC) {
             stall7_print(&o);
             ST7->magic = 0;              /* the M7 never rewrites magic until its next stall */
+        }
+        if (PROF->magic == PROF_MAGIC && PROF->n) {   /* where the M7 was while audio stalled */
+            prof_print(&o);
+            PROF->magic = 0;
         }
         /* Post-mortem: our RAM slice survives a reset; before anything resets it,
          * write the previous boot's last records and counters. */

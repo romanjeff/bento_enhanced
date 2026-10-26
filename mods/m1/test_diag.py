@@ -163,6 +163,45 @@ class StrikePeak(unittest.TestCase):
         seq, vel = self.strikes(u)
         self.assertEqual((seq[4], vel[4]), (2, 0x1000 * 127 // 0xD000))
 
+class StallProfile(unittest.TestCase):
+    """v3.17: the M7 SysTick vector samples where the M7 is while audio is stalled."""
+    ST, PROF, TICK = 0x3003C080, 0x3003D000, 0x0804BD40
+
+    def tick(self, u, pc):
+        frame = struct.pack("<8I", 0, 1, 2, 3, 12, 0x08012345, pc, 0x01000000) + bytes(range(160))
+        u.mem_write(STACK, frame)
+        call(u, self.TICK)
+
+    def test_samples_the_stalled_code_and_keeps_counting_ticks(self):
+        u = emu(DIAG)
+        w32(u, self.ST, 1000); w32(u, self.ST + 4, 1); w32(u, self.ST + 8, 7)   # last, armed, gen 7
+        for ms in range(1, 401):
+            self.tick(u, 0x0809F000 + ms * 2)
+        self.assertEqual(r32(u, self.PROF), 0x31464F50, "magic")
+        self.assertEqual(r32(u, self.PROF + 4), 7, "boot gen")
+        self.assertEqual(r32(u, self.PROF + 8), 1, "one stall")
+        n = r32(u, self.PROF + 12)
+        self.assertEqual(n, 18, "samples at 50, 70, ... 390 ms")
+        self.assertEqual(r32(u, self.PROF + 16), 399, "idle ms (first tick only arms)")
+        pcs = [r32(u, self.PROF + 32 + 4 * i) for i in range(n)]
+        self.assertEqual(pcs[0], 0x0809F000 + 51 * 2, "first sample = interrupted pc")
+        self.assertEqual(r32(u, self.PROF + 32 + 160), 0x08012345, "lr")
+        self.assertEqual(r32(u, self.PROF + 24), 300, "stack copied at 300 ms")
+        self.assertEqual(r32(u, self.PROF + 28), STACK, "frame address")
+        stack = self.PROF + 32 + 160 + 160 + 80
+        self.assertEqual(r32(u, stack + 24), 0x0809F000 + 301 * 2, "stack copy starts with the frame")
+        w32(u, self.ST, 2000)                                  # audio progressed
+        self.tick(u, 0x0809F000)
+        self.assertEqual(r32(u, self.PROF + 16), 0, "idle reset by progress")
+        self.assertEqual(r32(u, self.PROF + 12), 18, "previous capture kept until a new stall")
+
+    def test_hal_inctick_still_runs(self):
+        a = emu(CH10); b = emu(DIAG)
+        for u in (a, b):
+            call(u, self.TICK)
+        self.assertEqual(bytes(a.mem_read(0x24000000, 0x20000)), bytes(b.mem_read(0x24000000, 0x20000)),
+                         "SysTick has the same effect on M7 RAM as stock (HAL_IncTick)")
+
 class NativeFunctions(unittest.TestCase):
     def pair(self):
         a, b = emu(CH10), emu(DIAG)
@@ -486,6 +525,21 @@ class M4EndToEnd(unittest.TestCase):
         self.assertIn("HISR=00200000", boot)
         self.tick(50); self.tick(1700)
         self.assertNotIn("M7 audio stall record", self.files[-1].decode(), "printed once")
+
+    def test_stall_profile_printed_next_boot_once(self):
+        self.tick(1000)                                  # M4 publishes boot gen 1
+        self.m7("stall_progress", 1000)                  # armed
+        frame = struct.pack("<8I", 0, 1, 2, 3, 12, 0x08055551, 0x0809ABCC, 0x01000000) + bytes(160)
+        for _ in range(320):                             # 320 ms without audio progress
+            self.u.mem_write(STACK, frame)
+            call(self.u, 0x0804BD40)
+        self.tick(50); self.tick(1700)                   # watchdog reset, next boot
+        boot = self.files[-1].decode()
+        self.assertIn("M7 stall profile (from RAM): gen 1, stall #1 of that boot, idle 319 ms (SysTick)", boot)
+        self.assertIn("50:0809abcc/08055551", boot)
+        self.assertIn("stack at 300 ms, frame 2407f000", boot)
+        self.tick(50); self.tick(1700)
+        self.assertNotIn("M7 stall profile", self.files[-1].decode(), "printed once")
 
     def test_m7_progress_rearms_after_a_reboot(self):
         self.tick(1000)

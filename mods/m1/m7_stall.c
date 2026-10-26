@@ -90,3 +90,48 @@ __attribute__((used, retain)) void stall_check(void) {
     ST->snapped = 1;
     clean_all();
 }
+
+/* Stall profile (v3.17): called from the SysTick vector (1 ms, see build.py)
+ * with the interrupted exception frame. While the main loop has made no audio
+ * progress, sample where the M7 actually is: the stall record above is only
+ * taken once the loop runs again, so it cannot say what blocked it. Idle time
+ * is counted in ticks, which keep coming even if the core sleeps. */
+static void prof_clean(volatile const void *p, u32 n) {
+    u32 a = (u32)p & ~31u, end = (u32)p + n;
+    __asm volatile("dsb" ::: "memory");
+    for (; a < end; a += 32) DCCMVAC = a;
+    __asm volatile("dsb" ::: "memory");
+}
+
+__attribute__((used, retain)) void prof_sample(const u32 *frame) {
+    volatile Prof *p = PROF;
+    if (!ST->armed) return;                   /* no audio progress seen yet this boot */
+    if (p->magic != PROF_MAGIC || p->gen != ST->gen) {   /* first use this boot */
+        p->magic = 0; p->gen = ST->gen; p->stalls = 0; p->n = 0; p->idle_ms = 0; p->stack_ms = 0;
+        p->seen_last = ST->last; p->magic = PROF_MAGIC;
+        prof_clean(p, 32);
+        return;
+    }
+    if (ST->last != p->seen_last) {           /* audio progressed since the last tick */
+        p->seen_last = ST->last;
+        p->idle_ms = 0;
+        return;
+    }
+    u32 idle = ++p->idle_ms;
+    if (idle < PROF_START_MS) return;
+    if (idle == PROF_START_MS) {              /* a new stall: start over (keep the latest) */
+        p->stalls++; p->n = 0; p->stack_ms = 0;
+    }
+    u32 i = p->n;
+    if (i < PROF_SAMPLES && idle >= PROF_START_MS + PROF_EVERY_MS * i) {
+        p->pc[i] = frame[6]; p->lr[i] = frame[5]; p->at_ms[i] = (u16)idle;
+        p->n = i + 1;
+        prof_clean(&p->pc[i], 4); prof_clean(&p->lr[i], 4); prof_clean(&p->at_ms[i], 2);
+    }
+    if (!p->stack_ms && idle >= PROF_STACK_MS) {
+        for (u32 k = 0; k < PROF_STACK_WORDS; k++) p->stack[k] = frame[k];
+        p->frame = (u32)frame; p->stack_ms = idle;
+        prof_clean(p->stack, sizeof(p->stack));
+    }
+    prof_clean(p, 32);
+}

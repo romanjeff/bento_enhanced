@@ -41,8 +41,8 @@ M7_LIMIT = 0x080DB800
 APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
-M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.16"                       # bump for every build that goes on the device
+M4_LIMIT = M4_CODE + 0x3000   # 12 KB since v3.17 (stall profile printer)
+VERSION = "3.17"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -83,6 +83,7 @@ NOTE_ROUTE, RETRIG_ACCEPT_SITE, RETRIG_EMIT_SITE = 0x0805F8E0, 0x08060B9A, 0x080
 
 # Audio stall snapshot (idle-restart investigation): the M7 main audio loop
 # FUN_0808DF00 refreshes the watchdog only on audio progress.
+SYSTICK_HANDLER, HAL_INCTICK = 0x0804BD40, 0x08044280   # M7 SysTick vector target: `b.w HAL_IncTick`
 STALL_SITES = [  # (bl site, original target, our function, purpose)
     (0x0808DF54, 0x080A0460, "stall_progress", "Stall snapshot: main audio loop progress (watchdog refresh)"),
     (0x0808DFB4, 0x080816C0, "stall_check", "Stall snapshot: main audio loop waiting (message pump)"),
@@ -375,6 +376,20 @@ def build(base_img, out):
     tramps += loop + bytes(-len(loop) % 4)
     patch(COND_LOOP_SITE, asm(f"b.w {t:#x}", COND_LOOP_SITE), bytes.fromhex(COND_LOOP_ORIG),
           "Conditions (Lab T2): sequence loop boundary -> cond_loop")
+    # Stall profile (v3.17): the M7 SysTick handler is a lone `b.w HAL_IncTick`;
+    # sample the interrupted frame first (m7_stall.c prof_sample).
+    t = M7_TRAMP + len(tramps)
+    # The M7 is bare-metal and always on MSP (SVC/PendSV are default stubs), so the
+    # frame is at MSP. Keystone cannot assemble `mrs r0, msp`: emit F3EF 8008.
+    tick = bytes.fromhex("eff30880") + asm(
+        f"push {{r0, lr}}; bl {s7['prof_sample']:#x}; pop {{r0, lr}}; b.w {HAL_INCTICK:#x}", t + 4)
+    check_branches(tick, t, {s7["prof_sample"], HAL_INCTICK}, "SysTick profile hook")
+    tramps += tick + bytes(-len(tick) % 4)
+    orig = asm(f"b.w {HAL_INCTICK:#x}", SYSTICK_HANDLER)
+    if bytes(base_img[SYSTICK_HANDLER - BASE:SYSTICK_HANDLER - BASE + 4]) != orig:
+        raise SystemExit("SysTick handler is not the expected b.w HAL_IncTick")
+    patch(SYSTICK_HANDLER, asm(f"b.w {t:#x}", SYSTICK_HANDLER), orig,
+          "Stall profile: M7 SysTick samples the interrupted PC/LR while audio is stalled")
     if M7_TRAMP + len(tramps) > M7_CODE:
         raise SystemExit("trampolines overrun into M7 code")
     patch(M7_TRAMP, tramps, bytes(len(tramps)), "M1 diag: M7 trampolines")

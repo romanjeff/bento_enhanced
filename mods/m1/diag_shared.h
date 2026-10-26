@@ -158,4 +158,25 @@ typedef struct {
 _Static_assert(sizeof(Rec) == 48, "record size");
 _Static_assert(0x3003C2C0u + DIAG_RECORDS * sizeof(Rec) <= 0x3003C600u, "records overrun our slice");
 
+/* M7 stall profile (v3.17, m7_stall.c prof_sample): the M7 SysTick (1 ms)
+ * samples the interrupted PC/LR while the main audio loop has made no
+ * progress for >= PROF_START_MS, every PROF_EVERY_MS, plus one raw stack copy
+ * at PROF_STACK_MS. A new stall starts a new capture, so the last (fatal)
+ * stall survives the reset. M7 writes and cleans; the M4 prints it at boot.
+ * Lives in the D2 gap above the canary (0x3003D000.., see m4_diag.c). */
+#define PROF_SAMPLES 40u
+#define PROF_STACK_WORDS 48u
+#define PROF_START_MS 50u
+#define PROF_EVERY_MS 20u
+#define PROF_STACK_MS 300u
+typedef struct {
+    u32 magic, gen, stalls, n, idle_ms, seen_last, stack_ms, frame;   /* one cache line */
+    u32 pc[PROF_SAMPLES], lr[PROF_SAMPLES];
+    u16 at_ms[PROF_SAMPLES];
+    u32 stack[PROF_STACK_WORDS];
+} Prof;
+#define PROF ((volatile Prof *)0x3003D000u)
+#define PROF_MAGIC 0x31464F50u /* "POF1" */
+_Static_assert(0x3003D000u + sizeof(Prof) <= 0x3003D400u, "profile past its 1 KB");
+
 #endif
