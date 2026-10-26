@@ -318,6 +318,8 @@ class M4EndToEnd(unittest.TestCase):
         self.assertEqual(len(self.files), 1)
         text = self.files[0].decode()
         self.assertIn("BENTO black box, firmware BE", text)
+        self.assertRegex(text, r"at boot \(after the black box's own buffers\): \| ram bump cur=[0-9a-f]{8} end=[0-9a-f]{8} free=\d+")
+        self.assertRegex(text, r"\n# .* \| ram bump cur=[0-9a-f]{8} end=[0-9a-f]{8} free=\d+")
         self.assertIn("# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0"
                       " | midi ring max_fill=0 overflows=0 | m7 stack min_msp=", text)
         self.assertEqual(text.count(" SEND "), 2)

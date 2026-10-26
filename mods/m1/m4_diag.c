@@ -259,6 +259,15 @@ static int audio_watch(Out *o, u32 now) {
     return 0;
 }
 
+/* Native bump allocator (0x08104C08): advance-only, so free space now is this
+ * boot's minimum. Sizing data for M2's pressure-curve pool. */
+static void ram(Out *o) {
+    u32 cur = BUMP_CUR, end = BUMP_END;
+    puts_(o, " | ram bump cur="); hex(o, cur, 8);
+    puts_(o, " end="); hex(o, end, 8);
+    puts_(o, " free="); dec(o, end > cur ? end - cur : 0u);
+}
+
 static void counters(Out *o) {
     puts_(o, "m7 dropped="); dec(o, M7H->dropped);
     puts_(o, " | poly sent="); dec(o, M7H->r[0]);
@@ -274,6 +283,7 @@ static void counters(Out *o) {
     }
     puts_(o, " min_sp="); hex(o, RINGSTAT->min_sp, 8);
     puts_(o, " heartbeat="); dec(o, RINGSTAT->heartbeat);
+    ram(o);
     if (STRIKE_SET->magic == STRIKE_SET_MAGIC) {   /* Strike Vel header button (m4_step.c) */
         puts_(o, " | strike btn calls="); dec(o, STRIKE_SET->r[0]);
         puts_(o, " drum="); dec(o, STRIKE_SET->r[1] & 1u);
@@ -350,6 +360,7 @@ static void init(u32 now) {
             puts_(&o, "\r\nprevious boot: last UI-loop pass at ms "); dec(&o, M4H->r[3]);
             puts_(&o, ", rtc "); rtc_print(&o, AMON->rtc_tr, AMON->rtc_dr);
         }
+        puts_(&o, "\r\nat boot (after the black box's own buffers):"); ram(&o);
         puts_(&o, "\r\n");
         crash_record(&o);
         if (AMON->snap_magic == SNAP_MAGIC) {     /* survives the reset the stall caused */
