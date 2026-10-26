@@ -279,7 +279,7 @@ class M4EndToEnd(unittest.TestCase):
         self.tick(2700)                                  # idle >= 1500 ms -> flush
         self.assertEqual(len(self.files), 1)
         text = self.files[0].decode()
-        self.assertIn("BENTO M1 poly-AT + poly cap v2.3 black box (stock 1.6.1)", text)
+        self.assertIn("BENTO M1 black box (stock 1.6.1 + poly-AT, conditions, inspect)", text)
         self.assertIn("# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0"
                       " | midi ring max_fill=0 overflows=0 | m7 stack min_msp=", text)
         self.assertEqual(text.count(" SEND "), 2)

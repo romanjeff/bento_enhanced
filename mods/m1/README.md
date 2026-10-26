@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (58 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (111 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -187,3 +187,27 @@ step on the screen works the same way.
 - Removed from Lab's version: the parameter-lock call on step press (locks not ported).
 - `test_holdstep.py`: Lab's 15 tests ported (stock's own press/release/edit code runs),
   plus a boot-generation test. Against plain stock, 12 of the 16 fail as expected.
+
+## Hold shortcuts (since v2.6)
+
+Port of Lab's K16 hold controls (GPL-3.0-or-later) as in CH10, **without PROJ as Shift**:
+
+| Hold | Pads | Release |
+|---|---|---|
+| TRACKS | top row: track 1–8 instrument page; bottom row: its sequencer (playing clip if any) | stays on the destination |
+| LAUNCH | bottom row: start the track's selected clip; top row: stop it | back to your screen if used (pad or encoder); a plain tap stays, as on stock |
+| MIXER | shows Solo/Mute; top row: solo, bottom row: mute; encoders work | as LAUNCH |
+| INST (drum sequencer only) | pick a sound | back to the sequencer with that sound selected; no pick = stay in INST |
+
+While a hold button is down, pads don't play notes. PROJ is not a modifier: PROJ + pad
+plays as on stock.
+
+- M7: `m7_controls_input.s` at `0x080D9000` (pad receiver `0x0808D1FE`), startup at
+  `0x080D9800` (`0x080404B6`) initialises only its own state line `0x24048CA0`. Lab's
+  startup also zeroed lock RAM that is heap in our layout, and its UI startup zeroed
+  `0x24048000–0x24048800` (our black-box slice): both dropped.
+- M4: `m4_controls.c` (consumer `0x0813F98C`, INST selection observer `0x0813BD10`,
+  mixer render vtable `0x0819DD20`); state `0x24048CC0–0x24048D48`, reset per boot.
+- `test_controls.py`: Lab's input and UI tests (stock's real pad receiver and UI queue
+  run) plus ours for PROJ, encoder-as-use and boot reset. `lab_receiver_fixture.py` is
+  Lab's fixture, unchanged. With Lab's PROJ mask the PROJ tests fail (checked).

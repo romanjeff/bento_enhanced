@@ -37,7 +37,7 @@ M7_LIMIT = 0x080DB800
 APPEND_FROM = 0x081B4000
 M4_CODE = 0x081B5000
 M4_LIMIT = 0x081B6600
-MARKER = b"BENTO_MOD:m1-polyat:v2.5-stock+conditions+inspect" + bytes(1)
+MARKER = b"BENTO_MOD:m1-polyat:v2.6-stock+conditions+inspect+holds" + bytes(1)
 
 # (name, site, original bytes, displaced instruction(s), resume address, call setup)
 M7_HOOKS = [
@@ -101,6 +101,18 @@ HOLD_REMEMBER_SITES = [             # (bl site, function, extra setup)
 ]
 HOLD_EDIT_SITES = [0x0815C7C4, 0x0815C8AC, 0x0815C990]   # velocity, condition, timing edit entries
 HOLD_MATCH_SITE, HOLD_SELECTED_SITE = 0x0815B9C0, 0x0815BAB0
+
+# Hold shortcuts (port of bento-community-lab K16 hold controls, GPL-3.0-or-later).
+CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (below our 0x080DA000)
+CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
+CTRL_STATE = 0x24048CA0                             # M7-only line: magic, suppress mask, drops, enable, pad map
+CTRL_WRAP, CTRL_CODE, CTRL_LIMIT = 0x081B7000, 0x081B7200, 0x081B8000
+CTRL_CONSUMER_SITE, CTRL_DISPATCH_STOCK, CTRL_DISPATCH_NEXT = 0x0813F98C, 0x0813F990, 0x0813F2FC
+CTRL_SELECTION_SITE, CTRL_MIXER_VT = 0x0813BD10, 0x0819DD20
+CTRL_SYMBOLS = dict(STATE=hex(CTRL_STATE), STATE_MAGIC="0x31534d42", EVENT_MAGIC="0x314d5442", EVENT_TAIL="0x31525442",
+                    PRODUCER_GLOBAL="0x2401bd3c", ENQUEUE="0x08082221", PAD_NEXT="0x0808d1f1", PAD_CHANGED="0x0808d203",
+                    TRACKS_MASK="0x2000", LAUNCH_MASK="0x1000", MIXER_MASK="0x400",
+                    MODIFIERS_MASK="0x3400")             # Lab: 0x3500 (incl. PROJ 0x100)
 
 def cond_ui_helpers():
     """Lab T2's editor value conversions (native probability byte <-> list index)."""
@@ -372,6 +384,75 @@ def build(base_img, out):
     patch(HOLD_SELECTED_SITE, asm(f"b.w {sh['step_selected']:#x}", HOLD_SELECTED_SITE), bytes.fromhex("00f58a30"),
           "Inspect a step (Lab T2): edits use the inspected step when no pad is held")
     s4.update({f"hold.{k}": v for k, v in sh.items()})
+
+    # --- Hold shortcuts (Lab K16 port): M7 pad input + startup, M4 consumer/observer/mixer render
+    def template(path, addr):
+        src = "\n".join(x.split("//")[0] for x in path.read_text().splitlines())
+        for k, v in CTRL_SYMBOLS.items():
+            src = src.replace(f"@{k}@", v)
+        if "@" in src:
+            raise SystemExit(f"{path.name}: unresolved template symbol")
+        return asm(src, addr)
+    code = template(HERE / "m7_controls_input.s", CTRL_INPUT)
+    if CTRL_INPUT + len(code) > CTRL_STARTUP:
+        raise SystemExit("controls input code overruns its slice")
+    patch(CTRL_INPUT, code, bytes(len(code)), "Hold shortcuts (Lab K16): M7 pad input hook")
+    patch(CTRL_INPUT_SITE, asm(f"b.w {CTRL_INPUT:#x}", CTRL_INPUT_SITE), bytes.fromhex("9c42f6d0"),
+          "Hold shortcuts (Lab K16): pad receiver -> input hook")
+    lit = [struct.unpack_from("<I", base_img, ((a + 4) & ~3) + (struct.unpack_from("<H", base_img, a - BASE)[0] & 0xFF) * 4 - BASE)[0]
+           for a in (CTRL_STARTUP_SITE, CTRL_STARTUP_SITE + 2)]
+    startup = asm(
+        f"push.w {{r0-r12, lr}}; ldr r0, ={CTRL_STATE:#x}; movs r1, #0; movs r2, #8; "
+        "zero: str r1, [r0], #4; subs r2, #1; bne zero; "
+        f"ldr r0, ={CTRL_STATE:#x}; movs r1, #1; strb r1, [r0, #12]; movs r1, #0; "
+        "map: add.w r2, r0, #16; strb r1, [r2, r1]; adds r1, #1; cmp r1, #16; bne map; "
+        f"ldr r1, ={CTRL_SYMBOLS['STATE_MAGIC']}; dsb; str r1, [r0]; pop.w {{r0-r12, lr}}; "
+        f"ldr r0, ={lit[0]:#x}; ldr r1, ={lit[1]:#x}; "                       # the two displaced literal loads
+        f"push {{r0, r1}}; ldr r0, ={(CTRL_STARTUP_SITE + 4) | 1:#x}; str r0, [sp, #4]; pop {{r0, pc}}", CTRL_STARTUP)
+    if lit != [0x080A5F9C, 0x080A5FE8] or CTRL_STARTUP + len(startup) > CTRL_STARTUP + 0x100:
+        raise SystemExit("controls startup: unexpected literals or size")
+    patch(CTRL_STARTUP, startup, bytes(len(startup)), "Hold shortcuts (Lab K16): M7 startup inits only its own state line")
+    patch(CTRL_STARTUP_SITE, asm(f"b.w {CTRL_STARTUP:#x}", CTRL_STARTUP_SITE), bytes.fromhex("24482449"),
+          "Hold shortcuts (Lab K16): M7 startup -> state init")
+
+    ctl_elf = compile_elf([HERE / "m4_controls.c"], "cortex_m4", HERE / "m4_controls.ld", out / "m4_controls.elf")
+    vac, codec, sc = elf_load(ctl_elf, CTRL_CODE, CTRL_LIMIT)
+    if vac != CTRL_CODE:
+        raise SystemExit(f"controls code placement {vac:#x}")
+    pad = b"\xff" * (CTRL_LIMIT - (BASE + len(img)))
+    writes.append(dict(address=BASE + len(img), size=len(pad), original_hex="", replacement_hex=pad.hex(),
+                       purpose="Hold shortcuts: extend image with erased (0xFF) flash"))
+    img += pad
+    consumer = asm(
+        "push.w {r0-r12, lr}; sub sp, #8; add.w r0, sp, #608; str r0, [sp]; "   # record (orig sp+0x220)
+        f"mov r0, r4; mov r1, r5; mov r2, r6; mov r3, r7; bl {sc['controls_dispatch']:#x}; "
+        "cmp r0, #0; add sp, #8; pop.w {r0-r12, lr}; bne consumed; "
+        f"sub.w r3, r5, #17; b.w {CTRL_DISPATCH_STOCK:#x}; "                    # displaced instruction
+        f"consumed: b.w {CTRL_DISPATCH_NEXT:#x}", CTRL_WRAP)
+    check_branches(consumer, CTRL_WRAP, {sc["controls_dispatch"], CTRL_DISPATCH_STOCK, CTRL_DISPATCH_NEXT}, "controls consumer")
+    sel_at = CTRL_WRAP + 0x80
+    selection = asm(
+        "push.w {r0-r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
+        f"ldr r3, =0x24048cf0; ldr r0, [r3]; cmp r0, #0; beq replay; cmp r2, #15; bhi replay; "
+        "movs r0, #1; str r0, [r3, #20]; "                                        # INST->picked
+        "replay: pop.w {r12, lr}; msr apsr_nzcvq, r12; pop.w {r0-r3, r12, lr}; "
+        f"push {{r4-r7, lr}}; sub sp, #36; b.w {CTRL_SELECTION_SITE + 4:#x}", sel_at)
+    check_branches(selection, sel_at, {CTRL_SELECTION_SITE + 4}, "INST selection observer")
+    if len(consumer) > 0x80 or sel_at + len(selection) > CTRL_CODE:
+        raise SystemExit("controls wrappers overrun")
+    patch(CTRL_WRAP, consumer, b"\xff" * len(consumer), "Hold shortcuts (Lab K16): UI consumer wrapper")
+    patch(sel_at, selection, b"\xff" * len(selection), "Hold shortcuts (Lab K16): INST selection observer")
+    ctl_marker = b"BENTO_MOD:hold-shortcuts(Lab K16 port)\0"
+    if CTRL_CODE + len(codec) + len(ctl_marker) > CTRL_LIMIT:
+        raise SystemExit("controls code overruns its slice")
+    patch(CTRL_CODE, codec + ctl_marker, b"\xff" * (len(codec) + len(ctl_marker)), "Hold shortcuts (Lab K16): UI code")
+    patch(CTRL_CONSUMER_SITE, asm(f"b.w {CTRL_WRAP:#x}", CTRL_CONSUMER_SITE), bytes.fromhex("a5f11103"),
+          "Hold shortcuts (Lab K16): UI event consumer -> controls_dispatch")
+    patch(CTRL_SELECTION_SITE, asm(f"b.w {sel_at:#x}", CTRL_SELECTION_SITE), bytes.fromhex("f0b589b0"),
+          "Hold shortcuts (Lab K16): drum cell selection observer")
+    patch(CTRL_MIXER_VT, struct.pack("<I", sc["mixer_render"] | 1), struct.pack("<I", 0x0814B631),
+          "Hold shortcuts (Lab K16): mixer render shows Solo/Mute while MIXER is held")
+    s4.update({f"controls.{k}": v for k, v in sc.items()})
     if M4_CODE + len(code4) + 20 > M4_LIMIT:
         raise SystemExit("M4 code + marker overrun")
     if M4_CODE + len(code4) + len(MARKER) > M4_POLY:
@@ -419,7 +500,7 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the stock base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label="1.6.1+m1+conditions+inspect-v2.5", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label="1.6.1+m1+conditions+inspect+holds-v2.6", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")

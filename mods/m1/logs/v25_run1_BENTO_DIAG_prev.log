@@ -1,0 +1,16 @@
+BENTO M1b poly-AT + poly cap v2.2 black box (CH10 1.6HA), boot gen 1
+stock crash record: count=83 cause=00000005 pc=080a5920 core=00000002 | frame r0-r3,r12,lr,pc,xpsr (bkp6-13): 2401bcb4 2404cbe4 2404cb90 00000000 00000000 ffffffe9 080415ee 61000056
+rtc_bkp0..31: 00000003 00000dc0 00000340 00000000 00000000 00000400 2401bcb4 2404cbe4 2404cb90 00000000 00000000 ffffffe9 080415ee 61000056 2401dcec 000025eb 2404cb90 24048da0 1c908000 00000000 00004bd6 00000400 2404cb40 ffffffe9 00000053 00000005 00041c16 00000002 002a82f9 000003b2 000008fe 080a5920
+previous boot (from RAM): m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=0 overflows=0 | m7 stack min_msp=00000000 min_sp=00000000 heartbeat=0
+(no M7 trace in RAM)
+fields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)
+VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note
+# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=0 overflows=0 | m7 stack min_msp=00000000 min_sp=00000000 heartbeat=0 at ms 2472
+13218 a313f749 RING 0000 lr=00000000 obj=10040000 ev=000000ad,00000000,ffffff00,00000000,00000000,00000000 x=00000000
+13218 a3710f2d PAD  0001 lr=00000000 obj=2402a3c0 ev=000000ad,00000000,fffffffe,00000000,00000000,00000000 x=00000000
+13218 a374defd RING 0002 lr=00000000 obj=10040000 ev=000000ad,00000000,fffffffe,00000000,00000000,00000000 x=00000000
+17625 ab28abaf RING 0003 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000000
+17625 abfe92b5 RING 0004 lr=00000000 obj=10040000 ev=000000a4,00000000,000000c6,0000f000,00000000,00000000 x=00000000
+17625 bcbfad7d RING 0005 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000000
+17625 bcbfb09e RING 0006 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000001
+# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=1 overflows=0 | m7 stack min_msp=2404c998 (15352 B above bottom) min_sp=2404c998 heartbeat=39424 at ms 19231
