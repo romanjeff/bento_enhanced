@@ -470,9 +470,9 @@ class M4EndToEnd(unittest.TestCase):
         w32(self.u, 0x40020404, 0x00200000)              # HISR: S7 half-transfer flag set
         self.m7("stall_progress", 1000)
         self.m7("stall_check", 1000 + 99 * 480000)       # 99 ms: not yet
-        self.assertNotEqual(r32(self.u, 0x240484A0), 0x37544C53)
+        self.assertNotEqual(r32(self.u, 0x240484A0), 0x38544C53)
         self.m7("stall_check", 1000 + 101 * 480000)      # 101 ms: snapshot
-        self.assertEqual(r32(self.u, 0x240484A0), 0x37544C53)
+        self.assertEqual(r32(self.u, 0x240484A0), 0x38544C53)
         w32(self.u, 0x40020404, 0)
         self.m7("stall_check", 1000 + 200 * 480000)      # once per boot
         self.assertEqual(r32(self.u, 0x240484A0 + 4 * 15), 0x00200000, "first snapshot kept (hisr)")

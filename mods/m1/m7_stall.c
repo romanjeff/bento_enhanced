@@ -36,9 +36,10 @@ typedef struct {
     u32 magic, sgen, cycles, primask, basepri, faultmask, icsr, msp;
     u32 iser[2], ispr[2], iabr[2];          /* NVIC words 1 and 2: IRQ 32..95 */
     u32 lisr, hisr, s5cr, s5ndtr, s7cr, s7ndtr;
+    u32 mux[2], sai_sr[2];                  /* streams 5, 7: DMAMUX1 request (which SAI block), its SR */
 } Stall7;
 #define ST ((volatile Stall7 *)0x24048480u)
-#define STALL7_MAGIC 0x37544C53u /* "SLT7" */
+#define STALL7_MAGIC 0x38544C53u /* "SLT8": layout grew (SAI status); m4_diag.c matches */
 _Static_assert(sizeof(Stall7) <= 0x80u, "stall record past 0x24048500");
 
 static void clean_all(void) {
@@ -78,6 +79,13 @@ __attribute__((used, retain)) void stall_check(void) {
     ST->lisr = DMA2[0]; ST->hisr = DMA2[1];
     volatile u32 *s5 = DMA2 + (0x10u + 0x18u * 5u) / 4u, *s7 = DMA2 + (0x10u + 0x18u * 7u) / 4u;
     ST->s5cr = s5[0]; ST->s5ndtr = s5[1]; ST->s7cr = s7[0]; ST->s7ndtr = s7[1];
+    for (u32 i = 0; i < 2; i++) {            /* SAI status: did its clock stop, or did it flag an error? */
+        u32 mux = *(volatile u32 *)(0x40020800u + 4u * (8u + 5u + 2u * i)), id = mux & 0x7Fu, sr = 0xFFFFFFFFu;
+        u32 base = id == 87u || id == 88u ? 0x40015800u : id == 89u || id == 90u ? 0x40015C00u
+                 : id == 113u || id == 114u ? 0x40016000u : 0u;
+        if (base) sr = *(volatile u32 *)(base + ((id & 1u) ? 0x18u : 0x38u));   /* block A (odd id) ASR, B BSR */
+        ST->mux[i] = mux; ST->sai_sr[i] = sr;
+    }
     ST->magic = STALL7_MAGIC;
     ST->snapped = 1;
     clean_all();

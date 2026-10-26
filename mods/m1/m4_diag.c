@@ -304,9 +304,10 @@ typedef struct {
     u32 magic, sgen, cycles, primask, basepri, faultmask, icsr, msp;
     u32 iser[2], ispr[2], iabr[2];
     u32 lisr, hisr, s5cr, s5ndtr, s7cr, s7ndtr;
+    u32 mux[2], sai_sr[2];
 } Stall7;
 #define ST7 ((volatile Stall7 *)0x24048480u)
-#define STALL7_MAGIC 0x37544C53u
+#define STALL7_MAGIC 0x38544C53u /* "SLT8": layout grew (SAI status) */
 static void stall7_print(Out *o) {
     puts_(o, "M7 audio stall record (from RAM): gen "); dec(o, ST7->sgen);
     puts_(o, ", no audio progress for "); dec(o, ST7->cycles / 480000u); puts_(o, " ms");
@@ -321,6 +322,9 @@ static void stall7_print(Out *o) {
     puts_(o, "\r\n  DMA2 LISR="); hex(o, ST7->lisr, 8); puts_(o, " HISR="); hex(o, ST7->hisr, 8);
     puts_(o, " S5 CR/NDTR="); hex(o, ST7->s5cr, 8); puts_(o, "/"); hex(o, ST7->s5ndtr, 4);
     puts_(o, " S7 CR/NDTR="); hex(o, ST7->s7cr, 8); puts_(o, "/"); hex(o, ST7->s7ndtr, 4);
+    puts_(o, "\r\n  DMAMUX S5/S7="); hex(o, ST7->mux[0], 8); puts_(o, "/"); hex(o, ST7->mux[1], 8);
+    puts_(o, " SAI SR S5/S7="); hex(o, ST7->sai_sr[0], 8); puts_(o, "/"); hex(o, ST7->sai_sr[1], 8);
+    puts_(o, " (SR bit0 OVRUDR, 4 CNRDY, 5 AFSDET, 6 LFSDET)");
     puts_(o, "\r\n");
 }
 

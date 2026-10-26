@@ -1,0 +1,30 @@
+boot gen=6 ms=2508 count=89 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot gen=7 ms=2525 count=89 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot gen=8 ms=3435 count=90 cause=00000005 pc=080816e6 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot gen=9 ms=2508 count=90 cause=00000005 pc=080816e6 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot gen=10 ms=2506 count=91 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.1 rtc=730120-163145 gen=11 ms=2508 count=91 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.1 rtc=730120-170729 gen=12 ms=3415 count=92 cause=00000005 pc=080816c0 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.2 rtc=730120-170844 gen=13 ms=2508 count=92 cause=00000005 pc=080816c0 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.2 rtc=730120-182655 gen=14 ms=2739 count=93 cause=00000005 pc=080da160 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.3 rtc=730120-182813 gen=15 ms=2511 count=93 cause=00000005 pc=080da160 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.3 rtc=730120-185708 gen=16 ms=3429 count=94 cause=00000005 pc=0808dfb8 core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.3 rtc=730120-190827 gen=17 ms=3445 count=95 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.5 rtc=730120-191030 gen=18 ms=2508 count=95 cause=00000005 pc=0808dfba core=00000002 lr=00000000 frame_pc=0808cc5a
+boot fw=BE3.5 rtc=730120-192551 gen=19 ms=3045 count=96 cause=00000001 pc=080a053e core=00000002 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.6 rtc=730120-192711 gen=20 ms=2510 count=96 cause=00000001 pc=080a053e core=00000002 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.6 rtc=730120-193747 gen=21 ms=2552 count=97 cause=00000005 pc=080816ca core=00000002 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.7 rtc=730120-193912 gen=22 ms=2508 count=97 cause=00000005 pc=080816ca core=00000002 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.7 rtc=730120-194034 gen=23 ms=2542 count=97 cause=00000005 pc=080816ca core=00000002 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.7 rtc=730120-195006 gen=24 ms=2510 count=98 cause=00000005 pc=080da160 core=00000002 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.7 rtc=730120-195023 gen=25 ms=2504 count=99 cause=00000005 pc=0811e118 core=00000001 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.9 rtc=730120-195151 gen=26 ms=2512 count=99 cause=00000005 pc=0811e118 core=00000001 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.9 rtc=730120-195407 gen=27 ms=2512 count=99 cause=00000005 pc=0811e118 core=00000001 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.9 rtc=730120-195749 gen=28 ms=2544 count=100 cause=00000005 pc=080a5926 core=00000002 lr=080a0537 frame_pc=080a053e
+boot fw=BE3.10 rtc=730120-195930 gen=29 ms=2508 count=101 cause=00000001 pc=080654c8 core=00000002 lr=08057d2b frame_pc=080654c8
+boot fw=BE3.10 rtc=730120-201055 gen=30 ms=2724 count=102 cause=00000005 pc=080a5e40 core=00000002 lr=08057d2b frame_pc=080654c8
+boot fw=BE3.11 rtc=730120-201426 gen=31 ms=2510 count=103 cause=00000001 pc=0809f24c core=00000002 lr=0809f24d frame_pc=0809f24c
+boot fw=BE3.11 rtc=730120-203239 gen=32 ms=3231 count=104 cause=00000005 pc=080a5926 core=00000002 lr=0809f24d frame_pc=0809f24c
+boot fw=BE3.13 rtc=730120-204637 gen=1 ms=22457 count=131 cause=00000002 pc=081b9bb2 core=00000001 lr=081ba089 frame_pc=081b9bb2
+boot fw=BE3.13 rtc=730120-204642 gen=2 ms=2491 count=132 cause=00000005 pc=08122bdc core=00000001 lr=081ba089 frame_pc=081b9bb2
+boot fw=BE3.13 rtc=730120-210415 gen=3 ms=3999 count=133 cause=00000005 pc=08122bc4 core=00000001 lr=081ba089 frame_pc=081b9bb2
