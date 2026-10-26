@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (42 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (58 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -172,3 +172,18 @@ a project opened on stock shows those notes with plain probability.
 - `test_conditions.py`: all 35 conditions over two cycles, restart/clip-change reset,
   per-boot reinit, native probability path identical to stock, loop hook frame
   identical to stock, label table, and a drum-editor round trip for every value.
+
+## Inspect a step (since v2.5)
+
+Port of Lab's T2 hold-step module (GPL-3.0-or-later). **Hold a step that has a note**
+to edit its velocity, condition/probability or timing with the encoders; releasing it
+after an edit no longer toggles it off. The last held step stays selected after
+release, so you can keep editing it. A short tap still toggles a step as on stock;
+pressing an empty step clears the selection without creating a note. Touch-holding a
+step on the screen works the same way.
+
+- M4 only: `m4_holdstep.c` (code at `0x081B6800`, wrappers at `0x081B6600`); state at
+  `0x24048D80`, tagged with our boot generation (Lab cleared it from its startup hook).
+- Removed from Lab's version: the parameter-lock call on step press (locks not ported).
+- `test_holdstep.py`: Lab's 15 tests ported (stock's own press/release/edit code runs),
+  plus a boot-generation test. Against plain stock, 12 of the 16 fail as expected.
