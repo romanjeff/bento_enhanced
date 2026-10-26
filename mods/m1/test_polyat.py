@@ -39,6 +39,7 @@ CH10 = Path(sys.argv[1]).read_bytes()
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
 SYM7 = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["m7_symbols"].items()}
+POLY = int(json.loads((OUT / "manifest.json").read_text())["layout"]["M4_POLY"], 16)
 
 def emu(img, region=True):
     u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
@@ -260,7 +261,7 @@ class M4Handler(unittest.TestCase):
         return log
 
     def test_same_calls_as_native_note_on_except_status(self):
-        native, ours = self.trace(0x0810509A), self.trace(0x081B8000)
+        native, ours = self.trace(0x0810509A), self.trace(POLY)
         self.assertEqual(len(native), 8)  # init, status, channel, note, value, send, 2 finishing calls
         self.assertEqual(len(native), len(ours))
         i = [k for k, c in enumerate(native) if c[0] == 0x08105C44][0]
@@ -270,7 +271,7 @@ class M4Handler(unittest.TestCase):
     def test_only_slot_5f_changed(self):
         jt = lambda img: [struct.unpack_from("<I", img, 0x08105294 - BASE + 4 * i)[0] for i in range(9)]
         a, b = jt(CH10), jt(IMG)
-        self.assertEqual(b[4], 0x081B8001)
+        self.assertEqual(b[4], POLY | 1)
         self.assertEqual(a[:4] + a[5:], b[:4] + b[5:])
 
 if __name__ == "__main__":

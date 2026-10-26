@@ -21,7 +21,8 @@ OUT = Path(sys.argv[2])
 IMAGE = (OUT / "bento1.bin").read_bytes()
 SYMS = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["m4_symbols"].items()}
 MIXER_RENDER = SYMS["controls.mixer_render"]
-CONSUMER, CTRL_STARTUP, STATE = 0x081B7000, 0x080D9800, 0x24048CA0
+LAYOUT = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["layout"].items()}
+CONSUMER, CTRL_STARTUP, STATE = LAYOUT["CTRL_WRAP"], 0x080D9800, 0x24048CA0
 REGS = [UC_ARM_REG_R0 + i for i in range(13)]
 
 class NativeProperties(dict):

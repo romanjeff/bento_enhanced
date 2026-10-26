@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (124 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (127 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -259,3 +259,20 @@ screen and in the `<version>-cont-<n>` info string. One `VERSION` constant in
 stock's 8-byte version slot (`0x0818BAD4`, used by `FUN_08162950` and
 `FUN_08131024`), so the label is at most 6 characters (`BE3.10` fits). v3.0 = v2.9 +
 the label.
+
+## Black box v3.1: who stalled, when, and in which firmware
+
+- **M7 audio stall record** (`m7_stall.c`): the main audio loop's watchdog refresh
+  (`bl 0x080A0460` at `0x0808DF54`, progress) and message pump (`bl 0x080816C0` at
+  `0x0808DFB4`, waiting) are hooked. After 100 ms without audio progress (the watchdog
+  fires at ~280 ms) the M7 records, once per boot, PRIMASK/BASEPRI/FAULTMASK, ICSR,
+  MSP, the NVIC enable/pending/active words for IRQ 32–95 (DMA2 S5 = IRQ 68, S7 = 70)
+  and the DMA2 flags and S5/S7 state, at `0x240484A0` (tracking line `0x24048480`
+  kept separate so a cached copy can't resurrect a cleared record). Printed at the next
+  boot. This separates "DMA stopped" from "DMA running but its interrupt not serviced".
+- **Header:** firmware label (read from the patched version string), boot generation,
+  RTC wall clock, and the previous boot's last UI-loop pass (ms and RTC). A reset long
+  after the last pass happened while the UI loop wasn't running (e.g. SD Reader Mode).
+- **`BENTO_CRASHES.log`** lines now carry `fw=` and `rtc=`.
+- **Layout:** one table in `build.py` (logger 10 KB, hold-step, controls, poly handler);
+  linker-script ORIGIN/LENGTH and the tests' addresses come from it (manifest `layout`).

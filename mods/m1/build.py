@@ -10,7 +10,7 @@ every write reproduces the base exactly. Run with Lab's venv (ziglang +
 keystone). Earlier versions (<= v2.2) were built on Lab's CH10; CH10 itself
 crashed on the device without any of this code, so M1 moved to stock.
 """
-import argparse, hashlib, json, struct, subprocess, sys
+import argparse, hashlib, json, re, struct, subprocess, sys
 from pathlib import Path
 from keystone import Ks, KS_ARCH_ARM, KS_MODE_THUMB
 
@@ -35,9 +35,10 @@ M7_LIMIT = 0x080DB800
 # M4 code is appended after stock's image end (0x081B3F3C). 0x081B4000..0x081B5000
 # is reserved for the trigger-condition UI (S2).
 APPEND_FROM = 0x081B4000
-M4_CODE = 0x081B5000
-M4_LIMIT = 0x081B6C00
-VERSION = "3.0"                       # bump for every build that goes on the device
+# Appended M4 blocks, in order (see LAYOUT below for the full table).
+M4_CODE = 0x081B5000                        # black box (m4_diag.c)
+M4_LIMIT = M4_CODE + 0x2800
+VERSION = "3.1"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -61,7 +62,6 @@ POLY_SITE, POLY_ORIG, POLY_RESUME = 0x08062466, "7ff40bae", 0x08062080
 # (falls through to the loop at 0x081050DE). Our handler copies stock's Note On
 # case (0x0810509A..0x081050DE) with status 0x90 -> 0xA0.
 JT, JT_5F, JT_DEFAULT, M4_LOOP = 0x08105294, 0x081052A4, 0x081050DF, 0x081050DE
-M4_POLY, M4_POLY_LIMIT = 0x081B8000, 0x081B8100   # own block after the controls code (handler is 72 B)
 
 # Poly cap: the five `bl msg_send` sites that post External MIDI notes, and the
 # register holding the track object at each (verified unmodified on every path).
@@ -72,6 +72,13 @@ NOTE_SITES = [  # (site, track register, role)
     (0x0805FE44, "r4", "sequencer Note Off (FUN_0805FE00)"),
     (0x08060088, "r4", "pad Note Off (FUN_08060040)"),
     (0x08061966, "r6", "Note Off, stop/all-off (FUN_080618E0)"),
+]
+
+# Audio stall snapshot (idle-restart investigation): the M7 main audio loop
+# FUN_0808DF00 refreshes the watchdog only on audio progress.
+STALL_SITES = [  # (bl site, original target, our function, purpose)
+    (0x0808DF54, 0x080A0460, "stall_progress", "Stall snapshot: main audio loop progress (watchdog refresh)"),
+    (0x0808DFB4, 0x080816C0, "stall_check", "Stall snapshot: main audio loop waiting (message pump)"),
 ]
 
 # Trigger conditions (port of bento-community-lab T2, GPL-3.0-or-later).
@@ -106,14 +113,17 @@ COND_UI_SITES = [  # (site, helper, original bytes)
 
 # Inspect a step (from bento-community-lab T2 holdstep, GPL-3.0-or-later): only the
 # edit-protects-release part; no selection kept after release.
-HOLD_WRAP, HOLD_CODE, HOLD_LIMIT = 0x081B6C00, 0x081B6D00, 0x081B7000
+HOLD_WRAP = M4_LIMIT; HOLD_CODE = HOLD_WRAP + 0x100; HOLD_LIMIT = HOLD_WRAP + 0x400
 HOLD_EDIT_SITES = [0x0815C7C4, 0x0815C8AC, 0x0815C990]   # velocity, condition, timing edit entries
 
 # Hold shortcuts (port of bento-community-lab K16 hold controls, GPL-3.0-or-later).
 CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (below our 0x080DA000)
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x24048CA0                             # M7-only line: magic, suppress mask, drops, enable, pad map
-CTRL_WRAP, CTRL_CODE, CTRL_LIMIT = 0x081B7000, 0x081B7200, 0x081B8000
+CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
+M4_POLY = CTRL_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
+LAYOUT = dict(M7_TRAMP=M7_TRAMP, M7_CODE=M7_CODE, M4_CODE=M4_CODE, HOLD_WRAP=HOLD_WRAP, HOLD_CODE=HOLD_CODE,
+              CTRL_WRAP=CTRL_WRAP, CTRL_CODE=CTRL_CODE, M4_POLY=M4_POLY, IMAGE_END=M4_POLY_LIMIT)
 CTRL_CONSUMER_SITE, CTRL_DISPATCH_STOCK, CTRL_DISPATCH_NEXT = 0x0813F98C, 0x0813F990, 0x0813F2FC
 CTRL_SELECTION_SITE, CTRL_MIXER_VT = 0x0813BD10, 0x0819DD20
 CTRL_SYMBOLS = dict(STATE=hex(CTRL_STATE), STATE_MAGIC="0x31534d42", EVENT_MAGIC="0x314d5442", EVENT_TAIL="0x31525442",
@@ -176,7 +186,14 @@ def bcond_w(cond, src, dst):
     hw2 = 0x8000 | (J1 << 13) | (J2 << 11) | imm11
     return struct.pack("<HH", hw1, hw2)
 
-def compile_elf(srcs, cpu, ld, out):
+def compile_elf(srcs, cpu, ld, out, origin, limit):
+    """ld's MEMORY ORIGIN/LENGTH are replaced by this build's layout (written next to the ELF)."""
+    text, n = re.subn(r"ORIGIN = 0x[0-9A-Fa-f]+, LENGTH = 0x[0-9A-Fa-f]+",
+                      f"ORIGIN = {origin:#x}, LENGTH = {limit - origin:#x}", Path(ld).read_text())
+    if n != 1:
+        raise SystemExit(f"{ld}: expected one MEMORY line")
+    ld = out.with_suffix(".ld")
+    ld.write_text(text)
     cmd = [sys.executable, "-m", "ziglang", "cc", "-target", "thumb-freestanding-eabi", f"-mcpu={cpu}",
            "-mfloat-abi=soft", "-Os", "-g", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-nostdlib",
            "-ffunction-sections", "-fdata-sections", "-Wall", "-Werror",
@@ -239,8 +256,8 @@ def build(base_img, out):
               "M1: lower M7 heap end to reserve our RAM slice + condition counters (stack unchanged)")
 
     # --- M7: compile, place, trampolines, entry patches
-    m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c", HERE / "m7_conditions.c"],
-                         "cortex_m7", HERE / "m7.ld", out / "m7.elf")
+    m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c", HERE / "m7_conditions.c", HERE / "m7_stall.c"],
+                         "cortex_m7", HERE / "m7.ld", out / "m7.elf", M7_CODE, M7_LIMIT)
     va, code7, s7 = elf_load(m7_elf, M7_CODE, M7_LIMIT)
     if va != M7_CODE or M7_CODE + len(code7) > M7_LIMIT:
         raise SystemExit(f"M7 code placement {va:#x}+{len(code7)} outside our slice")
@@ -280,6 +297,16 @@ def build(base_img, out):
         if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
             raise SystemExit(f"{site:#x}: not the expected bl msg_send")
         patch(site, asm(f"bl {stub:#x}", site), orig, f"M1b poly cap: {role} -> h_note")
+    # Audio stall snapshot: the main audio loop's two calls (see m7_stall.c).
+    for site, target, fn, why in STALL_SITES:
+        stub = M7_TRAMP + len(tramps)
+        code = asm(f"push {{r0, lr}}; bl {s7[fn]:#x}; pop {{r0, lr}}; b.w {target:#x}", stub)
+        check_branches(code, stub, {s7[fn], target}, f"stall stub {fn}")
+        tramps += code + bytes(-len(code) % 4)
+        orig = asm(f"bl {target:#x}", site)
+        if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
+            raise SystemExit(f"{site:#x}: not the expected bl {target:#x}")
+        patch(site, asm(f"bl {stub:#x}", site), orig, why)
     # Trigger conditions (Lab T2 trampolines): save r0-r12, lr, flags (64 B).
     save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; "
     restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
@@ -306,7 +333,7 @@ def build(base_img, out):
     patch(M7_CODE, code7, bytes(len(code7)), "M1 diag: M7 capture code")
 
     # --- M4: compile, append, redirect the defaultTask-loop BL
-    m4_elf = compile_elf([HERE / "m4_diag.c"], "cortex_m4", HERE / "m4.ld", out / "m4.elf")
+    m4_elf = compile_elf([HERE / "m4_diag.c"], "cortex_m4", HERE / "m4.ld", out / "m4.elf", M4_CODE, M4_LIMIT)
     va4, code4, s4 = elf_load(m4_elf, M4_CODE, M4_LIMIT)
     if va4 != M4_CODE or M4_CODE + len(code4) > M4_LIMIT:
         raise SystemExit(f"M4 code placement {va4:#x}+{len(code4)} outside our slice")
@@ -360,7 +387,7 @@ def build(base_img, out):
           "Conditions (Lab T2): probability list labels -> extended table")
 
     # --- Inspect a step: encoder-edit wrappers at HOLD_WRAP, C at HOLD_CODE
-    hold_elf = compile_elf([HERE / "m4_holdstep.c"], "cortex_m4", HERE / "m4_holdstep.ld", out / "m4_holdstep.elf")
+    hold_elf = compile_elf([HERE / "m4_holdstep.c"], "cortex_m4", HERE / "m4_holdstep.ld", out / "m4_holdstep.elf", HOLD_CODE, HOLD_LIMIT)
     vah, codeh, sh = elf_load(hold_elf, HOLD_CODE, HOLD_LIMIT)
     if vah != HOLD_CODE:
         raise SystemExit(f"hold-step code placement {vah:#x}")
@@ -423,7 +450,7 @@ def build(base_img, out):
     patch(CTRL_STARTUP_SITE, asm(f"b.w {CTRL_STARTUP:#x}", CTRL_STARTUP_SITE), bytes.fromhex("24482449"),
           "Hold shortcuts (Lab K16): M7 startup -> state init")
 
-    ctl_elf = compile_elf([HERE / "m4_controls.c"], "cortex_m4", HERE / "m4_controls.ld", out / "m4_controls.elf")
+    ctl_elf = compile_elf([HERE / "m4_controls.c"], "cortex_m4", HERE / "m4_controls.ld", out / "m4_controls.elf", CTRL_CODE, CTRL_LIMIT)
     vac, codec, sc = elf_load(ctl_elf, CTRL_CODE, CTRL_LIMIT)
     if vac != CTRL_CODE:
         raise SystemExit(f"controls code placement {vac:#x}")
@@ -517,7 +544,7 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the stock base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label=f"{DISPLAY} (bento_enhanced v{VERSION} on stock 1.6.1)", version=VERSION, display=DISPLAY, base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label=f"{DISPLAY} (bento_enhanced v{VERSION} on stock 1.6.1)", version=VERSION, display=DISPLAY, layout={k: hex(v) for k, v in LAYOUT.items()}, base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")

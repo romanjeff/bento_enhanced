@@ -288,7 +288,7 @@ class M4EndToEnd(unittest.TestCase):
         self.tick(2700)                                  # idle >= 1500 ms -> flush
         self.assertEqual(len(self.files), 1)
         text = self.files[0].decode()
-        self.assertIn("BENTO M1 black box (stock 1.6.1 + poly-AT, conditions, inspect)", text)
+        self.assertIn("BENTO black box, firmware BE", text)
         self.assertIn("# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0"
                       " | midi ring max_fill=0 overflows=0 | m7 stack min_msp=", text)
         self.assertEqual(text.count(" SEND "), 2)
@@ -347,14 +347,14 @@ class M4EndToEnd(unittest.TestCase):
         self.tick(2600)                                  # first log write of this boot
         lines = self.fs[hist].decode().splitlines()
         self.assertEqual(len(lines), 2)
-        self.assertTrue(lines[1].startswith("boot gen=1 ms=2600 count=86 cause=00000005 pc=08122bc4 core=00000001"), lines[1])
+        self.assertRegex(lines[1], r"^boot fw=BE[0-9.]+ rtc=\d{6}-\d{6} gen=1 ms=2600 count=86 cause=00000005 pc=08122bc4 core=00000001")
         self.tick(5000)                                  # later flushes: no new history line
         self.assertEqual(len(self.fs[hist].decode().splitlines()), 2)
         w32(self.u, RTC_BKP + 4 * 24, 87)
         self.tick(50); self.tick(1700)                   # reboot, first write of boot 2
         lines = self.fs[hist].decode().splitlines()
         self.assertEqual(len(lines), 3)
-        self.assertTrue(lines[2].startswith("boot gen=2 ms=1700 count=87"), lines[2])
+        self.assertRegex(lines[2], r"^boot fw=BE[0-9.]+ rtc=\S+ gen=2 ms=1700 count=87")
         self.assertTrue(all(w[1] == 0x32 for w in self.writes if w[0] == hist), "append only, never truncated")
 
     def test_crash_history_live_crash_line(self):
@@ -363,7 +363,7 @@ class M4EndToEnd(unittest.TestCase):
         w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)
         self.tick(1050)
         lines = self.fs[hist].decode().splitlines()
-        self.assertTrue(lines[-1].startswith("live gen=1 ms=1050 count=1"), lines)
+        self.assertRegex(lines[-1], r"^live fw=BE[0-9.]+ rtc=\S+ gen=1 ms=1050 count=1")
         self.assertIn("pc=0808cc5a", lines[-1])
 
     # --- audio DMA monitor (DMA2 streams 5 and 7, as stock's own main-loop check)
@@ -396,7 +396,7 @@ class M4EndToEnd(unittest.TestCase):
         self.assertIn("HISR=00000800", text)
         self.assertIn("S5 CR,NDTR,PAR,M0AR,M1AR,FCR = 00000001 00000064 40015820", text)
         self.assertIn("periph SR=00000009", text)
-        self.assertTrue(self.fs["\\BENTO_CRASHES.log"].decode().splitlines()[-1].startswith("stall gen=1 ms=1040"))
+        self.assertRegex(self.fs["\\BENTO_CRASHES.log"].decode().splitlines()[-1], r"^stall fw=BE[0-9.]+ rtc=\S+ gen=1 ms=1040")
         n = len(self.files); self.tick(1100); self.tick(3000)
         self.assertFalse(any(b"AUDIO DMA" in f for f in self.files[n:]), "reported once per boot")
         self.stream(self.S5, cr=0); self.stream(self.S7, cr=0)  # reset: audio not restarted yet
@@ -415,6 +415,52 @@ class M4EndToEnd(unittest.TestCase):
         self.stream(self.S5, par=0x40011028)                   # e.g. a USART data register
         self.tick(1000); self.tick(1040)
         self.assertIn("periph SR=00000000 CR1=00000000", self.files[-1].decode())
+
+
+    # --- v3.1: RTC, previous-boot line, M7 stall record
+    def test_rtc_and_previous_boot_in_header(self):
+        w32(self.u, 0x58004000, 0x00142305); w32(self.u, 0x58004004, 0x0026B026)   # 14:23:05, 26-10-26 (wd bits set)
+        self.tick(1000); self.tick(2600)
+        first = self.files[-1].decode()
+        self.assertIn("firmware BE", first); self.assertIn("rtc 261026-142305", first)
+        w32(self.u, 0x58004000, 0x00142410)
+        self.tick(4000)                                  # last pass of this boot
+        w32(self.u, 0x58004000, 0x00153000)
+        self.tick(50); self.tick(1700)                   # reset, next boot
+        boot = self.files[-1].decode()
+        self.assertIn("previous boot: last UI-loop pass at ms 4000, rtc 261026-142410", boot)
+        self.assertIn("boot gen 2, rtc 261026-153000", boot)
+
+    def m7(self, fn, cyc):
+        w32(self.u, 0xE0001004, cyc)
+        call(self.u, SYM7[fn], 0)
+
+    def test_m7_stall_record_written_once_and_printed_next_boot(self):
+        self.tick(1000)                                  # M4 publishes boot gen 1
+        w32(self.u, 0xE000E108, 0x50); w32(self.u, 0xE000E208, 0x40)   # IRQ 68/70 enabled, 70 pending
+        w32(self.u, 0x40020404, 0x00200000)              # HISR: S7 half-transfer flag set
+        self.m7("stall_progress", 1000)
+        self.m7("stall_check", 1000 + 99 * 480000)       # 99 ms: not yet
+        self.assertNotEqual(r32(self.u, 0x240484A0), 0x37544C53)
+        self.m7("stall_check", 1000 + 101 * 480000)      # 101 ms: snapshot
+        self.assertEqual(r32(self.u, 0x240484A0), 0x37544C53)
+        w32(self.u, 0x40020404, 0)
+        self.m7("stall_check", 1000 + 200 * 480000)      # once per boot
+        self.assertEqual(r32(self.u, 0x240484A0 + 4 * 15), 0x00200000, "first snapshot kept (hisr)")
+        self.tick(50); self.tick(1700)                   # watchdog reset, next boot
+        boot = self.files[-1].decode()
+        self.assertIn("M7 audio stall record (from RAM): gen 1, no audio progress for 101 ms", boot)
+        self.assertIn("irq64-95 en/pend/act=00000050/00000040/00000000", boot)
+        self.assertIn("HISR=00200000", boot)
+        self.tick(50); self.tick(1700)
+        self.assertNotIn("M7 audio stall record", self.files[-1].decode(), "printed once")
+
+    def test_m7_progress_rearms_after_a_reboot(self):
+        self.tick(1000)
+        self.m7("stall_progress", 0); self.m7("stall_check", 101 * 480000)
+        self.tick(50); self.tick(1700)                   # gen 2
+        self.m7("stall_progress", 0)
+        self.assertEqual(r32(self.u, 0x2404848C), 0, "snapped flag reset for the new boot")
 
     def test_heartbeat_stall_is_reported(self):
         self.tick(1000)

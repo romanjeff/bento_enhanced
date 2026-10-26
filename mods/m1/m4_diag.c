@@ -94,10 +94,25 @@ static void preserve_previous(u8 *scratch) {
 /* Crash history: one line per boot (at its first log write) and one per crash
  * record that appears mid-session, appended forever to BENTO_CRASHES.log. The
  * session log only keeps two boots; this keeps every reset attributable. */
+/* RTC wall clock (BCD). Reading TR locks DR's shadow until DR is read. */
+#define RTC_TR (*(volatile u32 *)0x58004000u)
+#define RTC_DR (*(volatile u32 *)0x58004004u)
+static void rtc_print(Out *o, u32 tr, u32 dr) {
+    hex(o, dr & 0xFF1F3Fu, 6); puts_(o, "-"); hex(o, tr & 0x3F7F7Fu, 6);   /* yymmdd-hhmmss */
+}
+static void rtc_now(Out *o) { u32 tr = RTC_TR, dr = RTC_DR; rtc_print(o, tr, dr); }
+/* The visible label (stock's version string, patched by build.py). */
+static void version(Out *o) {
+    char v[9]; const volatile char *p = (const volatile char *)0x0818BAD4u;
+    for (u32 i = 0; i < 8; i++) v[i] = p[i];
+    v[8] = 0; puts_(o, v);
+}
 static const char HIST[] = "\\BENTO_CRASHES.log";
 static void history(const char *why) {
     Out o = {(char *)M4H->r[1] + BUF_BYTES - SCRATCH_BYTES, 0};   /* scratch: free between copies */
     puts_(&o, why);
+    puts_(&o, " fw="); version(&o);
+    puts_(&o, " rtc="); rtc_now(&o);
     puts_(&o, " gen="); dec(&o, M4H->r[0]);
     puts_(&o, " ms="); dec(&o, TICK_MS);
     puts_(&o, " count="); dec(&o, BKP[24]);
@@ -179,11 +194,12 @@ typedef struct {
     u32 snap_magic, snap_gen, snap_ms, snap_why, lisr, hisr;
     u32 regs[2][6];      /* CR, NDTR, PAR, M0AR, M1AR, FCR */
     u32 periph[2][2];    /* if PAR is a SAI DR: SR (DR-8), CR1 (DR-0x1C) */
+    u32 rtc_tr, rtc_dr;  /* RTC at the last UI-loop pass (survives the reset) */
 } AudioMon;
 #define AMON ((volatile AudioMon *)0x24048400u)   /* M4-only; freed by lowering the M7 heap end */
 #define AMON_MAGIC 0x314E4F4Du /* "MON1" */
 #define SNAP_MAGIC 0x50414E53u /* "SNAP" */
-_Static_assert(0x24048400u + sizeof(AudioMon) <= 0x24048500u, "audio monitor overlaps the diag slice");
+_Static_assert(0x24048400u + sizeof(AudioMon) <= 0x24048480u, "audio monitor overlaps the M7 stall record");
 static const u32 STREAMS[2] = {5u, 7u};
 static volatile u32 *dma_stream(u32 n) { return (volatile u32 *)(DMA2_BASE + 0x10u + 0x18u * n); }
 
@@ -275,6 +291,32 @@ static void ring_tail(Out *o, u32 ms) {
     }
 }
 
+/* M7 stall record (m7_stall.c), written just before a watchdog reset. */
+typedef struct {
+    u32 last, armed, gen, snapped, pad_[4];   /* M7 tracking line */
+    u32 magic, sgen, cycles, primask, basepri, faultmask, icsr, msp;
+    u32 iser[2], ispr[2], iabr[2];
+    u32 lisr, hisr, s5cr, s5ndtr, s7cr, s7ndtr;
+} Stall7;
+#define ST7 ((volatile Stall7 *)0x24048480u)
+#define STALL7_MAGIC 0x37544C53u
+static void stall7_print(Out *o) {
+    puts_(o, "M7 audio stall record (from RAM): gen "); dec(o, ST7->sgen);
+    puts_(o, ", no audio progress for "); dec(o, ST7->cycles / 480000u); puts_(o, " ms");
+    puts_(o, "\r\n  primask="); hex(o, ST7->primask, 1); puts_(o, " basepri="); hex(o, ST7->basepri, 2);
+    puts_(o, " faultmask="); hex(o, ST7->faultmask, 1); puts_(o, " icsr="); hex(o, ST7->icsr, 8);
+    puts_(o, " msp="); hex(o, ST7->msp, 8);
+    puts_(o, "\r\n  NVIC irq32-63 en/pend/act="); hex(o, ST7->iser[0], 8); puts_(o, "/"); hex(o, ST7->ispr[0], 8);
+    puts_(o, "/"); hex(o, ST7->iabr[0], 8);
+    puts_(o, " irq64-95 en/pend/act="); hex(o, ST7->iser[1], 8); puts_(o, "/"); hex(o, ST7->ispr[1], 8);
+    puts_(o, "/"); hex(o, ST7->iabr[1], 8);
+    puts_(o, " (DMA2 S5=irq68 bit4, S7=irq70 bit6)");
+    puts_(o, "\r\n  DMA2 LISR="); hex(o, ST7->lisr, 8); puts_(o, " HISR="); hex(o, ST7->hisr, 8);
+    puts_(o, " S5 CR/NDTR="); hex(o, ST7->s5cr, 8); puts_(o, "/"); hex(o, ST7->s5ndtr, 4);
+    puts_(o, " S7 CR/NDTR="); hex(o, ST7->s7cr, 8); puts_(o, "/"); hex(o, ST7->s7ndtr, 4);
+    puts_(o, "\r\n");
+}
+
 static void init(u32 now) {
     u32 gen = (M4H->magic == DIAG_MAGIC) ? M4H->r[0] + 1u : 1u;
     u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, region = 0;
@@ -290,13 +332,22 @@ static void init(u32 now) {
     u32 len = 0;
     if (buf) {
         Out o = {(char *)buf, 0};
-        puts_(&o, "BENTO M1 black box (stock 1.6.1 + poly-AT, conditions, inspect), boot gen ");
-        dec(&o, gen);
+        puts_(&o, "BENTO black box, firmware "); version(&o);
+        puts_(&o, ", boot gen "); dec(&o, gen);
+        puts_(&o, ", rtc "); rtc_now(&o);
+        if (M4H->magic == DIAG_MAGIC || M4H->r[0]) {
+            puts_(&o, "\r\nprevious boot: last UI-loop pass at ms "); dec(&o, M4H->r[3]);
+            puts_(&o, ", rtc "); rtc_print(&o, AMON->rtc_tr, AMON->rtc_dr);
+        }
         puts_(&o, "\r\n");
         crash_record(&o);
         if (AMON->snap_magic == SNAP_MAGIC) {     /* survives the reset the stall caused */
             snap_print(&o, "audio stall snapshot (from RAM)");
             AMON->snap_magic = 0;
+        }
+        if (ST7->magic == STALL7_MAGIC) {
+            stall7_print(&o);
+            ST7->magic = 0;              /* the M7 never rewrites magic until its next stall */
         }
         /* Post-mortem: our RAM slice survives a reset; before anything resets it,
          * write the previous boot's last records and counters. */
@@ -363,6 +414,7 @@ static void poll(void) {
     }
     /* Watch 3: the audio DMA stops (the M7 watchdog follows ~0.28 s later). */
     int stalled = audio_watch(&o, now);
+    AMON->rtc_tr = RTC_TR; AMON->rtc_dr = RTC_DR;
     if (stalled) urgent = 1;
 
     u32 n = 0;
