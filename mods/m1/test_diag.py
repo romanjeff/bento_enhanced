@@ -349,8 +349,10 @@ class NativeFunctions(unittest.TestCase):
 
 LOG, PREV = "\\BENTO_DIAG.log", "\\BENTO_DIAG_prev.log"
 
-class M4EndToEnd(unittest.TestCase):
+class FatFsRig(unittest.TestCase):
     """M4 flush path against a tiny emulated FatFS (path -> bytes, modes honoured)."""
+    live = True
+
     def setUp(self, previous=None):
         u = self.u = emu(DIAG)
         w32(u, 0x3000004C, 0xC6000000); w32(u, 0x30000048, 0xC6200000)
@@ -389,6 +391,8 @@ class M4EndToEnd(unittest.TestCase):
                 uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
         for a in (0x08101C78, 0x08120148, 0x08120464, 0x08120604, 0x08120974):
             u.hook_add(UC_HOOK_CODE, hook, begin=a, end=a)
+        if self.live:
+            w32(u, 0x3003D800, 0x54495257)               # opt into pre-v3.19 live card writes
 
     @property
     def files(self):
@@ -404,6 +408,10 @@ class M4EndToEnd(unittest.TestCase):
         self.u.mem_write(ev, bytes([t, 0, 0, 0]) + struct.pack("<5I", 0, 1, 2, 60, 100))
         self.u.reg_write(UC_ARM_REG_R2, lr)
         call(self.u, SYM7["h_send"], 0x24060000, ev, lr)
+
+class M4EndToEnd(FatFsRig):
+    """Live card writing opted in (the pre-v3.19 path). BootOnlyWrites covers what ships."""
+    live = True
 
     def test_flow(self):
         self.tick(1000)                                  # first call: init + allocate
@@ -648,6 +656,32 @@ class M4EndToEnd(unittest.TestCase):
         self.send(0x5B)                                  # M7 resyncs to the new generation
         self.assertEqual(r32(self.u, M7H + 8), 0)
         self.assertEqual(len(records(self.u)), 1)
+
+class BootOnlyWrites(FatFsRig):
+    """v3.19 default: the card is written once per boot, >= 20 s after boot with
+    pads idle (stock's FatFS/SD driver take no locks; live writes collided)."""
+    live = False
+
+    def test_nothing_before_20_s_then_one_write(self):
+        self.tick(1000); self.send(0x5B)
+        self.tick(3000); self.tick(19000)
+        self.assertEqual(self.files, [], "nothing written before 20 s")
+        self.tick(21000)
+        self.assertEqual(len(self.files), 1)
+        self.assertIn("BENTO black box, firmware BE", self.files[0].decode())
+
+    def test_no_later_writes_even_for_a_live_crash(self):
+        self.tick(1000); self.tick(21000)
+        n = len(self.writes)
+        self.send(0x5B); self.tick(30000)
+        w32(self.u, 0x58004050 + 24 * 4, r32(self.u, 0x58004050 + 24 * 4) + 1)   # new stock crash record
+        self.tick(31000); self.tick(40000)
+        self.assertEqual(len(self.writes), n, "no card access after the boot write")
+
+    def test_next_boot_writes_again(self):
+        self.tick(1000); self.tick(21000)
+        self.tick(50); self.tick(21000)                    # reset: time went back
+        self.assertEqual(len(self.files), 2)
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

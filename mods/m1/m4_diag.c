@@ -35,6 +35,11 @@
 #define BUMP_END (*(volatile u32 *)0x30000048u)
 #define BUF_BYTES 0x40000u                          /* 256 KB session log */
 #define IDLE_MS 1500u
+#define BOOT_WRITE_MS 20000u   /* the one card write per boot (v3.19): after autoload */
+/* Live card writing (pre-v3.19 behaviour) only if this word holds the magic:
+ * never set on the device; the tests set it to keep covering that code. */
+#define LOG_LIVE (*(volatile u32 *)0x3003D800u)
+#define LOG_LIVE_MAGIC 0x54495257u /* "WRIT" */
 #define STALL_MS 3000u
 #define BKP ((volatile u32 *)0x58004050u)           /* RTC_BKP0R..BKP31R: stock crash record */
 
@@ -477,7 +482,7 @@ static void init(u32 now) {
         if (MPROF->magic == MPROF_MAGIC && MPROF->n) {   /* what kept the M4 UI task from checking in */
             mprof_print(&o);
         }
-        MPROF->magic = 0; MPROF->max_main = MPROF->max_pcm = 0;   /* this boot's worst gaps start here */
+        MPROF->magic = 0;
         if (PROF->magic == PROF_MAGIC && PROF->n) {   /* where the M7 was while audio stalled */
             prof_print(&o);
             PROF->magic = 0;
@@ -485,8 +490,9 @@ static void init(u32 now) {
         /* Post-mortem: our RAM slice survives a reset; before anything resets it,
          * write the previous boot's last records and counters. */
         puts_(&o, "previous boot (from RAM): ");
-        counters(&o);
+        counters(&o);                    /* includes the previous boot's worst watchdog gaps */
         puts_(&o, "\r\n");
+        MPROF->max_main = MPROF->max_pcm = 0;   /* this boot's worst gaps start here */
         ring_tail(&o, 0);
         puts_(&o, "fields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)\r\n"
                   "VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note\r\n");
@@ -561,13 +567,29 @@ static void poll(void) {
         n++;
     }
     M4H->r[2] = o.len;
-    if (urgent || (o.len > M4H->r[4] && now - M4H->r[5] >= IDLE_MS)) {
+    /* v3.19: stock's FatFS and SD driver take no locks, and stock does its own
+     * disk work from several places (PROJ scan, project load, sample streaming).
+     * Writing whenever the pads were idle collided with that (suspected cause of
+     * SD command time-outs -> M4 watchdog resets, and of empty project lists).
+     * So the card is written once per boot, BOOT_WRITE_MS after boot with pads
+     * idle: the previous boot's post-mortem from RAM (crash record, profiles,
+     * counters, last records). Live alarms and runtime status stay in RAM only. */
+    if (LOG_LIVE == LOG_LIVE_MAGIC) {             /* live writing (pre-v3.19), opt-in only */
+        if (urgent || (o.len > M4H->r[4] && now - M4H->r[5] >= IDLE_MS)) {
+            puts_(&o, "# "); counters(&o);
+            puts_(&o, " at ms "); dec(&o, now); puts_(&o, "\r\n");
+            M4H->r[2] = o.len;
+            flush();
+            if (crashed) history("live");
+            if (stalled) history("stall");
+        }
+        return;
+    }
+    if (M4H->r[4] == 0 && o.len && now >= BOOT_WRITE_MS && now - M4H->r[5] >= IDLE_MS) {
         puts_(&o, "# "); counters(&o);
         puts_(&o, " at ms "); dec(&o, now); puts_(&o, "\r\n");
         M4H->r[2] = o.len;
         flush();
-        if (crashed) history("live");
-        if (stalled) history("stall");
     }
 }
 
