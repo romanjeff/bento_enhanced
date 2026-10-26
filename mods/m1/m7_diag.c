@@ -19,7 +19,7 @@
 
 #define DEDUPE ((volatile u32 *)PRIV_BASE)          /* 32 x {queue, lr} */
 #define DEDUPE_N 16u
-/* M7-private line 0x240485C0: flags[8] | region ptr (C8) | region gen (CC) | GEN (D0) */
+/* M7-private line 0x3003C1C0: flags[8] | region ptr (C8) | region gen (CC) | GEN (D0) */
 #define FLAGS ((volatile u8 *)(PRIV_BASE + 0x80u)) /* armed "log the first X after a press":
                                                         [0] input AE, [1] send AE, [2] send 0x0E,
                                                         [3] send 0x5F, [4] ring 0x5F */

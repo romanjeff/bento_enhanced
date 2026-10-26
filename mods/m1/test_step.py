@@ -17,7 +17,7 @@ BASE, SENT = 0x08040000, 0x08000100
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
 MAN = json.loads((OUT / "manifest.json").read_text())
-CFG, MAGIC = 0x240485E0, 0x31474144
+CFG, MAGIC = 0x3003C1E0, 0x31474144
 REG = 0x30040000                       # fake registry (499 x 32 B)
 VIEW = 0x20000000                      # drum step view / piano view (big)
 CONT = 0x20200000                      # fake note container (drum) / selection list (piano)
@@ -418,7 +418,7 @@ class Defaults(unittest.TestCase):
 
 
 class StrikeVelocity(unittest.TestCase):
-    STRIKE = 0x24048D60
+    STRIKE = 0x3003C960
 
     def rig(self, base=0):
         g = Rig(); w32(g.u, VIEW + 0x114C0, 100); w32(g.u, VIEW + 0x113F4, base)
@@ -513,31 +513,31 @@ class StrikeButton(unittest.TestCase):
         v3.12 read that field as a pointer and faulted on every boot (boot loop)."""
         for stale in (2204624, 1, 0xDEADBEE0):
             g = self.rig(); g.drum_header()
-            g.u.mem_write(0x24048D48, struct.pack("<6I", 0x32455653, 0, stale, 0, 0, 0))
+            g.u.mem_write(0x3003C948, struct.pack("<6I", 0x32455653, 0, stale, 0, 0, 0))
             changed, recs = self.generate(g)                        # must not fault
             self.assertEqual(recs[4], ("Strike Vel", 1, 0x10F0))
         g = self.rig(); g.drum_header()                             # same layout, unchecked pointer
-        g.u.mem_write(0x24048D48, struct.pack("<6I", 0x33455653, 0, 0xDEADBEE0, 0, 0, 0))
+        g.u.mem_write(0x3003C948, struct.pack("<6I", 0x33455653, 0, 0xDEADBEE0, 0, 0, 0))
         self.assertEqual(self.generate(g)[1][4], ("Strike Vel", 1, 0x10F0))
 
     def test_no_button_for_a_pitched_track(self):
         g = self.rig(kind=0x10); g.drum_header()                    # piano roll (pitched instrument)
         changed, recs = self.generate(g)
         self.assertNotIn(0x10F0, [r[2] for r in recs])
-        self.assertEqual(r32(g.u, 0x24048D48 + 16) & 0xFF, 0xF0, "diag: drum=0, slot=none")
+        self.assertEqual(r32(g.u, 0x3003C948 + 16) & 0xFF, 0xF0, "diag: drum=0, slot=none")
 
     def test_button_shows_even_if_the_piano_header_ran_last(self):
         g = self.rig(); g.drum_header(); g.call(0x081599BC, VIEW)
         changed, recs = self.generate(g)
         self.assertEqual(recs[4][2], 0x10F0)
-        self.assertEqual(r32(g.u, 0x24048D48 + 16) & 0x1FF, 0x141, "diag: drum=1, slot=4, inserted")
+        self.assertEqual(r32(g.u, 0x3003C948 + 16) & 0x1FF, 0x141, "diag: drum=1, slot=4, inserted")
 
     def test_button_toggles_lit_and_the_behaviour(self):
         g = self.rig(); g.drum_header()
         ev = 0x20100000; g.u.mem_write(ev, struct.pack("<HH4I", 0x10F0, 0, 0, 0, 0, 0))
         self.assertEqual(g.call(0x0815D600, VIEW, ev), 0, "handled")
         self.assertEqual(self.generate(g)[1][4], ("Strike Vel", 0, 0x10F0), "outline off")
-        sv = StrikeVelocity(); sv.STRIKE = 0x24048D60
+        sv = StrikeVelocity(); sv.STRIKE = 0x3003C960
         w32(g.u, VIEW + 0x114C0, 100); sv.strike(g, 1, 37); sv.tap(g, 4)
         self.assertEqual(g.notes[-1][4] >> 16, 100, "off: tapped step gets the default")
         g.call(0x0815D600, VIEW, ev)
@@ -571,7 +571,7 @@ class StrikeInsert(unittest.TestCase):
 
     def press(self, g, seq, vel, ms, pad=2, tick=True):
         StrikeButton().generate(g)                    # per-pad state exists (old presses don't count)
-        g.u.mem_write(0x24048D60 + pad, bytes([seq])); g.u.mem_write(0x24048D70 + pad, bytes([vel]))
+        g.u.mem_write(0x3003C960 + pad, bytes([seq])); g.u.mem_write(0x3003C970 + pad, bytes([vel]))
         w32(g.u, 0x30035F40, ms)
         if tick:
             StrikeButton().generate(g)                # a UI tick sees the strike (stamp)
@@ -629,7 +629,7 @@ class StrikeInsert(unittest.TestCase):
 
     def test_off_means_off(self):
         g = self.rig(); self.press(g, 5, 44, 10000)
-        w32(g.u, 0x24048D48 + 4, 1)                   # StrikeSet.off
+        w32(g.u, 0x3003C948 + 4, 1)                   # StrikeSet.off
         self.assertEqual(self.insert(g, note(2, nid=0), 10100)[4] >> 16, 100)
 
 if __name__ == "__main__":

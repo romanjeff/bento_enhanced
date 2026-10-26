@@ -6,19 +6,24 @@
  * MIDI-out event -> cross-core MIDI ring. The M7 only writes RAM; the M4
  * formats and writes \BENTO_DIAG.log on its UI thread when the pads are idle.
  *
- * RAM: 0x24048500..0x24048A00 is unclaimed by every CH10 source (Lab's
- * picker table ends 0x240484C0, condition counters start 0x24048A60),
- * outside the native heap (Lab moved its end to 0x24040000) and inside the
- * M4's MPU window (0x24040000..0x24080000).
+ * RAM (since v3.16): our whole slice is 0x3003C000..0x3003C9A0, in the top of
+ * D2 SRAM2 that no stock linker section uses (M4 .bss ends 0x30036CF0, heap
+ * 0x30036CF0..0x30037CF0, stack 0x30037CF0..0x300390F0; the M4 reset code
+ * briefly uses a stack below 0x30040000; SRAM3 from 0x30040000 holds the MIDI
+ * ring). M4 MPU region 2 maps 0x30000000..0x30080000; the M7 reaches it through
+ * its default map (cacheable: same clean/invalidate rules as before). Until
+ * v3.15 it lived at 0x24048400 by lowering the M7 heap end, which broke
+ * loading large projects. Layout inside the slice is unchanged (offset -0x24048400
+ * + 0x3003C000).
  *
  * Ownership, one writer per 32-byte cache line:
- *   0x24048500 M7 header   (M7 writes, M4 reads)
- *   0x24048520 M4 header   (M4 writes, M7 never reads)
- *   0x24048540 M7 private  diag: dedupe table 16 x 8 B
- *   0x240485C0 M7 private  diag: flags, generation
- *   0x240485E0 config      (M4 writes once at boot, M7 reads): M1 state region
- *   0x24048600 M7 stats    (M7 writes, M4 reads): MIDI ring fill / overflows
- *   0x240486C0 records     (M7 writes, M4 reads), 17 x 48 bytes
+ *   0x3003C100 M7 header   (M7 writes, M4 reads)
+ *   0x3003C120 M4 header   (M4 writes, M7 never reads)
+ *   0x3003C140 M7 private  diag: dedupe table 16 x 8 B
+ *   0x3003C1C0 M7 private  diag: flags, generation
+ *   0x3003C1E0 config      (M4 writes once at boot, M7 reads): M1 state region
+ *   0x3003C200 M7 stats    (M7 writes, M4 reads): MIDI ring fill / overflows
+ *   0x3003C2C0 records     (M7 writes, M4 reads), 17 x 48 bytes
  */
 #ifndef DIAG_SHARED_H
 #define DIAG_SHARED_H
@@ -62,11 +67,11 @@ typedef struct {
     u32 r[6];
 } M4Head; /* 32 bytes */
 
-#define M7H ((volatile M7Head *)0x24048500u)
-#define M4H ((volatile M4Head *)0x24048520u)
-#define PRIV_BASE 0x24048540u
-#define RECS ((volatile Rec *)0x240486C0u)
-#define M7_REGION_CACHE 0x240485C8u /* M7 private: cached region pointer */
+#define M7H ((volatile M7Head *)0x3003C100u)
+#define M4H ((volatile M4Head *)0x3003C120u)
+#define PRIV_BASE 0x3003C140u
+#define RECS ((volatile Rec *)0x3003C2C0u)
+#define M7_REGION_CACHE 0x3003C1C8u /* M7 private: cached region pointer */
 
 typedef struct {
     u32 magic;
@@ -74,7 +79,7 @@ typedef struct {
     u32 region_bytes;
     u32 r[5];          /* r[0] = M4 boot generation the region belongs to */
 } Cfg; /* 32 bytes */
-#define CFG ((volatile Cfg *)0x240485E0u)
+#define CFG ((volatile Cfg *)0x3003C1E0u)
 #define M1_REGION_BYTES 0x1000u
 #define RETRIG_BYTES 512u          /* 16 bursts x 32 B, inside the M1 region */
 
@@ -124,8 +129,8 @@ static inline u32 step_make(u32 cond, u32 hits, u32 div, int ramp, u32 locks) {
  * STRIKE_PEAK_SAMPLES pressure samples (0xAE), so a quick hit isn't read at
  * first contact. One line, M7-written and cleaned, read by the M4 (v3.12). */
 typedef struct { u8 seq[16]; u8 vel[16]; } Strikes;
-#define STRIKES ((volatile Strikes *)0x24048D60u)
-#define STRIKE_PEAK ((volatile u8 *)0x24048490u)   /* M7-private countdown per pad (stall line spare) */
+#define STRIKES ((volatile Strikes *)0x3003C960u)
+#define STRIKE_PEAK ((volatile u8 *)0x3003C090u)   /* M7-private countdown per pad (stall line spare) */
 #define STRIKE_PEAK_SAMPLES 8u
 /* The on/off setting (header button "Strike Vel", m4_step.c); M4-only.
  * pads: per-pad UI state block (bump-allocated once per boot, m4_step.c), trusted
@@ -133,7 +138,7 @@ typedef struct { u8 seq[16]; u8 vel[16]; } Strikes;
  * Reserved RAM survives resets: change the magic whenever this layout changes
  * (v3.12 kept v3.11's magic, read its old tick field as a pointer: boot loop). */
 typedef struct { u32 magic, off, pads, r[3]; } StrikeSet;
-#define STRIKE_SET ((volatile StrikeSet *)0x24048D48u)
+#define STRIKE_SET ((volatile StrikeSet *)0x3003C948u)
 #define STRIKE_SET_MAGIC 0x33455653u /* "SVE3" */
 #define STRIKE_ACTION 0x10F0u        /* header button action id (unused by stock) */
 
@@ -147,10 +152,10 @@ typedef struct {
     u32 r[2];
 } RingStat; /* 32 bytes */
 #define M7_STACK_TOP 0x2404CDA0u    /* initial M7 MSP */
-#define M7_STACK_BOTTOM 0x24048DA0u /* below it: Lab's state, then our slice */
-#define RINGSTAT ((volatile RingStat *)0x24048600u)
+#define M7_STACK_BOTTOM 0x24048DA0u /* stock M7 stack bottom (heap end below it) */
+#define RINGSTAT ((volatile RingStat *)0x3003C200u)
 #define MIDI_RING_SLOTS 16u
 _Static_assert(sizeof(Rec) == 48, "record size");
-_Static_assert(0x240486C0u + DIAG_RECORDS * sizeof(Rec) <= 0x24048A00u, "records overrun our slice");
+_Static_assert(0x3003C2C0u + DIAG_RECORDS * sizeof(Rec) <= 0x3003C600u, "records overrun our slice");
 
 #endif

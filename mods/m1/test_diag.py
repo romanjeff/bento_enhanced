@@ -19,10 +19,10 @@ from unicorn.arm_const import *
 BASE = 0x08040000
 SENT = 0x08000100           # return sentinel (never executed: emu stops on reaching it)
 STACK = 0x2407F000
-LOG_LO, LOG_HI = 0x24048400, 0x24048DA0   # our reserved block (heap end lowered): logger, monitors, strike line
-M7H, M4H, RECS = 0x24048500, 0x24048520, 0x240486C0
+LOG_LO, LOG_HI = 0x3003C000, 0x3003C9A0   # our reserved block (unlinked top of D2 SRAM2, v3.16): logger, monitors, strike line
+M7H, M4H, RECS = 0x3003C100, 0x3003C120, 0x3003C2C0
 MAGIC = 0x31474144
-RINGSTAT = 0x24048600
+RINGSTAT = 0x3003C200
 RTC_BKP = 0x58004050
 REGS = [UC_ARM_REG_R0 + i for i in range(13)] + [UC_ARM_REG_SP, UC_ARM_REG_LR]
 
@@ -84,10 +84,11 @@ class Image(unittest.TestCase):
                          "boot screen copies the first 6 bytes of this 8-byte slot")
         self.assertEqual(CH10[0x0818BAD4 - BASE:0x0818BAD4 - BASE + 8], b"1.6.1" + bytes(3), "stock string")
 
-    def test_heap_end_lowered_only_at_the_three_literals(self):
-        for a in (0x08040588, 0x080A3BDC, 0x080A3E94):
-            self.assertEqual(struct.unpack_from("<I", DIAG, a - BASE)[0], 0x24048400)
-        for a in (0x08040514, 0x0808E19C, 0x080A547C):   # stack bottom / sentinels: unchanged
+    def test_m7_heap_is_stock(self):
+        """v3.16: the M7 heap end is back to stock (v2.3-v3.15 lowered it by 2.4 KB;
+        large projects like SPACED then failed to load)."""
+        for a in (0x08040588, 0x080A3BDC, 0x080A3E94,    # heap literals
+                  0x08040514, 0x0808E19C, 0x080A547C):   # stack bottom / sentinels
             self.assertEqual(struct.unpack_from("<I", DIAG, a - BASE)[0], 0x24048DA0)
 
 class Trampolines(unittest.TestCase):
@@ -124,13 +125,11 @@ class Trampolines(unittest.TestCase):
                     b = self.run_site(DIAG, site, resume, t, ready)
                     self.assertEqual(a[0], b[0], "registers differ")
                     self.assertEqual(a[1], b[1], "flags differ")
-                    # Ignore our log slice and dead stack below the (identical) final SP:
-                    # pushed-then-popped trampoline scratch is not observable state.
+                    # Our slice is in D2 SRAM now (v3.16): all M7 AXI RAM must match stock,
+                    # except dead stack below the (identical) final SP (trampoline scratch).
                     sp = a[0][13] - 0x24000000
                     dead = STACK - 0x24000000 - 0x1000
-                    o1, o2 = LOG_LO - 0x24000000, LOG_HI - 0x24000000
-                    self.assertEqual(a[2][:o1], b[2][:o1], "RAM below our slice differs")
-                    self.assertEqual(a[2][o2:dead], b[2][o2:dead], "RAM above our slice differs")
+                    self.assertEqual(a[2][:dead], b[2][:dead], "M7 AXI RAM differs from stock")
                     self.assertEqual(a[2][sp:], b[2][sp:], "live stack differs")
                     n = len(records(b[3])) if ready else 0
                     self.assertEqual(n, 1 if ready and t is not None else 0)  # queue reads: heartbeat only
@@ -143,7 +142,7 @@ class StrikePeak(unittest.TestCase):
         call(u, SYM7["h_input"], 0x24071000, at)
 
     def strikes(self, u):
-        raw = bytes(u.mem_read(0x24048D60, 32))
+        raw = bytes(u.mem_read(0x3003C960, 32))
         return list(raw[:16]), list(raw[16:])
 
     def test_peak_over_the_first_samples_per_pad(self):
@@ -320,6 +319,8 @@ class M4EndToEnd(unittest.TestCase):
         self.assertIn("BENTO black box, firmware BE", text)
         self.assertRegex(text, r"at boot \(after the black box's own buffers\): \| ram bump cur=[0-9a-f]{8} end=[0-9a-f]{8} free=\d+")
         self.assertRegex(text, r"\n# .* \| ram bump cur=[0-9a-f]{8} end=[0-9a-f]{8} free=\d+")
+        self.assertRegex(text, r"\n# .* d2 canary changed=0\b", "canary armed at boot, untouched since")
+        self.assertEqual(r32(self.u, 0x3003CA00), 0x59524E43, "canary magic")
         self.assertIn("# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0"
                       " | midi ring max_fill=0 overflows=0 | m7 stack min_msp=", text)
         self.assertEqual(text.count(" SEND "), 2)
@@ -472,12 +473,12 @@ class M4EndToEnd(unittest.TestCase):
         w32(self.u, 0x40020404, 0x00200000)              # HISR: S7 half-transfer flag set
         self.m7("stall_progress", 1000)
         self.m7("stall_check", 1000 + 99 * 480000)       # 99 ms: not yet
-        self.assertNotEqual(r32(self.u, 0x240484A0), 0x38544C53)
+        self.assertNotEqual(r32(self.u, 0x3003C0A0), 0x38544C53)
         self.m7("stall_check", 1000 + 101 * 480000)      # 101 ms: snapshot
-        self.assertEqual(r32(self.u, 0x240484A0), 0x38544C53)
+        self.assertEqual(r32(self.u, 0x3003C0A0), 0x38544C53)
         w32(self.u, 0x40020404, 0)
         self.m7("stall_check", 1000 + 200 * 480000)      # once per boot
-        self.assertEqual(r32(self.u, 0x240484A0 + 4 * 15), 0x00200000, "first snapshot kept (hisr)")
+        self.assertEqual(r32(self.u, 0x3003C0A0 + 4 * 15), 0x00200000, "first snapshot kept (hisr)")
         self.tick(50); self.tick(1700)                   # watchdog reset, next boot
         boot = self.files[-1].decode()
         self.assertIn("M7 audio stall record (from RAM): gen 1, no audio progress for 101 ms", boot)
@@ -491,7 +492,7 @@ class M4EndToEnd(unittest.TestCase):
         self.m7("stall_progress", 0); self.m7("stall_check", 101 * 480000)
         self.tick(50); self.tick(1700)                   # gen 2
         self.m7("stall_progress", 0)
-        self.assertEqual(r32(self.u, 0x2404848C), 0, "snapped flag reset for the new boot")
+        self.assertEqual(r32(self.u, 0x3003C08C), 0, "snapped flag reset for the new boot")
 
     def test_heartbeat_stall_is_reported(self):
         self.tick(1000)

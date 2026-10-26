@@ -24,6 +24,10 @@ PROVEN_MAX_SIZE = 0x18D334
 FORBIDDEN_FROM = 0x081E0000
 
 # M7 heap: stock ends it at 0x24048DA0 (three literals, identified by Lab).
+# v2.3-v3.15 lowered it to 0x24048400 for our RAM slice; that broke loading
+# large projects (Jeff: SPACED). Since v3.16 the heap is stock and the slice
+# lives in unlinked D2 SRAM2 at 0x3003C000 (both cores' MPUs map it).
+# Historical note:
 # Lowering it frees 0x24048400..0x24048DA0 (below the M7 stack bottom, inside
 # the M4's MPU window) for our RAM slice and the trigger-condition counters.
 HEAP_LITERALS = (0x08040588, 0x080A3BDC, 0x080A3E94)
@@ -38,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.15"                       # bump for every build that goes on the device
+VERSION = "3.16"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -116,7 +120,7 @@ HOLD_EDIT_SITES = [0x0815C7C4, 0x0815C8AC, 0x0815C990]   # velocity, condition, 
 # Hold shortcuts (port of bento-community-lab K16 hold controls, GPL-3.0-or-later).
 CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (below our 0x080DA000)
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
-CTRL_STATE = 0x24048CA0                             # M7-only line: magic, suppress mask, drops, enable, pad map
+CTRL_STATE = 0x3003C8A0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
 STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x2000   # m4_step.c
 M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
@@ -272,10 +276,10 @@ def build(base_img, out):
         img[o:o + len(new)] = new
         writes.append(dict(address=addr, size=len(new), original_hex=old.hex(), replacement_hex=new.hex(), purpose=why))
 
-    # --- M7 heap: reserve 0x24048400..0x24048DA0
+    # --- M7 heap: left at stock since v3.16 (our slice is in D2 SRAM2)
     for a in HEAP_LITERALS:
-        patch(a, struct.pack("<I", HEAP_END_NEW), struct.pack("<I", HEAP_END_STOCK),
-              "M1: lower M7 heap end to reserve our RAM slice + condition counters (stack unchanged)")
+        if img[a - BASE:a - BASE + 4] != struct.pack("<I", HEAP_END_STOCK):
+            raise SystemExit(f"heap literal at {a:#x} is not stock")
 
     # --- M7: compile, place, trampolines, entry patches
     m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c", HERE / "m7_conditions.c", HERE / "m7_stall.c", HERE / "m7_retrig.c"],
@@ -482,7 +486,7 @@ def build(base_img, out):
     sel_at = CTRL_WRAP + 0x80
     selection = asm(
         "push.w {r0-r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
-        f"ldr r3, =0x24048cf0; ldr r0, [r3]; cmp r0, #0; beq replay; cmp r2, #15; bhi replay; "
+        f"ldr r3, =0x3003c8f0; ldr r0, [r3]; cmp r0, #0; beq replay; cmp r2, #15; bhi replay; "
         "movs r0, #1; str r0, [r3, #20]; "                                        # INST->picked
         "replay: pop.w {r12, lr}; msr apsr_nzcvq, r12; pop.w {r0-r3, r12, lr}; "
         f"push {{r4-r7, lr}}; sub sp, #36; b.w {CTRL_SELECTION_SITE + 4:#x}", sel_at)

@@ -104,7 +104,7 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
 /* ---- registry keys -------------------------------------------------------- */
 
 typedef struct { u32 magic, gen, ok; u16 key[4]; u32 r[3]; } StepUI;   /* one M4-only line */
-#define SU ((volatile StepUI *)0x24048C80u)
+#define SU ((volatile StepUI *)0x3003C880u)
 #define SU_MAGIC 0x31505453u /* "STP1" */
 _Static_assert(sizeof(StepUI) <= 32, "step UI state is one cache line");
 

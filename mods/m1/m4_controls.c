@@ -53,21 +53,21 @@ typedef struct { u32 active, track, sequence, scene, previous, picked; } InstHol
 typedef struct { u32 magic, active, generation, old_mode; } MixerUI;
 typedef struct { u32 active, old_mode; } MixerLights;
 typedef struct { u32 magic, gen; } Boot;
-#define S ((volatile State *)0x24048cc0u)          /* +4 button, +8 used: read by name in Lab's CH8 code */
-#define INST ((volatile InstHold *)0x24048cf0u)    /* +0x14 picked: written by the selection observer */
-#define BOOT ((volatile Boot *)0x24048d10u)
-#define UI ((volatile MixerUI *)0x24048d20u)
-#define LIGHTS ((volatile MixerLights *)0x24048d40u)
+#define S ((volatile State *)0x3003c8c0u)          /* +4 button, +8 used: read by name in Lab's CH8 code */
+#define INST ((volatile InstHold *)0x3003c8f0u)    /* +0x14 picked: written by the selection observer */
+#define BOOT ((volatile Boot *)0x3003c910u)
+#define UI ((volatile MixerUI *)0x3003c920u)
+#define LIGHTS ((volatile MixerLights *)0x3003c940u)
 #define STATE_MAGIC 0x354d5442u
 #define UI_MAGIC 0x35554942u
 #define BOOT_MAGIC 0x31544342u /* "BCT1" */
-_Static_assert(0x24048d40u + sizeof(MixerLights) <= 0x24048d80u, "controls state reaches the inspect-a-step state");
+_Static_assert(0x3003c940u + sizeof(MixerLights) <= 0x3003c980u, "controls state reaches the inspect-a-step state");
 
 /* Reset all controls state once per M4 boot (this RAM survives a reset). */
 static void init(void) {
     u32 gen = CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u;
     if (BOOT->magic == BOOT_MAGIC && BOOT->gen == gen) return;
-    for (volatile u32 *p = (volatile u32 *)0x24048cc0u; p < (volatile u32 *)0x24048d48u; p++) *p = 0;
+    for (volatile u32 *p = (volatile u32 *)0x3003c8c0u; p < (volatile u32 *)0x3003c948u; p++) *p = 0;
     S->magic = STATE_MAGIC;
     BOOT->gen = gen;
     BOOT->magic = BOOT_MAGIC;

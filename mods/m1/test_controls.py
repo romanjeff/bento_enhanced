@@ -22,7 +22,7 @@ IMAGE = (OUT / "bento1.bin").read_bytes()
 SYMS = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["m4_symbols"].items()}
 MIXER_RENDER = SYMS["controls.mixer_render"]
 LAYOUT = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["layout"].items()}
-CONSUMER, CTRL_STARTUP, STATE = LAYOUT["CTRL_WRAP"], 0x080D9800, 0x24048CA0
+CONSUMER, CTRL_STARTUP, STATE = LAYOUT["CTRL_WRAP"], 0x080D9800, 0x3003C8A0
 REGS = [UC_ARM_REG_R0 + i for i in range(13)]
 
 class NativeProperties(dict):
@@ -169,7 +169,7 @@ class LabUI(unittest.TestCase):
   self.assertEqual(f.page(),7)
  def test_selection_observer_preserves_native_entry_registers_and_flags(self):
   for active in [0,1]:
-   f=Fixture();f.w(0x24048cf0,active);sp=0x20030000
+   f=Fixture();f.w(0x3003c8f0,active);sp=0x20030000
    regs=[0x1010+i for i in range(13)];regs[0]=f.m;regs[2]=7
    for r,v in zip(REGS,regs):f.u.reg_write(r,v)
    f.u.reg_write(UC_ARM_REG_SP,sp);f.u.reg_write(UC_ARM_REG_LR,0x08112345)
@@ -179,7 +179,7 @@ class LabUI(unittest.TestCase):
    self.assertEqual(f.u.reg_read(UC_ARM_REG_LR),0x08112345)
    self.assertEqual(f.u.reg_read(UC_ARM_REG_APSR)&0xf8000000,0xa8000000)
    self.assertEqual(f.u.reg_read(UC_ARM_REG_SP),sp-56)
-   self.assertEqual(f.r(0x24048d04),active)
+   self.assertEqual(f.r(0x3003c904),active)
  def test_tracks_stays_inst(self):
   f=Fixture();f.event(175,2);f.pad(1);f.event(176,2);self.assertEqual(f.page(),7)
  def test_tracks_seq_playing_priority(self):
@@ -315,20 +315,20 @@ class Ours(unittest.TestCase):
 
     def test_state_from_a_previous_boot_is_discarded(self):
         f = Fixture()
-        f.w(0x240485E0, 0x31474144); f.w(0x240485E0 + 12, 1)      # boot gen 1
+        f.w(0x3003C1E0, 0x31474144); f.w(0x3003C1E0 + 12, 1)      # boot gen 1
         f.event(175, 3)                                           # LAUNCH held
-        f.w(0x240485E0 + 12, 2)                                   # reboot: same RAM, gen 2
+        f.w(0x3003C1E0 + 12, 2)                                   # reboot: same RAM, gen 2
         f.event(0xab, 0); f.event(176, 3)
         self.assertEqual(f.page(), 30, "stale hold not acted on after reboot")
 
     def test_startup_leaves_our_diag_and_condition_ram_alone(self):
         f = Input(); u = f.u
-        u.mem_write(0x24048400, bytes([0x5a]) * (STATE - 0x24048400))
-        u.mem_write(STATE + 32, bytes([0x5a]) * (0x24048DA0 - STATE - 32))
+        u.mem_write(0x3003C000, bytes([0x5a]) * (STATE - 0x3003C000))
+        u.mem_write(STATE + 32, bytes([0x5a]) * (0x3003C9A0 - STATE - 32))
         u.reg_write(UC_ARM_REG_SP, 0x2407e000)
         u.emu_start(CTRL_STARTUP | 1, 0x080404ba, count=200000)
-        self.assertEqual(bytes(u.mem_read(0x24048400, STATE - 0x24048400)), bytes([0x5a]) * (STATE - 0x24048400))
-        self.assertEqual(bytes(u.mem_read(STATE + 32, 0x24048DA0 - STATE - 32)), bytes([0x5a]) * (0x24048DA0 - STATE - 32))
+        self.assertEqual(bytes(u.mem_read(0x3003C000, STATE - 0x3003C000)), bytes([0x5a]) * (STATE - 0x3003C000))
+        self.assertEqual(bytes(u.mem_read(STATE + 32, 0x3003C9A0 - STATE - 32)), bytes([0x5a]) * (0x3003C9A0 - STATE - 32))
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

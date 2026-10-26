@@ -196,10 +196,10 @@ typedef struct {
     u32 periph[2][2];    /* if PAR is a SAI DR: SR (DR-8), CR1 (DR-0x1C) */
     u32 rtc_tr, rtc_dr;  /* RTC at the last UI-loop pass (survives the reset) */
 } AudioMon;
-#define AMON ((volatile AudioMon *)0x24048400u)   /* M4-only; freed by lowering the M7 heap end */
+#define AMON ((volatile AudioMon *)0x3003C000u)   /* M4-only; start of our D2 slice (v3.16) */
 #define AMON_MAGIC 0x314E4F4Du /* "MON1" */
 #define SNAP_MAGIC 0x50414E53u /* "SNAP" */
-_Static_assert(0x24048400u + sizeof(AudioMon) <= 0x24048480u, "audio monitor overlaps the M7 stall record");
+_Static_assert(0x3003C000u + sizeof(AudioMon) <= 0x3003C080u, "audio monitor overlaps the M7 stall record");
 static const u32 STREAMS[2] = {5u, 7u};
 static volatile u32 *dma_stream(u32 n) { return (volatile u32 *)(DMA2_BASE + 0x10u + 0x18u * n); }
 
@@ -261,11 +261,27 @@ static int audio_watch(Out *o, u32 now) {
 
 /* Native bump allocator (0x08104C08): advance-only, so free space now is this
  * boot's minimum. Sizing data for M2's pressure-curve pool. */
+/* D2 canary (v3.16): our slice moved into D2 SRAM2 that no stock linker
+ * section uses. Fill the 1.5 KB above it once with a known pattern (it
+ * survives resets) and report any word that changes: nonzero = something in
+ * stock uses this area after all. */
+#define CANARY ((volatile u32 *)0x3003CA00u)
+#define CANARY_WORDS ((0x3003D000u - 0x3003CA00u) / 4u)
+#define CANARY_MAGIC 0x59524E43u /* "CNRY" */
+static u32 canary_word(u32 i) { return 0xA5C30000u ^ (i * 0x9E3779B1u); }
+static void canary_arm(void) {
+    if (CANARY[0] == CANARY_MAGIC) return;
+    for (u32 i = 1; i < CANARY_WORDS; i++) CANARY[i] = canary_word(i);
+    CANARY[0] = CANARY_MAGIC;
+}
 static void ram(Out *o) {
-    u32 cur = BUMP_CUR, end = BUMP_END;
+    u32 cur = BUMP_CUR, end = BUMP_END, bad = 0;
     puts_(o, " | ram bump cur="); hex(o, cur, 8);
     puts_(o, " end="); hex(o, end, 8);
     puts_(o, " free="); dec(o, end > cur ? end - cur : 0u);
+    if (CANARY[0] != CANARY_MAGIC) bad = CANARY_WORDS;
+    else for (u32 i = 1; i < CANARY_WORDS; i++) bad += CANARY[i] != canary_word(i);
+    puts_(o, " d2 canary changed="); dec(o, bad);
 }
 
 static void counters(Out *o) {
@@ -316,7 +332,7 @@ typedef struct {
     u32 lisr, hisr, s5cr, s5ndtr, s7cr, s7ndtr;
     u32 mux[2], sai_sr[2];
 } Stall7;
-#define ST7 ((volatile Stall7 *)0x24048480u)
+#define ST7 ((volatile Stall7 *)0x3003C080u)
 #define STALL7_MAGIC 0x38544C53u /* "SLT8": layout grew (SAI status) */
 static void stall7_print(Out *o) {
     puts_(o, "M7 audio stall record (from RAM): gen "); dec(o, ST7->sgen);
@@ -360,7 +376,8 @@ static void init(u32 now) {
             puts_(&o, "\r\nprevious boot: last UI-loop pass at ms "); dec(&o, M4H->r[3]);
             puts_(&o, ", rtc "); rtc_print(&o, AMON->rtc_tr, AMON->rtc_dr);
         }
-        puts_(&o, "\r\nat boot (after the black box's own buffers):"); ram(&o);
+        puts_(&o, "\r\nat boot (after the black box's own buffers):"); ram(&o);   /* canary as found at boot */
+        canary_arm();
         puts_(&o, "\r\n");
         crash_record(&o);
         if (AMON->snap_magic == SNAP_MAGIC) {     /* survives the reset the stall caused */

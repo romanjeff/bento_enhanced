@@ -16,7 +16,7 @@ from unicorn.arm_const import *
 
 BASE = 0x08040000
 SENT = 0x08000100
-CFG, REGION, MAGIC = 0x240485E0, 0xC6100000, 0x31474144
+CFG, REGION, MAGIC = 0x3003C1E0, 0xC6100000, 0x31474144
 CLOCK = 0x24071000
 ROUTER = 0x24060000
 S = 0x2407E000                       # caller stack pointer at the bl site

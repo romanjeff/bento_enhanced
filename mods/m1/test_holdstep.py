@@ -15,8 +15,8 @@ from unicorn.arm_const import *
 
 BASE = 0x08040000
 SENT = 0x08000100
-STATE = 0x24048D80
-CFG = 0x240485E0
+STATE = 0x3003C980
+CFG = 0x3003C1E0
 MAGIC = 0x31474144
 REGS = [UC_ARM_REG_R0 + i for i in range(4)]
 IMG = (Path(sys.argv[2]) / "bento1.bin").read_bytes()
@@ -179,7 +179,7 @@ class MultiHold(unittest.TestCase):
     def probe(self):
         p = Probe()
         # step UI state as claim() leaves it: magic, boot gen 1, ok, four keys
-        p.u.mem_write(0x24048C80, struct.pack("<3I4H3I", 0x31505453, 1, 1, *self.KEYS, 0, 0, 0))
+        p.u.mem_write(0x3003C880, struct.pack("<3I4H3I", 0x31505453, 1, 1, *self.KEYS, 0, 0, 0))
         return p
 
     def encoder(self, p, which, value):

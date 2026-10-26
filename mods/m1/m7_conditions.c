@@ -18,8 +18,8 @@
  *   cond_decide(seq, value)  probability gate 0x08060B64: 0 skip, 1 play,
  *                            2 use the native probability decision
  *   cond_loop(seq)           sequence loop boundary 0x08061740: count passes
- * Counters: 16 x 32 B at 0x24048A60, M7-only, inside the RAM we reserve by
- * lowering the heap end. A sequence whose owner or playing row changes starts
+ * Counters: 16 x 32 B at 0x3003C660, M7-only, inside our D2 SRAM slice
+ * (diag_shared.h). A sequence whose owner or playing row changes starts
  * counting again.
  */
 #include "diag_shared.h"
@@ -29,11 +29,11 @@
 typedef struct { u32 sequence, owner, row, loop, boundaries, r[3]; } Counter;
 typedef struct { u32 magic, gen, r[6]; } CondHead;
 
-#define COUNTERS ((volatile Counter *)0x24048A60u)
+#define COUNTERS ((volatile Counter *)0x3003C660u)
 #define NCOUNTERS 16u
-#define CHEAD ((volatile CondHead *)0x24048C60u)
+#define CHEAD ((volatile CondHead *)0x3003C860u)
 #define COND_MAGIC 0x31444E43u /* "CND1" */
-_Static_assert(0x24048C60u + sizeof(CondHead) <= 0x24048DA0u, "conditions state past the M7 stack bottom");
+_Static_assert(0x3003C860u + sizeof(CondHead) <= 0x3003C9A0u, "conditions state past the M7 stack bottom");
 
 /* Our RAM survives a reset: (re)initialise once per M4 boot generation, or on
  * first use if the M4 has not published one yet. */
