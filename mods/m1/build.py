@@ -36,8 +36,8 @@ M7_LIMIT = 0x080DB800
 # is reserved for the trigger-condition UI (S2).
 APPEND_FROM = 0x081B4000
 M4_CODE = 0x081B5000
-M4_LIMIT = 0x081B6600
-MARKER = b"BENTO_MOD:m1-polyat:v2.7-stock+conditions+inspect+holds" + bytes(1)
+M4_LIMIT = 0x081B6C00
+MARKER = b"BENTO_MOD:m1-polyat:v2.8-stock+conditions+inspect+holds+dmamon" + bytes(1)
 
 # (name, site, original bytes, displaced instruction(s), resume address, call setup)
 M7_HOOKS = [
@@ -56,7 +56,7 @@ POLY_SITE, POLY_ORIG, POLY_RESUME = 0x08062466, "7ff40bae", 0x08062080
 # (falls through to the loop at 0x081050DE). Our handler copies stock's Note On
 # case (0x0810509A..0x081050DE) with status 0x90 -> 0xA0.
 JT, JT_5F, JT_DEFAULT, M4_LOOP = 0x08105294, 0x081052A4, 0x081050DF, 0x081050DE
-M4_POLY = 0x081B6580   # end of our M4 slice (handler is 72 B); diag code grows below it
+M4_POLY, M4_POLY_LIMIT = 0x081B8000, 0x081B8100   # own block after the controls code (handler is 72 B)
 
 # Poly cap: the five `bl msg_send` sites that post External MIDI notes, and the
 # register holding the track object at each (verified unmodified on every path).
@@ -94,7 +94,7 @@ COND_UI_SITES = [  # (site, helper, original bytes)
 
 # Inspect a step (from bento-community-lab T2 holdstep, GPL-3.0-or-later): only the
 # edit-protects-release part; no selection kept after release.
-HOLD_WRAP, HOLD_CODE, HOLD_LIMIT = 0x081B6600, 0x081B6800, 0x081B7000
+HOLD_WRAP, HOLD_CODE, HOLD_LIMIT = 0x081B6C00, 0x081B6D00, 0x081B7000
 HOLD_EDIT_SITES = [0x0815C7C4, 0x0815C8AC, 0x0815C990]   # velocity, condition, timing edit entries
 
 # Hold shortcuts (port of bento-community-lab K16 hold controls, GPL-3.0-or-later).
@@ -437,8 +437,8 @@ def build(base_img, out):
     s4.update({f"controls.{k}": v for k, v in sc.items()})
     if M4_CODE + len(code4) + 20 > M4_LIMIT:
         raise SystemExit("M4 code + marker overrun")
-    if M4_CODE + len(code4) + len(MARKER) > M4_POLY:
-        raise SystemExit("M4 diag code reaches the poly handler")
+    if M4_CODE + len(code4) + len(MARKER) > M4_LIMIT:
+        raise SystemExit("M4 diag code + marker overruns its slice")
     h = asm("mov r0, r5; bl 0x08105d56; "
             "movs r1, #0xa0; mov r0, r5; bl 0x08105c44; "           # Polyphonic Key Pressure
             "uxtb.w r1, r8; mov r0, r5; bl 0x08105c5e; "             # channel (event word 3)
@@ -447,8 +447,12 @@ def build(base_img, out):
             "uxtb.w r2, r9; mov r1, r5; mov r0, r6; bl 0x08105904; " # send on port (word 2)
             "mov r0, r5; bl 0x08105c4c; mov r1, r0; mov r0, r6; bl 0x08105b74; "
             f"b.w {M4_LOOP:#x}", M4_POLY)
-    if M4_POLY + len(h) > M4_LIMIT:
-        raise SystemExit("M4 poly handler overruns our slice")
+    if M4_POLY + len(h) > M4_POLY_LIMIT or BASE + len(img) != M4_POLY:
+        raise SystemExit("M4 poly handler block layout")
+    pad = b"\xff" * (M4_POLY_LIMIT - M4_POLY)
+    writes.append(dict(address=M4_POLY, size=len(pad), original_hex="", replacement_hex=pad.hex(),
+                       purpose="M1 poly AT: extend image with erased (0xFF) flash for the M4 handler"))
+    img += pad
     # Cross-check: the native Note On case assembles to the same shape with 0x90.
     native = base_img[0x0810509A - BASE:0x081050DE - BASE]
     ours_as_native = asm(h_src_native := ("mov r0, r5; bl 0x08105d56; movs r1, #0x90; mov r0, r5; bl 0x08105c44; "
@@ -482,7 +486,7 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the stock base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label="1.6.1+m1+conditions+inspect+holds-v2.7", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label="1.6.1+m1+conditions+inspect+holds-v2.8", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")

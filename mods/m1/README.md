@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (112 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (116 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -219,3 +219,19 @@ plays as on stock.
 - `test_controls.py`: Lab's input and UI tests (stock's real pad receiver and UI queue
   run) plus ours for PROJ, encoder-as-use and boot reset. `lab_receiver_fixture.py` is
   Lab's fixture, unchanged. With Lab's PROJ mask the PROJ tests fail (checked).
+
+## Audio DMA stall monitor (since v2.8)
+
+Investigating idle restarts (stock crash cause 5, M7 watchdog). The M7 main audio loop
+(`FUN_0808DF00`) refreshes the window watchdog (`WWDG1`, ~0.28 s) **only while the
+audio DMA advances**, and checks DMA2 streams 5 and 7 itself. A watchdog record there
+therefore means "audio DMA stopped", but stock records nothing about why. The M4 now
+samples DMA2 S5/S7 every UI-loop pass; if a stream seen running stops (NDTR unchanged
+≥ 30 ms, or disabled) it snapshots `LISR/HISR`, both streams' `CR NDTR PAR M0AR M1AR
+FCR` and the SAI `SR/CR1` behind `PAR` (only for SAI data registers) into M4-only RAM
+`0x24048400` that survives the reset, logs `!!! AUDIO DMA STALL`, adds a `stall` line to
+`BENTO_CRASHES.log`, and prints the snapshot again at the next boot. The `#` status
+line shows whether each stream has been seen running.
+
+Layout change: the M4 poly-AT handler moved to its own block `0x081B8000`; the logger
+slot is now `0x081B5000–0x081B6C00`; inspect-a-step wrappers `0x081B6C00`, code `0x081B6D00`.

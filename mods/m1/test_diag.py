@@ -40,7 +40,8 @@ def emu(img):
     u.mem_write(BASE, img)
     u.mem_write(SENT, b"\xfe\xe7")           # b .
     for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC6000000, 0x200000), (0xE0000000, 0x100000),
-                 (0x58000000, 0x10000)):  # RTC (backup registers hold stock's crash record)
+                 (0x58000000, 0x10000),   # RTC (backup registers hold stock's crash record)
+                 (0x40015000, 0x2000), (0x40020000, 0x1000)):  # SAI1-3, DMA2 (audio DMA monitor)
         u.mem_map(a, n)
     return u
 
@@ -356,6 +357,56 @@ class M4EndToEnd(unittest.TestCase):
         lines = self.fs[hist].decode().splitlines()
         self.assertTrue(lines[-1].startswith("live gen=1 ms=1050 count=1"), lines)
         self.assertIn("pc=0808cc5a", lines[-1])
+
+    # --- audio DMA monitor (DMA2 streams 5 and 7, as stock's own main-loop check)
+    S5, S7 = 0x40020488, 0x400204B8
+
+    def stream(self, base, cr=1, ndtr=100, par=0x40015820):
+        for i, v in enumerate((cr, ndtr, par, 0x30000000, 0x30001000, 0x21)):
+            w32(self.u, base + 4 * i, v)
+
+    def test_running_audio_dma_raises_nothing(self):
+        self.stream(self.S5); self.stream(self.S7)
+        for i, ms in enumerate(range(1000, 1400, 10)):
+            w32(self.u, self.S5 + 4, 100 - i % 50); w32(self.u, self.S7 + 4, 200 - i % 70)
+            self.tick(ms)
+        w32(self.u, self.S5 + 4, 7); w32(self.u, self.S7 + 4, 9)   # still running at the idle flush
+        self.tick(3000)
+        self.assertTrue(self.files, "the idle flush happened")
+        self.assertFalse(any(b"AUDIO DMA" in f for f in self.files))
+
+    def test_stream_that_stops_advancing_is_snapshotted(self):
+        self.stream(self.S5); self.stream(self.S7)
+        w32(self.u, 0x40015818, 0x00000009)                    # SAI1 A SR (e.g. overrun + flag)
+        w32(self.u, 0x40020400 + 4, 0x00000800)                # HISR: S5 transfer-error-ish bits
+        self.tick(1000); w32(self.u, self.S7 + 4, 199)
+        self.tick(1020); w32(self.u, self.S7 + 4, 198)
+        self.tick(1040)                                        # S5 unchanged for 40 ms
+        text = self.files[-1].decode()
+        self.assertIn("!!! AUDIO DMA STALL at ms 1040", text)
+        self.assertIn("stream 5 stopped advancing", text)
+        self.assertIn("HISR=00000800", text)
+        self.assertIn("S5 CR,NDTR,PAR,M0AR,M1AR,FCR = 00000001 00000064 40015820", text)
+        self.assertIn("periph SR=00000009", text)
+        self.assertTrue(self.fs["\\BENTO_CRASHES.log"].decode().splitlines()[-1].startswith("stall gen=1 ms=1040"))
+        n = len(self.files); self.tick(1100); self.tick(3000)
+        self.assertFalse(any(b"AUDIO DMA" in f for f in self.files[n:]), "reported once per boot")
+        self.stream(self.S5, cr=0); self.stream(self.S7, cr=0)  # reset: audio not restarted yet
+        self.tick(50); self.tick(1700)                         # the watchdog reset: next boot
+        boot = self.files[-1].decode()
+        self.assertIn("audio stall snapshot (from RAM) at ms 1040 gen 1: stream 5 stopped advancing", boot)
+        self.tick(50); self.tick(1700)
+        self.assertNotIn("audio stall snapshot", self.files[-1].decode(), "printed once")
+
+    def test_stream_disabled_after_running_is_reported(self):
+        self.stream(self.S7)
+        self.tick(1000); self.stream(self.S7, cr=0); self.tick(1010)
+        self.assertIn("stream 7 disabled", self.files[-1].decode())
+
+    def test_non_sai_peripheral_is_never_read(self):
+        self.stream(self.S5, par=0x40011028)                   # e.g. a USART data register
+        self.tick(1000); self.tick(1040)
+        self.assertIn("periph SR=00000000 CR1=00000000", self.files[-1].decode())
 
     def test_heartbeat_stall_is_reported(self):
         self.tick(1000)

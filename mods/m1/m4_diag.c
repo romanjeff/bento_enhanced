@@ -165,6 +165,84 @@ static void crash_record(Out *o) {
     puts_(o, "\r\n");
 }
 
+/* Audio DMA stall monitor. The M7 main audio loop (FUN_0808DF00) refreshes the
+ * window watchdog only while the audio DMA advances; stock checks DMA2 streams
+ * 5 and 7 there. Stock's crash record (cause 5) cannot say why audio stopped,
+ * so we sample those streams from the M4 every UI-loop pass: if a stream seen
+ * running stops moving (NDTR unchanged >= STALL_DMA_MS, or EN cleared), we
+ * snapshot its registers into M4-only RAM that survives the coming reset, log
+ * an alarm and a history line, and print the snapshot again at the next boot. */
+#define DMA2_BASE 0x40020400u
+#define STALL_DMA_MS 30u
+typedef struct {
+    u32 magic, gen, ndtr[2], since[2], seen, reported;
+    u32 snap_magic, snap_gen, snap_ms, snap_why, lisr, hisr;
+    u32 regs[2][6];      /* CR, NDTR, PAR, M0AR, M1AR, FCR */
+    u32 periph[2][2];    /* if PAR is a SAI DR: SR (DR-8), CR1 (DR-0x1C) */
+} AudioMon;
+#define AMON ((volatile AudioMon *)0x24048400u)   /* M4-only; freed by lowering the M7 heap end */
+#define AMON_MAGIC 0x314E4F4Du /* "MON1" */
+#define SNAP_MAGIC 0x50414E53u /* "SNAP" */
+_Static_assert(0x24048400u + sizeof(AudioMon) <= 0x24048500u, "audio monitor overlaps the diag slice");
+static const u32 STREAMS[2] = {5u, 7u};
+static volatile u32 *dma_stream(u32 n) { return (volatile u32 *)(DMA2_BASE + 0x10u + 0x18u * n); }
+
+static void snap_print(Out *o, const char *title) {
+    puts_(o, title); puts_(o, " at ms "); dec(o, AMON->snap_ms);
+    puts_(o, " gen "); dec(o, AMON->snap_gen);
+    puts_(o, ": stream "); dec(o, AMON->snap_why & 0xFFu);
+    puts_(o, (AMON->snap_why & 0x100u) ? " stopped advancing" : " disabled");
+    puts_(o, " | DMA2 LISR="); hex(o, AMON->lisr, 8); puts_(o, " HISR="); hex(o, AMON->hisr, 8);
+    for (u32 i = 0; i < 2; i++) {
+        puts_(o, "\r\n  S"); dec(o, STREAMS[i]); puts_(o, " CR,NDTR,PAR,M0AR,M1AR,FCR =");
+        for (u32 j = 0; j < 6; j++) { puts_(o, " "); hex(o, AMON->regs[i][j], 8); }
+        puts_(o, " | periph SR="); hex(o, AMON->periph[i][0], 8); puts_(o, " CR1="); hex(o, AMON->periph[i][1], 8);
+    }
+    puts_(o, "\r\n");
+}
+
+/* Returns 1 when a stall was detected on this pass. */
+static int audio_watch(Out *o, u32 now) {
+    if (AMON->magic != AMON_MAGIC || AMON->gen != M4H->r[0]) {
+        u32 keep_magic = AMON->snap_magic;      /* the snapshot must survive into the next boot */
+        for (u32 i = 0; i < 8; i++) ((volatile u32 *)AMON)[i] = 0;
+        AMON->snap_magic = keep_magic;
+        AMON->gen = M4H->r[0];
+        AMON->magic = AMON_MAGIC;
+    }
+    if (AMON->reported) return 0;
+    for (u32 i = 0; i < 2; i++) {
+        volatile u32 *s = dma_stream(STREAMS[i]);
+        u32 cr = s[0], nd = s[1], bit = 1u << i, why = 0;
+        if (cr & 1u) {
+            if (!(AMON->seen & bit) || nd != AMON->ndtr[i]) { AMON->ndtr[i] = nd; AMON->since[i] = now; AMON->seen |= bit; }
+            else if (now - AMON->since[i] >= STALL_DMA_MS) why = 0x100u | STREAMS[i];
+        } else if (AMON->seen & bit) {
+            why = STREAMS[i];
+        }
+        if (!why) continue;
+        AMON->snap_ms = now; AMON->snap_gen = M4H->r[0]; AMON->snap_why = why;
+        AMON->lisr = *(volatile u32 *)DMA2_BASE; AMON->hisr = *(volatile u32 *)(DMA2_BASE + 4u);
+        for (u32 k = 0; k < 2; k++) {
+            volatile u32 *t = dma_stream(STREAMS[k]);
+            for (u32 j = 0; j < 6; j++) AMON->regs[k][j] = t[j];
+            /* Only read status from a SAI block data register (A at +0x20, B at
+             * +0x40 of SAI1..4): SR and CR1 reads have no side effects there. */
+            u32 par = AMON->regs[k][2], blk = par & 0xFFFu, sai = par & ~0x3FFu;
+            int periph = (blk & 0x3FFu) == 0x20u || (blk & 0x3FFu) == 0x40u;
+            periph = periph && (sai == 0x40015800u || sai == 0x40015C00u || sai == 0x40016000u || sai == 0x58005400u);
+            AMON->periph[k][0] = periph ? *(volatile u32 *)(par - 8u) : 0u;
+            AMON->periph[k][1] = periph ? *(volatile u32 *)(par - 0x1Cu) : 0u;
+        }
+        AMON->snap_magic = SNAP_MAGIC;
+        AMON->reported = 1;
+        puts_(o, "!!! AUDIO DMA STALL at ms "); dec(o, now); puts_(o, "\r\n");
+        snap_print(o, "audio stall");
+        return 1;
+    }
+    return 0;
+}
+
 static void counters(Out *o) {
     puts_(o, "m7 dropped="); dec(o, M7H->dropped);
     puts_(o, " | poly sent="); dec(o, M7H->r[0]);
@@ -180,6 +258,8 @@ static void counters(Out *o) {
     }
     puts_(o, " min_sp="); hex(o, RINGSTAT->min_sp, 8);
     puts_(o, " heartbeat="); dec(o, RINGSTAT->heartbeat);
+    puts_(o, " | audio dma seen running: S5="); dec(o, AMON->seen & 1u);
+    puts_(o, " S7="); dec(o, (AMON->seen >> 1) & 1u);
 }
 
 /* The last DIAG_RECORDS trace records, oldest first, regardless of whether they
@@ -214,6 +294,10 @@ static void init(u32 now) {
         dec(&o, gen);
         puts_(&o, "\r\n");
         crash_record(&o);
+        if (AMON->snap_magic == SNAP_MAGIC) {     /* survives the reset the stall caused */
+            snap_print(&o, "audio stall snapshot (from RAM)");
+            AMON->snap_magic = 0;
+        }
         /* Post-mortem: our RAM slice survives a reset; before anything resets it,
          * write the previous boot's last records and counters. */
         puts_(&o, "previous boot (from RAM): ");
@@ -277,6 +361,9 @@ static void poll(void) {
         alarm(&o, now, "M7 HEARTBEAT STOPPED (audio core not running)");
         urgent = 1;
     }
+    /* Watch 3: the audio DMA stops (the M7 watchdog follows ~0.28 s later). */
+    int stalled = audio_watch(&o, now);
+    if (stalled) urgent = 1;
 
     u32 n = 0;
     while (M4H->rd != M7H->wr && n < DIAG_RECORDS) {
@@ -295,6 +382,7 @@ static void poll(void) {
         M4H->r[2] = o.len;
         flush();
         if (crashed) history("live");
+        if (stalled) history("stall");
     }
 }
 
