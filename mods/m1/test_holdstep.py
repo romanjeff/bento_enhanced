@@ -205,5 +205,26 @@ class MultiHold(unittest.TestCase):
         p.time(5100); p.release(0); p.release(8)
         self.assertFalse(any(x[0] == "toggle" for x in p.log), "edited held steps stay on")
 
+    def test_any_number_of_held_pads(self):
+        p = self.probe()
+        steps = (0, 2, 5, 9, 12, 15)
+        p.notes([(st, 2, 0, 100) for st in steps])
+        held = (0, 2, 9, 12, 15)                                    # five pads held, step 5 not
+        for pad in held:
+            p.press(pad)
+        self.encoder(p, 1, 4)                                        # Retrig 4
+        p.call(0x0815c7c4, p.view, 70)                               # stock velocity edit too
+        for i, st in enumerate(steps):
+            w = self.word(p, i)
+            with self.subTest(step=st):
+                if st in held:
+                    self.assertEqual(((w >> 13) & 0xF, p.value(i, 18)), (4, 70))
+                else:
+                    self.assertEqual((w, p.value(i, 18)), (0, 100), "not held: untouched")
+        p.time(5100)
+        for pad in held:
+            p.release(pad)
+        self.assertFalse(any(x[0] == "toggle" for x in p.log))
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])
