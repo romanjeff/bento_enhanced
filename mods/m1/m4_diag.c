@@ -274,6 +274,13 @@ static void counters(Out *o) {
     }
     puts_(o, " min_sp="); hex(o, RINGSTAT->min_sp, 8);
     puts_(o, " heartbeat="); dec(o, RINGSTAT->heartbeat);
+    if (STRIKE_SET->magic == STRIKE_SET_MAGIC) {   /* Strike Vel header button (m4_step.c) */
+        puts_(o, " | strike btn calls="); dec(o, STRIKE_SET->r[0]);
+        puts_(o, " drum="); dec(o, STRIKE_SET->r[1] & 1u);
+        puts_(o, " slot="); hex(o, (STRIKE_SET->r[1] >> 4) & 0xFu, 1);
+        puts_(o, " ins="); dec(o, (STRIKE_SET->r[1] >> 8) & 1u);
+        puts_(o, " off="); dec(o, STRIKE_SET->off);
+    }
     puts_(o, " | audio dma seen running: S5="); dec(o, AMON->seen & 1u);
     puts_(o, " S7="); dec(o, (AMON->seen >> 1) & 1u);
 }

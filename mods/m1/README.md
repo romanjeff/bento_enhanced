@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (172 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (177 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -368,8 +368,11 @@ outlined while on (default on; kept across warm reboots, not power-off).
   Undo) with `+0x21` lit while on; the header root's layout flag (`0x30034D48+0x117C`) is
   re-armed when our record differs from the applied header, because stock only applies a
   slot's visibility at page change. Its action id `0x10F0` is caught at the drum view's
-  event handler (`0x0815D600`). Shown only while the drum step view is the active SEQ view
-  (page `0x27` is shared with the piano roll). Method and helpers from Lab's
+  event handler (`0x0815D600`) in Step view, and at the piano-roll view object's handler
+  (`0x0815A598`) in Sequence view (stock draws the drum Sequence tab with the piano view).
+  Shown on page `0x27` whenever the selected track is a one-shot (drum) instrument (type
+  `0x0E`), never for pitched tracks (v3.9 used a view flag that the Sequence tab cleared).
+  The black box status line shows `strike btn calls/drum/slot/ins/off`. Method and helpers from Lab's
   `header_actions.c` (their Select button).
 - v3.6/v3.7 used a hamburger-menu item instead; it couldn't show its state reliably and
   was removed in v3.8.

@@ -140,6 +140,15 @@ class Rig:
             self.log.append(("set", step, r(2))); self.ret()
         elif a == 0x0815D1F0:                                     # rest of stock's press handler
             self.log.append(("press", r(1))); self.ret()
+        elif a == 0x0812DC74 and r(1) == 0x131:                 # selected track index
+            self.ret(2)
+        elif a == 0x08133960:                                     # find track -> handle
+            w32(u, r(2), 0x77); self.ret(1)
+        elif a == 0x0812D80E:                                     # resolve handle -> instrument object
+            obj, vt = 0x20140000, 0x20140100
+            w32(u, obj, vt); w32(u, vt, 0x081FF101); w32(u, r(2), obj); self.ret(1)
+        elif a == 0x081FF100:                                     # instrument vtable[0]: type
+            self.ret(getattr(self, "track_kind", 0x0E))
         elif a == 0x08134804:                                     # stock header generator body
             out = r(1)
             u.mem_write(out + 0x74, bytes(6 * 48))
@@ -457,10 +466,11 @@ class StrikeVelocity(unittest.TestCase):
 class StrikeButton(unittest.TestCase):
     OUT, ROOT = 0x20180000, 0x30034D48
 
-    def rig(self):
+    def rig(self, kind=0x0E):
         g = Rig()
         g.u.mem_write(0x30024B00 + 0x12C, bytes([0x27]))           # SEQ page
         w32(g.u, self.ROOT, 0x081B3680)                             # header root vtable
+        g.track_kind = kind                                         # selected track's instrument type
         return g
 
     def generate(self, g):
@@ -479,10 +489,17 @@ class StrikeButton(unittest.TestCase):
         self.assertEqual([r[0] for r in recs], ["", "Step", "Sequence", "", "Strike Vel", "Undo"])
         self.assertEqual(bytes(g.u.mem_read(self.ROOT + 0x117C, 1))[0], 1, "layout re-armed so the slot shows")
 
-    def test_no_button_in_the_piano_roll(self):
-        g = self.rig(); g.drum_header(); g.call(0x081599BC, VIEW)   # piano header ran last
+    def test_no_button_for_a_pitched_track(self):
+        g = self.rig(kind=0x10); g.drum_header()                    # piano roll (pitched instrument)
         changed, recs = self.generate(g)
         self.assertNotIn(0x10F0, [r[2] for r in recs])
+        self.assertEqual(r32(g.u, 0x24048D48 + 16) & 0xFF, 0xF0, "diag: drum=0, slot=none")
+
+    def test_button_shows_even_if_the_piano_header_ran_last(self):
+        g = self.rig(); g.drum_header(); g.call(0x081599BC, VIEW)
+        changed, recs = self.generate(g)
+        self.assertEqual(recs[4][2], 0x10F0)
+        self.assertEqual(r32(g.u, 0x24048D48 + 16) & 0x1FF, 0x141, "diag: drum=1, slot=4, inserted")
 
     def test_button_toggles_lit_and_the_behaviour(self):
         g = self.rig(); g.drum_header()
@@ -494,6 +511,19 @@ class StrikeButton(unittest.TestCase):
         self.assertEqual(g.notes[-1][4] >> 16, 100, "off: tapped step gets the default")
         g.call(0x0815D600, VIEW, ev)
         self.assertEqual(self.generate(g)[1][4][1], 1, "on again")
+
+    def test_sequence_tab_press_arrives_at_the_piano_view_object(self):
+        g = self.rig(); g.drum_header()
+        ev = 0x20100000; g.u.mem_write(ev, struct.pack("<HH4I", 0x10F0, 0, 0, 0, 0, 0))
+        self.assertEqual(g.call(0x0815A598, VIEW, ev), 0, "handled by the piano-roll event hook")
+        self.assertEqual(self.generate(g)[1][4], ("Strike Vel", 0, 0x10F0))
+
+    def test_press_on_a_pitched_track_is_ignored(self):
+        g = self.rig(kind=0x10)
+        ev = 0x20100000; g.u.mem_write(ev, struct.pack("<HH4I", 0x10F0, 0, 0, 0, 0, 0))
+        g.u.reg_write(UC_ARM_REG_SP, STACK); g.u.reg_write(UC_ARM_REG_R0, VIEW); g.u.reg_write(UC_ARM_REG_R1, ev)
+        g.u.emu_start(0x0815A598 | 1, 0x0815A59C, count=200000)
+        self.assertEqual(g.u.reg_read(UC_ARM_REG_PC), 0x0815A59C, "went on to stock")
 
     def test_other_drum_events_go_to_stock(self):
         g = self.rig()

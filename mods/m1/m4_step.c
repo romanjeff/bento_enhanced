@@ -414,7 +414,9 @@ __attribute__((used, retain)) void piano_header_after(void *v) {
 }
 
 /* Piano-roll event handler entry 0x0815A598 (view, event). 1 = handled. */
+int strike_event(void *v, const u16 *ev);
 __attribute__((used, retain)) int piano_event(void *v, const u32 *ev) {
+    if ((ev[0] & 0xFFFFu) == STRIKE_ACTION) return strike_event(v, (const u16 *)ev);
     if (!SU->ok || !piano_note_view(v) || (ev[0] & 0xFFFFu) != 0xCFu || ev[2] != SU->key[0]) return 0;
     void *sel = (u8 *)v + PIANO_SEL;
     u32 e[6], changed = 0;
@@ -489,17 +491,46 @@ static void header_sync(void *out) {
 }
 
 /* After stock generated the header description (0x08134800 returns "changed"). */
+/* Is the selected track a one-shot (drum) instrument? Page 0x27 is shared by
+ * the drum step sequencer and the piano roll; the track type tells them apart
+ * regardless of which view object stock refreshed last (v3.9 used a flag set
+ * by the header hooks, and the button never appeared on the device). Same
+ * native lookups as the INST-hold shortcut (m4_controls.c). */
+static int drum_track_selected(void) {
+    u32 track = FN(0x0812DC74u, u32 (*)(void *, u32))((u8 *)MODEL + 4, 0x131), h = 0;
+    if (!FN(0x08133960u, u32 (*)(void *, u32, u32 *))(MODEL, track, &h)) return 0;
+    void *obj = 0;
+    if (!FN(0x0812D80Eu, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) || !obj) return 0;
+    return ((u32 (*)(void *))W((void *)W(obj, 0), 0))(obj) == 0x0Eu;
+}
+
+/* Diagnostics in StrikeSet r[] (printed in the black box status line):
+ * r[0] calls on page 0x27, r[1] last: drum | slot << 4 (0xF = none) | change << 8. */
 __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int changed) {
     (void)model;
-    if (MODEL_PAGE == 0x27 && STRIKE_SET->magic == STRIKE_SET_MAGIC && STRIKE_SET->view)
-        changed |= header_action_lit(out, STRIKE_ACTION, STRIKE_LABEL, !STRIKE_SET->off);
+    strike_init();
+    if (MODEL_PAGE == 0x27) {
+        int drum = drum_track_selected(), ins = 0;
+        if (drum) ins = header_action_lit(out, STRIKE_ACTION, STRIKE_LABEL, !STRIKE_SET->off);
+        changed |= ins;
+        u32 slot = 0xF;
+        for (u32 i = 0; i < 6; i++)
+            if (rid(REC(out, i)) == STRIKE_ACTION) slot = i;
+        STRIKE_SET->r[0]++;
+        STRIKE_SET->r[1] = (u32)drum | (slot << 4) | ((u32)ins << 8);
+    }
     header_sync(out);
     return changed;
 }
 
 /* Drum view event handler entry (0x0815D600). 1 = handled. */
+static int drum_track_selected(void);
+/* The button's action reaches whichever SEQ view object is showing: the drum
+ * step view (0x0815D600) in Step, the piano-roll view object (0x0815A598) in
+ * the Sequence tab, which stock draws with the piano view even for drum tracks. */
 __attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
-    if (ev[0] != STRIKE_ACTION || !drum_step_view(v)) return 0;
+    (void)v;
+    if (ev[0] != STRIKE_ACTION || !drum_track_selected()) return 0;
     strike_init();
     STRIKE_SET->off = !STRIKE_SET->off;
     SU->r[1] = 0;                                     /* drop any pending strike */
