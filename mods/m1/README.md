@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (111 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (112 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -173,20 +173,28 @@ a project opened on stock shows those notes with plain probability.
   per-boot reinit, native probability path identical to stock, loop hook frame
   identical to stock, label table, and a drum-editor round trip for every value.
 
-## Inspect a step (since v2.5)
+## Inspect a step (since v2.5; reworked in v2.7)
 
-Port of Lab's T2 hold-step module (GPL-3.0-or-later). **Hold a step that has a note**
-to edit its velocity, condition/probability or timing with the encoders; releasing it
-after an edit no longer toggles it off. The last held step stays selected after
-release, so you can keep editing it. A short tap still toggles a step as on stock;
-pressing an empty step clears the selection without creating a note. Touch-holding a
-step on the screen works the same way.
+Stock already selects a held step (pad or touch): while you hold it, the encoders show
+and edit that step. But releasing a step held for under a second toggles it, so a quick
+hold-and-edit also deleted it. **Now any encoder edit while holding keeps the step on
+release.** After release, the encoders show the defaults for new steps again, as on
+stock (v2.5 kept the last step selected after release, as Lab does; Jeff preferred
+stock's behaviour). One-shot (drum) step sequencer only; the piano roll selects notes
+by touch natively.
 
-- M4 only: `m4_holdstep.c` (code at `0x081B6800`, wrappers at `0x081B6600`); state at
-  `0x24048D80`, tagged with our boot generation (Lab cleared it from its startup hook).
-- Removed from Lab's version: the parameter-lock call on step press (locks not ported).
-- `test_holdstep.py`: Lab's 15 tests ported (stock's own press/release/edit code runs),
-  plus a boot-generation test. Against plain stock, 12 of the 16 fail as expected.
+- M4 only: `m4_holdstep.c` `step_edit`, from Lab's T2 holdstep (GPL-3.0-or-later), at
+  the three step-editor encoder handlers (velocity `0x0815C7C4`, condition
+  `0x0815C8AC`, timing `0x0815C990`). No RAM state; selection code untouched.
+- `test_holdstep.py`: stock's own press/release/touch/edit code runs. On plain stock
+  exactly the 7 edit-protection tests fail.
+
+## Crash history (since v2.7)
+
+`BENTO_CRASHES.log` on the card gets one line per boot (at its first log write) and one
+per crash record that appears mid-session: `boot|live gen ms count cause pc core lr
+frame_pc`. It is only ever appended, so every reset stays attributable even when the
+session log (current + previous boot only) has moved on.
 
 ## Hold shortcuts (since v2.6)
 

@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Emulated checks for inspect-a-step (port of bento-community-lab T2 holdstep tests).
+"""Emulated checks for inspect-a-step (from bento-community-lab T2 holdstep tests).
 
     python test_holdstep.py <stock 1.6.1 bento1.bin> <m1 build dir>
 
 Runs stock's own press/release, selected-note reads and encoder edits on our
 image. Only display redraw, publish and touch hit-testing are stubbed. Lab's
-"cleared by UI startup" test becomes a boot-generation test (stock has no such
-startup hook; this RAM survives a reset).
+"stays selected after release" tests are inverted: after release nothing is
+selected and the encoders edit no note, as on stock.
 """
 import struct, sys, unittest
 from pathlib import Path
@@ -79,6 +79,7 @@ class Probe:
     def value(self, index, offset): return self.u.mem_read(self.container + index * 24 + offset, 1)[0]
 
 class Tests(unittest.TestCase):
+    # --- stock behaviour we rely on (held steps are selected while held)
     def test_hold_reads_real_condition_and_velocity_without_note_changes(self):
         p = Probe(); before = bytes(p.u.mem_read(p.container, 0x3004)); p.press(0)
         ok, event = p.snapshot(); self.assertEqual(ok, 1); self.assertEqual(event[1], 101)
@@ -91,13 +92,18 @@ class Tests(unittest.TestCase):
 
     def test_long_hold_release_does_not_toggle(self):
         p = Probe(); p.press(0); p.time(6500); p.release(0)
-        self.assertNotIn(("toggle", 0), p.log); self.assertEqual(p.snapshot()[1][1], 101)
+        self.assertNotIn(("toggle", 0), p.log)
 
+    def test_physical_pad_bank_and_scroll_mapping_use_actual_step(self):
+        p = Probe(); p.notes([(20, 2, 105, 80)]); p.w(p.view + 0x11404, 16); p.w(p.view + 0x113f4, 8)
+        p.press(4); self.assertEqual(p.snapshot()[1][1], 105)
+
+    # --- ours: an edit while held keeps the step on release
     def test_condition_edit_changes_only_held_hit_and_short_release_does_not_toggle(self):
         p = Probe(); p.press(0); p.time(5100); p.call(0x0815c8ac, p.view, 104)
         self.assertEqual(p.value(0, 1), 104); self.assertEqual(p.value(1, 1), 100); self.assertEqual(p.value(2, 1), 102)
         self.assertIn(("publish",), p.log); p.release(0); self.assertNotIn(("toggle", 0), p.log)
-        self.assertEqual(p.snapshot()[1][1], 104)
+        self.assertEqual(p.value(0, 1), 104)
 
     def test_velocity_edit_protects_short_release(self):
         p = Probe(); p.press(0); p.time(5100); p.call(0x0815c7c4, p.view, 85)
@@ -113,34 +119,7 @@ class Tests(unittest.TestCase):
         p = Probe(); p.press(0); p.press(8); p.call(0x0815c8ac, p.view, 103)
         self.assertEqual(p.value(0, 1), 103); self.assertEqual(p.value(1, 1), 103); self.assertEqual(p.value(2, 1), 102)
         p.time(5100); p.release(0); p.release(8)
-        self.assertFalse(any(x[0] == "toggle" for x in p.log)); self.assertEqual(p.snapshot()[1][1], 103)
-
-    def test_last_inspected_hit_stays_selected_after_release(self):
-        p = Probe(); p.press(8); p.time(6500); p.release(8)
-        self.assertEqual(p.selected(), 1); self.assertEqual(p.snapshot()[1][1], 100)
-        p.call(0x0815c8ac, p.view, 106); self.assertEqual(p.value(1, 1), 106); self.assertEqual(p.value(0, 1), 101)
-
-    def test_view_return_default_reset_does_not_hide_inspected_condition(self):
-        p = Probe(); p.press(0); p.time(6500); p.release(0)
-        p.u.mem_write(p.view + 0x11420, bytes(128)); p.w(p.view + 0x114c0, 100); p.w(p.view + 0x114c4, 0)
-        self.assertEqual(p.snapshot()[1][1], 101)
-
-    def test_pressing_an_empty_step_clears_last_inspection_without_creating_notes(self):
-        p = Probe(); p.press(0); p.time(6500); p.release(0); before = bytes(p.u.mem_read(p.container, 0x3004))
-        p.press(4); self.assertEqual(p.snapshot()[0], 0); p.call(0x0815c8ac, p.view, 108)
-        p.time(6600); p.release(4)
         self.assertFalse(any(x[0] == "toggle" for x in p.log))
-        self.assertEqual(bytes(p.u.mem_read(p.container, 0x3004)), before)
-
-    def test_different_track_clip_or_drum_never_uses_stale_selection(self):
-        for offset, value in [(0x113e4, 88), (0x11400, 3), (0x113f4, 32), (0x113f8, 0)]:
-            p = Probe(); p.press(0); p.time(6500); p.release(0); p.w(p.view + offset, value)
-            self.assertEqual(p.selected(), 0, (offset, value)); self.assertEqual(p.snapshot()[0], 0)
-
-    def test_physical_pad_bank_and_scroll_mapping_use_actual_step(self):
-        p = Probe(); p.notes([(20, 2, 105, 80)]); p.w(p.view + 0x11404, 16); p.w(p.view + 0x113f4, 8)
-        p.press(4); self.assertEqual(p.word(STATE + 16), 20)
-        self.assertEqual(p.snapshot()[1][1], 105)
 
     def test_touch_hold_uses_the_same_selection_and_edit_protection(self):
         p = Probe(); xy = 0x2002e000; p.w(xy, 100); p.w(xy + 4, 100)
@@ -153,16 +132,36 @@ class Tests(unittest.TestCase):
             p = Probe(); p.time(tick); p.press(0); p.call(0x0815c8ac, p.view, 102); p.release(0)
             self.assertFalse(any(x[0] == "toggle" for x in p.log), tick)
 
-    def test_deleted_inspected_note_falls_back_without_creating_notes(self):
-        p = Probe(); p.press(0); p.time(6500); p.release(0); p.notes([(8, 2, 100, 90)])
+    def test_editing_on_an_empty_step_creates_no_note(self):
+        p = Probe(); before = bytes(p.u.mem_read(p.container, 0x3004))
+        p.press(4); self.assertEqual(p.snapshot()[0], 0); p.call(0x0815c8ac, p.view, 108)
+        p.time(5100); p.release(4)
+        self.assertFalse(any(x[0] == "toggle" for x in p.log))
+        self.assertEqual(bytes(p.u.mem_read(p.container, 0x3004)), before)
+
+    # --- ours: nothing stays selected after release (Jeff: show the defaults again)
+    def test_after_pad_release_no_step_is_selected(self):
+        for hold in (100, 1500):
+            p = Probe(); p.press(8); p.call(0x0815c8ac, p.view, 106); p.time(5000 + hold); p.release(8)
+            self.assertEqual(p.selected(), 0, hold); self.assertEqual(p.snapshot()[0], 0, hold)
+            before = bytes(p.u.mem_read(p.container, 0x3004))
+            p.call(0x0815c8ac, p.view, 107)                       # encoder turn with nothing held
+            self.assertEqual(bytes(p.u.mem_read(p.container, 0x3004)), before, "no note edited after release")
+
+    def test_after_touch_release_no_step_is_selected(self):
+        p = Probe(); xy = 0x2002e000; p.w(xy, 100); p.w(xy + 4, 100)
+        p.call(0x0815d29c, p.view, xy); p.call(0x0815c8ac, p.view, 105); p.call(0x0815d444, p.view)
         self.assertEqual(p.selected(), 0); self.assertEqual(p.snapshot()[0], 0)
 
-    def test_inspection_from_a_previous_boot_is_ignored(self):
-        p = Probe(gen=1); p.press(8); p.time(6500); p.release(8)
-        self.assertEqual(p.selected(), 1)
-        p.w(CFG + 12, 2)                                  # M4 rebooted: same RAM, new generation
-        self.assertEqual(p.selected(), 0)
-        self.assertEqual(p.snapshot()[0], 0)
+    def test_no_ram_state(self):
+        p = Probe(); p.u.mem_write(STATE, bytes([0x5a]) * 32)
+        p.press(0); p.call(0x0815c8ac, p.view, 104); p.release(0)
+        self.assertEqual(bytes(p.u.mem_read(STATE, 32)), bytes([0x5a]) * 32)
+
+    def test_selection_hooks_are_stock(self):
+        stock = Path(sys.argv[1]).read_bytes()
+        for a, n in ((0x0815b9c0, 6), (0x0815bab0, 4), (0x0815d22e, 4), (0x0815d2ea, 4)):
+            self.assertEqual(IMG[a - BASE:a - BASE + n], stock[a - BASE:a - BASE + n], hex(a))
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

@@ -91,11 +91,37 @@ static void preserve_previous(u8 *scratch) {
     F_CLOSE(src);
 }
 
+/* Crash history: one line per boot (at its first log write) and one per crash
+ * record that appears mid-session, appended forever to BENTO_CRASHES.log. The
+ * session log only keeps two boots; this keeps every reset attributable. */
+static const char HIST[] = "\\BENTO_CRASHES.log";
+static void history(const char *why) {
+    Out o = {(char *)M4H->r[1] + BUF_BYTES - SCRATCH_BYTES, 0};   /* scratch: free between copies */
+    puts_(&o, why);
+    puts_(&o, " gen="); dec(&o, M4H->r[0]);
+    puts_(&o, " ms="); dec(&o, TICK_MS);
+    puts_(&o, " count="); dec(&o, BKP[24]);
+    puts_(&o, " cause="); hex(&o, BKP[25], 8);
+    puts_(&o, " pc="); hex(&o, BKP[31], 8);
+    puts_(&o, " core="); hex(&o, BKP[27], 8);
+    puts_(&o, " lr="); hex(&o, BKP[11], 8);
+    puts_(&o, " frame_pc="); hex(&o, BKP[12], 8);
+    puts_(&o, "\r\n");
+    u32 file[22], done = 0;
+    zero(file, sizeof(file));
+    if (F_OPEN(file, HIST, FA_APPEND_WRITE)) return;
+    F_WRITE(file, o.buf, o.len, &done);
+    F_CLOSE(file);
+}
+
 /* Write only what is new since the last flush. */
 static void flush(void) {
     u32 saved = M4H->r[4], len = M4H->r[2];
     if (len <= saved) return;
-    if (!saved) preserve_previous((u8 *)M4H->r[1] + BUF_BYTES - SCRATCH_BYTES);
+    if (!saved) {
+        preserve_previous((u8 *)M4H->r[1] + BUF_BYTES - SCRATCH_BYTES);
+        history("boot");
+    }
     u32 file[22];
     zero(file, sizeof(file));
     if (F_OPEN(file, LOG, saved ? FA_APPEND_WRITE : FA_CREATE_WRITE)) return;
@@ -233,14 +259,14 @@ static void poll(void) {
     M4H->r[3] = now;
     if (M4H->r[1] <= 1u) return;
     Out o = {(char *)M4H->r[1], M4H->r[2]};
-    int urgent = 0;
+    int urgent = 0, crashed = 0;
 
     /* Watch 1: a new stock crash record while we are running (e.g. the M7
      * faulted and parked while the UI stays alive). */
     if (BKP[24] != CFG->r[1]) {
         CFG->r[1] = BKP[24];
         alarm(&o, now, "NEW CRASH RECORD");
-        urgent = 1;
+        urgent = crashed = 1;
     }
     /* Watch 2: the M7 heartbeat (bumped every audio block) stops. */
     u32 hb = RINGSTAT->heartbeat;
@@ -268,6 +294,7 @@ static void poll(void) {
         puts_(&o, " at ms "); dec(&o, now); puts_(&o, "\r\n");
         M4H->r[2] = o.len;
         flush();
+        if (crashed) history("live");
     }
 }
 

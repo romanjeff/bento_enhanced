@@ -37,7 +37,7 @@ M7_LIMIT = 0x080DB800
 APPEND_FROM = 0x081B4000
 M4_CODE = 0x081B5000
 M4_LIMIT = 0x081B6600
-MARKER = b"BENTO_MOD:m1-polyat:v2.6-stock+conditions+inspect+holds" + bytes(1)
+MARKER = b"BENTO_MOD:m1-polyat:v2.7-stock+conditions+inspect+holds" + bytes(1)
 
 # (name, site, original bytes, displaced instruction(s), resume address, call setup)
 M7_HOOKS = [
@@ -92,15 +92,10 @@ COND_UI_SITES = [  # (site, helper, original bytes)
     (0x08158A7C, "piano_edit", "9df81930"),
 ]
 
-# Inspect a step (port of bento-community-lab T2 holdstep, GPL-3.0-or-later).
+# Inspect a step (from bento-community-lab T2 holdstep, GPL-3.0-or-later): only the
+# edit-protects-release part; no selection kept after release.
 HOLD_WRAP, HOLD_CODE, HOLD_LIMIT = 0x081B6600, 0x081B6800, 0x081B7000
-HOLD_HEADER = 0x0815C27C            # stock: called after a step press/touch (header refresh)
-HOLD_REMEMBER_SITES = [             # (bl site, function, extra setup)
-    (0x0815D22E, "step_press", "ldr r1, [sp, #12]; "),   # r1 = encoded pad
-    (0x0815D2EA, "step_touch", ""),
-]
 HOLD_EDIT_SITES = [0x0815C7C4, 0x0815C8AC, 0x0815C990]   # velocity, condition, timing edit entries
-HOLD_MATCH_SITE, HOLD_SELECTED_SITE = 0x0815B9C0, 0x0815BAB0
 
 # Hold shortcuts (port of bento-community-lab K16 hold controls, GPL-3.0-or-later).
 CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (below our 0x080DA000)
@@ -338,7 +333,7 @@ def build(base_img, out):
     patch(COND_TABLE_PTR_SITE, struct.pack("<I", COND_TABLE), struct.pack("<I", NATIVE_LABELS),
           "Conditions (Lab T2): probability list labels -> extended table")
 
-    # --- Inspect a step (Lab T2 port): wrappers at HOLD_WRAP, C at HOLD_CODE
+    # --- Inspect a step: encoder-edit wrappers at HOLD_WRAP, C at HOLD_CODE
     hold_elf = compile_elf([HERE / "m4_holdstep.c"], "cortex_m4", HERE / "m4_holdstep.ld", out / "m4_holdstep.elf")
     vah, codeh, sh = elf_load(hold_elf, HOLD_CODE, HOLD_LIMIT)
     if vah != HOLD_CODE:
@@ -356,17 +351,8 @@ def build(base_img, out):
         check_branches(code, a, exits, "hold-step wrapper")
         wrap.extend(code)
         return a
-    # Stock step_match's first 6 bytes, then resume: the C code calls this when pads are held.
-    if wrap_block(f"push {{r4, lr}}; add.w lr, r0, #0x11400; b.w {HOLD_MATCH_SITE + 6:#x}",
-                  {HOLD_MATCH_SITE + 6}) != HOLD_WRAP:
-        raise SystemExit("original step_match wrapper must sit at HOLD_WRAP (m4_holdstep.c ORIG_STEP_MATCH)")
     save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; ldr r0, [sp, #8]; "   # r0 = view
     restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
-    for site, name, extra in HOLD_REMEMBER_SITES:
-        orig = asm(f"bl {HOLD_HEADER:#x}", site)
-        a = wrap_block(save + extra + f"bl {sh[name]:#x}; " + restore + f"b.w {HOLD_HEADER:#x}",
-                       {sh[name], HOLD_HEADER})
-        patch(site, asm(f"bl {a:#x}", site), orig, f"Inspect a step (Lab T2): remember {name}")
     for site in HOLD_EDIT_SITES:
         a = wrap_block(save + f"bl {sh['step_edit']:#x}; " + restore + f"push.w {{r4-r11, lr}}; b.w {site + 4:#x}",
                        {sh["step_edit"], site + 4})
@@ -375,14 +361,10 @@ def build(base_img, out):
     if HOLD_WRAP + len(wrap) > HOLD_CODE:
         raise SystemExit("hold-step wrappers overlap the C code")
     patch(HOLD_WRAP, bytes(wrap), b"\xff" * len(wrap), "Inspect a step (Lab T2): wrappers")
-    hold_marker = b"BENTO_MOD:step-inspect(Lab T2 port)\0"
+    hold_marker = b"BENTO_MOD:step-edit-keeps-step(from Lab T2)\0"
     if HOLD_CODE + len(codeh) + len(hold_marker) > HOLD_LIMIT:
         raise SystemExit("hold-step code overruns its slice")
     patch(HOLD_CODE, codeh + hold_marker, b"\xff" * (len(codeh) + len(hold_marker)), "Inspect a step (Lab T2): code")
-    patch(HOLD_MATCH_SITE, asm(f"b.w {sh['step_match']:#x}; nop", HOLD_MATCH_SITE), bytes.fromhex("10b500f58a3e"),
-          "Inspect a step (Lab T2): step matching, held pads first")
-    patch(HOLD_SELECTED_SITE, asm(f"b.w {sh['step_selected']:#x}", HOLD_SELECTED_SITE), bytes.fromhex("00f58a30"),
-          "Inspect a step (Lab T2): edits use the inspected step when no pad is held")
     s4.update({f"hold.{k}": v for k, v in sh.items()})
 
     # --- Hold shortcuts (Lab K16 port): M7 pad input + startup, M4 consumer/observer/mixer render
@@ -500,7 +482,7 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the stock base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label="1.6.1+m1+conditions+inspect+holds-v2.6", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label="1.6.1+m1+conditions+inspect+holds-v2.7", base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")

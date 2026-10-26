@@ -328,6 +328,35 @@ class M4EndToEnd(unittest.TestCase):
         self.tick(1100)
         self.assertEqual(text.count("!!!"), 1, "reported once")
 
+    def test_crash_history_one_line_per_boot_appended_forever(self):
+        hist = "\\BENTO_CRASHES.log"
+        self.fs[hist] = b"older history\r\n"
+        w32(self.u, RTC_BKP + 4 * 24, 86); w32(self.u, RTC_BKP + 4 * 25, 5)
+        w32(self.u, RTC_BKP + 4 * 31, 0x08122BC4); w32(self.u, RTC_BKP + 4 * 27, 1)
+        self.tick(1000)
+        self.assertEqual(self.fs[hist], b"older history\r\n", "not before the card is in use")
+        self.tick(2600)                                  # first log write of this boot
+        lines = self.fs[hist].decode().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].startswith("boot gen=1 ms=2600 count=86 cause=00000005 pc=08122bc4 core=00000001"), lines[1])
+        self.tick(5000)                                  # later flushes: no new history line
+        self.assertEqual(len(self.fs[hist].decode().splitlines()), 2)
+        w32(self.u, RTC_BKP + 4 * 24, 87)
+        self.tick(50); self.tick(1700)                   # reboot, first write of boot 2
+        lines = self.fs[hist].decode().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[2].startswith("boot gen=2 ms=1700 count=87"), lines[2])
+        self.assertTrue(all(w[1] == 0x32 for w in self.writes if w[0] == hist), "append only, never truncated")
+
+    def test_crash_history_live_crash_line(self):
+        hist = "\\BENTO_CRASHES.log"
+        self.tick(1000)
+        w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)
+        self.tick(1050)
+        lines = self.fs[hist].decode().splitlines()
+        self.assertTrue(lines[-1].startswith("live gen=1 ms=1050 count=1"), lines)
+        self.assertIn("pc=0808cc5a", lines[-1])
+
     def test_heartbeat_stall_is_reported(self):
         self.tick(1000)
         self.send(0x5B)                                  # M7 side live
