@@ -393,11 +393,10 @@ class Defaults(unittest.TestCase):
 
 
 class StrikeVelocity(unittest.TestCase):
-    STRIKE, SET = 0x24048D60, 0x24048D48
+    STRIKE = 0x24048D60
 
-    def rig(self, on=1, base=0):
+    def rig(self, base=0):
         g = Rig(); w32(g.u, VIEW + 0x114C0, 100); w32(g.u, VIEW + 0x113F4, base)
-        g.u.mem_write(self.SET, struct.pack("<IB3x16s", 0x31455653, on, b"Strike Vel: On"))
         return g
 
     def strike(self, g, seq, vel, pad=4):
@@ -419,9 +418,7 @@ class StrikeVelocity(unittest.TestCase):
         self.tap(g, 2)
         self.assertEqual([(n[4] >> 16, n[5]) for n in g.notes], [(100, 0)])
 
-    def test_off_or_stale_or_touch_keeps_the_default(self):
-        g = self.rig(on=0); self.strike(g, 1, 37); self.tap(g, 4)
-        self.assertEqual(g.notes[0][4] >> 16, 100, "setting off")
+    def test_stale_or_touch_keeps_the_default(self):
         g = self.rig(); self.strike(g, 1, 37); self.tap(g, 4)
         g.call(0x0815D114, VIEW, 6)                   # touchscreen toggle: no press
         self.assertEqual([n[4] >> 16 for n in g.notes], [37, 100], "touch = default")
@@ -440,10 +437,10 @@ class StrikeVelocity(unittest.TestCase):
         self.tap(g, 3)
         self.assertEqual([(n[1] // 960, n[4] >> 16) for n in g.notes], [(19, 64)])
 
-    def test_menu_patch(self):
-        self.assertEqual(IMG[0x081415F8 - BASE:0x081415FA - BASE], bytes.fromhex("0523"), "menu 0xFA: 5 items")
-        self.assertEqual(struct.unpack("<5I", IMG[0x08198E00 - BASE:0x08198E14 - BASE]),
-                         (0x10F0, 0x24048D50, 0, 0, 1))
+    def test_drum_menu_is_stock(self):
+        stock = Path(sys.argv[1]).read_bytes()
+        for a, n in ((0x081415F8, 2), (0x08198E00, 20)):
+            self.assertEqual(IMG[a - BASE:a - BASE + n], stock[a - BASE:a - BASE + n], hex(a))
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

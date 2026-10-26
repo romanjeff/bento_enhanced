@@ -325,14 +325,15 @@ __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
  * drum step view handles a pad press (0x0815D1EC) a fresh strike is kept as
  * pending; when stock's toggle (0x0815D114) then creates a step there, the
  * new note gets that velocity (locked if it differs from the pad default).
- * Touchscreen taps have no fresh strike and get the default, as before. */
+ * Touchscreen taps have no fresh strike and get the default, as before.
+ * Always on (v3.8): the menu toggle of v3.6/v3.7 was removed. */
 #define STEP_HAS_NOTE 0x0815BCB4u   /* (view, visible index) */
 #define STRIKE_WINDOW_MS 3000u
 
 __attribute__((used, retain)) void strike_press(void *v, u32 pad) {
     (void)pad;
     SU->r[1] = 0;
-    if (!drum_step_view(v) || STRIKE_SET->magic != STRIKE_SET_MAGIC || !STRIKE_SET->on) return;
+    if (!drum_step_view(v)) return;
     if (STRIKE->magic != STRIKE_MAGIC || STRIKE->seq == SU->r[0]) return;   /* no new press seen */
     SU->r[0] = STRIKE->seq;
     SU->r[1] = STRIKE->vel;

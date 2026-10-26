@@ -46,7 +46,6 @@ typedef void *Ptr;
 #define NATIVE_FLUSH_PAD_LIGHTS 0x081257f0u
 #define NATIVE_CLEAR_PAD_HIGHLIGHTS 0x081257ccu
 #define ENGINE (*(Ptr *)0x3000f650u)
-#define HEADER_WIDGET 0x30034D48u   /* static header widget (menus live at +0xFDC) */
 
 typedef struct { u32 code, context, key, value, extra; } Event;
 typedef struct { u32 magic, button, used, await_press, page, track, previous, ctx[4], generation; } State;
@@ -72,23 +71,6 @@ static void init(void) {
     S->magic = STATE_MAGIC;
     BOOT->gen = gen;
     BOOT->magic = BOOT_MAGIC;
-}
-
-/* Strike velocity on/off: the drum step view's hamburger menu has a 5th item
- * (build.py) whose label points at STRIKE_SET->label and whose command id is
- * STRIKE_TOGGLE_EVENT; selecting it bubbles up to this consumer. The setting
- * survives warm reboots (not power-off) and defaults to on. */
-static void strike_label(void) {
-    const char *t = STRIKE_SET->on ? "Strike Vel: On" : "Strike Vel: Off";
-    u32 i = 0;
-    for (; t[i] && i < sizeof(STRIKE_SET->label) - 1; i++) STRIKE_SET->label[i] = t[i];
-    for (; i < sizeof(STRIKE_SET->label); i++) STRIKE_SET->label[i] = 0;
-}
-static void strike_init(void) {
-    if (STRIKE_SET->magic == STRIKE_SET_MAGIC) return;
-    STRIKE_SET->on = 1;
-    strike_label();
-    STRIKE_SET->magic = STRIKE_SET_MAGIC;
 }
 
 static void mixer_pad_mode(Ptr m, u32 enabled) {
@@ -230,18 +212,6 @@ static int inst_hold(Ptr m, u32 code, u32 index) {
 /* UI event consumer (0x0813F98C). Returns 1 when the event was handled. */
 __attribute__((used, retain)) int controls_dispatch(Ptr m, u32 code, u32 context, u32 index, const u32 *record) {
     init();
-    strike_init();
-    if (code == STRIKE_TOGGLE_EVENT) {
-        STRIKE_SET->on = !STRIKE_SET->on;
-        strike_label();
-        /* Stock re-applies a menu (copying its labels into the buttons) only when
-         * opening a different menu than last time: FUN_0817FFF8 compares the menu
-         * index cached in the header widget (static object 0x30034D48, built by
-         * the static constructor 0x0816E391) at +0xFE0. Forget it so the next
-         * open re-applies and shows the new label. */
-        *(volatile u16 *)(HEADER_WIDGET + 0xFE0u) = 0xFFFFu;
-        return 1;
-    }
     /* CH8: an encoder turn (0xAB) while holding LAUNCH or MIXER counts as use. */
     if (code == 0xab && (S->button == 3 || S->button == 5)) S->used = 1;
     if (inst_hold(m, code, index)) return 1;

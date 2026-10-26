@@ -38,7 +38,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.7"                       # bump for every build that goes on the device
+VERSION = "3.8"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -124,12 +124,8 @@ M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
 STEP_SAVE_SITE, STEP_LOAD_SITE = 0x0812F4F0, 0x0812FBB4
 DRUM_HEADER, DRUM_ENCODER = 0x0815C27C, 0x0815CAA0
 PIANO_HEADER, PIANO_EVENT = 0x081599BC, 0x0815A598
-# Strike velocity: drum step pad press / step toggle, and the drum step menu (id 0xFA,
-# registered by FUN_081412EC with a 4-item count from the table at 0x08198DB0)
+# Strike velocity: drum step pad press / step toggle (always on since v3.8)
 STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
-DRUM_MENU_COUNT_SITE = 0x081415F8              # movs r3, #4
-DRUM_MENU_SLOT5 = 0x08198DB0 + 4 * 20          # 5th 20-byte entry {id, label, 0, 0, 1}
-STRIKE_TOGGLE_EVENT, STRIKE_LABEL = 0x10F0, 0x24048D50
 LAYOUT = dict(M7_TRAMP=M7_TRAMP, M7_CODE=M7_CODE, M4_CODE=M4_CODE, HOLD_WRAP=HOLD_WRAP, HOLD_CODE=HOLD_CODE,
               CTRL_WRAP=CTRL_WRAP, CTRL_CODE=CTRL_CODE, STEP_WRAP=STEP_WRAP, STEP_CODE=STEP_CODE,
               M4_POLY=M4_POLY, IMAGE_END=M4_POLY_LIMIT)
@@ -576,11 +572,6 @@ def build(base_img, out):
                f"mov r0, r4; mov r1, r5; mov r2, r6; bl {ss['toggle_post']:#x}; pop {{r4, r5, r6, pc}}",
                {ss["toggle_pre"], orig_toggle, ss["toggle_post"]}, "toggle wrapper")
     patch(STEP_TOGGLE, asm(f"b.w {a:#x}", STEP_TOGGLE), bytes.fromhex("38b51f29"), "Strike velocity: step toggle")
-    # the drum step hamburger menu: 5th item "Strike Vel: On/Off" (label text in RAM)
-    patch(DRUM_MENU_COUNT_SITE, asm("movs r3, #5", DRUM_MENU_COUNT_SITE), bytes.fromhex("0423"),
-          "Strike velocity: drum step menu 4 -> 5 items")
-    patch(DRUM_MENU_SLOT5, struct.pack("<5I", STRIKE_TOGGLE_EVENT, STRIKE_LABEL, 0, 0, 1),
-          struct.pack("<5I", 0, 0x0818A3D8, 0, 0, 1), "Strike velocity: menu item (id 0x10F0, label in RAM)")
     if STEP_WRAP + len(wrap) > STEP_CODE:
         raise SystemExit("step wrappers overlap the step code")
     patch(STEP_WRAP, bytes(wrap), b"\xff" * len(wrap), "Per-step: wrappers")
