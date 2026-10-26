@@ -130,6 +130,16 @@ class Rig:
             self.log.append(("title", cstr(u, r(1)))); self.ret()
         elif a == BAR_TEXT:
             self.log.append(("text", r(1), cstr(u, r(2)) if r(2) else None)); self.ret()
+        elif a == 0x0815BCB4:                                     # step has a note? (view, visible idx)
+            step = r32(u, VIEW + 0x113F4) + r(1)
+            self.ret(1 if any(n[1] // 960 == step and (n[0] >> 16) == r32(u, VIEW + 0x11400) for n in self.notes) else 0)
+        elif a == 0x0815CE98:                                     # stock set step (view, idx, on)
+            step = r32(u, VIEW + 0x113F4) + r(1)
+            if r(2):
+                self.notes.append(note(step, pad=r32(u, VIEW + 0x11400), vel=r32(u, VIEW + 0x114C0), nid=100 + step))
+            self.log.append(("set", step, r(2))); self.ret()
+        elif a == 0x0815D1F0:                                     # rest of stock's press handler
+            self.log.append(("press", r(1))); self.ret()
         elif a in (STOCK_DRUM_HEADER, STOCK_PIANO_HEADER):
             # stand-in for stock's header body: return from the replayed prologue's frame
             self.log.append("stock-header")
@@ -381,6 +391,59 @@ class Defaults(unittest.TestCase):
         w32(g.u, VIEW + 0x114C0, 100); g.drum_header()
         self.assertEqual(r32(g.u, VIEW + 0x114C0), 64, "stock's reset of its field is corrected from the notes")
 
+
+class StrikeVelocity(unittest.TestCase):
+    STRIKE, SET = 0x24048D60, 0x24048D48
+
+    def rig(self, on=1, base=0):
+        g = Rig(); w32(g.u, VIEW + 0x114C0, 100); w32(g.u, VIEW + 0x113F4, base)
+        g.u.mem_write(self.SET, struct.pack("<IB3x16s", 0x31455653, on, b"Strike Vel: On"))
+        return g
+
+    def strike(self, g, seq, vel, pad=4):
+        g.u.mem_write(self.STRIKE, struct.pack("<8I", 0x4B525453, seq, pad, vel, 0, 0, 0, 0))
+
+    def tap(self, g, pad, ms=5000):
+        w32(g.u, 0x30035F40, ms)
+        g.call(0x0815D1EC, VIEW, pad)                 # press (our hook, then stock's handler)
+        g.call(0x0815D114, VIEW, pad)                 # stock's release -> toggle
+
+    def test_tapped_step_takes_the_strike_and_locks(self):
+        g = self.rig(); self.strike(g, 1, 37)
+        self.tap(g, 4)
+        self.assertIn(("press", 4), g.log)
+        self.assertEqual([(n[1] // 960, n[4] >> 16, locks(n[5])) for n in g.notes], [(4, 37, 1)])
+
+    def test_strike_equal_to_default_is_not_a_lock(self):
+        g = self.rig(); self.strike(g, 1, 100)
+        self.tap(g, 2)
+        self.assertEqual([(n[4] >> 16, n[5]) for n in g.notes], [(100, 0)])
+
+    def test_off_or_stale_or_touch_keeps_the_default(self):
+        g = self.rig(on=0); self.strike(g, 1, 37); self.tap(g, 4)
+        self.assertEqual(g.notes[0][4] >> 16, 100, "setting off")
+        g = self.rig(); self.strike(g, 1, 37); self.tap(g, 4)
+        g.call(0x0815D114, VIEW, 6)                   # touchscreen toggle: no press
+        self.assertEqual([n[4] >> 16 for n in g.notes], [37, 100], "touch = default")
+        g = self.rig(); self.strike(g, 1, 37); self.tap(g, 4)
+        self.tap(g, 7)                                # no new pad press seen by the M7 (same seq)
+        self.assertEqual([n[4] >> 16 for n in g.notes], [37, 100], "a strike is used once")
+
+    def test_removing_a_step_changes_nothing(self):
+        g = self.rig(); g.notes = [note(4, vel=90, nid=1)]; self.strike(g, 1, 37)
+        self.tap(g, 4)
+        self.assertIn(("set", 4, 0), g.log)
+        self.assertEqual(g.notes[0][4] >> 16, 90)
+
+    def test_scrolled_view_uses_the_absolute_step(self):
+        g = self.rig(base=16); self.strike(g, 1, 64)
+        self.tap(g, 3)
+        self.assertEqual([(n[1] // 960, n[4] >> 16) for n in g.notes], [(19, 64)])
+
+    def test_menu_patch(self):
+        self.assertEqual(IMG[0x081415F8 - BASE:0x081415FA - BASE], bytes.fromhex("0523"), "menu 0xFA: 5 items")
+        self.assertEqual(struct.unpack("<5I", IMG[0x08198E00 - BASE:0x08198E14 - BASE]),
+                         (0x10F0, 0x24048D50, 0, 0, 1))
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

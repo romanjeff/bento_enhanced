@@ -19,7 +19,7 @@ from unicorn.arm_const import *
 BASE = 0x08040000
 SENT = 0x08000100           # return sentinel (never executed: emu stops on reaching it)
 STACK = 0x2407F000
-LOG_LO, LOG_HI = 0x24048500, 0x24048A00
+LOG_LO, LOG_HI = 0x24048400, 0x24048DA0   # our reserved block (heap end lowered): logger, monitors, strike line
 M7H, M4H, RECS = 0x24048500, 0x24048520, 0x240486C0
 MAGIC = 0x31474144
 RINGSTAT = 0x24048600

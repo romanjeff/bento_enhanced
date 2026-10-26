@@ -330,5 +330,23 @@ class Ours(unittest.TestCase):
         self.assertEqual(bytes(u.mem_read(0x24048400, STATE - 0x24048400)), bytes([0x5a]) * (STATE - 0x24048400))
         self.assertEqual(bytes(u.mem_read(STATE + 32, 0x24048DA0 - STATE - 32)), bytes([0x5a]) * (0x24048DA0 - STATE - 32))
 
+class StrikeMenu(unittest.TestCase):
+    def label(self, f):
+        a = 0x24048D50; t = b""
+        while True:
+            c = bytes(f.u.mem_read(a, 1))
+            if c == b"\0": return t.decode()
+            t += c; a += 1
+
+    def test_menu_event_toggles_the_setting_and_label(self):
+        f = Fixture(); f.event(180, 3)                 # any event: setting initialised (on)
+        self.assertEqual(self.label(f), "Strike Vel: On")
+        f.event(0x10F0, 0)
+        self.assertEqual(self.label(f), "Strike Vel: Off")
+        self.assertEqual(bytes(f.u.mem_read(0x24048D4C, 1))[0], 0)
+        f.event(0x10F0, 0)
+        self.assertEqual(self.label(f), "Strike Vel: On")
+        self.assertEqual(f.log, [], "nothing else happens")
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

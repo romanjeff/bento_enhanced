@@ -130,7 +130,7 @@ logged; M1b will sample instead.
 
 Uses Lab's pinned toolchain (zig cc, keystone, Unicorn 2.1.3). See
 [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/): `build_m1.sh` builds from
-CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (161 emulated checks).
+CH10, and `test_m1.sh` runs `test_diag.py` and `test_polyat.py` (168 emulated checks).
 
 ```
 python build.py --base <CH10 bento1.bin> --out <new dir>
@@ -350,3 +350,22 @@ clip loads that pad's default (the most common value among its unlocked steps).
 - Notes keep their concrete values: stock firmware plays them exactly the same.
 - Stock's three edit functions are wrapped (hold-step release protection, `param_pre`,
   stock's edit, `param_post`). `test_step.py` drives stock's real edit functions.
+
+## Strike velocity (v3.6)
+
+Drum step sequencer (step and sequence views): **a step you tap in takes the velocity
+of the hit** (locked if it differs from the pad default). Touchscreen taps still get the
+default. **On/off: 5th item in the hamburger menu, "Strike Vel: On/Off"** (default on;
+kept across warm reboots, not power-off).
+
+- M7: `h_input` records each pad press (`0xAC`) with stock's velocity formula
+  (`min(raw, 0xD000) × 127 / 0xD000`, 0 → 100) in an M7-written line `0x24048D60`.
+- M4: the drum step pad-press handler (`0x0815D1EC`) takes a fresh strike as pending;
+  stock's toggle (`0x0815D114`) is wrapped and, when it creates a step, gives the new
+  note that velocity. A strike is used once and only within 3 s.
+- Menu: the drum step menu (id `0xFA`) is registered from a 10-slot table with count 4
+  (`0x081415F8`); count → 5 and slot 5 (`0x08198E00`) = `{0x10F0, label in RAM
+  0x24048D50, 0, 0, 1}`. Stock copies the label *pointer*, so the text can change. The
+  selection bubbles up (`FUN_0816FC34`) to the UI consumer, where `controls_dispatch`
+  toggles the setting.
+- Velocity curve unchanged (stock's), as decided; tapped steps match live playing.

@@ -118,6 +118,18 @@ static inline u32 step_make(u32 cond, u32 hits, u32 div, int ramp, u32 locks) {
            (locks & 7u);
 }
 
+/* Strike velocity (programming drum steps by hit strength).
+ * Strike: the M7 records the latest pad press (input event 0xAC) with stock's
+ * velocity formula; one line, M7-written and cleaned, read by the M4.
+ * StrikeSet: the on/off setting and its menu label; M4-only. */
+typedef struct { u32 magic, seq, pad, vel, raw, r[3]; } Strike;
+#define STRIKE ((volatile Strike *)0x24048D60u)
+#define STRIKE_MAGIC 0x4B525453u /* "STRK" */
+typedef struct { u32 magic; u8 on, pad_[3]; char label[16]; } StrikeSet;
+#define STRIKE_SET ((volatile StrikeSet *)0x24048D48u)
+#define STRIKE_SET_MAGIC 0x31455653u /* "SVE1" */
+#define STRIKE_TOGGLE_EVENT 0x10F0u   /* our menu item's command id (unused by stock) */
+
 typedef struct {
     u32 max_fill;  /* highest M7->M4 MIDI ring fill seen when posting (16 slots) */
     u32 overflows; /* posts made while 16 entries were still unread (overwrites) */

@@ -113,10 +113,20 @@ static int interesting_send(u32 t) {
     return 0;
 }
 
+/* Latest pad press for strike-velocity step programming (m4_step.c): stock's
+ * velocity formula on the press's raw pressure (a computed 0 becomes 100). */
+static void strike(const u32 *ev) {
+    u32 raw = ev[4] & 0xFFFFu, v = (raw > 0xD000u ? 0xD000u : raw) * 127u / 0xD000u;
+    STRIKE->pad = ev[3]; STRIKE->raw = raw; STRIKE->vel = v ? v : 100u;
+    STRIKE->seq = STRIKE->seq + 1u;
+    STRIKE->magic = STRIKE_MAGIC;
+    clean(STRIKE, sizeof(Strike));
+}
+
 __attribute__((used, retain)) void h_input(u32 engine, const u32 *ev) {
     u32 t = ev[0] & 0xFF;
     diag_sp();
-    if (t == 0xAC) FLAGS[0] = 1;
+    if (t == 0xAC) { FLAGS[0] = 1; strike(ev); }
     if (t == 0xAC || t == 0xAD || (t == 0xAE && FLAGS[0])) {
         if (t == 0xAE) FLAGS[0] = 0; /* only the first pressure event after a press */
         put(K_PAD, 0, engine, ev, 0);

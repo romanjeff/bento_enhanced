@@ -38,7 +38,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x2800
-VERSION = "3.5"                       # bump for every build that goes on the device
+VERSION = "3.6"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
@@ -124,6 +124,12 @@ M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
 STEP_SAVE_SITE, STEP_LOAD_SITE = 0x0812F4F0, 0x0812FBB4
 DRUM_HEADER, DRUM_ENCODER = 0x0815C27C, 0x0815CAA0
 PIANO_HEADER, PIANO_EVENT = 0x081599BC, 0x0815A598
+# Strike velocity: drum step pad press / step toggle, and the drum step menu (id 0xFA,
+# registered by FUN_081412EC with a 4-item count from the table at 0x08198DB0)
+STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
+DRUM_MENU_COUNT_SITE = 0x081415F8              # movs r3, #4
+DRUM_MENU_SLOT5 = 0x08198DB0 + 4 * 20          # 5th 20-byte entry {id, label, 0, 0, 1}
+STRIKE_TOGGLE_EVENT, STRIKE_LABEL = 0x10F0, 0x24048D50
 LAYOUT = dict(M7_TRAMP=M7_TRAMP, M7_CODE=M7_CODE, M4_CODE=M4_CODE, HOLD_WRAP=HOLD_WRAP, HOLD_CODE=HOLD_CODE,
               CTRL_WRAP=CTRL_WRAP, CTRL_CODE=CTRL_CODE, STEP_WRAP=STEP_WRAP, STEP_CODE=STEP_CODE,
               M4_POLY=M4_POLY, IMAGE_END=M4_POLY_LIMIT)
@@ -557,6 +563,24 @@ def build(base_img, out):
                    {sh["step_edit"], ss["param_pre"], orig_edit, ss["param_post"]}, "edit wrapper")
         patch(site, asm(f"b.w {a:#x}", site), bytes.fromhex("2de9f04f"),
               f"Step edit {('velocity', 'probability', 'offset')[f]}: keep step on release + defaults/locks")
+    # strike velocity: pad press (view, pad) and step toggle (view, idx)
+    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['strike_press']:#x}; " + restore
+               + f"cmp r1, #15; bls stock; b.w {STEP_PRESS + 0x48:#x}; stock: b.w {STEP_PRESS + 4:#x}",
+               {ss["strike_press"], STEP_PRESS + 0x48, STEP_PRESS + 4}, "strike press")
+    if bytes(base_img[STEP_PRESS - BASE:STEP_PRESS - BASE + 4]) != asm(f"cmp r1, #15; bhi {STEP_PRESS + 0x48:#x}", STEP_PRESS):
+        raise SystemExit("step press entry is not the expected cmp/bhi")
+    patch(STEP_PRESS, asm(f"b.w {a:#x}", STEP_PRESS), bytes.fromhex("0f2921d8"), "Strike velocity: drum step pad press")
+    orig_toggle = sblock(f"push {{r3, r4, r5, lr}}; cmp r1, #0x1f; b.w {STEP_TOGGLE + 4:#x}", {STEP_TOGGLE + 4}, "toggle replay")
+    a = sblock(f"push {{r4, r5, r6, lr}}; mov r4, r0; mov r5, r1; bl {ss['toggle_pre']:#x}; mov r6, r0; "
+               f"mov r0, r4; mov r1, r5; bl {orig_toggle:#x}; "
+               f"mov r0, r4; mov r1, r5; mov r2, r6; bl {ss['toggle_post']:#x}; pop {{r4, r5, r6, pc}}",
+               {ss["toggle_pre"], orig_toggle, ss["toggle_post"]}, "toggle wrapper")
+    patch(STEP_TOGGLE, asm(f"b.w {a:#x}", STEP_TOGGLE), bytes.fromhex("38b51f29"), "Strike velocity: step toggle")
+    # the drum step hamburger menu: 5th item "Strike Vel: On/Off" (label text in RAM)
+    patch(DRUM_MENU_COUNT_SITE, asm("movs r3, #5", DRUM_MENU_COUNT_SITE), bytes.fromhex("0423"),
+          "Strike velocity: drum step menu 4 -> 5 items")
+    patch(DRUM_MENU_SLOT5, struct.pack("<5I", STRIKE_TOGGLE_EVENT, STRIKE_LABEL, 0, 0, 1),
+          struct.pack("<5I", 0, 0x0818A3D8, 0, 0, 1), "Strike velocity: menu item (id 0x10F0, label in RAM)")
     if STEP_WRAP + len(wrap) > STEP_CODE:
         raise SystemExit("step wrappers overlap the step code")
     patch(STEP_WRAP, bytes(wrap), b"\xff" * len(wrap), "Per-step: wrappers")

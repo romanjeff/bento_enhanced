@@ -320,6 +320,51 @@ __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
     return 1;
 }
 
+/* ---- strike velocity: a tapped-in step takes the hit's velocity ----------
+ * The M7 records each pad press (STRIKE, stock's velocity formula). When the
+ * drum step view handles a pad press (0x0815D1EC) a fresh strike is kept as
+ * pending; when stock's toggle (0x0815D114) then creates a step there, the
+ * new note gets that velocity (locked if it differs from the pad default).
+ * Touchscreen taps have no fresh strike and get the default, as before. */
+#define STEP_HAS_NOTE 0x0815BCB4u   /* (view, visible index) */
+#define STRIKE_WINDOW_MS 3000u
+
+__attribute__((used, retain)) void strike_press(void *v, u32 pad) {
+    (void)pad;
+    SU->r[1] = 0;
+    if (!drum_step_view(v) || STRIKE_SET->magic != STRIKE_SET_MAGIC || !STRIKE_SET->on) return;
+    if (STRIKE->magic != STRIKE_MAGIC || STRIKE->seq == SU->r[0]) return;   /* no new press seen */
+    SU->r[0] = STRIKE->seq;
+    SU->r[1] = STRIKE->vel;
+    SU->r[2] = UI_TICK_MS;
+}
+
+__attribute__((used, retain)) u32 toggle_pre(void *v, u32 idx) {
+    return idx < 32 && drum_step_view(v) ? (u32)FN(STEP_HAS_NOTE, int (*)(void *, u32))(v, idx) : 1u;
+}
+
+static int pad_default(void *v, u32 f, u32 *out);
+__attribute__((used, retain)) void toggle_post(void *v, u32 idx, u32 had) {
+    u32 vel = SU->r[1];
+    SU->r[1] = 0;
+    if (had || !vel || UI_TICK_MS - SU->r[2] > STRIKE_WINDOW_MS || !drum_step_view(v)) return;
+    void *container = (void *)W(v, 0x113DC);
+    u32 pad = W(v, 0x11400), step = W(v, 0x113F4) + idx, e[6], dflt;
+    if (!pad_default(v, F_VEL, &dflt)) dflt = W(v, 0x114C0);
+    for (u32 j = 0; j < 511; j++) {
+        if (!FN(NOTE_GET, int (*)(void *, u32, u32 *))(container, j, e)) break;
+        if ((e[0] & 0xFFu) != 1u || (e[0] >> 16) != pad) continue;
+        int t = (int)e[1], q = offset_of(e[1]);
+        if ((u32)((t - q) / 960) != step) continue;
+        note_set(e, F_VEL, vel);
+        u32 locks = step_locks(e[5]);
+        e[5] = with_locks(e[5], vel != dflt ? locks | LOCK_VEL : locks & ~LOCK_VEL);
+        FN(NOTE_PUT, void (*)(void *, u32 *))(container, e);
+        publish(v);
+        return;
+    }
+}
+
 /* ---- piano roll: Condition on encoder 7 (note-edit mode) ------------------
  * Stock's note-edit keys come from a flash table [Event, Start, Note, Length,
  * Velocity, Probability, 0, Auto]; slot 7 is bound after stock's header, as
