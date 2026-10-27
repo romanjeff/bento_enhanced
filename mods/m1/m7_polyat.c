@@ -59,7 +59,7 @@ typedef struct {
 
 typedef struct {
     u32 track, cyc;
-    u8 note, last, pend, pval, port, ch, used, pad_;
+    u8 note, last, pend, pval, port, ch, used, chan;   /* chan: AT Out Channel, pval = current */
 } PEnt;
 
 typedef struct {
@@ -101,7 +101,7 @@ typedef struct {
     u32 bursts[RETRIG_BYTES / 4]; /* m7_retrig.c burst table (zeroed with the region) */
     Player pl[PLAYERS];
     Chan cd[CHANS];
-    u32 chan_sent;
+    u32 chan_sent, live_off;
 } Region;
 _Static_assert(__builtin_offsetof(Region, curve_starts) == REGION_CURVE_STATS, "curve stats offset");
 _Static_assert(__builtin_offsetof(Region, curve_peak) == REGION_CURVE_PEAK, "curve peak offset");
@@ -200,6 +200,7 @@ __attribute__((used, retain)) void h_poly(u32 track, const u32 *ev, u32 engine) 
     irq_restore(p);
 }
 
+static void chan_pass(volatile Region *r, u32 now, u32 *on_port);
 static void note_body(u32 q, const u32 *ev, u32 track) {
     volatile Region *r = region();
     u32 type = ev[0] & 0xFF, note = ev[4] & 0x7F;
@@ -237,6 +238,7 @@ static void note_body(u32 q, const u32 *ev, u32 track) {
         int i = find(v, note);
         if (i >= 0) drop(v, (u32)i);
         MSG_SEND(q, ev);
+        if (r->midi_q) { u32 on_port[PORTS] = {0}; chan_pass(r, CYCCNT, on_port); }   /* AT Channel: drop it now */
     }
     stats(r);
 }
@@ -295,19 +297,32 @@ static void flush(volatile Region *r, u32 engine, u32 now) {
     }
 }
 
-/* Called from the 0x08062466 trampoline: (track r6, event at sp+0x20, engine r8). */
+static u32 at_mode(u32 port, u32 ch, u32 *how);
+
+/* Called from the 0x08062466 trampoline: (track r6, event at sp+0x20, engine r8).
+ * AT Out (M2-5c): Off drops live pressure (capture is upstream, AT Rec still
+ * records it); Channel feeds the destination's aggregate, shared with recorded
+ * curves on it; Poly as always. */
 static void poly_body(u32 track, const u32 *ev, u32 engine) {
     if ((ev[0] & 0xFF) != 0x0E) return;
     volatile Region *r = region();
     if (!r) return;
     if (!*(volatile u8 *)(track + 0x86D1u)) return; /* MIDI out off: stock's own check */
-    u32 now = CYCCNT, note = ev[3] & 0x7F, value = ev[4] & 0x7F;
+    u32 now = CYCCNT, note = ev[3] & 0x7F, value = ev[4] & 0x7F, how;
+    u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u);
+    u32 mode = at_mode(port, ch, &how);
     volatile Voices *v = voices(r, track, 0);
-    if (v && find(v, note) >= 0) {                  /* only notes that are sounding */
+    if (mode == AT_OFF) {
+        r->live_off++;
+    } else if (v && find(v, note) >= 0) {           /* only notes that are sounding */
         volatile PEnt *e = pent(r, track, note, now);
-        e->port = *(volatile u8 *)(track + 0x31u);
-        e->ch = *(volatile u8 *)(track + 0x32u);
-        if (value == e->last) {
+        e->port = (u8)port;
+        e->ch = (u8)ch;
+        e->chan = mode == AT_CHAN;
+        if (e->chan) {
+            e->pval = (u8)value; e->pend = 0;
+            if (r->midi_q) { u32 on_port[PORTS] = {0}; chan_pass(r, now, on_port); }
+        } else if (value == e->last) {
             e->pend = 0;
         } else if (now - e->cyc >= MIN_GAP && take_token(r, e->port, now)) {
             post(r, engine, e, value, now);
@@ -347,24 +362,30 @@ static u32 curve_data(u32 handle, u32 *n) {
     return *n && off + 2u + *n <= CURVE_POOL_BYTES ? c->pool + off + 2u : 0;
 }
 
+/* AT Out for a port/channel (AT_POLY when unknown). The M4's channel parameter
+ * is 1-based (1 = MIDI ch 1), the M7's byte 0-based; M4 value 0 (non-External
+ * tracks) never matches. Device log v3.33: track 1 = M4 0/1/Off, M7 port 0
+ * byte 0; tracks 2-4 = M4 0/0/Poly. *how = 1 + matched track, 0 = none. */
+static u32 at_mode(u32 port, u32 ch, u32 *how) {
+    DCIMVAC = (u32)AT_DEST & ~31u; DCIMVAC = ((u32)AT_DEST + 32u) & ~31u;   /* M4-written lines */
+    __asm volatile("dsb" ::: "memory");
+    *how = 0;
+    if (AT_DEST->magic == AT_DEST_MAGIC)
+        for (u32 i = 0; i < 8; i++)
+            if (AT_DEST->d[i].valid && AT_DEST->d[i].port == port && AT_DEST->d[i].ch == ch + 1u) {
+                *how = 1u + i;
+                return AT_DEST->d[i].mode;
+            }
+    return AT_POLY;
+}
+
 static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi) {
     volatile Region *r = region();
     u32 h = step_handle(word), n = 0, data;
     if (!r || !h || !*(volatile u8 *)(track + 0x86D1u)) return;   /* MIDI out off: nothing to drive */
     if (!(data = curve_data(h, &n))) { r->curve_skipped++; return; }
-    u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u), mode = AT_POLY;
-    DCIMVAC = (u32)AT_DEST & ~31u; DCIMVAC = ((u32)AT_DEST + 32u) & ~31u;   /* M4-written lines */
-    __asm volatile("dsb" ::: "memory");
-    /* The M4's channel parameter is 1-based (1 = MIDI ch 1), the M7's byte
-     * 0-based; M4 value 0 (non-External tracks) never matches. Device log v3.33:
-     * track 1 = M4 0/1/Off, M7 port 0 byte 0; tracks 2-4 = M4 0/0/Poly. v3.33
-     * tried an exact match first and hit track 2's entry, so Off was ignored. */
-    u32 how = 0;
-    if (AT_DEST->magic == AT_DEST_MAGIC)
-        for (u32 i = 0; i < 8; i++)
-            if (AT_DEST->d[i].valid && AT_DEST->d[i].port == port && AT_DEST->d[i].ch == ch + 1u) {
-                mode = AT_DEST->d[i].mode; how = 1u + i; break;   /* which track's entry */
-            }
+    u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u), how;
+    u32 mode = at_mode(port, ch, &how);
     r->curve_dest = port | (ch << 8) | (mode << 16) | (how << 24);
     if (mode != AT_POLY && mode != AT_CHAN) { r->curve_skipped++; return; }   /* Off */
     volatile Player *slot = 0;
@@ -398,8 +419,31 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
  * none sound, so nothing is left pressed. Changed values only, at most one
  * send per 8 ms, from the port's budget. Returns active destinations per port
  * (each costs the port like one poly note). */
+static u32 chan_dest(volatile Region *r, u32 port, u32 ch, u32 now) {
+    u32 freed = CHANS;
+    for (u32 j = 0; j < CHANS; j++) {
+        if (r->cd[j].used && r->cd[j].port == port && r->cd[j].ch == ch) return j;
+        if (!r->cd[j].used && freed == CHANS) freed = j;
+    }
+    if (freed < CHANS) {
+        r->cd[freed].port = (u8)port; r->cd[freed].ch = (u8)ch; r->cd[freed].last = 0xFF;
+        r->cd[freed].cyc = now - CURVE_MIN_GAP; r->cd[freed].used = 1;
+    }
+    return freed;                                       /* CHANS: 8 busy (cannot: 8 tracks) */
+}
+
 static void chan_pass(volatile Region *r, u32 now, u32 *on_port) {
     u8 val[CHANS] = {0}, has[CHANS] = {0}, live[CHANS] = {0};
+    for (u32 i = 0; i < PENT; i++) {                    /* live notes: count while sounding */
+        volatile PEnt *e = &r->p[i];
+        if (!e->used || !e->chan) continue;
+        volatile Voices *v = voices(r, e->track, 0);
+        if (!v || find(v, e->note) < 0) { e->chan = 0; e->used = 0; continue; }   /* released */
+        u32 d = chan_dest(r, e->port, e->ch, now);
+        if (d == CHANS) continue;
+        live[d] = 1; has[d] = 1;
+        if (e->pval > val[d]) val[d] = e->pval;
+    }
     for (u32 i = 0; i < PLAYERS; i++) {
         volatile Player *p = &r->pl[i];
         if (!p->used || !p->chan) continue;

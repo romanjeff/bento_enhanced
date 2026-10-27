@@ -213,6 +213,41 @@ class PolyHook(unittest.TestCase):
     def test_midi_out_off_posts_nothing(self):
         self.assertEqual(self.run_branch(IMG, 0x0E, midi=0)[3], [])
 
+class LiveAtOut(unittest.TestCase):
+    """M2-5c: live pad pressure follows the track's AT Out (M4 table at 0x3003DF80,
+    channel 1-based). Off sends nothing; Channel sends the highest held note's
+    pressure as event 0x60 and 0 once all are released; no table = poly."""
+    def rig(self, mode):
+        v = Voices()
+        v.u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + bytes([1, 3, mode, 1]) + bytes(28))
+        return v
+
+    def at(self, v, ms): w32(v.u, CYC, 10_000_000 + ms * 480_000)
+    def chan(self, v): return [(e[3], e[4]) for e in queued(v.u) if e[0] == 0x60]
+
+    def test_off_sends_no_pressure(self):
+        v = self.rig(1); v.on(60)
+        v.pressure(60, 50)
+        self.assertEqual([e for e in queued(v.u) if e[0] in (0x5F, 0x60)], [])
+
+    def test_channel_follows_the_highest_held_note(self):
+        v = self.rig(2); v.on(60); v.on(64)
+        self.at(v, 0); v.pressure(60, 50)
+        self.at(v, 10); v.pressure(64, 90)
+        self.at(v, 20); v.pressure(60, 70)                         # 90 still the highest: nothing new
+        self.assertEqual(self.chan(v), [(2, 50), (2, 90)], "the track channel byte; no poly")
+        self.assertFalse([e for e in queued(v.u) if e[0] == 0x5F])
+        v.off(64)
+        self.at(v, 30); v.pressure(60, 71)                         # 64 released: 71 now the highest
+        self.assertEqual(self.chan(v)[-1], (2, 71))
+        self.at(v, 40); v.off(60)                                  # last one released: 0 at once
+        self.assertEqual(self.chan(v)[-1], (2, 0))
+
+    def test_no_table_is_poly(self):
+        v = Voices(); v.on(60)
+        v.pressure(60, 50)
+        self.assertEqual([e[0] for e in queued(v.u) if e[0] in (0x5F, 0x60)], [0x5F])
+
 class PolyRate(unittest.TestCase):
     def setUp(self):
         self.v = Voices()
