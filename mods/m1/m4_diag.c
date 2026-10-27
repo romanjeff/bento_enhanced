@@ -447,15 +447,24 @@ static void mprof_print(Out *o) {
 
 static void init(u32 now) {
     u32 gen = (M4H->magic == DIAG_MAGIC) ? M4H->r[0] + 1u : 1u;
-    u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, region = 0;
+    u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, region = 0, capb = 0;
+    CAPCFG->magic = 0;                              /* M7 stops capturing until republished */
     /* Preflight exactly like Lab: the native allocator crashes on overflow.
-     * One check covers both allocations (each is rounded up to 32 bytes). */
-    if (end > cur && end - cur >= BUF_BYTES + M1_REGION_BYTES + 64u) {
+     * One check covers all allocations (each is rounded up to 32 bytes). */
+    if (end > cur && end - cur >= BUF_BYTES + M1_REGION_BYTES + sizeof(CapBlock) + 96u) {
         u32 got = FN(0x08104C08, u32 (*)(u32))(BUF_BYTES);
         if (got == cur) buf = got;
         cur = BUMP_CUR;
         got = FN(0x08104C08, u32 (*)(u32))(M1_REGION_BYTES);
         if (got == cur) region = got;
+        cur = BUMP_CUR;
+        got = FN(0x08104C08, u32 (*)(u32))(sizeof(CapBlock));   /* M2 pressure capture */
+        if (got == cur) capb = got;
+    }
+    if (capb) {
+        for (u32 i = 0; i < sizeof(CapBlock); i += 4) *(volatile u32 *)(capb + i) = 0;
+        CAPCFG->block = capb; CAPCFG->check = ~capb; CAPCFG->gen = gen;
+        CAPCFG->magic = CAPCFG_MAGIC;               /* publish last */
     }
     u32 len = 0;
     if (buf) {
@@ -527,6 +536,7 @@ static void alarm(Out *o, u32 now, const char *why) {
     ring_tail(o, now);
 }
 
+static void curve_lines(Out *o);
 static void poll(void) {
     u32 now = TICK_MS;
     if (M4H->magic != DIAG_MAGIC || now < M4H->r[3] || M4H->r[1] == 0) init(now); /* new boot */
@@ -566,6 +576,7 @@ static void poll(void) {
         M4H->r[5] = now;
         n++;
     }
+    curve_lines(&o);                              /* RAM only; written by dump_after_save */
     M4H->r[2] = o.len;
     /* v3.19: stock's FatFS and SD driver take no locks, and stock does its own
      * disk work from several places (PROJ scan, project load, sample streaming).
@@ -591,6 +602,43 @@ static void poll(void) {
      * cause of PROJ crashes, empty project lists and "insert microSD card".
      * Everything stays in reset-surviving RAM until an explicit, safe dump exists. */
     (void)now;
+}
+
+/* M2-1: curve attaches logged by m4_step.c (CURVELOG ring), formatted here. */
+#define CLOG_DONE (*(volatile u32 *)0x3003D804u)   /* last CURVELOG seq formatted (M4) */
+static void curve_lines(Out *o) {
+    u32 newest = 0;
+    for (u32 i = 0; i < CURVELOG_N; i++) if (CURVELOG[i].seq > newest) newest = CURVELOG[i].seq;
+    if (CLOG_DONE > newest) CLOG_DONE = 0;           /* stale from an earlier boot */
+    u32 from = CLOG_DONE + 1u;
+    if (newest >= CURVELOG_N && from < newest - CURVELOG_N + 1u) from = newest - CURVELOG_N + 1u;
+    for (u32 q = from; q <= newest; q++) {
+        volatile CurveLogEntry *e = &CURVELOG[q % CURVELOG_N];
+        if (e->seq != q) continue;
+        puts_(o, "CURVE #"); dec(o, q); puts_(o, " h="); dec(o, e->handle);
+        puts_(o, " pad="); dec(o, e->pad); puts_(o, " rec_pad="); dec(o, e->rec_pad);
+        puts_(o, " pitch="); dec(o, e->pitch); puts_(o, " len="); dec(o, e->len_ticks);
+        puts_(o, " ticks in="); dec(o, e->n_in); puts_(o, "<<"); dec(o, e->shift);
+        puts_(o, " dur="); dec(o, e->dur_ms); puts_(o, "ms out="); dec(o, e->n_out); puts_(o, ":");
+        u32 k = e->n_out < 32u ? e->n_out : 32u;
+        for (u32 j = 0; j < k; j++) { puts_(o, " "); hex(o, e->first[j], 2); }
+        puts_(o, "\r\n");
+    }
+    CLOG_DONE = newest;
+}
+
+/* The only card access in default builds (v3.22): called by the stub around
+ * stock's project-file write (FUN_0813032C -> FUN_08130958), right after stock
+ * itself wrote the card from this same task. On failure it just returns; the
+ * next save tries again (no retry loop). */
+__attribute__((used, retain)) void dump_after_save(void) {
+    if (M4H->magic != DIAG_MAGIC || M4H->r[1] <= 1u) return;
+    Out o = {(char *)M4H->r[1], M4H->r[2]};
+    curve_lines(&o);
+    puts_(&o, "# saved: "); counters(&o);
+    puts_(&o, " at ms "); dec(&o, TICK_MS); puts_(&o, "\r\n");
+    M4H->r[2] = o.len;
+    flush();
 }
 
 /* Replaces `bl 0x08101c78` at 0x08114b10 in the defaultTask loop. */

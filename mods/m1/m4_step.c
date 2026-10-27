@@ -72,7 +72,7 @@ static void note_set(u32 *e, u32 f, u32 v) {
     }
 }
 static u32 with_locks(u32 w, u32 locks) {
-    return step_make(step_cond(w), step_hits(w), step_div(w), step_ramp(w), locks);
+    return step_make(step_cond(w), step_hits(w), step_div(w), step_ramp(w), locks, step_handle(w));
 }
 
 /* ---- project save / load ------------------------------------------------ */
@@ -80,7 +80,7 @@ static u32 with_locks(u32 w, u32 locks) {
 __attribute__((used, retain)) void step_save(void *node, const void *rec) {
     if (B(rec, 0) != 1) return;
     u32 w = W(rec, 20);
-    if (!step_valid(w)) return;
+    if (!step_any(w)) return;                       /* incl. curve words (M2) */
     void *a = FN(XML_ADD, void *(*)(void *, const char *))(node, ATTR);
     if (a) FN(XML_SET_U32, void (*)(void *, u32))(a, w);
 }
@@ -89,7 +89,7 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
     if (B(rec, 0) != 1) return;
     u32 w = 0, x = 0;
     void *a = FN(XML_FIND, void *(*)(void *, const char *))(node, ATTR);
-    if (a && !FN(XML_GET_U32, int (*)(void *, u32 *))(a, &x) && step_valid(x)) w = x;
+    if (a && !FN(XML_GET_U32, int (*)(void *, u32 *))(a, &x) && step_any(x)) w = x;
     u32 prob = B(rec, 1), cond = step_cond(w);
     if (prob >= 100 && prob <= 173) {               /* v2.4..v3.2 condition in the probability byte */
         if (!cond) cond = prob - 99;
@@ -98,7 +98,9 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
     /* Notes without lock data load unlocked: the pad default is the value most of
      * them share, and any other value gets locked (not overwritten) the first
      * time the default changes. */
-    W(rec, 20) = step_make(cond, step_hits(w), step_div(w), step_ramp(w), step_locks(w));
+    /* Curve handles are per-boot pool indices: until curves are saved with the
+     * project (M2-3) a loaded note keeps its condition and locks, not its handle. */
+    W(rec, 20) = step_make(cond, step_hits(w), step_div(w), step_ramp(w), step_locks(w), 0);
 }
 
 /* ---- registry keys -------------------------------------------------------- */
@@ -163,7 +165,7 @@ static u32 with_field(u32 w, u32 which, u32 v) {
     case 2: div = v; break;
     default: ramp = (int)v * RAMP_STEP - 100; break;
     }
-    return step_make(cond, hits, div, ramp, step_locks(w));
+    return step_make(cond, hits, div, ramp, step_locks(w), step_handle(w));
 }
 
 /* ---- drum step sequencer header and encoders ---------------------------- */
@@ -597,8 +599,89 @@ static u32 fresh_vel(volatile PadState *ps, u32 p) {
     return STRIKES->vel[p];
 }
 
-__attribute__((used, retain)) void strike_insert(u32 *rec) {
+/* ---- M2-1: pressure curves for live-recorded melodic notes ------------------
+ * Stock's recording handler (0x0813B2F8, event 0xE9 at note-off) inserts the
+ * note through 0x0812E070; the insert stub passes us its return address, so
+ * REC_INSERT_RET marks a just-recorded note. Its pad's capture slot (M7,
+ * CapBlock) is resampled to 16 samples per step over the note's length and
+ * stored in the pool; the handle goes into the note word (tag 0xB7). */
+#define REC_INSERT_RET 0x0813B4BAu
+static volatile CurveState *curves(void) {
+    volatile CurveState *c = CURVES;
+    if (c->magic == CURVES_MAGIC && c->gen == boot_gen()) return c->pool ? c : 0;
+    c->magic = 0; c->pool = c->table = c->used = c->claims = c->misses = 0; c->next = 1;
+    for (u32 i = 0; i < 32; i++) CLAIMED[i] = 0xFFFFFFFFu;
+    u32 need = CURVE_POOL_BYTES + CURVE_HANDLES * 4u, cur = BUMP_CUR, end = BUMP_END;
+    if (end > cur && end - cur >= need + 128u) {          /* the native allocator faults on overflow */
+        u32 pool = FN(BUMP_ALLOC, u32 (*)(u32))(CURVE_POOL_BYTES);
+        u32 cur2 = BUMP_CUR, table = FN(BUMP_ALLOC, u32 (*)(u32))(CURVE_HANDLES * 4u);
+        if (pool == cur && table == cur2) { c->pool = pool; c->table = table; }
+    }
+    c->gen = boot_gen(); c->magic = CURVES_MAGIC;
+    return c->pool ? c : 0;
+}
+
+static volatile CapSlot *pick_slot(u32 rec_pad, u32 *pad_out, u32 *idx_out) {
+
+    volatile CapBlock *b = (volatile CapBlock *)CAPCFG->block;
+    if (CAPCFG->magic != CAPCFG_MAGIC || CAPCFG->check != ~(u32)b || !b) return 0;
+    volatile CapSlot *best = 0;
+    for (u32 p = 0; p < 16; p++)
+        for (u32 k = 0; k < 2; k++) {
+            volatile CapSlot *s = &b->slot[p][k];
+            if (!s->done || !s->n || CLAIMED[p * 2 + k] == s->seq) continue;
+            if (p == rec_pad) { *pad_out = p; *idx_out = p * 2 + k; return s; }   /* the record's own pad */
+            if (!best || (int)(s->t_end - best->t_end) > 0) { best = s; *pad_out = p; *idx_out = p * 2 + k; }
+        }
+    return best;
+}
+
+static void log_curve(u32 handle, u32 pad, const u32 *rec, volatile CapSlot *s, u32 n_out, const u8 *out) {
+    u32 newest = 0;
+    for (u32 i = 0; i < CURVELOG_N; i++) if (CURVELOG[i].seq > newest) newest = CURVELOG[i].seq;
+    volatile CurveLogEntry *e = &CURVELOG[(newest + 1u) % CURVELOG_N];
+    e->seq = 0;
+    e->handle = (u16)handle; e->n_out = (u16)n_out; e->pad = (u16)pad; e->rec_pad = (u16)(rec[0] >> 16);
+    e->pitch = (u16)(rec[4] & 0xFFFFu); e->len_steps = (u16)(rec[2] / 960u);
+    e->n_in = s ? (u16)s->n : 0; e->shift = s ? (u16)s->shift : 0;
+    e->dur_ms = s ? s->t_end - s->t0 : 0; e->len_ticks = rec[2];
+    for (u32 j = 0; j < 32; j++) e->first[j] = out && j < n_out ? out[j] : 0;
+    e->seq = newest + 1u;
+}
+
+static void attach_curve(u32 *rec) {
+    if ((rec[0] & 0xFFu) != 1u || drum_track_selected()) return;   /* melodic notes only */
+    volatile CurveState *c = curves();
+    u32 pad = 16, idx = 0;
+    volatile CapSlot *s = pick_slot(rec[0] >> 16, &pad, &idx);
+    if (!c || !s || c->next >= CURVE_HANDLES) {
+        if (c) c->misses++;
+        log_curve(0, pad, rec, s, 0, 0);
+        return;
+    }
+    u32 n_in = s->n, n_out = (rec[2] + 59u) / 60u;               /* 16 per step at 960 ticks/step */
+    if (n_out < 1u) n_out = 1u;
+    if (n_out > 4095u) n_out = 4095u;
+    if (c->used + 2u + n_out > CURVE_POOL_BYTES) { c->misses++; log_curve(0, pad, rec, s, 0, 0); return; }
+    u8 *dst = (u8 *)(c->pool + c->used);
+    dst[0] = (u8)n_out; dst[1] = (u8)(n_out >> 8);
+    for (u32 i = 0; i < n_out; i++) {                              /* linear resample */
+        u32 pos = n_out > 1u ? i * (n_in - 1u) * 256u / (n_out - 1u) : 0u, j = pos >> 8, f = pos & 255u;
+        u32 a = s->s[j], b = j + 1u < n_in ? s->s[j + 1u] : a;
+        dst[2 + i] = (u8)((a * (256u - f) + b * f) >> 8);
+    }
+    u32 h = c->next++;
+    ((volatile u32 *)c->table)[h] = c->used;
+    c->used += (2u + n_out + 3u) & ~3u;
+    CLAIMED[idx] = s->seq;
+    c->claims++;
+    rec[5] = step_make(step_cond(rec[5]), 0, STEP_DIV_DEFAULT, 0, step_locks(rec[5]), h);
+    log_curve(h, pad, rec, s, n_out, dst + 2);
+}
+
+__attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr) {
     volatile PadState *ps;
+    if ((lr & ~1u) == REC_INSERT_RET) attach_curve(rec);
     if ((rec[0] & 0xFFu) != 1u || strike_off() || !(ps = pads()) || !drum_track_selected()) return;
     /* Which pad made this note? The Sequence page's pads are the 16 steps of the
      * shown page (as in the Step view); live entry uses the drum's own pad;

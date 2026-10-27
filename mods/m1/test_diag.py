@@ -265,6 +265,57 @@ class MainTaskProfile(unittest.TestCase):
         ins = struct.unpack_from("<HH", DIAG, 0x08107ADC - BASE)
         self.assertNotEqual(DIAG[0x08107ADC - BASE:0x08107AE0 - BASE], CH10[0x08107ADC - BASE:0x08107AE0 - BASE])
 
+class PressureCapture(unittest.TestCase):
+    """M2-1: h_input records each press's pressure on an 8 ms clock (m7_diag.c cap)."""
+    BLOCK, SLOT = 0xC6100000, 1056
+
+    def setUp(self):
+        u = self.u = emu(DIAG)
+        w32(u, 0x3003D820 + 4, self.BLOCK); w32(u, 0x3003D820 + 8, ~self.BLOCK & 0xFFFFFFFF)
+        w32(u, 0x3003D820, 0x31504143)                         # CAPCFG published by the M4
+
+    def ev(self, t, pad, raw, ms):
+        w32(self.u, UWTICK, ms)
+        at = 0x24070200
+        self.u.mem_write(at, struct.pack("<6I", t, 0, 0xFFFFFFFE, pad, raw, 0))
+        call(self.u, SYM7["h_input"], 0x24071000, at)
+
+    def slot(self, pad, k):
+        a = self.BLOCK + (pad * 2 + k) * self.SLOT
+        hdr = struct.unpack("<8I", self.u.mem_read(a, 32))
+        return dict(seq=hdr[0], t0=hdr[1], t_end=hdr[2], n=hdr[3], shift=hdr[4], done=hdr[5],
+                    s=list(self.u.mem_read(a + 32, hdr[3])))
+
+    def test_press_pressure_release(self):
+        v = lambda raw: raw * 127 // 0xD000
+        self.ev(0xAC, 3, 0x6800, 1000)                        # press: seq 1 -> slot 1
+        self.ev(0xAE, 3, 0xD000, 1004)                        # same 8 ms bucket: latest wins
+        self.ev(0xAE, 3, 0x3400, 1030)                        # bucket 3: 1, 2 hold 127
+        self.ev(0xAD, 3, 0, 1050)                             # release in bucket 6: hold 3's value
+        s = self.slot(3, 1)
+        self.assertEqual((s["seq"], s["t0"], s["t_end"], s["done"], s["shift"]), (1, 1000, 1050, 1, 0))
+        self.assertEqual(s["s"], [127, 127, 127, v(0x3400), v(0x3400), v(0x3400), v(0x3400)])
+
+    def test_next_press_uses_the_other_slot(self):
+        self.ev(0xAC, 3, 0x6800, 1000); self.ev(0xAD, 3, 0, 1020)
+        self.ev(0xAC, 3, 0x1000, 2000)                        # seq 2 -> slot 0; slot 1 kept
+        self.assertEqual(self.slot(3, 1)["done"], 1)
+        self.assertEqual((self.slot(3, 0)["seq"], self.slot(3, 0)["done"]), (2, 0))
+
+    def test_long_hold_halves_resolution(self):
+        self.ev(0xAC, 7, 0x6800, 1000)
+        self.ev(0xAE, 7, 0xD000, 1000 + 9000)                  # 9 s: bucket 1125 > 1024
+        self.ev(0xAD, 7, 0, 1000 + 9100)
+        s = self.slot(7, 1)
+        self.assertEqual(s["shift"], 1)
+        self.assertEqual(s["n"], (9100 // 8 >> 1) + 1)
+        self.assertEqual(s["s"][-1], 127)
+
+    def test_unpublished_block_records_nothing(self):
+        w32(self.u, 0x3003D820, 0)
+        self.ev(0xAC, 3, 0x6800, 1000)
+        self.assertEqual(self.slot(3, 1)["n"], 0)
+
 class NativeFunctions(unittest.TestCase):
     def pair(self):
         a, b = emu(CH10), emu(DIAG)
@@ -675,6 +726,16 @@ class NoCardWrites(FatFsRig):
         self.tick(61000); self.tick(90000)
         self.tick(50); self.tick(25000)                    # reset and a new boot
         self.assertEqual(self.writes, [], "no f_open of any kind")
+
+    def test_dump_after_save_writes_once_per_save(self):
+        self.tick(1000)
+        call(self.u, SYM4["dump_after_save"])
+        self.assertEqual(len(self.files), 1)
+        self.assertIn("# saved: m7 dropped=", self.files[0].decode())
+        self.tick(2000)
+        self.assertEqual(len(self.files), 1, "no writes between saves")
+        call(self.u, SYM4["dump_after_save"])
+        self.assertEqual(len(self.files), 2, "the next save appends")
 
     def test_header_still_built_in_ram(self):
         self.tick(1000)

@@ -99,8 +99,14 @@ typedef struct {
 #define LOCK_VEL 1u
 #define LOCK_PROB 2u
 #define LOCK_OFFSET 4u
+/* v3 curve word (tag 0xB7, M2, melodic notes only): a recorded pressure curve
+ *   [23:17] condition (as above)   [16:3] curve handle 1..16383   [2:0] locks
+ * No retrig fields: hits/div/ramp read as their defaults. */
+#define STEP_TAG_CURVE 0xB7u
 static inline int step_valid(u32 w) { return (w >> 24) == STEP_TAG || (w >> 24) == STEP_TAG_V1; }
-static inline u32 step_cond(u32 w) { return step_valid(w) ? (w >> 17) & 0x7Fu : 0u; }
+static inline int step_any(u32 w) { return step_valid(w) || (w >> 24) == STEP_TAG_CURVE; }
+static inline u32 step_handle(u32 w) { return (w >> 24) == STEP_TAG_CURVE ? (w >> 3) & 0x3FFFu : 0u; }
+static inline u32 step_cond(u32 w) { return step_any(w) ? (w >> 17) & 0x7Fu : 0u; }
 static inline u32 step_hits(u32 w) { return step_valid(w) ? (w >> 13) & 0xFu : 0u; }
 static inline u32 step_div(u32 w) {
     u32 f = step_valid(w) ? (w >> 9) & 0xFu : 0u;
@@ -112,8 +118,11 @@ static inline int step_ramp(u32 w) {
     u32 f = (w >> 3) & 0x3Fu;
     return f && f <= 41u ? ((int)f - 21) * 5 : 0;
 }
-static inline u32 step_locks(u32 w) { return (w >> 24) == STEP_TAG ? w & 7u : 0u; }
-static inline u32 step_make(u32 cond, u32 hits, u32 div, int ramp, u32 locks) {
+static inline u32 step_locks(u32 w) { return (w >> 24) == STEP_TAG || (w >> 24) == STEP_TAG_CURVE ? w & 7u : 0u; }
+/* A curve handle wins: a note with a curve carries no retrig fields. */
+static inline u32 step_make(u32 cond, u32 hits, u32 div, int ramp, u32 locks, u32 handle) {
+    if (handle & 0x3FFFu)
+        return (STEP_TAG_CURVE << 24) | ((cond & 0x7Fu) << 17) | ((handle & 0x3FFFu) << 3) | (locks & 7u);
     u32 f = div == STEP_DIV_DEFAULT ? 0u : div + 1u;
     if (ramp < -100) ramp = -100;
     if (ramp > 100) ramp = 100;
@@ -175,6 +184,55 @@ typedef struct {
     u16 at_ms[PROF_SAMPLES];
     u32 stack[PROF_STACK_WORDS];
 } Prof;
+/* ---- M2 pressure capture (v3.22) -------------------------------------------
+ * The M7 (h_input, m7_diag.c) records each pad press's pressure on a fixed
+ * clock (CAP_MS per sample, from the M7 HAL tick) into one of two ping-pong
+ * slots per pad (slot = press count & 1, so a just-released note survives the
+ * next press of that pad). Past CAP_SAMPLES the slot halves its resolution
+ * (shift++). Values are stock's 0..127 pressure scale. The block lives in SDRAM
+ * from the M4's bump allocator (the M7 reaches 0xC6.. through its default map,
+ * uncached), published once per boot in CAPCFG (M4 writes, M7 invalidates and
+ * reads; trusted only with its magic, check word and boot generation). */
+#define CAP_MS 8u
+#define CAP_SAMPLES 1024u
+typedef struct {
+    u32 seq;        /* the pad's press count (STRIKES->seq) this slot holds */
+    u32 t0, t_end;  /* M7 HAL ms at press / release */
+    u32 n;          /* samples filled */
+    u32 shift;      /* resolution halvings (each sample = CAP_MS << shift ms) */
+    u32 done;       /* 1 once released */
+    u32 r_[2];
+    u8 s[CAP_SAMPLES];
+} CapSlot;          /* 1056 bytes */
+typedef struct { CapSlot slot[16][2]; } CapBlock;
+typedef struct { u32 magic, block, check, gen, r_[4]; } CapCfg;
+#define CAPCFG ((volatile CapCfg *)0x3003D820u)
+#define CAPCFG_MAGIC 0x31504143u /* "CAP1" */
+
+/* M4 side (m4_step.c): curves attached to recorded melodic notes. The pool
+ * (SDRAM, bump-allocated on first use) holds [u16 n][n samples] per curve at
+ * 16 samples per step; handles index CurveState.off[] (1-based). Each attach
+ * is logged to CURVELOG for the black box. */
+#define CURVE_POOL_BYTES 0x40000u
+#define CURVE_HANDLES 4096u
+typedef struct { u32 magic, gen, pool, used, table, next, claims, misses; } CurveState;
+#define CURVES ((volatile CurveState *)0x3003D840u)
+#define CURVES_MAGIC 0x31565243u /* "CRV1" */
+typedef struct {
+    u32 seq;              /* 0 = empty; bumped per entry */
+    u16 handle, n_out;    /* curve handle, samples stored (16/step) */
+    u16 pad, rec_pad;     /* capture slot's pad; rec[0] >> 16 */
+    u16 pitch, len_steps; /* rec[4] & 0xFFFF; rec[2] / 960 */
+    u16 n_in, shift;      /* captured samples, resolution halvings */
+    u32 dur_ms, len_ticks, r_;
+    u8 first[32];         /* first 32 stored samples */
+} CurveLogEntry;
+_Static_assert(sizeof(CurveLogEntry) == 64, "curve log entry is 64 bytes");
+#define CURVELOG ((volatile CurveLogEntry *)0x3003D880u)
+#define CURVELOG_N 16u
+#define CLAIMED ((volatile u32 *)0x3003DC80u)   /* [pad*2 + slot]: claimed press seq (M4) */
+_Static_assert(0x3003D880u + CURVELOG_N * sizeof(CurveLogEntry) <= 0x3003DC80u, "curve log");
+
 #define PROF ((volatile Prof *)0x3003D000u)
 #define PROF_MAGIC 0x31464F50u /* "POF1" */
 _Static_assert(0x3003D000u + sizeof(Prof) <= 0x3003D400u, "profile past its 1 KB");

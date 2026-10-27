@@ -41,8 +41,8 @@ M7_LIMIT = 0x080DB800
 APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
-M4_LIMIT = M4_CODE + 0x3000   # 12 KB since v3.17 (stall profile printer)
-VERSION = "3.21"                       # bump for every build that goes on the device
+M4_LIMIT = M4_CODE + 0x3800   # 14 KB since v3.22 (curve log + save dump)
+VERSION = "3.22"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -64,7 +64,7 @@ PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection"))
                 ("trace", ("M1 diag: h_",)),                        # M7 event tracing hooks
                 ("stall", ("Stall",)),                              # M7 stall record + SysTick profile
                 ("irq30", ("M4 watchdog profile: IRQ30",)),         # M4 heartbeat-supervisor profile
-                ("bbox", ("M1 diag: defaultTask",))]                # M4 black box (also hands poly AT its region)
+                ("bbox", ("M1 diag: defaultTask", "Diag dump"))]                # M4 black box (also hands poly AT its region)
 if "diag7" in DISABLED:
     DISABLED |= {"trace", "stall"}
 if "diag" in DISABLED:
@@ -112,6 +112,7 @@ NOTE_ROUTE, RETRIG_ACCEPT_SITE, RETRIG_EMIT_SITE = 0x0805F8E0, 0x08060B9A, 0x080
 # Audio stall snapshot (idle-restart investigation): the M7 main audio loop
 # FUN_0808DF00 refreshes the watchdog only on audio progress.
 SYSTICK_HANDLER, HAL_INCTICK = 0x0804BD40, 0x08044280   # M7 SysTick vector target: `b.w HAL_IncTick`
+SAVE_WRITE_SITE, FILE_WRITER = 0x0813044C, 0x08130958   # project save (FUN_0813032C): bl to stock's file writer
 M4_WD_SITE, M4_WD_SUPERVISOR = 0x08107ADC, 0x08108354   # M4 IRQ30: bl to the Main/PcmThread heartbeat supervisor
 STALL_SITES = [  # (bl site, original target, our function, purpose)
     (0x0808DF54, 0x080A0460, "stall_progress", "Stall snapshot: main audio loop progress (watchdog refresh)"),
@@ -152,7 +153,7 @@ CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (b
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x3003C8A0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
-STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x2000   # m4_step.c
+STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x2400   # m4_step.c (9 KB since v3.22)
 M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
 # Per-step Condition / Retrigger (m4_step.c)
 STEP_SAVE_SITE, STEP_LOAD_SITE = 0x0812F4F0, 0x0812FBB4
@@ -457,6 +458,20 @@ def build(base_img, out):
         raise SystemExit(f"{M4_WD_SITE:#x}: not the expected bl to the heartbeat supervisor")
     patch(M4_WD_SITE, asm(f"bl {stub:#x}", M4_WD_SITE), orig,
           "M4 watchdog profile: IRQ30 -> main_prof, then stock's heartbeat supervisor")
+    # Diagnostics dump (v3.22): our only card access, right after stock's own
+    # project-file write, from the same task (FUN_0813032C -> FUN_08130958).
+    dstub = (stub + len(sup) + 3) & ~3
+    dump = asm(f"push {{r4, lr}}; bl {FILE_WRITER:#x}; mov r4, r0; bl {s4['dump_after_save']:#x}; "
+               "mov r0, r4; pop {r4, pc}", dstub)
+    check_branches(dump, dstub, {FILE_WRITER, s4["dump_after_save"]}, "diagnostics dump stub")
+    if dstub + len(dump) > M4_LIMIT:
+        raise SystemExit("diagnostics dump stub overruns the black-box block")
+    patch(dstub, dump, None, "Diag dump: stub around stock's project-file write")
+    orig = asm(f"bl {FILE_WRITER:#x}", SAVE_WRITE_SITE)
+    if bytes(base_img[SAVE_WRITE_SITE - BASE:SAVE_WRITE_SITE - BASE + 4]) != orig:
+        raise SystemExit(f"{SAVE_WRITE_SITE:#x}: not the expected bl to stock's file writer")
+    patch(SAVE_WRITE_SITE, asm(f"bl {dstub:#x}", SAVE_WRITE_SITE), orig,
+          "Diag dump: project save writes the file, then the black box appends its log")
 
     # --- Probability editor conversions (Lab T2 sites, clamp only since v3.3)
     ui = bytearray(); ui_syms = {}
@@ -653,7 +668,7 @@ def build(base_img, out):
                {ss["strike_event"], DRUM_EVENT + 4}, "drum event")
     patch(DRUM_EVENT, asm(f"b.w {a:#x}", DRUM_EVENT), bytes.fromhex("00b59bb0"), "Strike Vel: button action in the drum view")
     # strike velocity for notes created by any view (drum Sequence page)
-    a = sblock(save + f"ldr r0, [sp, #16]; bl {ss['strike_insert']:#x}; " + restore
+    a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #60]; bl {ss['strike_insert']:#x}; " + restore   # record, caller lr
                + f"push {{r4, r5, r6, lr}}; sub sp, #0x20; b.w {NOTE_INSERT + 4:#x}", {ss["strike_insert"], NOTE_INSERT + 4}, "note insert")
     patch(NOTE_INSERT, asm(f"b.w {a:#x}", NOTE_INSERT), bytes.fromhex("70b588b0"), "Strike velocity: notes created by any view")
     # shorter tap/hold boundary for step inspection (Jeff: 400 ms)

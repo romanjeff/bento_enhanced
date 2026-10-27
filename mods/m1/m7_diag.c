@@ -138,11 +138,53 @@ static void strike(const u32 *ev, u32 t) {
     clean(STRIKES, sizeof(Strikes));
 }
 
+/* M2 pressure capture (see CapSlot in diag_shared.h). */
+#define UWTICK (*(volatile u32 *)0x2401EDB8u)    /* stock M7 HAL tick, ms */
+static volatile CapBlock *cap_block(void) {
+    DCIMVAC = (u32)CAPCFG & ~31u;                 /* M4-written line: never dirty here */
+    dsb();
+    u32 b = CAPCFG->block;
+    if (CAPCFG->magic != CAPCFG_MAGIC || CAPCFG->check != ~b || !b) return 0;
+    return (volatile CapBlock *)b;
+}
+static void cap_fill(volatile CapSlot *s, u32 idx) {   /* hold the last value through idx */
+    u8 last = s->s[s->n - 1];
+    for (u32 i = s->n; i <= idx; i++) s->s[i] = last;
+    if (idx >= s->n) s->n = idx + 1u;
+}
+static void cap(const u32 *ev, u32 t) {
+    u32 p = ev[3];
+    if (p >= 16u) return;
+    volatile CapBlock *b = cap_block();
+    if (!b) return;
+    u32 now = UWTICK, seq = STRIKES->seq[p];
+    volatile CapSlot *s = &b->slot[p][seq & 1u];
+    if (t == 0xACu) {                             /* strike() has counted this press */
+        s->done = 0; s->seq = seq; s->t0 = now; s->t_end = now;
+        s->shift = 0; s->s[0] = (u8)strike_vel(ev); s->n = 1;
+        return;
+    }
+    if (s->seq != seq || s->done || !s->n) return;
+    u32 idx = ((now - s->t0) / CAP_MS) >> s->shift;
+    while (idx >= CAP_SAMPLES) {                   /* held long: halve the resolution */
+        for (u32 i = 0; i < CAP_SAMPLES / 2u; i++) s->s[i] = s->s[2u * i];
+        s->n = (s->n + 1u) / 2u; s->shift++;
+        idx = ((now - s->t0) / CAP_MS) >> s->shift;
+    }
+    if (t == 0xAEu) {
+        cap_fill(s, idx);
+        s->s[idx] = (u8)strike_vel(ev);
+    } else if (t == 0xADu) {
+        cap_fill(s, idx);
+        s->t_end = now; s->done = 1;
+    }
+}
+
 __attribute__((used, retain)) void h_input(u32 engine, const u32 *ev) {
     u32 t = ev[0] & 0xFF;
     diag_sp();
     if (t == 0xAC) FLAGS[0] = 1;
-    if (t >= 0xAC && t <= 0xAE) strike(ev, t);
+    if (t >= 0xAC && t <= 0xAE) { strike(ev, t); cap(ev, t); }
     if (t == 0xAC || t == 0xAD || (t == 0xAE && FLAGS[0])) {
         if (t == 0xAE) FLAGS[0] = 0; /* only the first pressure event after a press */
         put(K_PAD, 0, engine, ev, 0);
