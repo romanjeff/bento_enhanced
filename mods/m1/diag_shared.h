@@ -258,6 +258,13 @@ typedef struct { u32 magic, gen, total, last_kind, lr[8], count[8]; } InsLog;
 typedef struct { u32 pitch, pad, seq, r_; } Bind;
 #define BINDS ((volatile Bind *)0x3003DD60u)
 #define BINDS_NEXT (*(volatile u32 *)0x3003DE60u)
+/* M2-3b (M4): the document stock is reading (its reader 0x08130A18 is hooked),
+ * and the curves its sidecar gave: sidecar index i -> handle base + i - 1. */
+typedef struct { u32 magic, doc_seq, attempted, base, count, status; char path[160]; } LoadState;
+#define LOADSTATE ((volatile LoadState *)0x3003DE80u)
+#define LOADSTATE_MAGIC 0x31444C42u /* "BLD1" */
+/* status: 0 none yet, 1 not a project.xml, 2 no sidecar, 3 bad data, 4 ok,
+ * 5 pool/handles full (partial), 9 no curve memory */
 _Static_assert(0x3003D880u + CURVELOG_N * sizeof(CurveLogEntry) <= 0x3003DC80u, "curve log");
 
 #define PROF ((volatile Prof *)0x3003D000u)

@@ -85,6 +85,7 @@ class Rig:
         w32(u, VIEW + 0x113E4, 0x1234); w32(u, VIEW + 0x113DC, CONT); w32(u, VIEW + 0x11400, 2)
         w32(u, VIEW + 0x11CD00, 0x5678)                   # piano view: sequence context
         self.notes = []; self.attrs = {}; self.log = []; self.selected_steps = set()
+        self.files = {}; self.fils = {}; self.opened = []
         u.hook_add(UC_HOOK_CODE, self.hook)
 
     def ret(self, v=0):
@@ -93,6 +94,20 @@ class Rig:
 
     def hook(self, u, a, size, _):
         r = lambda i: u.reg_read(UC_ARM_REG_R0 + i)
+        if a == 0x08120148:                                      # f_open(fil, path, mode): read-only files
+            path = cstr(u, r(1)); self.opened.append(path)
+            if path in self.files and r(2) == 0x01:
+                self.fils[r(0)] = [path, 0]; self.ret(0)
+            else:
+                self.ret(4)                                      # FR_NO_FILE
+            return
+        if a == 0x08120464:                                      # f_read(fil, buf, n, &got)
+            f = self.fils[r(0)]; data = self.files[f[0]][f[1]:f[1] + r(2)]
+            u.mem_write(r(1), data); w32(u, r(3), len(data)); f[1] += len(data); self.ret(0)
+            return
+        if a == 0x08120974:                                      # f_close
+            self.fils.pop(r(0), None); self.ret(0)
+            return
         if a == XML_FIND:
             name = cstr(u, r(1)); self.ret(0x20310000 + len(name) if name in self.attrs else 0); self._last = name
         elif a == XML_GET:
@@ -736,6 +751,98 @@ class CurveAttach(unittest.TestCase):
         self.slot(g, 5, 1, 1, [10, 20])
         w = self.note_off(g, 60, word=(0xB6 << 24) | (12 << 17) | 1)[5]
         self.assertEqual((w >> 24, (w >> 17) & 0x7F, w & 7), (0xB7, 12, 1))
+
+def encode_curve(data):
+    """The sidecar encoding (diag_shared.h): literals, runs, two packed deltas."""
+    out, prev, i = [], None, 0
+    while i < len(data):
+        v, run = data[i], 0
+        while prev is not None and i + run < len(data) and data[i + run] == prev and run < 64:
+            run += 1
+        if run:
+            out.append(0x80 | (run - 1)); i += run; continue
+        if prev is not None and i + 1 < len(data):
+            d1, d2 = v - prev, data[i + 1] - v
+            if -4 <= d1 <= 3 and -4 <= d2 <= 3:
+                out.append(0xC0 | ((d1 + 4) << 3) | (d2 + 4)); prev = data[i + 1]; i += 2; continue
+        out.append(v); prev = v; i += 1
+    return bytes(out)
+
+
+def sidecar(curves):
+    blob = b"BNTC" + struct.pack("<HH", 1, len(curves))
+    for c in curves:
+        enc = encode_curve(c) if isinstance(c, list) else c[1]
+        blob += struct.pack("<HH", len(c) if isinstance(c, list) else c[0], len(enc)) + enc
+    return blob
+
+
+class SidecarLoad(unittest.TestCase):
+    """M2-3b: a project's curve notes get their curves back from ...\curves.bnt. The
+    document reader (0x08130A18) remembers the path; the first curve note decodes
+    the sidecar into the pool; index i -> handle base + i - 1."""
+    PATH = 0x20140000
+    CURVES = [[10, 11, 12, 13, 13, 13, 13, 40, 41, 42], [5] * 30, list(range(0, 64)) + list(range(64, 0, -1))]
+
+    def rig(self, project=r"\Projects\H\project.xml", files=None):
+        g = Rig()
+        w32(g.u, 0x3000004C, 0x20280000); w32(g.u, 0x30000048, 0x203C0000)   # room for the pool
+        g.u.mem_write(0x3003DE80, bytes(0xB8))                    # load state: empty
+        g.files = files if files is not None else {r"\Projects\H\curves.bnt": sidecar(self.CURVES)}
+        g.u.mem_write(self.PATH, project.encode() + bytes(1))
+        g.u.reg_write(UC_ARM_REG_R0, self.PATH); g.u.reg_write(UC_ARM_REG_SP, STACK)
+        g.u.emu_start(0x08130A18 | 1, 0x08130A1C, count=200000)  # the reader's entry: path remembered
+        self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 36, "replayed push.w {r4-r11, lr}")
+        return g
+
+    def load(self, g, word):
+        sp = STACK - 0x100
+        g.attrs = {"be_step_v1": word}
+        g.u.mem_write(sp + 0x24, struct.pack("<6I", *note(0))); w32(g.u, sp + 0x3C, 0xABCD)
+        g.u.reg_write(UC_ARM_REG_R4, NODE); g.u.reg_write(UC_ARM_REG_SP, sp)
+        g.u.emu_start(0x0812FBB4 | 1, 0x0812FBB8, count=2000000)
+        return r32(g.u, sp + 0x24 + 20)
+
+    def curve(self, g, h):
+        pool, table = r32(g.u, 0x3003D840 + 8), r32(g.u, 0x3003D840 + 16)
+        off = r32(g.u, table + 4 * h)
+        n = struct.unpack("<H", g.u.mem_read(pool + off, 2))[0]
+        return list(g.u.mem_read(pool + off + 2, n))
+
+    def test_round_trip(self):
+        g = self.rig()
+        w2 = self.load(g, (0xB7 << 24) | (6 << 17) | (2 << 3) | 1)   # index 2, condition 6, velocity lock
+        base = r32(g.u, 0x3003DE80 + 12)
+        self.assertEqual((w2 >> 24, (w2 >> 17) & 0x7F, w2 & 7), (0xB7, 6, 1))
+        self.assertEqual((w2 >> 3) & 0x3FFF, base + 1, "index 2 -> base + 1")
+        for i, c in enumerate(self.CURVES):
+            self.assertEqual(self.curve(g, base + i), c, f"curve {i + 1} decoded exactly")
+        w1 = self.load(g, (0xB7 << 24) | (1 << 3))
+        self.assertEqual((w1 >> 3) & 0x3FFF, base, "index 1 -> base; the file was read once")
+        self.assertEqual(g.opened.count(r"\Projects\H\curves.bnt"), 1)
+        self.assertEqual(r32(g.u, 0x3003DE80 + 20), 4, "status ok")
+
+    def test_missing_sidecar_keeps_condition_and_locks(self):
+        g = self.rig(files={})
+        w = self.load(g, (0xB7 << 24) | (6 << 17) | (1 << 3) | 1)
+        self.assertEqual((w >> 24, (w >> 17) & 0x7F, w & 7), (0xB6, 6, 1), "no curve; condition + lock kept")
+        self.assertEqual(r32(g.u, 0x3003DE80 + 20), 2)
+
+    def test_patch_documents_never_open_a_sidecar(self):
+        g = self.rig(project=r"\Patches\P\patch.xml")
+        self.load(g, (0xB7 << 24) | (1 << 3))
+        self.assertEqual(g.opened, [])
+        self.assertEqual(r32(g.u, 0x3003DE80 + 20), 1)
+
+    def test_damaged_curve_plays_nothing_others_load(self):
+        bad = (8, bytes([0x10, 0xFF, 0xFF, 0xFF]))               # deltas run below 0
+        g = self.rig(files={r"\Projects\H\curves.bnt": sidecar([self.CURVES[0], bad, self.CURVES[2]])})
+        self.load(g, (0xB7 << 24) | (1 << 3))
+        base = r32(g.u, 0x3003DE80 + 12)
+        self.assertEqual(self.curve(g, base), self.CURVES[0])
+        self.assertEqual(self.curve(g, base + 1), [], "damaged: empty, plays nothing")
+        self.assertEqual(self.curve(g, base + 2), self.CURVES[2])
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

@@ -78,6 +78,7 @@ static u32 with_locks(u32 w, u32 locks) {
 /* ---- project save / load ------------------------------------------------ */
 
 static volatile CurveState *curves(void);
+static u32 curve_for_index(u32 idx);
 __attribute__((used, retain)) void step_save(void *node, const void *rec) {
     if (B(rec, 0) != 1) return;
     u32 w = W(rec, 20);
@@ -102,6 +103,8 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
     u32 w = 0, x = 0;
     void *a = FN(XML_FIND, void *(*)(void *, const char *))(node, ATTR);
     if (a && !FN(XML_GET_U32, int (*)(void *, u32 *))(a, &x) && step_any(x)) w = x;
+    u32 h = 0, idx = step_handle(w);
+    if (idx) h = curve_for_index(idx);              /* sidecar index -> this boot's handle (or 0) */
     u32 prob = B(rec, 1), cond = step_cond(w);
     if (prob >= 100 && prob <= 173) {               /* v2.4..v3.2 condition in the probability byte */
         if (!cond) cond = prob - 99;
@@ -110,9 +113,9 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
     /* Notes without lock data load unlocked: the pad default is the value most of
      * them share, and any other value gets locked (not overwritten) the first
      * time the default changes. */
-    /* Curve handles are per-boot pool indices: until curves are saved with the
-     * project (M2-3) a loaded note keeps its condition and locks, not its handle. */
-    W(rec, 20) = step_make(cond, step_hits(w), step_div(w), step_ramp(w), step_locks(w), 0);
+    /* A curve note's saved word carries its index in the project's sidecar; it
+     * gets this boot's handle for that curve, or none (condition and locks kept). */
+    W(rec, 20) = step_make(cond, step_hits(w), step_div(w), step_ramp(w), step_locks(w), h);
 }
 
 /* ---- registry keys -------------------------------------------------------- */
@@ -774,4 +777,118 @@ __attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr) {
     ps->used[pad] = STRIKES->seq[pad];
     rec[4] = (rec[4] & 0xFFFFu) | (vel << 16);
     rec[5] = with_locks(rec[5], step_locks(rec[5]) | LOCK_VEL);
+}
+
+
+/* ---- M2-3b: load curves from the sidecar (format in diag_shared.h) ---------
+ * doc_begin runs at the entry of stock's document reader (0x08130A18, path in
+ * r0) for every document it reads (projects, patches, PROJ browsing): it only
+ * remembers the path. The first curve note of that document then reads
+ * ...\curves.bnt next to a ...\project.xml through the 4 KB SDRAM buffer (the
+ * SD DMA cannot reach D2) and decodes every curve into the pool with
+ * consecutive handles; index i maps to base + i - 1. Same task as stock's load. */
+#define F_OPEN(f, p, m) FN(0x08120148, u32 (*)(void *, const char *, u32))((f), (p), (m))
+#define F_READ(f, b, n, d) FN(0x08120464, u32 (*)(void *, void *, u32, u32 *))((f), (b), (n), (d))
+#define F_CLOSE(f) FN(0x08120974, u32 (*)(void *))((f))
+
+__attribute__((used, retain)) void doc_begin(const char *path) {
+    volatile LoadState *ls = LOADSTATE;
+    u32 seq = ls->magic == LOADSTATE_MAGIC ? ls->doc_seq + 1u : 1u;
+    ls->magic = 0;
+    u32 n = 0;
+    while (path && path[n] && n < sizeof(ls->path) - 12u) { ls->path[n] = path[n]; n++; }
+    ls->path[n] = 0;
+    ls->doc_seq = seq; ls->attempted = 0; ls->base = 0; ls->count = 0; ls->status = 0;
+    ls->magic = LOADSTATE_MAGIC;
+}
+
+typedef struct { u32 *file; volatile u8 *buf; u32 n, pos, eof; } Reader;
+static int rd_byte(Reader *r) {
+    if (r->pos == r->n) {
+        if (r->eof) return -1;
+        u32 got = 0;
+        if (F_READ(r->file, (void *)r->buf, SIDECAR_WBUF, &got) || !got) { r->eof = 1; return -1; }
+        r->n = got; r->pos = 0;
+    }
+    return r->buf[r->pos++];
+}
+static int rd_u16(Reader *r) {
+    int a = rd_byte(r), b = rd_byte(r);
+    return a < 0 || b < 0 ? -1 : a | (b << 8);
+}
+
+static void load_sidecar(volatile LoadState *ls, volatile CurveState *c) {
+    char name[160];
+    u32 n = 0, cut = 0;
+    while (ls->path[n] && n < sizeof(name) - 12u) {
+        name[n] = ls->path[n];
+        if (name[n] == '\\' || name[n] == '/') cut = n + 1u;
+        n++;
+    }
+    static const char want[] = "project.xml", side[] = "curves.bnt";
+    for (u32 i = 0; i < sizeof(want) - 1u; i++) {
+        char ch = cut + i < n ? name[cut + i] : 0;
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+        if (ch != want[i]) { ls->status = 1; return; }
+    }
+    for (u32 i = 0; i < sizeof(side); i++) name[cut + i] = side[i];
+    u32 file[22];
+    for (u32 i = 0; i < 22; i++) file[i] = 0;
+    if (F_OPEN(file, name, 0x01u)) { ls->status = 2; return; }
+    Reader r = {file, (volatile u8 *)c->wbuf, 0, 0, 0};
+    int m0 = rd_byte(&r), m1 = rd_byte(&r), m2 = rd_byte(&r), m3 = rd_byte(&r);
+    int ver = rd_u16(&r), count = rd_u16(&r);
+    if (m0 != 'B' || m1 != 'N' || m2 != 'T' || m3 != 'C' || ver != 1 || count < 0) {
+        F_CLOSE(file); ls->status = 3; return;
+    }
+    ls->base = c->next;
+    ls->status = 4;
+    for (int k = 0; k < count; k++) {
+        int cn = rd_u16(&r), len = rd_u16(&r);
+        if (cn < 0 || len < 0) { ls->status = 3; break; }
+        if (cn > 4095 || c->next >= CURVE_HANDLES || c->used + 2u + (u32)cn + 4u > CURVE_POOL_BYTES) {
+            ls->status = 5; break;
+        }
+        u8 *dst = (u8 *)(c->pool + c->used);
+        u32 got = 0, prev = 0x100, bad = 0;
+        for (int b = 0; b < len; b++) {                 /* decode; never past cn samples */
+            int v = rd_byte(&r);
+            if (v < 0) { ls->status = 3; break; }
+            if (bad) continue;
+            if (v < 0x80) {
+                if (got < (u32)cn) dst[2 + got++] = (u8)v;
+                prev = (u32)v;
+            } else if (v < 0xC0) {
+                if (prev > 0x7Fu) { bad = 1; continue; }
+                for (u32 q = 0; q <= ((u32)v & 0x3Fu) && got < (u32)cn; q++) dst[2 + got++] = (u8)prev;
+            } else {
+                if (prev > 0x7Fu) { bad = 1; continue; }
+                int p1 = (int)prev + (((v >> 3) & 7) - 4), p2 = p1 + ((v & 7) - 4);
+                if (p1 < 0 || p1 > 127 || p2 < 0 || p2 > 127) { bad = 1; continue; }
+                if (got < (u32)cn) dst[2 + got++] = (u8)p1;
+                if (got < (u32)cn) dst[2 + got++] = (u8)p2;
+                prev = (u32)p2;
+            }
+        }
+        if (ls->status == 3) break;
+        u32 ok = !bad && got == (u32)cn && cn > 0;     /* a damaged curve keeps its slot, plays nothing */
+        dst[0] = (u8)(ok ? cn : 0); dst[1] = (u8)(ok ? (cn >> 8) : 0);
+        ((volatile u32 *)c->table)[c->next] = c->used;
+        c->used += (2u + (ok ? (u32)cn : 0u) + 3u) & ~3u;
+        c->next++;
+        ls->count++;
+    }
+    F_CLOSE(file);
+}
+
+static u32 curve_for_index(u32 idx) {
+    volatile LoadState *ls = LOADSTATE;
+    if (ls->magic != LOADSTATE_MAGIC) return 0;
+    if (!ls->attempted) {
+        ls->attempted = 1;
+        volatile CurveState *c = curves();
+        if (!c || !c->wbuf) { ls->status = 9; return 0; }
+        load_sidecar(ls, c);
+    }
+    return idx && idx <= ls->count ? ls->base + idx - 1u : 0u;
 }

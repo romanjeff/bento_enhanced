@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x4000   # 16 KB since v3.26 (curve sidecar writer)
-VERSION = "3.28"                       # bump for every build that goes on the device
+VERSION = "3.29"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -153,7 +153,7 @@ CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (b
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x3003C8A0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
-STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x2800   # m4_step.c (10 KB since v3.24)
+STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x3000   # m4_step.c (12 KB since v3.29)
 M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
 # Per-step Condition / Retrigger (m4_step.c)
 STEP_SAVE_SITE, STEP_LOAD_SITE = 0x0812F4F0, 0x0812FBB4
@@ -164,6 +164,7 @@ STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
 HEADER_GEN, DRUM_EVENT = 0x08134800, 0x0815D600   # header description generator; drum view events
 NOTE_INSERT = 0x0812E070                            # stock: assign ID + insert (model, seq, record)
 NOTE_UPDATE = 0x0812E0CE                            # stock: replace a note (model, seq, record)
+DOC_READ = 0x08130A18                               # stock: open + read + parse an XML document (path, ..., doc)
 HOLD_TAP_SITES = (0x0815D284, 0x0815D484)          # pad release / touch release: "< 1000 ms = tap"
 HOLD_TAP_MS = 150   # Jeff: 400 -> 150 ms, confirmed on device v3.13
 STRIKE_ACTION = 0x10F0
@@ -676,6 +677,10 @@ def build(base_img, out):
     a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #60]; bl {ss['curve_update']:#x}; " + restore   # record, caller lr
                + f"push {{r4, lr}}; sub sp, #8; b.w {NOTE_UPDATE + 4:#x}", {ss["curve_update"], NOTE_UPDATE + 4}, "note update")
     patch(NOTE_UPDATE, asm(f"b.w {a:#x}", NOTE_UPDATE), bytes.fromhex("10b582b0"), "Curves: note update (recording note-off) -> curve_update")
+    # M2-3b: remember which document stock is reading (path in r0)
+    a = sblock(save + f"ldr r0, [sp, #8]; bl {ss['doc_begin']:#x}; " + restore
+               + f"push.w {{r4, r5, r6, r7, r8, sb, sl, fp, lr}}; b.w {DOC_READ + 4:#x}", {ss["doc_begin"], DOC_READ + 4}, "document reader")
+    patch(DOC_READ, asm(f"b.w {a:#x}", DOC_READ), bytes.fromhex("2de9f04f"), "Curves: document reader -> remember the path (sidecar load)")
     # shorter tap/hold boundary for step inspection (Jeff: 400 ms)
     for site in HOLD_TAP_SITES:
         patch(site, asm(f"cmp.w r3, #{HOLD_TAP_MS}", site), bytes.fromhex("b3f57a7f"),
