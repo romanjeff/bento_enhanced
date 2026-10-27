@@ -326,6 +326,8 @@ static void counters(Out *o) {
         volatile u32 *cs = (volatile u32 *)(CFG->region + REGION_CURVE_STATS);
         puts_(o, " | curves started="); dec(o, cs[0]); puts_(o, " sent="); dec(o, cs[1]);
         puts_(o, " late="); dec(o, cs[2]); puts_(o, " skipped="); dec(o, cs[3]);
+        volatile u32 *cp = (volatile u32 *)(CFG->region + REGION_CURVE_PEAK);
+        puts_(o, " peak players="); dec(o, cp[0]); puts_(o, " thinned="); dec(o, cp[1]);
     }
     ram(o);
     if (STRIKE_SET->magic == STRIKE_SET_MAGIC) {   /* Strike Vel header button (m4_step.c) */

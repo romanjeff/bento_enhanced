@@ -151,9 +151,10 @@ class Retrig(unittest.TestCase):
 
 class CurvePlayback(unittest.TestCase):
     """M2-2: a note whose word carries a curve handle (tag 0xB7) plays its recorded
-    pressure as poly aftertouch (0x5F) on its External track: sample k at the note's
-    start + 15k playback ticks, changed values only."""
-    CURVES, POOL, TABLE, MSG_SEND = 0x3003D840, 0xC6180000, 0xC61C0000, 0x08065600
+    pressure as poly aftertouch (0x5F) on its External track. v3.27: per block only
+    the latest due value, sent when the note's share of its port allows."""
+    CURVES, POOL, TABLE, MSG_SEND, CYC = 0x3003D840, 0xC6180000, 0xC61C0000, 0x08065600, 0xE0001004
+    MS = 480000
 
     def rig(self, samples=(10, 10, 20, 30)):
         g = Rig()
@@ -164,46 +165,115 @@ class CurvePlayback(unittest.TestCase):
         g.sent = []
         def send(uc, addr, size, _):
             ev = struct.unpack("<6I", uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 24))
-            g.sent.append((uc.reg_read(UC_ARM_REG_R0), ev[0], ev[4], ev[5]))
+            g.sent.append((uc.reg_read(UC_ARM_REG_R0), ev[0], ev[2], ev[4], ev[5], r32(uc, self.CYC)))
             uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
         u.hook_add(UC_HOOK_CODE, send, begin=self.MSG_SEND, end=self.MSG_SEND)
+        w32(u, self.CYC, 1000 * self.MS)
         return g
 
-    def start(self, g, word=(0xB7 << 24) | (1 << 3)):
-        g.accept(g.t1, pad=0, tick=1000, note=60, word=word)       # region initialised here
+    def start(self, g, track=None, note=60, word=(0xB7 << 24) | (1 << 3), tick=1000):
+        g.accept(g.t1 if track is None else track, pad=0, tick=tick, note=note, word=word)
         w32(g.u, REGION + 48, 0x2403A118)                           # MIDI-out queue seen at a note-on
 
-    def test_samples_due_per_block_changed_values_only(self):
+    def emit(self, g, track, start, length, ms):
+        w32(g.u, self.CYC, ms * self.MS)
+        g.emit(track, start, length)
+
+    def values(self, g):
+        return [(x[3], x[4]) for x in g.sent]
+
+    def test_latest_due_value_per_block(self):
         g = self.rig(); self.start(g)
-        g.emit(g.t1, 0, 40)                                         # k0 @0, k1 @15 (same), k2 @30
-        self.assertEqual(g.sent, [(0x2403A118, 0x5F, 60, 10), (0x2403A118, 0x5F, 60, 20)])
-        g.emit(g.t1, 40, 40)                                        # k3 @45
-        self.assertEqual(g.sent[-1], (0x2403A118, 0x5F, 60, 30))
+        self.emit(g, g.t1, 0, 40, 1010)                             # k0 10, k1 10, k2 20 due: 20 goes
+        self.assertEqual(self.values(g), [(60, 20)])
+        self.assertEqual(r32(g.u, REGION + 56), 1, "the unsent 10 was thinned")
+        self.emit(g, g.t1, 40, 40, 1030)                            # k3 30: the last value
+        self.assertEqual(self.values(g)[-1], (60, 30))
         self.assertEqual(r32(g.u, REGION + 32), 1, "curve_starts")
-        self.assertEqual(r32(g.u, REGION + 36), 3, "curve_sent")
-        n = len(g.sent); g.emit(g.t1, 80, 40)
+        n = len(g.sent); self.emit(g, g.t1, 80, 40, 1050)
         self.assertEqual(len(g.sent), n, "finished after its last sample")
+
+    def test_a_note_waits_its_gap(self):
+        g = self.rig(samples=(10, 20, 30, 40, 50, 60, 70, 80))
+        self.start(g)
+        self.emit(g, g.t1, 0, 16, 1010)                             # k0, k1 due -> 20
+        self.emit(g, g.t1, 16, 15, 1011)                            # 1 ms later: k2 30 waits (8 ms gap)
+        self.assertEqual(self.values(g), [(60, 20)])
+        self.emit(g, g.t1, 31, 15, 1020)                            # 9 ms after the send: latest (k3 40)
+        self.assertEqual(self.values(g)[-1], (60, 40))
 
     def test_other_tracks_and_plain_notes_send_nothing(self):
         g = self.rig(); self.start(g, word=0)
-        g.emit(g.t1, 0, 100)
+        self.emit(g, g.t1, 0, 100, 1010)
         self.assertEqual(g.sent, [])
         g = self.rig(); self.start(g)
-        g.emit(g.t2, 0, 100)                                        # another track's block
+        self.emit(g, g.t2, 0, 100, 1010)                            # another track's block
         self.assertEqual(g.sent, [])
 
     def test_midi_out_off_or_bad_handle_starts_nothing(self):
-        g = self.rig(); g.u.mem_write(g.t1 + 0x86D1, b"\x00"); self.start(g)
-        g.emit(g.t1, 0, 100)
+        g = self.rig(); g.u.mem_write(g.t1 + 0x86D1, bytes(1)); self.start(g)
+        self.emit(g, g.t1, 0, 100, 1010)
         self.assertEqual(g.sent, [])
         g = self.rig(); self.start(g, word=(0xB7 << 24) | (5 << 3))   # handle 5 >= next
-        g.emit(g.t1, 0, 100)
+        self.emit(g, g.t1, 0, 100, 1010)
         self.assertEqual((g.sent, r32(g.u, REGION + 44)), ([], 1), "skipped")
 
     def test_late_player_is_dropped(self):
         g = self.rig(); self.start(g)
-        g.emit(g.t1, 5000, 40)                                      # transport jumped far ahead
+        self.emit(g, g.t1, 5000, 40, 1010)                          # transport jumped far ahead
         self.assertEqual((g.sent, r32(g.u, REGION + 40)), ([], 1), "late")
+
+
+class CurveWorstCase(unittest.TestCase):
+    """Jeff's worst case: 8 External tracks x 6 voices = 48 curve notes at once, all
+    on one MIDI port, each curve changing on every sample (a sawtooth, 256 samples
+    = 16 steps). Timing model: 15 ticks per curve sample ~ 7.8 ms at 120 BPM, so a
+    32-tick block ~ 16.7 ms. Checks: no curve is cut off, the port never exceeds
+    its budget (400/s + a 4-message burst), every note keeps updating, and the M7
+    cost per block stays small."""
+    TRACKS, VOICES, N = 8, 6, 256
+    BLOCK, BLOCK_MS = 4, 2.08                                     # ~2 ms of audio per block
+
+    def test_48_notes_on_one_port(self):
+        pb = CurvePlayback()
+        g = pb.rig(samples=tuple((i * 7) % 120 for i in range(self.N)))
+        tracks = [0x24010000 + t * 0x9000 for t in range(self.TRACKS)]
+        for t in tracks:
+            g.u.mem_write(t, bytes(0x8800)); g.u.mem_write(t + 0x86D1, b"\x01\x01")
+        for ti, t in enumerate(tracks):
+            for v in range(self.VOICES):
+                pb.start(g, track=t, note=40 + ti * 8 + v)
+        self.assertEqual(r32(g.u, REGION + 32), 48, "all 48 started")
+        steps = 0
+        ins = [0]
+        def count(uc, a, sz, _): ins[0] += 1
+        blocks = (self.N * 15) // self.BLOCK + 3
+        worst = 0
+        for b in range(blocks):
+            ms = 1000 + int(b * self.BLOCK_MS)
+            h = g.u.hook_add(UC_HOOK_CODE, count) if b == 400 else None
+            before = ins[0]
+            for t in tracks:
+                pb.emit(g, t, b * self.BLOCK, self.BLOCK, ms)
+            if h is not None:
+                g.u.hook_del(h)
+                worst = ins[0] - before
+        seconds = blocks * self.BLOCK_MS / 1000.0
+        self.assertEqual(r32(g.u, REGION + 52), 48, "peak players: none cut off")
+        self.assertEqual(r32(g.u, REGION + 40), 0, "nothing late")
+        total = len(g.sent)
+        self.assertLessEqual(total, int(400 * seconds) + 4 + 48, "port budget (+ one final value each)")
+        per_note = {}
+        for x in g.sent:
+            per_note.setdefault(x[3], []).append(x[5])
+        self.assertEqual(len(per_note), 48, "every note was heard")
+        slowest = min(len(v) for v in per_note.values())
+        self.assertGreaterEqual(slowest, int(seconds / (48 * 0.0025)) - 4, "each note keeps updating (~1/(48 x 2.5 ms))")
+        spread = max(len(v) for v in per_note.values()) - slowest
+        self.assertLessEqual(spread, 3, "fair: every note gets about the same number of updates")
+        self.assertLess(worst, 60000, "M7 instructions for one block across 8 tracks")
+        print(f"\n  worst case: {total} sends in {seconds:.2f} s ({total / seconds:.0f}/s), slowest note "
+              f"{slowest} updates, {worst} M7 instructions per block (8 tracks x 48 players)")
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

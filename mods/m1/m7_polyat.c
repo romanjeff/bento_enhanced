@@ -70,10 +70,13 @@ typedef struct {
 typedef struct {
     u32 track, tick_lo, tick_hi;     /* the note's start (playback ticks, 960 per quarter) */
     u32 data;                        /* the curve's samples (pool, SDRAM) */
-    u16 n, k;                        /* samples, next to send */
-    u8 note, last, used, port, ch, pad_[3];
-} Player; /* 28 bytes */
-#define PLAYERS 16u
+    u32 cyc;                         /* CYCCNT of the last send */
+    u16 n, k;                        /* samples, next due */
+    u8 note, last, want, used, port, ch, pad_[2];
+} Player; /* 32 bytes */
+#define PLAYERS 64u                  /* 8 tracks x 8 voices: no curve is ever cut off by another */
+#define CURVE_MIN_GAP (8u * MS_CYC)  /* per note, when alone on its port */
+#define CURVE_SHARE (MS_CYC * 5u / 2u)   /* + one token interval per curve note on the port */
 #define CURVE_TICKS 15u              /* 16 samples per step = 240 playback ticks */
 #define LATE_SAMPLES 2400            /* 50 ms at 48 kHz: transport stopped / clip changed */
 
@@ -82,6 +85,7 @@ typedef struct {
     u32 sent, deferred, budget_drops, stolen, retrig, swallowed, pent_reuse;
     u32 curve_starts, curve_sent, curve_late, curve_skipped;   /* REGION_CURVE_STATS (M4 reads) */
     u32 midi_q;                      /* MIDI-out queue (engine + 0x7C8), seen at note-on */
+    u32 curve_peak, curve_thinned;   /* most players at once; values superseded before sending */
     Bucket b[PORTS];
     Voices v[TRACKS];
     PEnt p[PENT];
@@ -89,6 +93,7 @@ typedef struct {
     Player pl[PLAYERS];
 } Region;
 _Static_assert(__builtin_offsetof(Region, curve_starts) == REGION_CURVE_STATS, "curve stats offset");
+_Static_assert(__builtin_offsetof(Region, curve_peak) == REGION_CURVE_PEAK, "curve peak offset");
 
 #define REGION_MAGIC 0x31424D31u /* "1MB1" */
 
@@ -342,19 +347,60 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
         if (p->used && p->track == track && p->note == (note & 0x7Fu)) { slot = p; break; }   /* retrigger */
         if (!p->used && !slot) slot = p;
     }
-    if (!slot) slot = &r->pl[0];                     /* all busy: reuse the first */
+    if (!slot) { r->curve_skipped++; return; }      /* 64 busy: never steal another note's curve */
     slot->track = track; slot->tick_lo = tick_lo; slot->tick_hi = tick_hi;
     slot->data = data; slot->n = (u16)n; slot->k = 0;
-    slot->note = (u8)(note & 0x7Fu); slot->last = 0xFF;
+    slot->note = (u8)(note & 0x7Fu); slot->last = 0xFF; slot->want = 0xFF;
+    slot->cyc = CYCCNT - CURVE_MIN_GAP * 8u;        /* the first value may go at once */
     slot->port = *(volatile u8 *)(track + 0x31u); slot->ch = *(volatile u8 *)(track + 0x32u);
     slot->used = 1;
     r->curve_starts++;
 }
 
+/* Per track per audio block: catch this track's players up to the samples now
+ * due (keeping only the latest value). Then one send pass over ALL players:
+ * while the port has tokens, send the eligible note that has waited longest
+ * (a finished note's final value first). Eligible = value changed and its
+ * share of the port has elapsed: max(8 ms, notes on the port x 2.5 ms). Total
+ * demand then stays within the port budget and oldest-first means no note
+ * starves, whatever order the tracks are processed in. */
+#define CURVE_FINAL_WAIT (50u * MS_CYC)  /* a finished note's last value: give up after this */
+static void curve_send_pass(volatile Region *r, u32 now) {
+    u32 on_port[PORTS] = {0}, active = 0;
+    for (u32 i = 0; i < PLAYERS; i++)
+        if (r->pl[i].used) { on_port[r->pl[i].port % PORTS]++; active++; }
+    if (active > r->curve_peak) r->curve_peak = active;
+    for (u32 round = 0; round < PLAYERS; round++) {
+        volatile Player *best = 0;
+        u32 best_age = 0;
+        for (u32 i = 0; i < PLAYERS; i++) {
+            volatile Player *p = &r->pl[i];
+            if (!p->used) continue;
+            int done = p->k >= p->n;
+            if (p->want == p->last || p->want > 0x7Fu) {      /* nothing to send */
+                if (done) p->used = 0;
+                continue;
+            }
+            u32 age = now - p->cyc;
+            if (done && age >= CURVE_FINAL_WAIT + CURVE_MIN_GAP) { p->used = 0; continue; }
+            u32 gap = on_port[p->port % PORTS] * CURVE_SHARE;
+            if (gap < CURVE_MIN_GAP) gap = CURVE_MIN_GAP;
+            if (!done && age < gap) continue;
+            if (done) age |= 0x80000000u;                     /* final values first */
+            if (!best || age > best_age) { best = p; best_age = age; }
+        }
+        if (!best || !take_token(r, best->port, now)) return;
+        u32 ev[6] = {0x5F, 0, best->port, best->ch, best->note, best->want};
+        MSG_SEND(r->midi_q, ev);
+        best->last = best->want; best->cyc = now;
+        r->curve_sent++;
+        if (best->k >= best->n) best->used = 0;
+    }
+}
+
 static void curve_emit_body(u32 track, u32 clock, int start, int len) {
     volatile Region *r = region();
     if (!r || !r->midi_q) return;
-    u32 now = CYCCNT;
     for (u32 i = 0; i < PLAYERS; i++) {
         volatile Player *p = &r->pl[i];
         if (!p->used || p->track != track) continue;
@@ -365,17 +411,13 @@ static void curve_emit_body(u32 track, u32 clock, int start, int len) {
             int off = FN7(TICK_TO_OFFSET, offset_fn)(clock, t);
             if (off >= start + len) break;                     /* due in a later block */
             if (off < start - LATE_SAMPLES) { p->used = 0; r->curve_late++; break; }
-            u32 v = ((volatile u8 *)p->data)[p->k] & 0x7Fu;
-            if (v != p->last && take_token(r, p->port, now)) {
-                u32 ev[6] = {0x5F, 0, p->port, p->ch, p->note, v};
-                MSG_SEND(r->midi_q, ev);
-                p->last = (u8)v;
-                r->curve_sent++;
-            }
+            u8 v = ((volatile u8 *)p->data)[p->k] & 0x7Fu;
+            if (p->want != p->last && v != p->want) r->curve_thinned++;   /* unsent value superseded */
+            p->want = v;
             p->k++;
         }
-        if (p->k >= p->n) p->used = 0;
     }
+    curve_send_pass(r, CYCCNT);
 }
 
 void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi) {
