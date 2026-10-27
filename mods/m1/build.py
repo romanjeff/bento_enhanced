@@ -42,12 +42,18 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x3000   # 12 KB since v3.17 (stall profile printer)
-VERSION = "3.19"                       # bump for every build that goes on the device
+VERSION = "3.20"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
 # the boot label (<= 6 chars) and BE_TAG suffixes the kit version.
-DISABLED = {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
+# Off by default since v3.20 (Jeff's bisect, 2026-10-26): with the M7 stall hooks
+# (main-loop progress/wait + SysTick profile) patched in, PROJ with a large project
+# (SPACED) crash-restarted and the SD card dropped out ("insert microSD card");
+# BS-C (stall off) was fine, BS-D (stall on) failed. irq30 (v3.18) is unproven.
+# Code stays in the image, unreachable. BE_ENABLE="stall,irq30" turns them back on.
+DEFAULT_OFF = {"stall", "irq30"}
+DISABLED = (DEFAULT_OFF - {g for g in os.environ.get("BE_ENABLE", "").split(",") if g})     | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
 DISPLAY = os.environ.get("BE_LABEL", DISPLAY)
 VERSION = VERSION + (f"-{os.environ['BE_TAG']}" if os.environ.get("BE_TAG") else "")
 PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection")),
@@ -718,13 +724,13 @@ def build(base_img, out):
         raise SystemExit("reversal does not reproduce the stock base")
 
     (out / "bento1.bin").write_bytes(img)
-    man = dict(label=f"{DISPLAY} (bento_enhanced v{VERSION} on stock 1.6.1)", version=VERSION, display=DISPLAY, layout={k: hex(v) for k, v in LAYOUT.items()}, base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
+    man = dict(label=f"{DISPLAY} (bento_enhanced v{VERSION} on stock 1.6.1)", version=VERSION, display=DISPLAY, disabled=sorted(DISABLED), layout={k: hex(v) for k, v in LAYOUT.items()}, base_sha256=STOCK_SHA, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
     print(f"built {man['label']} sha256={man['sha256']}")
     if skipped:
-        print(f"BISECT build: disabled {sorted(DISABLED)}; {len(skipped)} stock sites left unpatched:")
+        print(f"disabled groups {sorted(DISABLED)}; {len(skipped)} stock sites left unpatched:")
         for a, why in skipped:
             print(f"  {a:#x} {why}")
     print(f"  M7 code {len(code7)} B at {M7_CODE:#x}, trampolines {len(tramps)} B; M4 code {len(code4)} B at {M4_CODE:#x}")

@@ -31,6 +31,7 @@ CH10 = Path(sys.argv[1]).read_bytes()
 OUT = Path(sys.argv[2])
 DIAG = (OUT / "bento1.bin").read_bytes()
 MAN = json.loads((OUT / "manifest.json").read_text())
+OFF = set(MAN.get("disabled", []))   # feature groups whose stock sites this build leaves unpatched
 SYM7 = {k: int(v, 16) for k, v in MAN["m7_symbols"].items()}
 SYM4 = {k: int(v, 16) for k, v in MAN["m4_symbols"].items()}
 
@@ -164,6 +165,7 @@ class StrikePeak(unittest.TestCase):
         seq, vel = self.strikes(u)
         self.assertEqual((seq[4], vel[4]), (2, 0x1000 * 127 // 0xD000))
 
+@unittest.skipIf("stall" in OFF, "stall group off in this build (SysTick not hooked)")
 class StallProfile(unittest.TestCase):
     """v3.17: the M7 SysTick vector samples where the M7 is while audio is stalled."""
     ST, PROF, TICK = 0x3003C080, 0x3003D000, 0x0804BD40
@@ -258,6 +260,7 @@ class MainTaskProfile(unittest.TestCase):
         self.assertEqual(r32(self.u, self.MP + 32), 499, "worst gap")
         self.assertNotEqual(r32(self.u, self.MP), 0x3150524D, "no capture below 1000")
 
+    @unittest.skipIf("irq30" in OFF, "irq30 group off in this build")
     def test_irq30_bl_goes_through_the_stub(self):
         ins = struct.unpack_from("<HH", DIAG, 0x08107ADC - BASE)
         self.assertNotEqual(DIAG[0x08107ADC - BASE:0x08107AE0 - BASE], CH10[0x08107ADC - BASE:0x08107AE0 - BASE])
@@ -596,6 +599,7 @@ class M4EndToEnd(FatFsRig):
         self.tick(50); self.tick(1700)
         self.assertNotIn("M7 audio stall record", self.files[-1].decode(), "printed once")
 
+    @unittest.skipIf("stall" in OFF, "stall group off in this build (SysTick not hooked)")
     def test_stall_profile_printed_next_boot_once(self):
         self.tick(1000)                                  # M4 publishes boot gen 1
         self.m7("stall_progress", 1000)                  # armed
