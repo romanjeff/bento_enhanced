@@ -270,9 +270,10 @@ typedef struct { u32 magic, doc_seq, attempted, base, count, status; char path[1
 #define AT_POLY 0u
 #define AT_OFF 1u
 #define AT_CHAN 2u                   /* v3.30: behaves as Off until channel pressure exists */
-typedef struct { u32 magic, gen; u8 rec_off[16], out_mode[16]; } AtSet;
+typedef struct { u32 magic, gen; u8 rec_off[16], out_mode[16]; u32 pending; } AtSet;
 #define AT_SET ((volatile AtSet *)0x3003DF40u)
-#define AT_SET_MAGIC 0x31544541u /* "AET1" */
+#define AT_SET_MAGIC 0x32544541u /* "AET2": + pending (v3.31) */
+_Static_assert(0x3003DF40u + sizeof(AtSet) <= 0x3003DF80u, "AT settings reach the dest table");
 /* Published for the M7 (M4 writes, M7 invalidates and reads): each track's MIDI
  * destination and send mode. A curve's player looks its port/channel up here;
  * no match means the default (poly). */

@@ -165,6 +165,7 @@ class Rig:
             port, ch = getattr(self, "dest", (1, 3))
             self.ret(port if r(1) == 0x0F else ch)
         elif a == 0x08133960:                                     # find track -> handle
+            self.model_calls = getattr(self, "model_calls", 0) + 1
             w32(u, r(2), 0x77); self.ret(1)
         elif a == 0x0812D80E:                                     # resolve handle -> instrument object
             obj, vt = 0x20140000, 0x20140100
@@ -412,7 +413,7 @@ class AtSettings(unittest.TestCase):
     def test_rec_off_stops_curves_attaching(self):
         c = CurveAttach(); g = c.rig()
         g.selected = 2
-        g.u.mem_write(self.AT_SET, struct.pack("<II", 0x31544541, 1) + bytes([0, 0, 1]) + bytes(29))
+        g.u.mem_write(self.AT_SET, struct.pack("<II", 0x32544541, 1) + bytes([0, 0, 1]) + bytes(29))
         c.slot(g, 5, 1, 1, [10, 20])
         self.assertEqual(c.note_off(g, 60)[5], 0, "AT Rec Off: no curve")
         g.u.mem_write(self.AT_SET + 8 + 2, b"\x00")
@@ -884,15 +885,25 @@ class SidecarLoad(unittest.TestCase):
     def test_track_settings_load_with_the_project(self):
         trailer = b"TRKS" + struct.pack("<H", 16) + bytes([0, 1] + [0] * 14) + bytes([2, 1] + [0] * 14)
         g = self.rig(files={r"\Projects\H\curves.bnt": sidecar(self.CURVES) + trailer})
-        g.u.mem_write(0x3003DF40, struct.pack("<II", 0x31544541, 1) + bytes([1] * 32))   # previous project's
+        g.u.mem_write(0x3003DF40, struct.pack("<II", 0x32544541, 1) + bytes([1] * 32))   # previous project's
         self.load(g, 0)                                       # any note: the sidecar loads
         at = bytes(g.u.mem_read(0x3003DF40 + 8, 32))
         self.assertEqual((at[0], at[1], at[16], at[17]), (0, 1, 2, 1), "rec/out from the sidecar")
         self.assertEqual(at[2:16], bytes(14), "others back to defaults")
 
+    def test_loading_never_walks_the_track_model(self):
+        """v3.30 published AT destinations at the first note of a load, walking the
+        model's track list while stock was rebuilding it: restart loop on autoload."""
+        g = self.rig()
+        g.model_calls = 0
+        self.load(g, (0xB7 << 24) | (1 << 3)); self.load(g, 0)
+        self.assertEqual(g.model_calls, 0, "no track-model calls during a load")
+        self.assertEqual(r32(g.u, 0x3003DF80), 0, "M7 table cleared: defaults until published")
+        self.assertEqual(r32(g.u, 0x3003DF40 + 40), 1, "publish pending")
+
     def test_project_without_sidecar_resets_settings(self):
         g = self.rig(files={})
-        g.u.mem_write(0x3003DF40, struct.pack("<II", 0x31544541, 1) + bytes([1] * 32))
+        g.u.mem_write(0x3003DF40, struct.pack("<II", 0x32544541, 1) + bytes([1] * 32))
         self.load(g, 0)
         self.assertEqual(bytes(g.u.mem_read(0x3003DF40 + 8, 32)), bytes(32))
 

@@ -572,8 +572,11 @@ static int drum_track_selected(void) {
 
 /* Diagnostics in StrikeSet r[] (printed in the black box status line):
  * r[0] calls on page 0x27, r[1] last: drum | slot << 4 (0xF = none) | change << 8. */
+static volatile AtSet *at_set(void);
+static void at_publish(void);
 __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int changed) {
     (void)model;
+    if (at_set()->pending) at_publish();            /* after a project load (UI context) */
     strike_init();
     volatile PadState *ps = pads();
     for (u32 p = 0; ps && p < 16; p++)
@@ -911,7 +914,10 @@ static void doc_first_note(void) {
     volatile CurveState *c = curves();
     if (!c || !c->wbuf) { ls->status = 9; return; }
     load_sidecar(ls, c);
-    at_publish();
+    AT_DEST->magic = 0;                             /* M7: defaults until published */
+    at_set()->pending = 1;                          /* publish from the UI tick, never mid-load:
+                                                       v3.30 walked the track list here and crashed
+                                                       every autoload (restart loop) */
 }
 
 static u32 curve_for_index(u32 idx) {
@@ -935,7 +941,7 @@ static volatile AtSet *at_set(void) {
     volatile AtSet *a = AT_SET;
     if (a->magic != AT_SET_MAGIC || a->gen != boot_gen()) {
         for (u32 i = 0; i < 16; i++) { a->rec_off[i] = 0; a->out_mode[i] = 0; }
-        a->gen = boot_gen(); a->magic = AT_SET_MAGIC;
+        a->pending = 1; a->gen = boot_gen(); a->magic = AT_SET_MAGIC;
     }
     return a;
 }
@@ -966,6 +972,7 @@ static void at_publish(void) {
     }
     t->seq++;
     t->magic = AT_DEST_MAGIC;
+    a->pending = 0;
 }
 
 static const u8 OUT_TO_INDEX[3] = {1, 0, 2};   /* mode Poly/Off/Channel -> list Off/Poly/Channel */
