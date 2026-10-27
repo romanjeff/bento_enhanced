@@ -850,6 +850,11 @@ static void load_sidecar(volatile LoadState *ls, volatile CurveState *c) {
     }
     for (u32 i = 0; i < sizeof(side); i++) name[cut + i] = side[i];
     at_defaults();                                  /* a project's own settings, or the defaults */
+    /* M2-4: a project load replaces every note, so no earlier curve can still be
+     * referenced: start the pool over (it grew by a whole project per load).
+     * Nothing referenced is moved; players still holding old data are dropped
+     * by the M7 once the transport stops (late). */
+    c->used = 0; c->next = 1; c->nsave = 0;
     u32 file[22];
     for (u32 i = 0; i < 22; i++) file[i] = 0;
     if (F_OPEN(file, name, 0x01u)) { ls->status = 2; return; }

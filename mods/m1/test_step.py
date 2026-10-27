@@ -885,6 +885,21 @@ class SidecarLoad(unittest.TestCase):
         self.assertEqual(g.opened.count(r"\Projects\H\curves.bnt"), 1)
         self.assertEqual(r32(g.u, 0x3003DE80 + 20), 4, "status ok")
 
+    def test_each_project_load_starts_the_pool_over(self):
+        """M2-4: v3.37 and earlier appended every load's curves after the previous
+        project's (base 1, then 4, 7, ...); now each project load starts at handle 1."""
+        g = self.rig()
+        self.load(g, (0xB7 << 24) | (1 << 3))
+        first = (r32(g.u, 0x3003DE80 + 12), r32(g.u, 0x3003D840 + 12), r32(g.u, 0x3003D840 + 20))
+        for _ in range(3):                                          # load the project again
+            g.u.mem_write(0x3003DE80 + 4, bytes(16))
+            g.u.reg_write(UC_ARM_REG_R0, self.PATH); g.u.reg_write(UC_ARM_REG_SP, STACK)
+            g.u.emu_start(0x08130A18 | 1, 0x08130A1C, count=200000)
+            w = self.load(g, (0xB7 << 24) | (2 << 3))
+            again = (r32(g.u, 0x3003DE80 + 12), r32(g.u, 0x3003D840 + 12), r32(g.u, 0x3003D840 + 20))
+            self.assertEqual(again, first, "base handle, pool used, next handle: as after the first load")
+            self.assertEqual(self.curve(g, (w >> 3) & 0x3FFF), self.CURVES[1])
+
     def test_missing_sidecar_keeps_condition_and_locks(self):
         g = self.rig(files={})
         w = self.load(g, (0xB7 << 24) | (6 << 17) | (1 << 3) | 1)
