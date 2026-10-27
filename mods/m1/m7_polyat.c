@@ -72,8 +72,16 @@ typedef struct {
     u32 data;                        /* the curve's samples (pool, SDRAM) */
     u32 cyc;                         /* CYCCNT of the last send */
     u16 n, k;                        /* samples, next due */
-    u8 note, last, want, used, port, ch, pad_[2];
+    u8 note, last, want, used, port, ch, chan, pad_;   /* chan: AT Out Channel (aggregated) */
 } Player; /* 32 bytes */
+
+/* M2-5b: one channel-pressure destination (port/channel) for AT Out Channel:
+ * sends the highest current value of its sounding curve notes. */
+typedef struct {
+    u32 cyc;                         /* CYCCNT of the last send */
+    u8 port, ch, last, used;         /* last: 0xFF = nothing sent yet */
+} Chan;
+#define CHANS 8u                     /* one per track */
 #define PLAYERS 64u                  /* 8 tracks x 8 voices: no curve is ever cut off by another */
 #define CURVE_MIN_GAP (8u * MS_CYC)  /* per note, when alone on its port */
 #define CURVE_SHARE (MS_CYC * 5u / 2u)   /* + one token interval per curve note on the port */
@@ -92,11 +100,13 @@ typedef struct {
     PEnt p[PENT];
     u32 bursts[RETRIG_BYTES / 4]; /* m7_retrig.c burst table (zeroed with the region) */
     Player pl[PLAYERS];
+    Chan cd[CHANS];
+    u32 chan_sent;
 } Region;
 _Static_assert(__builtin_offsetof(Region, curve_starts) == REGION_CURVE_STATS, "curve stats offset");
 _Static_assert(__builtin_offsetof(Region, curve_peak) == REGION_CURVE_PEAK, "curve peak offset");
 
-#define REGION_MAGIC 0x31424D31u /* "1MB1" */
+#define REGION_MAGIC 0x32424D31u /* "1MB2": + channel destinations (v3.35) */
 
 static volatile Region *region(void);
 /* m7_retrig.c: the burst table, valid only for this boot's region (0 if none). */
@@ -356,7 +366,7 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
                 mode = AT_DEST->d[i].mode; how = 1u + i; break;   /* which track's entry */
             }
     r->curve_dest = port | (ch << 8) | (mode << 16) | (how << 24);
-    if (mode != AT_POLY) { r->curve_skipped++; return; }   /* Off (Channel: v3.31) */
+    if (mode != AT_POLY && mode != AT_CHAN) { r->curve_skipped++; return; }   /* Off */
     volatile Player *slot = 0;
     for (u32 i = 0; i < PLAYERS; i++) {
         volatile Player *p = &r->pl[i];
@@ -369,6 +379,7 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
     slot->note = (u8)(note & 0x7Fu); slot->last = 0xFF; slot->want = 0xFF;
     slot->cyc = CYCCNT - CURVE_MIN_GAP * 8u;        /* the first value may go at once */
     slot->port = *(volatile u8 *)(track + 0x31u); slot->ch = *(volatile u8 *)(track + 0x32u);
+    slot->chan = mode == AT_CHAN;
     slot->used = 1;
     r->curve_starts++;
 }
@@ -381,17 +392,63 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
  * demand then stays within the port budget and oldest-first means no note
  * starves, whatever order the tracks are processed in. */
 #define CURVE_FINAL_WAIT (50u * MS_CYC)  /* a finished note's last value: give up after this */
+
+/* M2-5b AT Out Channel: per destination, the highest current value of its
+ * sounding notes (a note leaves the set once its curve has ended); 0 once
+ * none sound, so nothing is left pressed. Changed values only, at most one
+ * send per 8 ms, from the port's budget. Returns active destinations per port
+ * (each costs the port like one poly note). */
+static void chan_pass(volatile Region *r, u32 now, u32 *on_port) {
+    u8 val[CHANS] = {0}, has[CHANS] = {0}, live[CHANS] = {0};
+    for (u32 i = 0; i < PLAYERS; i++) {
+        volatile Player *p = &r->pl[i];
+        if (!p->used || !p->chan) continue;
+        u32 d = CHANS, freed = CHANS;
+        for (u32 j = 0; j < CHANS; j++) {
+            if (r->cd[j].used && r->cd[j].port == p->port && r->cd[j].ch == p->ch) { d = j; break; }
+            if (!r->cd[j].used && freed == CHANS) freed = j;
+        }
+        if (d == CHANS && (d = freed) < CHANS) {
+            r->cd[d].port = p->port; r->cd[d].ch = p->ch; r->cd[d].last = 0xFF;
+            r->cd[d].cyc = now - CURVE_MIN_GAP; r->cd[d].used = 1;
+        }
+        if (d < CHANS) {
+            live[d] = 1;
+            if (p->want <= 0x7Fu) { has[d] = 1; if (p->want > val[d]) val[d] = p->want; }
+        }
+        if (p->k >= p->n) p->used = 0;                    /* ended: counted once more, then leaves */
+    }
+    for (u32 j = 0; j < CHANS; j++) {
+        volatile Chan *c = &r->cd[j];
+        if (!c->used) continue;
+        if (live[j] && !has[j]) continue;                 /* notes sounding, no value due yet */
+        u32 want = live[j] ? val[j] : 0u;
+        if (want == c->last || (!live[j] && c->last == 0xFF)) {
+            if (!live[j]) c->used = 0;                    /* settled at 0 (or never sent): done */
+            else on_port[c->port % PORTS]++;
+            continue;
+        }
+        on_port[c->port % PORTS]++;
+        if (now - c->cyc < CURVE_MIN_GAP || !take_token(r, c->port, now)) continue;
+        u32 ev[6] = {0x60, 0, c->port, c->ch, want, 0};
+        MSG_SEND(r->midi_q, ev);
+        c->last = (u8)want; c->cyc = now;
+        r->chan_sent++;
+    }
+}
+
 static void curve_send_pass(volatile Region *r, u32 now) {
     u32 on_port[PORTS] = {0}, active = 0;
+    chan_pass(r, now, on_port);
     for (u32 i = 0; i < PLAYERS; i++)
-        if (r->pl[i].used) { on_port[r->pl[i].port % PORTS]++; active++; }
+        if (r->pl[i].used) { if (!r->pl[i].chan) on_port[r->pl[i].port % PORTS]++; active++; }
     if (active > r->curve_peak) r->curve_peak = active;
     for (u32 round = 0; round < PLAYERS; round++) {
         volatile Player *best = 0;
         u32 best_age = 0;
         for (u32 i = 0; i < PLAYERS; i++) {
             volatile Player *p = &r->pl[i];
-            if (!p->used) continue;
+            if (!p->used || p->chan) continue;            /* channel notes: chan_pass */
             int done = p->k >= p->n;
             if (p->want == p->last || p->want > 0x7Fu) {      /* nothing to send */
                 if (done) p->used = 0;

@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x4000   # 16 KB since v3.26 (curve sidecar writer)
-VERSION = "3.34"                       # bump for every build that goes on the device
+VERSION = "3.35"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -154,7 +154,8 @@ CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x3003C8A0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
 STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x3000   # m4_step.c (12 KB since v3.29)
-M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
+M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B), 0x60 handler at +0x80
+M4_CHAN = M4_POLY + 0x80
 # Per-step Condition / Retrigger (m4_step.c)
 STEP_SAVE_SITE, STEP_LOAD_SITE = 0x0812F4F0, 0x0812FBB4
 DRUM_HEADER, DRUM_ENCODER = 0x0815C27C, 0x0815CAA0
@@ -722,6 +723,18 @@ def build(base_img, out):
     patch(M4_POLY, h, b"\xff" * len(h), "M1 poly AT: M4 0x5F handler (Note On case copy, status 0xA0)")
     old = struct.pack("<I", JT_DEFAULT)
     patch(JT_5F, struct.pack("<I", M4_POLY | 1), old, "M1 poly AT: MIDI task jump table slot 0x5F -> handler")
+    # M2-5b: event 0x60 {port w2, ch w3, value w4} -> Channel Pressure 0xD0 (two bytes)
+    hc = asm("mov r0, r5; bl 0x08105d56; "
+             "movs r1, #0xd0; mov r0, r5; bl 0x08105c44; "          # Channel Pressure
+             "uxtb.w r1, r8; mov r0, r5; bl 0x08105c5e; "            # channel (word 3)
+             "uxtb r1, r7; mov r0, r5; bl 0x08105cfe; "              # pressure (word 4)
+             "uxtb.w r2, r9; mov r1, r5; mov r0, r6; bl 0x08105904; "# send on port (word 2)
+             "mov r0, r5; bl 0x08105c4c; mov r1, r0; mov r0, r6; bl 0x08105b74; "
+             f"b.w {M4_LOOP:#x}", M4_CHAN)
+    if M4_POLY + len(h) > M4_CHAN or M4_CHAN + len(hc) > M4_POLY_LIMIT:
+        raise SystemExit("M4 channel pressure handler layout")
+    patch(M4_CHAN, hc, b"\xff" * len(hc), "M2-5b AT Out Channel: M4 0x60 handler (status 0xD0)")
+    patch(JT_5F + 4, struct.pack("<I", M4_CHAN | 1), old, "M2-5b AT Out Channel: MIDI task jump table slot 0x60 -> handler")
     bl_check = asm(f"bl {M4_BL_ORIG_TARGET:#x}", M4_BL_SITE)
     if bl_check.hex() != M4_BL_ORIG:
         raise SystemExit("assembler disagrees with the original BL encoding")

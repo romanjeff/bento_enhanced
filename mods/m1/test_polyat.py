@@ -40,6 +40,7 @@ OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
 SYM7 = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["m7_symbols"].items()}
 POLY = int(json.loads((OUT / "manifest.json").read_text())["layout"]["M4_POLY"], 16)
+CHAN = POLY + 0x80                                                   # build.py M4_CHAN
 
 def emu(img, region=True):
     u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
@@ -268,11 +269,22 @@ class M4Handler(unittest.TestCase):
         self.assertEqual((native[i][2], ours[i][2]), (0x90, 0xA0))
         self.assertEqual(native[:i] + native[i + 1:], ours[:i] + ours[i + 1:])
 
-    def test_only_slot_5f_changed(self):
+    def test_channel_pressure_handler(self):
+        """M2-5b: 0x60 -> status 0xD0, channel (word 3), ONE data byte (word 4)."""
+        native, ours = self.trace(0x0810509A), self.trace(CHAN)
+        i = [k for k, c in enumerate(native) if c[0] == 0x08105C44][0]
+        want = list(native)
+        want[i] = (want[i][0], want[i][1], 0xD0, want[i][3])
+        second = [k for k, c in enumerate(native) if c[0] == 0x08105CFE][1]   # the velocity byte
+        del want[second]
+        self.assertEqual(ours, want)
+        self.assertEqual([c[2] for c in ours if c[0] == 0x08105CFE], [0x40], "the value from word 4")
+
+    def test_only_slots_5f_60_changed(self):
         jt = lambda img: [struct.unpack_from("<I", img, 0x08105294 - BASE + 4 * i)[0] for i in range(9)]
         a, b = jt(CH10), jt(IMG)
-        self.assertEqual(b[4], POLY | 1)
-        self.assertEqual(a[:4] + a[5:], b[:4] + b[5:])
+        self.assertEqual((b[4], b[5]), (POLY | 1, CHAN | 1))
+        self.assertEqual(a[:4] + a[6:], b[:4] + b[6:])
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

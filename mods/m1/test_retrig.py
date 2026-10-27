@@ -260,6 +260,62 @@ class CurveDestMode(unittest.TestCase):
         self.assertTrue(g.sent, "default poly")
 
 
+class CurveChannelMode(unittest.TestCase):
+    """M2-5b AT Out Channel: the track's curve notes become one Channel Pressure
+    stream (event 0x60) on its port/channel: the highest current value of the
+    sounding notes, changed values only, 0 when the last one ends."""
+    def setUp(self):
+        self.pb = CurvePlayback()
+
+    def rig(self, samples):
+        g = self.pb.rig(samples=samples)
+        g.u.mem_write(g.t1 + 0x31, bytes([1, 3]))               # M7: port 1, channel byte 3
+        CurveDestMode.table(None, g, 1, 4, 2)                     # M4: channel 4, Channel
+        return g
+
+    def chan(self, g):
+        return [(x[2], x[3]) for x in g.sent if x[1] == 0x60]
+
+    def test_single_note_goes_out_as_channel_pressure(self):
+        g = self.rig((10, 10, 20, 30))
+        self.pb.start(g)
+        self.pb.emit(g, g.t1, 0, 40, 1010)
+        self.assertEqual([x[1] for x in g.sent], [0x60], "no poly for a Channel track")
+        self.assertEqual(self.chan(g), [(1, 20)])
+        self.pb.emit(g, g.t1, 40, 40, 1030)
+        self.assertEqual(self.chan(g)[-1], (1, 30))
+        self.pb.emit(g, g.t1, 80, 40, 1050)                       # ended: release to 0
+        self.assertEqual(self.chan(g)[-1], (1, 0))
+        n = len(g.sent); self.pb.emit(g, g.t1, 120, 40, 1070)
+        self.assertEqual(len(g.sent), n, "settled: nothing more")
+
+    def test_chord_sends_the_highest(self):
+        g = self.rig((40, 40, 40, 40, 40, 40, 40, 40))
+        self.pb.start(g, note=60)
+        w32(g.u, self.pb.TABLE + 8, 0x40)                       # handle 2 -> a second curve
+        g.u.mem_write(self.pb.POOL + 0x40, struct.pack("<H", 8) + bytes([90] * 8))
+        w32(g.u, self.pb.CURVES + 20, 3)                        # next handle
+        self.pb.start(g, note=64, word=(0xB7 << 24) | (2 << 3))
+        self.pb.emit(g, g.t1, 0, 40, 1010)
+        self.assertEqual(self.chan(g), [(1, 90)], "one message, the louder note")
+        self.assertFalse([x for x in g.sent if x[1] == 0x5F], "no poly")
+        self.assertEqual(r32(g.u, REGION + 32), 2, "both notes started")
+
+    def test_values_wait_the_gap(self):
+        g = self.rig((10, 20, 30, 40, 50, 60, 70, 80))
+        self.pb.start(g)
+        self.pb.emit(g, g.t1, 0, 16, 1010)                        # 20
+        self.pb.emit(g, g.t1, 16, 15, 1011)                       # 1 ms later: waits
+        self.assertEqual(self.chan(g), [(1, 20)])
+        self.pb.emit(g, g.t1, 31, 15, 1020)
+        self.assertEqual(self.chan(g)[-1], (1, 40))
+
+    def test_poly_track_unchanged(self):
+        g = self.pb.rig()
+        self.pb.start(g)
+        self.pb.emit(g, g.t1, 0, 40, 1010)
+        self.assertEqual([x[1] for x in g.sent], [0x5F])
+
 class CurveWorstCase(unittest.TestCase):
     """Jeff's worst case: 8 External tracks x 6 voices = 48 curve notes at once, all
     on one MIDI port, each curve changing on every sample (a sawtooth, 256 samples
