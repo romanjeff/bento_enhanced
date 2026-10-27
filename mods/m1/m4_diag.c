@@ -35,6 +35,7 @@
 #define BUMP_END (*(volatile u32 *)0x30000048u)
 #define BUF_BYTES 0x40000u                          /* 256 KB session log */
 #define IDLE_MS 1500u
+#define CLOG_DONE (*(volatile u32 *)0x3003D804u)   /* last CURVELOG seq formatted (M4) */
 #define BOOT_WRITE_MS 20000u   /* the one card write per boot (v3.19): after autoload */
 /* Live card writing (pre-v3.19 behaviour) only if this word holds the magic:
  * never set on the device; the tests set it to keep covering that code. */
@@ -321,6 +322,11 @@ static void counters(Out *o) {
     }
     puts_(o, " min_sp="); hex(o, RINGSTAT->min_sp, 8);
     puts_(o, " heartbeat="); dec(o, RINGSTAT->heartbeat);
+    if (CFG->region) {                               /* M2-2 curve playback (M7 region, uncached) */
+        volatile u32 *cs = (volatile u32 *)(CFG->region + REGION_CURVE_STATS);
+        puts_(o, " | curves started="); dec(o, cs[0]); puts_(o, " sent="); dec(o, cs[1]);
+        puts_(o, " late="); dec(o, cs[2]); puts_(o, " skipped="); dec(o, cs[3]);
+    }
     ram(o);
     if (STRIKE_SET->magic == STRIKE_SET_MAGIC) {   /* Strike Vel header button (m4_step.c) */
         puts_(o, " | strike btn calls="); dec(o, STRIKE_SET->r[0]);
@@ -449,6 +455,8 @@ static void init(u32 now) {
     u32 gen = (M4H->magic == DIAG_MAGIC) ? M4H->r[0] + 1u : 1u;
     u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, region = 0, capb = 0;
     CAPCFG->magic = 0;                              /* M7 stops capturing until republished */
+    for (u32 i = 0; i < CURVELOG_N; i++) CURVELOG[i].seq = 0;   /* curve log starts empty each boot */
+    CLOG_DONE = 0;
     /* Preflight exactly like Lab: the native allocator crashes on overflow.
      * One check covers all allocations (each is rounded up to 32 bytes). */
     if (end > cur && end - cur >= BUF_BYTES + M1_REGION_BYTES + sizeof(CapBlock) + 96u) {
@@ -605,7 +613,6 @@ static void poll(void) {
 }
 
 /* M2-1: curve attaches logged by m4_step.c (CURVELOG ring), formatted here. */
-#define CLOG_DONE (*(volatile u32 *)0x3003D804u)   /* last CURVELOG seq formatted (M4) */
 static void curve_lines(Out *o) {
     u32 newest = 0;
     for (u32 i = 0; i < CURVELOG_N; i++) if (CURVELOG[i].seq > newest) newest = CURVELOG[i].seq;

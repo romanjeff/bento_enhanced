@@ -66,14 +66,29 @@ typedef struct {
     u32 refill, tokens;
 } Bucket;
 
+/* M2-2: a recorded pressure curve playing on an External track. */
+typedef struct {
+    u32 track, tick_lo, tick_hi;     /* the note's start (playback ticks, 960 per quarter) */
+    u32 data;                        /* the curve's samples (pool, SDRAM) */
+    u16 n, k;                        /* samples, next to send */
+    u8 note, last, used, port, ch, pad_[3];
+} Player; /* 28 bytes */
+#define PLAYERS 16u
+#define CURVE_TICKS 15u              /* 16 samples per step = 240 playback ticks */
+#define LATE_SAMPLES 2400            /* 50 ms at 48 kHz: transport stopped / clip changed */
+
 typedef struct {
     u32 magic;
     u32 sent, deferred, budget_drops, stolen, retrig, swallowed, pent_reuse;
+    u32 curve_starts, curve_sent, curve_late, curve_skipped;   /* REGION_CURVE_STATS (M4 reads) */
+    u32 midi_q;                      /* MIDI-out queue (engine + 0x7C8), seen at note-on */
     Bucket b[PORTS];
     Voices v[TRACKS];
     PEnt p[PENT];
     u32 bursts[RETRIG_BYTES / 4]; /* m7_retrig.c burst table (zeroed with the region) */
+    Player pl[PLAYERS];
 } Region;
+_Static_assert(__builtin_offsetof(Region, curve_starts) == REGION_CURVE_STATS, "curve stats offset");
 
 #define REGION_MAGIC 0x31424D31u /* "1MB1" */
 
@@ -176,6 +191,7 @@ static void note_body(u32 q, const u32 *ev, u32 track) {
     volatile Voices *v = voices(r, track, type == 0x5B);
     if (!v) { MSG_SEND(q, ev); return; }
     if (type == 0x5B) {
+        r->midi_q = q;                              /* M2-2: where curves go out */
         int i = find(v, note);
         if (i >= 0) {                              /* same note: retrigger the same voice */
             note_off(q, ev, note);
@@ -287,4 +303,88 @@ static void poly_body(u32 track, const u32 *ev, u32 engine) {
     }
     flush(r, engine, now);
     stats(r);
+}
+
+
+/* ---- M2-2: play recorded pressure curves on External tracks ----------------
+ * curve_start (from retrig_accept, after stock posted a sequenced note) starts
+ * a player when the note word carries a curve handle (tag 0xB7); curve_emit
+ * (from retrig_emit, once per track per audio block) sends each due sample as
+ * poly aftertouch: sample k is due at the note's start + k * 15 playback ticks,
+ * converted with stock's tick -> sample offset (tempo-following). Only changed
+ * values go out, within the per-port token budget shared with live pressure.
+ * The pool (M4, SDRAM) is reached through CURVES, an M4-written D2 line. */
+#define FN7(a, t) ((t)((a) | 1u))
+#define TICK_TO_OFFSET 0x080A2200u
+typedef int (*offset_fn)(u32 clock, const u32 *tick64);
+
+static u32 curve_data(u32 handle, u32 *n) {
+    DCIMVAC = (u32)CURVES & ~31u;                    /* M4-written line: never dirty here */
+    __asm volatile("dsb" ::: "memory");
+    volatile CurveState *c = CURVES;
+    if (c->magic != CURVES_MAGIC || !c->pool || !c->table || !handle || handle >= c->next || handle >= CURVE_HANDLES)
+        return 0;
+    u32 off = ((volatile u32 *)c->table)[handle];
+    if (off + 2u > CURVE_POOL_BYTES) return 0;
+    volatile u8 *e = (volatile u8 *)(c->pool + off);
+    *n = e[0] | ((u32)e[1] << 8);
+    return *n && off + 2u + *n <= CURVE_POOL_BYTES ? c->pool + off + 2u : 0;
+}
+
+static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi) {
+    volatile Region *r = region();
+    u32 h = step_handle(word), n = 0, data;
+    if (!r || !h || !*(volatile u8 *)(track + 0x86D1u)) return;   /* MIDI out off: nothing to drive */
+    if (!(data = curve_data(h, &n))) { r->curve_skipped++; return; }
+    volatile Player *slot = 0;
+    for (u32 i = 0; i < PLAYERS; i++) {
+        volatile Player *p = &r->pl[i];
+        if (p->used && p->track == track && p->note == (note & 0x7Fu)) { slot = p; break; }   /* retrigger */
+        if (!p->used && !slot) slot = p;
+    }
+    if (!slot) slot = &r->pl[0];                     /* all busy: reuse the first */
+    slot->track = track; slot->tick_lo = tick_lo; slot->tick_hi = tick_hi;
+    slot->data = data; slot->n = (u16)n; slot->k = 0;
+    slot->note = (u8)(note & 0x7Fu); slot->last = 0xFF;
+    slot->port = *(volatile u8 *)(track + 0x31u); slot->ch = *(volatile u8 *)(track + 0x32u);
+    slot->used = 1;
+    r->curve_starts++;
+}
+
+static void curve_emit_body(u32 track, u32 clock, int start, int len) {
+    volatile Region *r = region();
+    if (!r || !r->midi_q) return;
+    u32 now = CYCCNT;
+    for (u32 i = 0; i < PLAYERS; i++) {
+        volatile Player *p = &r->pl[i];
+        if (!p->used || p->track != track) continue;
+        while (p->k < p->n) {
+            u32 add = CURVE_TICKS * p->k, t[2];
+            t[0] = p->tick_lo + add;
+            t[1] = p->tick_hi + (t[0] < add);
+            int off = FN7(TICK_TO_OFFSET, offset_fn)(clock, t);
+            if (off >= start + len) break;                     /* due in a later block */
+            if (off < start - LATE_SAMPLES) { p->used = 0; r->curve_late++; break; }
+            u32 v = ((volatile u8 *)p->data)[p->k] & 0x7Fu;
+            if (v != p->last && take_token(r, p->port, now)) {
+                u32 ev[6] = {0x5F, 0, p->port, p->ch, p->note, v};
+                MSG_SEND(r->midi_q, ev);
+                p->last = (u8)v;
+                r->curve_sent++;
+            }
+            p->k++;
+        }
+        if (p->k >= p->n) p->used = 0;
+    }
+}
+
+void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi) {
+    u32 p = irq_save();
+    curve_start_body(track, note, word, tick_lo, tick_hi);
+    irq_restore(p);
+}
+void curve_emit(u32 track, u32 clock, int start, int len) {
+    u32 p = irq_save();
+    curve_emit_body(track, clock, start, len);
+    irq_restore(p);
 }

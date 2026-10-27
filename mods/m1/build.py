@@ -35,14 +35,14 @@ HEAP_END_STOCK, HEAP_END_NEW = 0x24048DA0, 0x24048400
 
 M7_TRAMP = 0x080DA000   # inside stock's zero gap after the M7 image's data (0x080CF49C..0x080E0000)
 M7_CODE = 0x080DA200
-M7_LIMIT = 0x080DB800
+M7_LIMIT = 0x080DC000   # 7.5 KB since v3.25 (curve players); stock zero gap runs to 0x080E0000
 # M4 code is appended after stock's image end (0x081B3F3C). 0x081B4000..0x081B5000
 # is reserved for the trigger-condition UI (S2).
 APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x3800   # 14 KB since v3.22 (curve log + save dump)
-VERSION = "3.24"                       # bump for every build that goes on the device
+VERSION = "3.25"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets

@@ -149,5 +149,61 @@ class Retrig(unittest.TestCase):
         g = Rig(region=False); g.accept(g.t1, pad=15, tick=1000); g.emit(g.t1, 0, 2000)
         self.assertEqual(len(g.calls), 1)
 
+class CurvePlayback(unittest.TestCase):
+    """M2-2: a note whose word carries a curve handle (tag 0xB7) plays its recorded
+    pressure as poly aftertouch (0x5F) on its External track: sample k at the note's
+    start + 15k playback ticks, changed values only."""
+    CURVES, POOL, TABLE, MSG_SEND = 0x3003D840, 0xC6180000, 0xC61C0000, 0x08065600
+
+    def rig(self, samples=(10, 10, 20, 30)):
+        g = Rig()
+        u = g.u
+        w32(u, self.TABLE + 4, 0)                                   # handle 1 -> pool offset 0
+        u.mem_write(self.POOL, struct.pack("<H", len(samples)) + bytes(samples))
+        u.mem_write(self.CURVES, struct.pack("<8I", 0x31565243, 1, self.POOL, 8, self.TABLE, 2, 0, 0))
+        g.sent = []
+        def send(uc, addr, size, _):
+            ev = struct.unpack("<6I", uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 24))
+            g.sent.append((uc.reg_read(UC_ARM_REG_R0), ev[0], ev[4], ev[5]))
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        u.hook_add(UC_HOOK_CODE, send, begin=self.MSG_SEND, end=self.MSG_SEND)
+        return g
+
+    def start(self, g, word=(0xB7 << 24) | (1 << 3)):
+        g.accept(g.t1, pad=0, tick=1000, note=60, word=word)       # region initialised here
+        w32(g.u, REGION + 48, 0x2403A118)                           # MIDI-out queue seen at a note-on
+
+    def test_samples_due_per_block_changed_values_only(self):
+        g = self.rig(); self.start(g)
+        g.emit(g.t1, 0, 40)                                         # k0 @0, k1 @15 (same), k2 @30
+        self.assertEqual(g.sent, [(0x2403A118, 0x5F, 60, 10), (0x2403A118, 0x5F, 60, 20)])
+        g.emit(g.t1, 40, 40)                                        # k3 @45
+        self.assertEqual(g.sent[-1], (0x2403A118, 0x5F, 60, 30))
+        self.assertEqual(r32(g.u, REGION + 32), 1, "curve_starts")
+        self.assertEqual(r32(g.u, REGION + 36), 3, "curve_sent")
+        n = len(g.sent); g.emit(g.t1, 80, 40)
+        self.assertEqual(len(g.sent), n, "finished after its last sample")
+
+    def test_other_tracks_and_plain_notes_send_nothing(self):
+        g = self.rig(); self.start(g, word=0)
+        g.emit(g.t1, 0, 100)
+        self.assertEqual(g.sent, [])
+        g = self.rig(); self.start(g)
+        g.emit(g.t2, 0, 100)                                        # another track's block
+        self.assertEqual(g.sent, [])
+
+    def test_midi_out_off_or_bad_handle_starts_nothing(self):
+        g = self.rig(); g.u.mem_write(g.t1 + 0x86D1, b"\x00"); self.start(g)
+        g.emit(g.t1, 0, 100)
+        self.assertEqual(g.sent, [])
+        g = self.rig(); self.start(g, word=(0xB7 << 24) | (5 << 3))   # handle 5 >= next
+        g.emit(g.t1, 0, 100)
+        self.assertEqual((g.sent, r32(g.u, REGION + 44)), ([], 1), "skipped")
+
+    def test_late_player_is_dropped(self):
+        g = self.rig(); self.start(g)
+        g.emit(g.t1, 5000, 40)                                      # transport jumped far ahead
+        self.assertEqual((g.sent, r32(g.u, REGION + 40)), ([], 1), "late")
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])
