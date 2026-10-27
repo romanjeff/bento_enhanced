@@ -248,6 +248,69 @@ class LiveAtOut(unittest.TestCase):
         v.pressure(60, 50)
         self.assertEqual([e[0] for e in queued(v.u) if e[0] in (0x5F, 0x60)], [0x5F])
 
+class LiveInternal(unittest.TestCase):
+    """M2-2b: live pad pressure on an internal track (hook at the pad router's
+    post, h_live(bus, ev, router)): Poly passes through untouched; Off drops it;
+    Channel gives every pressed note the highest pressure; drum tracks and
+    External tracks pass through."""
+    BUS_POST, ROUTER, KEY, IDX = 0x0809ECA0, 0x24050000, 0x0123, 3
+
+    def rig(self, mode=None, drum=False, ext=False):
+        v = Voices()
+        u = v.u
+        w32(u, self.ROUTER + 0x2C8, self.IDX)
+        w32(u, self.ROUTER + 0x2CC + 4 * self.IDX, 0xFFFFFF00 if drum else self.KEY)
+        if mode is not None:
+            e = bytes(4 * self.IDX) + bytes([0, 2 if ext else 0, mode, 1])
+            u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + e + bytes(32 - len(e)))
+        v.posts = []
+        def post(uc, addr, size, _):
+            ev = struct.unpack("<6I", uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 24))
+            v.posts.append((uc.reg_read(UC_ARM_REG_R0), ev[0], ev[2], ev[3], ev[4]))
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        u.hook_add(UC_HOOK_CODE, post, begin=self.BUS_POST, end=self.BUS_POST)
+        return v
+
+    def press(self, v, note, value, ms=0):
+        w32(v.u, CYC, 10_000_000 + ms * 480_000)
+        at = 0x24070100
+        v.u.mem_write(at, struct.pack("<6I", 0x0E, 0, self.KEY, note, value, 0))
+        call(v.u, SYM7["h_live"], ENGINE, at, self.ROUTER)
+
+    def test_poly_and_no_table_pass_through(self):
+        for mode in (None, 0):
+            v = self.rig(mode)
+            self.press(v, 60, 50)
+            self.assertEqual(v.posts, [(ENGINE, 0x0E, self.KEY, 60, 50)], mode)
+
+    def test_off_drops_it(self):
+        v = self.rig(1)
+        self.press(v, 60, 50)
+        self.assertEqual(v.posts, [])
+
+    def test_drum_and_external_tracks_pass_through(self):
+        for kw in (dict(mode=1, drum=True), dict(mode=1, ext=True)):
+            v = self.rig(**kw)
+            self.press(v, 60, 50)
+            self.assertEqual(len(v.posts), 1, kw)
+
+    def test_channel_highest_to_every_pressed_note(self):
+        v = self.rig(2)
+        self.press(v, 60, 50, 0)
+        self.assertEqual([p[3:] for p in v.posts], [(60, 50)])
+        self.press(v, 64, 90, 10)
+        self.assertEqual(sorted(p[3:] for p in v.posts[1:]), [(60, 90), (64, 90)])
+        n = len(v.posts)
+        self.press(v, 64, 0, 20)                                   # released
+        self.assertEqual([p[3:] for p in v.posts[n:]], [(60, 50), (64, 0)])
+
+    def test_stale_live_note_stops_counting(self):
+        v = self.rig(2)
+        self.press(v, 60, 90, 0)
+        self.press(v, 64, 40, 400)                                 # 60 not updated for 400 ms
+        self.assertEqual([p[3:] for p in v.posts[1:]], [(64, 40)])
+
+
 class PolyRate(unittest.TestCase):
     def setUp(self):
         self.v = Voices()

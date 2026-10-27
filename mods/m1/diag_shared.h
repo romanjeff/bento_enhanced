@@ -83,6 +83,7 @@ typedef struct {
 #define M1_REGION_BYTES 0x2000u   /* 8 KB since v3.25 (curve players) */
 #define REGION_CURVE_STATS 32u     /* curve_starts, curve_sent, curve_late, curve_skipped (m7_polyat.c) */
 #define REGION_CURVE_PEAK 52u      /* curve_peak, curve_thinned, curve_dest (port | ch << 8 | mode << 16) */
+#define REGION_INTERNAL 64u        /* int_dest, live_int, int_sent (M2-2b internal instruments) */
 #define RETRIG_BYTES 512u          /* 16 bursts x 32 B, inside the M1 region */
 
 /* Per-step word: the native note record's +20 word (notes, kind 1, only;

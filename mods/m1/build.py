@@ -35,14 +35,14 @@ HEAP_END_STOCK, HEAP_END_NEW = 0x24048DA0, 0x24048400
 
 M7_TRAMP = 0x080DA000   # inside stock's zero gap after the M7 image's data (0x080CF49C..0x080E0000)
 M7_CODE = 0x080DA200
-M7_LIMIT = 0x080DC000   # 7.5 KB since v3.25 (curve players); stock zero gap runs to 0x080E0000
+M7_LIMIT = 0x080DE000   # 15.5 KB since v3.37 (internal AT); stock zero gap runs to 0x080E0000 (verified all zero, unreferenced)
 # M4 code is appended after stock's image end (0x081B3F3C). 0x081B4000..0x081B5000
 # is reserved for the trigger-condition UI (S2).
 APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x4000   # 16 KB since v3.26 (curve sidecar writer)
-VERSION = "3.36"                       # bump for every build that goes on the device
+VERSION = "3.37"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -64,7 +64,8 @@ PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection", 
                 ("trace", ("M1 diag: h_",)),                        # M7 event tracing hooks
                 ("stall", ("Stall",)),                              # M7 stall record + SysTick profile
                 ("irq30", ("M4 watchdog profile: IRQ30",)),         # M4 heartbeat-supervisor profile
-                ("bbox", ("M1 diag: defaultTask", "Diag dump"))]                # M4 black box (also hands poly AT its region)
+                ("bbox", ("M1 diag: defaultTask", "Diag dump")),                # M4 black box (also hands poly AT its region)
+                ("inta", ("Internal AT",))]                         # M2-2b internal instruments (+ -DBE_NO_INTA)
 if "diag7" in DISABLED:
     DISABLED |= {"trace", "stall"}
 if "diag" in DISABLED:
@@ -105,6 +106,10 @@ NOTE_SITES = [  # (site, track register, role)
     (0x08060088, "r4", "pad Note Off (FUN_08060040)"),
     (0x08061966, "r6", "Note Off, stop/all-off (FUN_080618E0)"),
 ]
+
+# M2-2b: the pad router's pressure post (melodic and drum paths join here):
+# bl bus_post(bus r0, event r1) with the router object in r5.
+LIVE_SITE, BUS_POST = 0x08085B6C, 0x0809ECA0
 
 # Retrigger (m7_retrig.c).
 NOTE_ROUTE, RETRIG_ACCEPT_SITE, RETRIG_EMIT_SITE = 0x0805F8E0, 0x08060B9A, 0x08060820
@@ -257,7 +262,8 @@ def compile_elf(srcs, cpu, ld, out, origin, limit):
     cmd = [sys.executable, "-m", "ziglang", "cc", "-target", "thumb-freestanding-eabi", f"-mcpu={cpu}",
            "-mfloat-abi=soft", "-Os", "-g", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-nostdlib",
            "-ffunction-sections", "-fdata-sections", "-Wall", "-Werror",
-           "-Wl,--gc-sections", f"-I{out.parent}", f"-Wl,--script={ld}", "-Wl,--entry=0", *map(str, srcs), "-o", str(out)]
+           "-Wl,--gc-sections", f"-I{out.parent}", f"-Wl,--script={ld}", "-Wl,--entry=0",
+           *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *map(str, srcs), "-o", str(out)]
     subprocess.run(cmd, check=True)
     return out.read_bytes()
 
@@ -360,6 +366,15 @@ def build(base_img, out):
         if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
             raise SystemExit(f"{site:#x}: not the expected bl msg_send")
         patch(site, asm(f"bl {stub:#x}", site), orig, f"M1b poly cap: {role} -> h_note")
+    if "inta" not in DISABLED:
+        stub = M7_TRAMP + len(tramps)
+        code = asm(f"mov r2, r5; b.w {s7['h_live']:#x}", stub)    # h_live(bus, ev, router); returns to site+4
+        tramps += code + bytes(-len(code) % 4)
+    orig = asm(f"bl {BUS_POST:#x}", LIVE_SITE)
+    if bytes(base_img[LIVE_SITE - BASE:LIVE_SITE - BASE + 4]) != orig:
+        raise SystemExit(f"{LIVE_SITE:#x}: not the expected bl bus_post")
+    patch(LIVE_SITE, asm(f"bl {stub:#x}", LIVE_SITE) if "inta" not in DISABLED else orig, orig,
+          "Internal AT: pad router pressure post -> h_live (AT Out on internal tracks)")
     # Retrigger (m7_retrig.c): accept = stub around stock's bl note_route;
     # emit = entry trampoline of the timed-note processor.
     stub = M7_TRAMP + len(tramps)

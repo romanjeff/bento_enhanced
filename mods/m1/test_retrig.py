@@ -159,6 +159,8 @@ class CurvePlayback(unittest.TestCase):
     def rig(self, samples=(10, 10, 20, 30)):
         g = Rig()
         u = g.u
+        for t in (g.t1, g.t2):
+            u.mem_write(t + 0x86D2, b"\x00")                        # External only (internal: CurveInternal)
         w32(u, self.TABLE + 4, 0)                                   # handle 1 -> pool offset 0
         u.mem_write(self.POOL, struct.pack("<H", len(samples)) + bytes(samples))
         u.mem_write(self.CURVES, struct.pack("<8I", 0x31565243, 1, self.POOL, 8, self.TABLE, 2, 0, 0))
@@ -316,6 +318,71 @@ class CurveChannelMode(unittest.TestCase):
         self.pb.emit(g, g.t1, 0, 40, 1010)
         self.assertEqual([x[1] for x in g.sent], [0x5F])
 
+class CurveInternal(unittest.TestCase):
+    """M2-2b: a recorded curve on an internal instrument track posts stock's live
+    pressure event {0x0E, 0, key, note, value} through the engine bus (the router
+    note_route got, 0x0809ECA0), as the pad router does. AT Out by track index
+    (track+0x86D4) from the M4 table, applied only to non-External entries."""
+    BUS_POST, KEY, IDX = 0x0809ECA0, 0x0123, 2
+
+    def rig(self, mode=None, samples=(10, 10, 20, 30), ext_entry=False):
+        pb = CurvePlayback()
+        g = pb.rig(samples=samples)
+        u = g.u
+        u.mem_write(g.t1 + 0x86D1, b"\x00\x01")                    # no MIDI out; instrument
+        u.mem_write(g.t1 + 0x10, struct.pack("<H", self.KEY))
+        w32(u, g.t1 + 0x86D4, self.IDX)
+        if mode is not None:
+            e = bytes(4 * self.IDX) + bytes([0, 5 if ext_entry else 0, mode, 1])
+            u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + e + bytes(32 - len(e)))
+        g.posts = []
+        def post(uc, addr, size, _):
+            ev = struct.unpack("<6I", uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 24))
+            g.posts.append((uc.reg_read(UC_ARM_REG_R0), ev[0], ev[2], ev[3], ev[4]))
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        u.hook_add(UC_HOOK_CODE, post, begin=self.BUS_POST, end=self.BUS_POST)
+        return pb, g
+
+    def test_poly_posts_the_voice_pressure_event(self):
+        pb, g = self.rig(0)
+        pb.start(g)
+        pb.emit(g, g.t1, 0, 40, 1010)
+        self.assertEqual(g.posts, [(ROUTER, 0x0E, self.KEY, 60, 20)])
+        self.assertEqual(g.sent, [], "no MIDI")
+        pb.emit(g, g.t1, 40, 40, 1030)
+        self.assertEqual(g.posts[-1][3:], (60, 30), "last value")
+        n = len(g.posts); pb.emit(g, g.t1, 80, 40, 1050)
+        self.assertEqual(len(g.posts), n, "finished")
+        self.assertEqual(r32(g.u, REGION + 64), self.KEY | (self.IDX << 16), "int_dest: key, idx, Poly")
+
+    def test_off_posts_nothing(self):
+        pb, g = self.rig(1)
+        pb.start(g); pb.emit(g, g.t1, 0, 100, 1010)
+        self.assertEqual(g.posts, [])
+
+    def test_no_table_or_external_entry_is_poly(self):
+        for kw in (dict(mode=None), dict(mode=1, ext_entry=True)):
+            pb, g = self.rig(**kw)
+            pb.start(g); pb.emit(g, g.t1, 0, 40, 1010)
+            self.assertEqual([x[3:] for x in g.posts], [(60, 20)], kw)
+
+    def test_channel_gives_every_voice_the_highest(self):
+        pb, g = self.rig(2, samples=(40,) * 8)
+        pb.start(g, note=60)
+        w32(g.u, pb.TABLE + 8, 0x40)
+        g.u.mem_write(pb.POOL + 0x40, struct.pack("<H", 8) + bytes([90] * 8))
+        w32(g.u, pb.CURVES + 20, 3)
+        pb.start(g, note=64, word=(0xB7 << 24) | (2 << 3))
+        pb.emit(g, g.t1, 0, 40, 1010)
+        self.assertEqual(sorted(x[3:] for x in g.posts), [(60, 90), (64, 90)])
+
+    def test_external_and_instrument_both_play(self):
+        pb, g = self.rig(None)
+        g.u.mem_write(g.t1 + 0x86D1, b"\x01\x01")
+        pb.start(g); pb.emit(g, g.t1, 0, 40, 1010)
+        self.assertEqual((len(g.sent), len(g.posts)), (1, 1), "MIDI poly AT and the instrument")
+
+
 class CurveWorstCase(unittest.TestCase):
     """Jeff's worst case: 8 External tracks x 6 voices = 48 curve notes at once, all
     on one MIDI port, each curve changing on every sample (a sawtooth, 256 samples
@@ -331,7 +398,7 @@ class CurveWorstCase(unittest.TestCase):
         g = pb.rig(samples=tuple((i * 7) % 120 for i in range(self.N)))
         tracks = [0x24010000 + t * 0x9000 for t in range(self.TRACKS)]
         for t in tracks:
-            g.u.mem_write(t, bytes(0x8800)); g.u.mem_write(t + 0x86D1, b"\x01\x01")
+            g.u.mem_write(t, bytes(0x8800)); g.u.mem_write(t + 0x86D1, b"\x01\x00")   # External only
         for ti, t in enumerate(tracks):
             for v in range(self.VOICES):
                 pb.start(g, track=t, note=40 + ti * 8 + v)

@@ -337,6 +337,10 @@ static void counters(Out *o) {
         volatile u32 *cp = (volatile u32 *)(rg + REGION_CURVE_PEAK);
         puts_(o, " peak players="); dec(o, cp[0]); puts_(o, " thinned="); dec(o, cp[1]);
         puts_(o, " last dest="); hex(o, cp[2], 8);   /* [31:24] 1 + matched track, 0 = none */
+        volatile u32 *ci = (volatile u32 *)(rg + REGION_INTERNAL);
+        puts_(o, " | internal dest="); hex(o, ci[0], 8);   /* key | 0x86D4 idx << 16 | mode << 24 */
+        puts_(o, " live="); hex(o, ci[1], 8);              /* router idx | key << 8 | mode << 24 */
+        puts_(o, " posts="); dec(o, ci[2]);
         if (AT_DEST->magic == AT_DEST_MAGIC) {
             puts_(o, " | AT tracks port/ch/mode:");
             for (u32 i = 0; i < 8; i++) {

@@ -72,7 +72,8 @@ typedef struct {
     u32 data;                        /* the curve's samples (pool, SDRAM) */
     u32 cyc;                         /* CYCCNT of the last send */
     u16 n, k;                        /* samples, next due */
-    u8 note, last, want, used, port, ch, chan, pad_;   /* chan: AT Out Channel (aggregated) */
+    u8 note, last, want, used, port, ch, chan, kind;   /* chan: AT Out Channel (aggregated);
+                                                          kind 1: internal instrument, port|ch<<8 = bus key */
 } Player; /* 32 bytes */
 
 /* M2-5b: one channel-pressure destination (port/channel) for AT Out Channel:
@@ -95,6 +96,10 @@ typedef struct {
     u32 midi_q;                      /* MIDI-out queue (engine + 0x7C8), seen at note-on */
     u32 curve_peak, curve_thinned;   /* most players at once; values superseded before sending */
     u32 curve_dest;                  /* last start: port | ch << 8 | mode << 16 (mapping check) */
+    u32 int_dest;                    /* last internal start: key | idx << 16 | mode << 24 (0x86D4 check) */
+    u32 live_int;                    /* last live internal: router idx | key << 8 | mode << 24 */
+    u32 int_sent;                    /* 0x0E posts to internal instruments */
+    u32 bus;                         /* engine (note_route's router): internal posts go through it */
     Bucket b[PORTS];
     Voices v[TRACKS];
     PEnt p[PENT];
@@ -102,11 +107,13 @@ typedef struct {
     Player pl[PLAYERS];
     Chan cd[CHANS];
     u32 chan_sent, live_off;
+    Chan ic[CHANS];                  /* M2-2b: internal channel aggregates (port|ch<<8 = key) */
 } Region;
 _Static_assert(__builtin_offsetof(Region, curve_starts) == REGION_CURVE_STATS, "curve stats offset");
 _Static_assert(__builtin_offsetof(Region, curve_peak) == REGION_CURVE_PEAK, "curve peak offset");
+_Static_assert(__builtin_offsetof(Region, int_dest) == REGION_INTERNAL, "internal stats offset");
 
-#define REGION_MAGIC 0x32424D31u /* "1MB2": + channel destinations (v3.35) */
+#define REGION_MAGIC 0x33424D31u /* "1MB3": + internal instruments (v3.37) */
 
 static volatile Region *region(void);
 /* m7_retrig.c: the burst table, valid only for this boot's region (0 if none). */
@@ -379,19 +386,12 @@ static u32 at_mode(u32 port, u32 ch, u32 *how) {
     return AT_POLY;
 }
 
-static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi) {
-    volatile Region *r = region();
-    u32 h = step_handle(word), n = 0, data;
-    if (!r || !h || !*(volatile u8 *)(track + 0x86D1u)) return;   /* MIDI out off: nothing to drive */
-    if (!(data = curve_data(h, &n))) { r->curve_skipped++; return; }
-    u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u), how;
-    u32 mode = at_mode(port, ch, &how);
-    r->curve_dest = port | (ch << 8) | (mode << 16) | (how << 24);
-    if (mode != AT_POLY && mode != AT_CHAN) { r->curve_skipped++; return; }   /* Off */
+static void start_player(volatile Region *r, u32 track, u32 note, u32 data, u32 n, u32 tick_lo, u32 tick_hi,
+                         u32 kind, u32 port, u32 ch, u32 chan) {
     volatile Player *slot = 0;
     for (u32 i = 0; i < PLAYERS; i++) {
         volatile Player *p = &r->pl[i];
-        if (p->used && p->track == track && p->note == (note & 0x7Fu)) { slot = p; break; }   /* retrigger */
+        if (p->used && p->track == track && p->kind == kind && p->note == (note & 0x7Fu)) { slot = p; break; }   /* retrigger */
         if (!p->used && !slot) slot = p;
     }
     if (!slot) { r->curve_skipped++; return; }      /* 64 busy: never steal another note's curve */
@@ -399,10 +399,48 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
     slot->data = data; slot->n = (u16)n; slot->k = 0;
     slot->note = (u8)(note & 0x7Fu); slot->last = 0xFF; slot->want = 0xFF;
     slot->cyc = CYCCNT - CURVE_MIN_GAP * 8u;        /* the first value may go at once */
-    slot->port = *(volatile u8 *)(track + 0x31u); slot->ch = *(volatile u8 *)(track + 0x32u);
-    slot->chan = mode == AT_CHAN;
+    slot->port = (u8)port; slot->ch = (u8)ch;
+    slot->chan = (u8)chan; slot->kind = (u8)kind;
     slot->used = 1;
     r->curve_starts++;
+}
+
+/* AT Out for an internal track, by track index (UI order). The index is
+ * note_route's track+0x86D4 (sent to the UI with each note); unconfirmed on
+ * the device: the save log prints it (int_dest) next to the M4's table.
+ * Only entries the M4 marks non-External (channel parameter 0) apply. */
+static u32 int_mode(u32 idx) {
+    DCIMVAC = (u32)AT_DEST & ~31u; DCIMVAC = ((u32)AT_DEST + 32u) & ~31u;
+    __asm volatile("dsb" ::: "memory");
+    if (idx < 8u && AT_DEST->magic == AT_DEST_MAGIC && AT_DEST->d[idx].valid && !AT_DEST->d[idx].ch)
+        return AT_DEST->d[idx].mode;
+    return AT_POLY;
+}
+
+static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus) {
+    volatile Region *r = region();
+    u32 h = step_handle(word), n = 0, data;
+    int ext = *(volatile u8 *)(track + 0x86D1u), inst = *(volatile u8 *)(track + 0x86D2u);
+    if (!r || !h || (!ext && !inst)) return;        /* no MIDI out, no instrument: nothing to drive */
+    if (!(data = curve_data(h, &n))) { r->curve_skipped++; return; }
+    if (ext) {
+        u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u), how;
+        u32 mode = at_mode(port, ch, &how);
+        r->curve_dest = port | (ch << 8) | (mode << 16) | (how << 24);
+        if (mode == AT_POLY || mode == AT_CHAN) start_player(r, track, note, data, n, tick_lo, tick_hi, 0, port, ch, mode == AT_CHAN);
+        else r->curve_skipped++;                    /* Off */
+    }
+#ifdef BE_NO_INTA
+    inst = 0;                                       /* group inta off: External only */
+#endif
+    if (inst && bus) {                              /* M2-2b: the track's own instrument */
+        u32 key = *(volatile u16 *)(track + 0x10u), idx = *(volatile u32 *)(track + 0x86D4u);
+        u32 mode = int_mode(idx);
+        r->bus = bus;
+        r->int_dest = (key & 0xFFFFu) | ((idx & 0xFFu) << 16) | (mode << 24);
+        if (mode == AT_POLY || mode == AT_CHAN) start_player(r, track, note, data, n, tick_lo, tick_hi, 1, key & 0xFF, (key >> 8) & 0xFF, mode == AT_CHAN);
+        else r->curve_skipped++;
+    }
 }
 
 /* Per track per audio block: catch this track's players up to the samples now
@@ -436,7 +474,7 @@ static void chan_pass(volatile Region *r, u32 now, u32 *on_port) {
     u8 val[CHANS] = {0}, has[CHANS] = {0}, live[CHANS] = {0};
     for (u32 i = 0; i < PENT; i++) {                    /* live notes: count while sounding */
         volatile PEnt *e = &r->p[i];
-        if (!e->used || !e->chan) continue;
+        if (!e->used || !e->chan || e->track < 0x20000u) continue;   /* internal (key tag): int_chan */
         volatile Voices *v = voices(r, e->track, 0);
         if (!v || find(v, e->note) < 0) { e->chan = 0; e->used = 0; continue; }   /* released */
         u32 d = chan_dest(r, e->port, e->ch, now);
@@ -446,7 +484,7 @@ static void chan_pass(volatile Region *r, u32 now, u32 *on_port) {
     }
     for (u32 i = 0; i < PLAYERS; i++) {
         volatile Player *p = &r->pl[i];
-        if (!p->used || !p->chan) continue;
+        if (!p->used || !p->chan || p->kind) continue;
         u32 d = CHANS, freed = CHANS;
         for (u32 j = 0; j < CHANS; j++) {
             if (r->cd[j].used && r->cd[j].port == p->port && r->cd[j].ch == p->ch) { d = j; break; }
@@ -485,14 +523,14 @@ static void curve_send_pass(volatile Region *r, u32 now) {
     u32 on_port[PORTS] = {0}, active = 0;
     chan_pass(r, now, on_port);
     for (u32 i = 0; i < PLAYERS; i++)
-        if (r->pl[i].used) { if (!r->pl[i].chan) on_port[r->pl[i].port % PORTS]++; active++; }
+        if (r->pl[i].used) { if (!r->pl[i].chan && !r->pl[i].kind) on_port[r->pl[i].port % PORTS]++; active++; }
     if (active > r->curve_peak) r->curve_peak = active;
     for (u32 round = 0; round < PLAYERS; round++) {
         volatile Player *best = 0;
         u32 best_age = 0;
         for (u32 i = 0; i < PLAYERS; i++) {
             volatile Player *p = &r->pl[i];
-            if (!p->used || p->chan) continue;            /* channel notes: chan_pass */
+            if (!p->used || p->chan || p->kind) continue; /* channel: chan_pass; internal: int_pass */
             int done = p->k >= p->n;
             if (p->want == p->last || p->want > 0x7Fu) {      /* nothing to send */
                 if (done) p->used = 0;
@@ -515,9 +553,10 @@ static void curve_send_pass(volatile Region *r, u32 now) {
     }
 }
 
+static void int_pass(volatile Region *r, u32 now);
 static void curve_emit_body(u32 track, u32 clock, int start, int len) {
     volatile Region *r = region();
-    if (!r || !r->midi_q) return;
+    if (!r || (!r->midi_q && !r->bus)) return;
     for (u32 i = 0; i < PLAYERS; i++) {
         volatile Player *p = &r->pl[i];
         if (!p->used || p->track != track) continue;
@@ -534,12 +573,126 @@ static void curve_emit_body(u32 track, u32 clock, int start, int len) {
             p->k++;
         }
     }
-    curve_send_pass(r, CYCCNT);
+    if (r->midi_q) curve_send_pass(r, CYCCNT);
+    if (r->bus) int_pass(r, CYCCNT);
 }
 
-void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi) {
+/* ---- M2-2b: internal instruments ---------------------------------------------
+ * Stock's voice engine (FUN_080945E0, case 0x0E) sets each sounding voice of
+ * the event's note to value/127 (voice +0xC8): the pad router's live pressure.
+ * We post the same event {0x0E, 0, key, note, value} through the engine's bus
+ * (FUN_0809ECA0, key -> the instrument's queue). Poly: each note its own
+ * curve. Channel: one value per track, the highest of its sounding notes
+ * (curves and live pads), posted to every one of them. No MIDI budget: the
+ * queue (64 entries per track per block) is drained every block; at most one
+ * post per note per INT_GAP. */
+#define BUS_POST 0x0809ECA0u
+#define INT_GAP (4u * MS_CYC)
+#define KEY_TAG 0x10000u                 /* PEnt.track for a live internal note: key | tag */
+#define LIVE_STALE (300u * MS_CYC)       /* no update for this long: the pad was let go */
+
+static void int_post(volatile Region *r, u32 key, u32 note, u32 value) {
+    u32 ev[6] = {0x0E, 0, key, note & 0x7Fu, value & 0x7Fu, 0};
+    FN7(BUS_POST, void (*)(u32, const u32 *))(r->bus, ev);
+    r->int_sent++;
+}
+
+/* Channel for one key: highest current value over its channel curve notes and
+ * live notes still pressed (value > 0); posted to each of them on a change. */
+static void int_chan(volatile Region *r, u32 key, u32 now, int force) {
+    u32 best = 0, any = 0;
+    for (u32 i = 0; i < PLAYERS; i++) {
+        volatile Player *p = &r->pl[i];
+        if (p->used && p->kind && p->chan && (p->port | (p->ch << 8)) == key && p->want <= 0x7Fu) {
+            any = 1; if (p->want > best) best = p->want;
+        }
+    }
+    for (u32 i = 0; i < PENT; i++) {
+        volatile PEnt *e = &r->p[i];
+        if (e->used && e->chan && e->track == (key | KEY_TAG) && e->pval && now - e->cyc > LIVE_STALE) e->used = 0;
+        if (e->used && e->chan && e->track == (key | KEY_TAG) && e->pval) { any = 1; if (e->pval > best) best = e->pval; }
+    }
+    volatile Chan *c = 0;
+    for (u32 j = 0; j < CHANS; j++)
+        if (r->ic[j].used && (r->ic[j].port | (r->ic[j].ch << 8)) == key) { c = &r->ic[j]; break; }
+    if (!c) {
+        if (!any) return;
+        for (u32 j = 0; j < CHANS && !c; j++)
+            if (!r->ic[j].used) { c = &r->ic[j]; c->port = key & 0xFF; c->ch = (key >> 8) & 0xFF; c->last = 0xFF; c->cyc = now - INT_GAP; c->used = 1; }
+        if (!c) return;
+    }
+    if (!any) { c->used = 0; return; }              /* voices end with their notes */
+    if (best == c->last || (!force && now - c->cyc < INT_GAP)) return;
+    for (u32 i = 0; i < PLAYERS; i++) {
+        volatile Player *p = &r->pl[i];
+        if (p->used && p->kind && p->chan && (p->port | (p->ch << 8)) == key) int_post(r, key, p->note, best);
+    }
+    for (u32 i = 0; i < PENT; i++) {
+        volatile PEnt *e = &r->p[i];
+        if (e->used && e->chan && e->track == (key | KEY_TAG) && e->pval) int_post(r, key, e->note, best);
+    }
+    c->last = (u8)best; c->cyc = now;
+}
+
+static void int_pass(volatile Region *r, u32 now) {
+    for (u32 i = 0; i < PLAYERS; i++) {
+        volatile Player *p = &r->pl[i];
+        if (!p->used || !p->kind) continue;
+        u32 key = p->port | (p->ch << 8);
+        int done = p->k >= p->n;
+        if (p->chan) {
+            int_chan(r, key, now, 0);
+            if (done) p->used = 0;
+            continue;
+        }
+        if (p->want <= 0x7Fu && p->want != p->last && (done || now - p->cyc >= INT_GAP)) {
+            int_post(r, key, p->note, p->want);
+            p->last = p->want; p->cyc = now;
+        }
+        if (done) p->used = 0;
+    }
+}
+
+/* Live pads on internal tracks (hook at the pad router's post 0x08085B6C:
+ * bus r0, event r1, router r5). The router's selected track (+0x2C8) is the
+ * UI index; a per-pad key (+0x2CC[idx] == 0xFFFFFF00) is a drum track: as is.
+ * External tracks pass on to their own handler (h_poly applies AT Out there). */
+static void live_body(u32 bus, const u32 *ev, u32 router) {
+    volatile Region *r = region();
+    u32 idx = *(volatile u32 *)(router + 0x2C8u);
+    if (!r || idx >= 8u || *(volatile u32 *)(router + 0x2CCu + idx * 4u) == 0xFFFFFF00u) {
+        FN7(BUS_POST, void (*)(u32, const u32 *))(bus, ev); return;
+    }
+    DCIMVAC = (u32)AT_DEST & ~31u; DCIMVAC = ((u32)AT_DEST + 32u) & ~31u;
+    __asm volatile("dsb" ::: "memory");
+    int internal = AT_DEST->magic == AT_DEST_MAGIC && AT_DEST->d[idx].valid && !AT_DEST->d[idx].ch;
+    u32 mode = internal ? AT_DEST->d[idx].mode : AT_POLY, key = ev[2] & 0xFFFFu, note = ev[3] & 0x7Fu, now = CYCCNT;
+    r->live_int = idx | (key << 8) | (mode << 24);
+    if (!internal || mode == AT_POLY) { FN7(BUS_POST, void (*)(u32, const u32 *))(bus, ev); return; }
+    if (mode == AT_OFF) { r->live_off++; return; }
+    r->bus = bus;
+    volatile PEnt *e = pent(r, key | KEY_TAG, note, now);
+    e->chan = 1; e->pend = 0; e->pval = (u8)(ev[4] & 0x7Fu); e->cyc = now;
+    if (!e->pval) {                                 /* released: drop it, then re-aggregate */
+        int_chan(r, key, now, 1);
+        u32 ev0[6] = {0x0E, 0, key, note, 0, 0};    /* this voice may still ring: let it go */
+        FN7(BUS_POST, void (*)(u32, const u32 *))(bus, ev0);
+        e->used = 0;
+        return;
+    }
+    int_chan(r, key, now, 1);
+}
+
+__attribute__((used, retain)) void h_live(u32 bus, const u32 *ev, u32 router) {
+    diag_sp();
     u32 p = irq_save();
-    curve_start_body(track, note, word, tick_lo, tick_hi);
+    live_body(bus, ev, router);
+    irq_restore(p);
+}
+
+void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus) {
+    u32 p = irq_save();
+    curve_start_body(track, note, word, tick_lo, tick_hi, bus);
     irq_restore(p);
 }
 void curve_emit(u32 track, u32 clock, int start, int len) {
