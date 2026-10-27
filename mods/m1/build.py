@@ -41,8 +41,8 @@ M7_LIMIT = 0x080DC000   # 7.5 KB since v3.25 (curve players); stock zero gap run
 APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
-M4_LIMIT = M4_CODE + 0x3800   # 14 KB since v3.22 (curve log + save dump)
-VERSION = "3.25"                       # bump for every build that goes on the device
+M4_LIMIT = M4_CODE + 0x4000   # 16 KB since v3.26 (curve sidecar writer)
+VERSION = "3.26"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -462,8 +462,8 @@ def build(base_img, out):
     # Diagnostics dump (v3.22): our only card access, right after stock's own
     # project-file write, from the same task (FUN_0813032C -> FUN_08130958).
     dstub = (stub + len(sup) + 3) & ~3
-    dump = asm(f"push {{r4, lr}}; bl {FILE_WRITER:#x}; mov r4, r0; bl {s4['dump_after_save']:#x}; "
-               "mov r0, r4; pop {r4, pc}", dstub)
+    dump = asm(f"push {{r3, r4, r5, lr}}; mov r5, r0; bl {FILE_WRITER:#x}; mov r4, r0; "   # r0 = the file's path
+               f"mov r0, r5; bl {s4['dump_after_save']:#x}; mov r0, r4; pop {{r3, r4, r5, pc}}", dstub)
     check_branches(dump, dstub, {FILE_WRITER, s4["dump_after_save"]}, "diagnostics dump stub")
     if dstub + len(dump) > M4_LIMIT:
         raise SystemExit("diagnostics dump stub overruns the black-box block")

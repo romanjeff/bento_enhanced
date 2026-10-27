@@ -737,6 +737,51 @@ class NoCardWrites(FatFsRig):
         call(self.u, SYM4["dump_after_save"])
         self.assertEqual(len(self.files), 2, "the next save appends")
 
+    def sidecar_rig(self, samples):
+        u = self.u
+        pool, table, lst = 0xC6180000, 0xC61C0000, 0xC61D0000
+        u.mem_write(pool, struct.pack("<H", len(samples)) + bytes(samples))
+        w32(u, table + 4, 0)
+        u.mem_write(lst, struct.pack("<H", 1))
+        u.mem_write(0x3003D840, struct.pack("<10I", 0x31565243, 1, pool, 8, table, 2, 0, 0, lst, 1))
+
+    @staticmethod
+    def decode(blob):
+        assert blob[:4] == b"BNTC"
+        ver, count = struct.unpack_from("<HH", blob, 4); at = 8; out = []
+        for _ in range(count):
+            n, ln = struct.unpack_from("<HH", blob, at); at += 4
+            data, prev = [], None
+            for b in blob[at:at + ln]:
+                if b < 0x80: data.append(b); prev = b
+                elif b < 0xC0: data += [prev] * ((b & 0x3F) + 1)
+                else:
+                    prev += ((b >> 3) & 7) - 4; data.append(prev)
+                    prev += (b & 7) - 4; data.append(prev)
+            at += ln; out.append((n, data))
+        return ver, out
+
+    def path(self, text):
+        self.u.mem_write(0x24070400, text.encode() + b"\0")
+        return 0x24070400
+
+    def test_sidecar_round_trip_next_to_project_xml(self):
+        samples = [10, 10, 10, 12, 14, 15, 15, 50, 49, 48, 48, 48, 48, 0]
+        self.tick(1000); self.sidecar_rig(samples)
+        call(self.u, SYM4["dump_after_save"], self.path(r"\Projects\X\project.xml"))
+        blob = self.fs[r"\Projects\X\curves.bnt"]
+        ver, curves = self.decode(blob)
+        self.assertEqual((ver, curves), (1, [(len(samples), samples)]))
+        self.assertLess(len(blob), 8 + 4 + len(samples), "smaller than raw")
+        self.assertEqual(r32(self.u, 0x3003D840 + 36), 0, "save list cleared")
+        self.assertIn("sidecar status=4 curves=1", self.files[-1].decode())
+
+    def test_no_sidecar_for_other_files(self):
+        self.tick(1000); self.sidecar_rig([1, 2, 3])
+        call(self.u, SYM4["dump_after_save"], self.path(r"\Patches\P\patch.xml"))
+        self.assertFalse(any(k.endswith("curves.bnt") for k in self.fs))
+        self.assertEqual(r32(self.u, 0x3003D840 + 36), 0, "save list cleared anyway")
+
     def test_header_still_built_in_ram(self):
         self.tick(1000)
         buf, n = r32(self.u, M4H + 12), r32(self.u, M4H + 16)

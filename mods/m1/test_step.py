@@ -217,6 +217,21 @@ class SaveLoad(unittest.TestCase):
         auto = note(0, word=step_make(hits=2)); auto[0] = (auto[0] & ~0xFF) | 2
         self.assertEqual(self.run_save(auto), {}, "automation event: +20 is stock's value2")
 
+    def test_curve_note_saves_its_sidecar_index(self):
+        """v3.26: the per-boot handle never reaches the project; the word carries the note's
+        1-based index in this save, and the handle goes into the save list."""
+        g = Rig(); sp = STACK - 0x100
+        g.u.mem_write(0x3003D840, struct.pack("<10I", 0x31565243, 1, 0x20300000, 8, 0x20310000, 5, 0, 0,
+                                              0x20320000, 0))
+        w = (0xB7 << 24) | (4 << 17) | (3 << 3) | 1               # condition 4, handle 3, velocity lock
+        g.u.mem_write(sp + 8, struct.pack("<6I", *note(0, word=w)))
+        g.u.reg_write(UC_ARM_REG_R4, NODE); g.u.reg_write(UC_ARM_REG_SP, sp)
+        g.u.emu_start(0x0812F4F0 | 1, 0x0812F4F4, count=200000)
+        self.assertEqual(g.attrs, {"be_step_v1": (0xB7 << 24) | (4 << 17) | (1 << 3) | 1}, "index 1, not handle 3")
+        self.assertEqual(struct.unpack("<H", g.u.mem_read(0x20320000, 2))[0], 3, "save list holds the handle")
+        self.assertEqual(r32(g.u, 0x3003D840 + 36), 1, "nsave")
+        self.assertEqual(bytes(g.u.mem_read(sp + 8 + 20, 4)), struct.pack("<I", w), "the note in RAM keeps its handle")
+
     def test_load_round_trip(self):
         w = step_make(cond=7, hits=15, div=10, ramp=100)
         self.assertEqual(self.run_load(note(0), {"be_step_v1": w})[5], w)

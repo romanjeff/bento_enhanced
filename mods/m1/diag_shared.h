@@ -212,11 +212,24 @@ typedef struct { u32 magic, block, check, gen, r_[4]; } CapCfg;
 
 /* M4 side (m4_step.c): curves attached to recorded melodic notes. The pool
  * (SDRAM, bump-allocated on first use) holds [u16 n][n samples] per curve at
- * 16 samples per step; handles index CurveState.off[] (1-based). Each attach
- * is logged to CURVELOG for the black box. */
-#define CURVE_POOL_BYTES 0x40000u
-#define CURVE_HANDLES 4096u
-typedef struct { u32 magic, gen, pool, used, table, next, claims, misses; } CurveState;
+ * 16 samples per step; handles index the table (1-based). Each attach is
+ * logged to CURVELOG for the black box.
+ * Persistence (v3.26): on project save, a curve note's XML word carries its
+ * 1-based index in this save (savelist); right after stock writes
+ * ...\project.xml the black box writes ...\curves.bnt next to it (stock never
+ * sees curve data). Sidecar format, little endian:
+ *   "BNTC" u16 version=1 u16 count, then per curve: u16 n, u16 len, len bytes
+ *   encoded: 0x00-0x7F literal sample; 0x80-0xBF repeat previous (b&0x3F)+1
+ *   times; 0xC0-0xFF two deltas d1=((b>>3)&7)-4, d2=(b&7)-4 (two samples). */
+#define SIDECAR_MAGIC 0x43544E42u /* "BNTC" */
+#define CURVE_POOL_BYTES 0x100000u   /* 1 MB (v3.26) */
+#define CURVE_HANDLES 16384u         /* the word's 14-bit field: 1..16383 */
+typedef struct {
+    u32 magic, gen, pool, used, table, next, claims, misses;   /* first line: the M7 reads it */
+    u32 savelist, nsave;             /* handles of curve notes in the save in progress (u16 each) */
+    u32 sc_count, sc_bytes, sc_status;   /* last sidecar written */
+} CurveState;
+_Static_assert(sizeof(CurveState) <= 64u, "curve state reaches the curve log");
 #define CURVES ((volatile CurveState *)0x3003D840u)
 #define CURVES_MAGIC 0x31565243u /* "CRV1" */
 typedef struct {

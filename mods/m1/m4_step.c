@@ -77,10 +77,22 @@ static u32 with_locks(u32 w, u32 locks) {
 
 /* ---- project save / load ------------------------------------------------ */
 
+static volatile CurveState *curves(void);
 __attribute__((used, retain)) void step_save(void *node, const void *rec) {
     if (B(rec, 0) != 1) return;
     u32 w = W(rec, 20);
     if (!step_any(w)) return;                       /* incl. curve words (M2) */
+    u32 h = step_handle(w);
+    if (h) {                                        /* the saved word carries the sidecar index */
+        volatile CurveState *c = curves();
+        u32 idx = 0;
+        if (c && c->savelist && c->nsave + 1u < CURVE_HANDLES) {
+            ((volatile u16 *)c->savelist)[c->nsave] = (u16)h;
+            idx = ++c->nsave;
+        }
+        w = step_make(step_cond(w), 0, STEP_DIV_DEFAULT, 0, step_locks(w), idx);
+        if (!w) return;
+    }
     void *a = FN(XML_ADD, void *(*)(void *, const char *))(node, ATTR);
     if (a) FN(XML_SET_U32, void (*)(void *, u32))(a, w);
 }
@@ -607,12 +619,14 @@ static volatile CurveState *curves(void) {
     volatile CurveState *c = CURVES;
     if (c->magic == CURVES_MAGIC && c->gen == boot_gen()) return c->pool ? c : 0;
     c->magic = 0; c->pool = c->table = c->used = c->claims = c->misses = 0; c->next = 1;
+    c->savelist = c->nsave = c->sc_count = c->sc_bytes = c->sc_status = 0;
     for (u32 i = 0; i < 32; i++) CLAIMED[i] = 0xFFFFFFFFu;
-    u32 need = CURVE_POOL_BYTES + CURVE_HANDLES * 4u, cur = BUMP_CUR, end = BUMP_END;
-    if (end > cur && end - cur >= need + 128u) {          /* the native allocator faults on overflow */
+    u32 need = CURVE_POOL_BYTES + CURVE_HANDLES * 6u, cur = BUMP_CUR, end = BUMP_END;
+    if (end > cur && end - cur >= need + 160u) {          /* the native allocator faults on overflow */
         u32 pool = FN(BUMP_ALLOC, u32 (*)(u32))(CURVE_POOL_BYTES);
         u32 cur2 = BUMP_CUR, table = FN(BUMP_ALLOC, u32 (*)(u32))(CURVE_HANDLES * 4u);
-        if (pool == cur && table == cur2) { c->pool = pool; c->table = table; }
+        u32 cur3 = BUMP_CUR, list = FN(BUMP_ALLOC, u32 (*)(u32))(CURVE_HANDLES * 2u);
+        if (pool == cur && table == cur2 && list == cur3) { c->pool = pool; c->table = table; c->savelist = list; }
     }
     c->gen = boot_gen(); c->magic = CURVES_MAGIC;
     return c->pool ? c : 0;

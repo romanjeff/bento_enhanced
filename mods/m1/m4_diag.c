@@ -638,10 +638,94 @@ static void curve_lines(Out *o) {
  * stock's project-file write (FUN_0813032C -> FUN_08130958), right after stock
  * itself wrote the card from this same task. On failure it just returns; the
  * next save tries again (no retry loop). */
-__attribute__((used, retain)) void dump_after_save(void) {
+/* ---- M2-3: curve sidecar (format in diag_shared.h) ----------------------- */
+typedef struct { u32 *file; u8 buf[512]; u32 n, bytes, err; } SideOut;
+static void so_put(SideOut *so, u32 b) {
+    so->buf[so->n++] = (u8)b; so->bytes++;
+    if (so->n == sizeof(so->buf)) {
+        u32 done = 0;
+        if (!so->err && (F_WRITE(so->file, so->buf, so->n, &done) || done != so->n)) so->err = 1;
+        so->n = 0;
+    }
+}
+static void so_u16(SideOut *so, u32 v) { so_put(so, v & 0xFFu); so_put(so, (v >> 8) & 0xFFu); }
+/* Encoded length of one curve (first pass) or the bytes themselves (so != 0). */
+static u32 encode(const volatile u8 *s, u32 n, SideOut *so) {
+    u32 len = 0, i = 0, prev = 0x100;
+    while (i < n) {
+        u32 v = s[i] & 0x7Fu, run = 0;
+        while (prev <= 0x7Fu && i + run < n && (s[i + run] & 0x7Fu) == prev && run < 64u) run++;
+        if (run) { if (so) so_put(so, 0x80u | (run - 1u)); len++; i += run; continue; }
+        if (prev <= 0x7Fu && i + 1u < n) {
+            int d1 = (int)v - (int)prev, d2 = (int)(s[i + 1] & 0x7Fu) - (int)v;
+            if (d1 >= -4 && d1 <= 3 && d2 >= -4 && d2 <= 3) {
+                if (so) so_put(so, 0xC0u | ((u32)(d1 + 4) << 3) | (u32)(d2 + 4));
+                len++; prev = s[i + 1] & 0x7Fu; i += 2; continue;
+            }
+        }
+        if (so) so_put(so, v);
+        len++; prev = v; i++;
+    }
+    return len;
+}
+/* path = the file stock just wrote; only ...\project.xml gets a sidecar. */
+static void write_sidecar(const char *path) {
+    volatile CurveState *c = CURVES;
+    if (c->magic != CURVES_MAGIC || !c->pool || !c->table || !c->savelist || !path) return;
+    char name[160];
+    u32 n = 0, cut = 0;
+    while (path[n] && n < sizeof(name) - 12u) { name[n] = path[n]; if (path[n] == '\\' || path[n] == '/') cut = n + 1u; n++; }
+    static const char want[] = "project.xml", side[] = "curves.bnt";
+    for (u32 i = 0; i < sizeof(want) - 1u; i++) {
+        char ch = cut + i < n ? name[cut + i] : 0;
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+        if (ch != want[i]) { c->nsave = 0; return; }
+    }
+    for (u32 i = 0; i < sizeof(side); i++) name[cut + i] = side[i];
+    u32 file[22];
+    zero(file, sizeof(file));
+    c->sc_status = 1;
+    if (F_OPEN(file, name, FA_CREATE_WRITE)) { c->nsave = 0; c->sc_status = 2; return; }
+    SideOut so;
+    so.file = file; so.n = so.bytes = so.err = 0;
+    u32 count = c->nsave;
+    so_put(&so, 'B'); so_put(&so, 'N'); so_put(&so, 'T'); so_put(&so, 'C');
+    so_u16(&so, 1); so_u16(&so, count);
+    for (u32 k = 0; k < count; k++) {
+        u32 h = ((volatile u16 *)c->savelist)[k], cn = 0;
+        const volatile u8 *d = 0;
+        if (h && h < c->next) {
+            u32 off = ((volatile u32 *)c->table)[h];
+            volatile u8 *e = (volatile u8 *)(c->pool + off);
+            cn = e[0] | ((u32)e[1] << 8);
+            d = e + 2;
+        }
+        u32 len = d ? encode(d, cn, 0) : 0;
+        so_u16(&so, d ? cn : 0); so_u16(&so, len);
+        if (d) encode(d, cn, &so);
+    }
+    u32 done = 0;
+    if (so.n && !so.err && (F_WRITE(file, so.buf, so.n, &done) || done != so.n)) so.err = 1;
+    F_CLOSE(file);
+    c->sc_count = count; c->sc_bytes = so.bytes; c->sc_status = so.err ? 3 : 4;
+    c->nsave = 0;
+}
+
+#define XHEAP_CUR (*(volatile u32 *)0x30000044u)   /* stock "extended memory" heap: grows down */
+#define XHEAP_FLOOR (*(volatile u32 *)0x30000040u)
+__attribute__((used, retain)) void dump_after_save(const char *path) {
+    write_sidecar(path);                            /* first: it belongs to this save */
     if (M4H->magic != DIAG_MAGIC || M4H->r[1] <= 1u) return;
     Out o = {(char *)M4H->r[1], M4H->r[2]};
     curve_lines(&o);
+    if (CURVES->magic == CURVES_MAGIC) {
+        puts_(&o, "SAVE "); for (u32 i = 0; path && path[i] && i < 120u; i++) { char t[2] = {path[i], 0}; puts_(&o, t); }
+        puts_(&o, " | sidecar status="); dec(&o, CURVES->sc_status);
+        puts_(&o, " curves="); dec(&o, CURVES->sc_count); puts_(&o, " bytes="); dec(&o, CURVES->sc_bytes);
+        puts_(&o, " | pool used="); dec(&o, CURVES->used); puts_(&o, " handles="); dec(&o, CURVES->next - 1u);
+        puts_(&o, " | ext heap free="); dec(&o, XHEAP_CUR > XHEAP_FLOOR ? XHEAP_CUR - XHEAP_FLOOR : 0u);
+        puts_(&o, " (cur="); hex(&o, XHEAP_CUR, 8); puts_(&o, " floor="); hex(&o, XHEAP_FLOOR, 8); puts_(&o, ")\r\n");
+    }
     if (INSLOG->magic == INSLOG_MAGIC) {            /* who inserted notes this boot */
         puts_(&o, "INSERTS total="); dec(&o, INSLOG->total);
         puts_(&o, " last rec0="); hex(&o, INSLOG->last_kind, 8); puts_(&o, " by caller:");
