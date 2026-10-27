@@ -413,6 +413,7 @@ class FatFsRig(unittest.TestCase):
         self.fs = {} if previous is None else {LOG: previous}
         self.open = {}      # FIL address -> [path, position]
         self.writes = []    # (path, mode, bytes written in that open)
+        self.write_bufs = []  # buffer address of every f_write (the SD DMA cannot read D2 SRAM)
         def cstr(uc, a):
             s = b""
             while True:
@@ -437,6 +438,7 @@ class FatFsRig(unittest.TestCase):
                 f = self.open[r(0)]; data = self.fs[f[0]][f[1]:f[1] + r(2)]
                 uc.mem_write(r(1), data); w32(uc, r(3), len(data)); f[1] += len(data); ret = 0
             elif addr == 0x08120604:                              # f_write(fil, buf, n, &done)
+                self.write_bufs.append(r(1))
                 f = self.open[r(0)]; data = bytes(uc.mem_read(r(1), r(2)))
                 self.fs[f[0]] += data; self.writes[-1][2] += data; w32(uc, r(3), len(data)); ret = 0
             elif addr == 0x08120974: self.open.pop(r(0), None); ret = 0   # f_close
@@ -743,7 +745,8 @@ class NoCardWrites(FatFsRig):
         u.mem_write(pool, struct.pack("<H", len(samples)) + bytes(samples))
         w32(u, table + 4, 0)
         u.mem_write(lst, struct.pack("<H", 1))
-        u.mem_write(0x3003D840, struct.pack("<10I", 0x31565243, 1, pool, 8, table, 2, 0, 0, lst, 1))
+        u.mem_write(0x3003D840, struct.pack("<14I", 0x31565243, 1, pool, 8, table, 2, 0, 0, lst, 1,
+                                            0, 0, 0, 0xC61E0000))       # wbuf: SDRAM write buffer
 
     @staticmethod
     def decode(blob):
@@ -766,15 +769,21 @@ class NoCardWrites(FatFsRig):
         return 0x24070400
 
     def test_sidecar_round_trip_next_to_project_xml(self):
-        samples = [10, 10, 10, 12, 14, 15, 15, 50, 49, 48, 48, 48, 48, 0]
+        samples = [10, 10, 10, 12, 14, 15, 15, 50, 49, 48, 48, 48, 48, 0] * 80   # > one 4 KB buffer
         self.tick(1000); self.sidecar_rig(samples)
-        call(self.u, SYM4["dump_after_save"], self.path(r"\Projects\X\project.xml"))
+        # Run on a D2 stack like the real UI task (0x30037CF0..0x300390F0), so a buffer
+        # on the stack would show up as a D2 address below.
+        self.u.reg_write(UC_ARM_REG_R0, self.path(r"\Projects\X\project.xml"))
+        self.u.reg_write(UC_ARM_REG_SP, 0x30039000); self.u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        self.u.emu_start(SYM4["dump_after_save"] | 1, SENT, count=2000000)
         blob = self.fs[r"\Projects\X\curves.bnt"]
         ver, curves = self.decode(blob)
         self.assertEqual((ver, curves), (1, [(len(samples), samples)]))
         self.assertLess(len(blob), 8 + 4 + len(samples), "smaller than raw")
         self.assertEqual(r32(self.u, 0x3003D840 + 36), 0, "save list cleared")
         self.assertIn("sidecar status=4 curves=1", self.files[-1].decode())
+        d2 = [hex(b) for b in self.write_bufs if 0x30000000 <= b < 0x30080000 or b < 0x24000000]
+        self.assertEqual(d2, [], "every f_write buffer must be DMA-reachable (not D2 SRAM / the M4 stack)")
 
     def test_no_sidecar_for_other_files(self):
         self.tick(1000); self.sidecar_rig([1, 2, 3])

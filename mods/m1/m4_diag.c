@@ -641,12 +641,12 @@ static void curve_lines(Out *o) {
  * itself wrote the card from this same task. On failure it just returns; the
  * next save tries again (no retry loop). */
 /* ---- M2-3: curve sidecar (format in diag_shared.h) ----------------------- */
-typedef struct { u32 *file; u8 buf[512]; u32 n, bytes, err; } SideOut;
+typedef struct { u32 *file; volatile u8 *buf; u32 n, bytes, err; } SideOut;   /* buf: SDRAM (DMA-reachable) */
 static void so_put(SideOut *so, u32 b) {
     so->buf[so->n++] = (u8)b; so->bytes++;
-    if (so->n == sizeof(so->buf)) {
+    if (so->n == SIDECAR_WBUF) {
         u32 done = 0;
-        if (!so->err && (F_WRITE(so->file, so->buf, so->n, &done) || done != so->n)) so->err = 1;
+        if (!so->err && (F_WRITE(so->file, (const void *)so->buf, so->n, &done) || done != so->n)) so->err = 1;
         so->n = 0;
     }
 }
@@ -673,7 +673,7 @@ static u32 encode(const volatile u8 *s, u32 n, SideOut *so) {
 /* path = the file stock just wrote; only ...\project.xml gets a sidecar. */
 static void write_sidecar(const char *path) {
     volatile CurveState *c = CURVES;
-    if (c->magic != CURVES_MAGIC || !c->pool || !c->table || !c->savelist || !path) return;
+    if (c->magic != CURVES_MAGIC || !c->pool || !c->table || !c->savelist || !c->wbuf || !path) return;
     char name[160];
     u32 n = 0, cut = 0;
     while (path[n] && n < sizeof(name) - 12u) { name[n] = path[n]; if (path[n] == '\\' || path[n] == '/') cut = n + 1u; n++; }
@@ -689,7 +689,7 @@ static void write_sidecar(const char *path) {
     c->sc_status = 1;
     if (F_OPEN(file, name, FA_CREATE_WRITE)) { c->nsave = 0; c->sc_status = 2; return; }
     SideOut so;
-    so.file = file; so.n = so.bytes = so.err = 0;
+    so.file = file; so.buf = (volatile u8 *)c->wbuf; so.n = so.bytes = so.err = 0;
     u32 count = c->nsave;
     so_put(&so, 'B'); so_put(&so, 'N'); so_put(&so, 'T'); so_put(&so, 'C');
     so_u16(&so, 1); so_u16(&so, count);
@@ -707,7 +707,7 @@ static void write_sidecar(const char *path) {
         if (d) encode(d, cn, &so);
     }
     u32 done = 0;
-    if (so.n && !so.err && (F_WRITE(file, so.buf, so.n, &done) || done != so.n)) so.err = 1;
+    if (so.n && !so.err && (F_WRITE(file, (const void *)so.buf, so.n, &done) || done != so.n)) so.err = 1;
     F_CLOSE(file);
     c->sc_count = count; c->sc_bytes = so.bytes; c->sc_status = so.err ? 3 : 4;
     c->nsave = 0;

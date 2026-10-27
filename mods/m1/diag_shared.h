@@ -229,7 +229,10 @@ typedef struct {
     u32 magic, gen, pool, used, table, next, claims, misses;   /* first line: the M7 reads it */
     u32 savelist, nsave;             /* handles of curve notes in the save in progress (u16 each) */
     u32 sc_count, sc_bytes, sc_status;   /* last sidecar written */
+    u32 wbuf;                        /* sidecar write buffer, SDRAM: the SD controller's DMA cannot
+                                        reach D2 SRAM (the M4 stack), so file data never comes from it */
 } CurveState;
+#define SIDECAR_WBUF 4096u
 _Static_assert(sizeof(CurveState) <= 64u, "curve state reaches the curve log");
 #define CURVES ((volatile CurveState *)0x3003D840u)
 #define CURVES_MAGIC 0x31565243u /* "CRV1" */

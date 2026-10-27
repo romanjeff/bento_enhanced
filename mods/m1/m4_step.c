@@ -619,14 +619,17 @@ static volatile CurveState *curves(void) {
     volatile CurveState *c = CURVES;
     if (c->magic == CURVES_MAGIC && c->gen == boot_gen()) return c->pool ? c : 0;
     c->magic = 0; c->pool = c->table = c->used = c->claims = c->misses = 0; c->next = 1;
-    c->savelist = c->nsave = c->sc_count = c->sc_bytes = c->sc_status = 0;
+    c->savelist = c->nsave = c->sc_count = c->sc_bytes = c->sc_status = c->wbuf = 0;
     for (u32 i = 0; i < 32; i++) CLAIMED[i] = 0xFFFFFFFFu;
-    u32 need = CURVE_POOL_BYTES + CURVE_HANDLES * 6u, cur = BUMP_CUR, end = BUMP_END;
-    if (end > cur && end - cur >= need + 160u) {          /* the native allocator faults on overflow */
+    u32 need = CURVE_POOL_BYTES + CURVE_HANDLES * 6u + SIDECAR_WBUF, cur = BUMP_CUR, end = BUMP_END;
+    if (end > cur && end - cur >= need + 192u) {          /* the native allocator faults on overflow */
         u32 pool = FN(BUMP_ALLOC, u32 (*)(u32))(CURVE_POOL_BYTES);
         u32 cur2 = BUMP_CUR, table = FN(BUMP_ALLOC, u32 (*)(u32))(CURVE_HANDLES * 4u);
         u32 cur3 = BUMP_CUR, list = FN(BUMP_ALLOC, u32 (*)(u32))(CURVE_HANDLES * 2u);
-        if (pool == cur && table == cur2 && list == cur3) { c->pool = pool; c->table = table; c->savelist = list; }
+        u32 cur4 = BUMP_CUR, wbuf = FN(BUMP_ALLOC, u32 (*)(u32))(SIDECAR_WBUF);
+        if (pool == cur && table == cur2 && list == cur3 && wbuf == cur4) {
+            c->pool = pool; c->table = table; c->savelist = list; c->wbuf = wbuf;
+        }
     }
     c->gen = boot_gen(); c->magic = CURVES_MAGIC;
     return c->pool ? c : 0;
