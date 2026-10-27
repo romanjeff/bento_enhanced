@@ -82,7 +82,7 @@ typedef struct {
 #define CFG ((volatile Cfg *)0x3003C1E0u)
 #define M1_REGION_BYTES 0x2000u   /* 8 KB since v3.25 (curve players) */
 #define REGION_CURVE_STATS 32u     /* curve_starts, curve_sent, curve_late, curve_skipped (m7_polyat.c) */
-#define REGION_CURVE_PEAK 52u      /* curve_peak, curve_thinned */
+#define REGION_CURVE_PEAK 52u      /* curve_peak, curve_thinned, curve_dest (port | ch << 8 | mode << 16) */
 #define RETRIG_BYTES 512u          /* 16 bursts x 32 B, inside the M1 region */
 
 /* Per-step word: the native note record's +20 word (notes, kind 1, only;
@@ -263,6 +263,24 @@ typedef struct { u32 pitch, pad, seq, r_; } Bind;
 typedef struct { u32 magic, doc_seq, attempted, base, count, status; char path[160]; } LoadState;
 #define LOADSTATE ((volatile LoadState *)0x3003DE80u)
 #define LOADSTATE_MAGIC 0x31444C42u /* "BLD1" */
+
+/* M2-5: per-track aftertouch settings, stored as differences from the default
+ * so zeroed memory means "record on, send poly". Indexed by track number (the
+ * model's selected-track value). M4-only. */
+#define AT_POLY 0u
+#define AT_OFF 1u
+#define AT_CHAN 2u                   /* v3.30: behaves as Off until channel pressure exists */
+typedef struct { u32 magic, gen; u8 rec_off[16], out_mode[16]; } AtSet;
+#define AT_SET ((volatile AtSet *)0x3003DF40u)
+#define AT_SET_MAGIC 0x31544541u /* "AET1" */
+/* Published for the M7 (M4 writes, M7 invalidates and reads): each track's MIDI
+ * destination and send mode. A curve's player looks its port/channel up here;
+ * no match means the default (poly). */
+typedef struct { u8 port, ch, mode, valid; } AtDest;
+typedef struct { u32 magic, seq; AtDest d[8]; } AtDestTable;
+#define AT_DEST ((volatile AtDestTable *)0x3003DF80u)
+#define AT_DEST_MAGIC 0x31544441u /* "ADT1" */
+_Static_assert(0x3003DF80u + sizeof(AtDestTable) <= 0x3003DFC0u, "AT dest table");
 /* status: 0 none yet, 1 not a project.xml, 2 no sidecar, 3 bad data, 4 ok,
  * 5 pool/handles full (partial), 9 no curve memory */
 _Static_assert(0x3003D880u + CURVELOG_N * sizeof(CurveLogEntry) <= 0x3003DC80u, "curve log");

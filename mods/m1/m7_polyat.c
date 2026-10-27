@@ -86,6 +86,7 @@ typedef struct {
     u32 curve_starts, curve_sent, curve_late, curve_skipped;   /* REGION_CURVE_STATS (M4 reads) */
     u32 midi_q;                      /* MIDI-out queue (engine + 0x7C8), seen at note-on */
     u32 curve_peak, curve_thinned;   /* most players at once; values superseded before sending */
+    u32 curve_dest;                  /* last start: port | ch << 8 | mode << 16 (mapping check) */
     Bucket b[PORTS];
     Voices v[TRACKS];
     PEnt p[PENT];
@@ -341,6 +342,14 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
     u32 h = step_handle(word), n = 0, data;
     if (!r || !h || !*(volatile u8 *)(track + 0x86D1u)) return;   /* MIDI out off: nothing to drive */
     if (!(data = curve_data(h, &n))) { r->curve_skipped++; return; }
+    u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u), mode = AT_POLY;
+    DCIMVAC = (u32)AT_DEST & ~31u; DCIMVAC = ((u32)AT_DEST + 32u) & ~31u;   /* M4-written lines */
+    __asm volatile("dsb" ::: "memory");
+    if (AT_DEST->magic == AT_DEST_MAGIC)
+        for (u32 i = 0; i < 8; i++)
+            if (AT_DEST->d[i].valid && AT_DEST->d[i].port == port && AT_DEST->d[i].ch == ch) { mode = AT_DEST->d[i].mode; break; }
+    r->curve_dest = port | (ch << 8) | (mode << 16);
+    if (mode != AT_POLY) { r->curve_skipped++; return; }   /* Off (Channel: v3.31) */
     volatile Player *slot = 0;
     for (u32 i = 0; i < PLAYERS; i++) {
         volatile Player *p = &r->pl[i];

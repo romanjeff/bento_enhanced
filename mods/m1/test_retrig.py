@@ -224,6 +224,30 @@ class CurvePlayback(unittest.TestCase):
         self.assertEqual((g.sent, r32(g.u, REGION + 40)), ([], 1), "late")
 
 
+class CurveDestMode(unittest.TestCase):
+    """M2-5: the player looks its track's MIDI port/channel up in the M4's table;
+    AT Out Off (or Channel, until v3.31) starts nothing; no match = poly."""
+    def table(self, g, port, ch, mode):
+        g.u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + bytes([port, ch, mode, 1]) + bytes(28))
+
+    def test_off_for_this_destination(self):
+        pb = CurvePlayback(); g = pb.rig()
+        g.u.mem_write(g.t1 + 0x31, bytes([2, 5]))               # this track: port 2, ch 5
+        self.table(g, 2, 5, 1)
+        pb.start(g)
+        pb.emit(g, g.t1, 0, 100, 1010)
+        self.assertEqual((g.sent, r32(g.u, REGION + 44)), ([], 1), "skipped")
+        self.assertEqual(r32(g.u, REGION + 60), 2 | (5 << 8) | (1 << 16), "mapping recorded")
+
+    def test_other_destination_or_no_table_plays(self):
+        pb = CurvePlayback(); g = pb.rig()
+        g.u.mem_write(g.t1 + 0x31, bytes([2, 5]))
+        self.table(g, 2, 6, 1)                                  # Off, but for channel 6
+        pb.start(g)
+        pb.emit(g, g.t1, 0, 40, 1010)
+        self.assertTrue(g.sent, "default poly")
+
+
 class CurveWorstCase(unittest.TestCase):
     """Jeff's worst case: 8 External tracks x 6 voices = 48 curve notes at once, all
     on one MIDI port, each curve changing on every sample (a sawtooth, 256 samples

@@ -160,7 +160,10 @@ class Rig:
         elif a == 0x0815D1F0:                                     # rest of stock's press handler
             self.log.append(("press", r(1))); self.ret()
         elif a == 0x0812DC74 and r(1) == 0x131:                 # selected track index
-            self.ret(2)
+            self.ret(getattr(self, "selected", 2))
+        elif a == 0x0812DC74 and r(1) in (0x0F, 0x10):          # a track's MIDI out port / channel
+            port, ch = getattr(self, "dest", (1, 3))
+            self.ret(port if r(1) == 0x0F else ch)
         elif a == 0x08133960:                                     # find track -> handle
             w32(u, r(2), 0x77); self.ret(1)
         elif a == 0x0812D80E:                                     # resolve handle -> instrument object
@@ -274,8 +277,8 @@ class DrumEncoders(unittest.TestCase):
     def test_four_keys_claimed_and_put_in_slots_5_to_8(self):
         g = self.setup()
         keys = g.keys()
-        self.assertEqual(len(keys), 4)
-        self.assertEqual(sorted(keys, reverse=True), [0x1F1, 0x1EF, 0x1EE, 0x1ED], "empty keys from the top")
+        self.assertEqual(len(keys), 6, "4 step keys + AT Rec + AT Out (v3.30)")
+        self.assertEqual(sorted(keys, reverse=True), [0x1F1, 0x1EF, 0x1EE, 0x1ED, 0x1EC, 0x1EB], "empty keys from the top")
         table = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))
         self.assertEqual(table[4:], (0x1F1, 0x1EF, 0x1EE, 0x1ED))
         titles = [cstr(g.u, r32(g.u, REG + k * 32 + 4)) for k in table[4:]]
@@ -365,6 +368,56 @@ class Piano(unittest.TestCase):
         g.u.reg_write(UC_ARM_REG_R0, VIEW); g.u.reg_write(UC_ARM_REG_R1, ev)
         g.u.emu_start(PIANO_EVENT | 1, PIANO_EVENT + 4, count=200000)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 20 - 0x174, "replayed push + sub")
+
+class AtSettings(unittest.TestCase):
+    """M2-5: piano roll Sequence view, encoders 5/6 = AT Rec (Off/On) and AT Out
+    (Off/Poly/Channel) for the selected track; published for the M7 by the track's
+    MIDI out port/channel; AT Rec Off stops curves attaching."""
+    AT_SET, AT_DEST = 0x3003DF40, 0x3003DF80
+
+    def rig(self, selected=2):
+        g = Rig(); g.selected = selected; g.dest = (1, 3)
+        g.u.mem_write(VIEW + 0x125DAC, b"\x01")                 # Sequence view (not note edit)
+        g.call(PIANO_HEADER, VIEW)
+        return g
+
+    def slot_key(self, g, s):
+        return struct.unpack("<H", g.u.mem_read(VIEW + 0x11BCC0 + 2 * s, 2))[0]
+
+    def turn(self, g, key, value):
+        ev = 0x20100000
+        g.u.mem_write(ev, struct.pack("<5I", 0xCF, 0, key, value, 0))
+        g.log.clear()
+        return g.call(PIANO_EVENT, VIEW, ev)
+
+    def test_defaults_shown_on_encoders_5_and_6(self):
+        g = self.rig()
+        rec, out = self.slot_key(g, 4), self.slot_key(g, 5)
+        self.assertEqual((rec, out), (0x1EC, 0x1EB))
+        self.assertIn(("slot", rec, 1), g.log, "AT Rec: On")
+        self.assertIn(("slot", out, 1), g.log, "AT Out: Poly")
+        self.assertIn(("title", "AT Rec"), g.log)
+        self.assertEqual(self.slot_key(g, 6), 0, "note-edit Condition slot untouched in Sequence view")
+
+    def test_turning_sets_the_selected_track_and_publishes(self):
+        g = self.rig(selected=2)
+        self.assertEqual(self.turn(g, self.slot_key(g, 5), 0), 0, "handled")
+        self.assertEqual(bytes(g.u.mem_read(self.AT_SET + 8 + 16 + 2, 1))[0], 1, "track 2: out Off")
+        self.assertEqual(r32(g.u, self.AT_DEST), 0x31544441, "published")
+        d = bytes(g.u.mem_read(self.AT_DEST + 8 + 4 * 2, 4))
+        self.assertEqual(tuple(d), (1, 3, 1, 1), "track 2: port 1, ch 3, mode Off, valid")
+        self.turn(g, self.slot_key(g, 4), 0)
+        self.assertEqual(bytes(g.u.mem_read(self.AT_SET + 8 + 2, 1))[0], 1, "track 2: rec Off")
+
+    def test_rec_off_stops_curves_attaching(self):
+        c = CurveAttach(); g = c.rig()
+        g.selected = 2
+        g.u.mem_write(self.AT_SET, struct.pack("<II", 0x31544541, 1) + bytes([0, 0, 1]) + bytes(29))
+        c.slot(g, 5, 1, 1, [10, 20])
+        self.assertEqual(c.note_off(g, 60)[5], 0, "AT Rec Off: no curve")
+        g.u.mem_write(self.AT_SET + 8 + 2, b"\x00")
+        self.assertEqual(c.note_off(g, 60)[5] >> 24, 0xB7, "back On: curve")
+
 
 class LegacyLocks(unittest.TestCase):
     """Notes without lock data load unlocked (v3.4's 100/Always/0 rule locked
@@ -827,6 +880,21 @@ class SidecarLoad(unittest.TestCase):
         w = self.load(g, (0xB7 << 24) | (6 << 17) | (1 << 3) | 1)
         self.assertEqual((w >> 24, (w >> 17) & 0x7F, w & 7), (0xB6, 6, 1), "no curve; condition + lock kept")
         self.assertEqual(r32(g.u, 0x3003DE80 + 20), 2)
+
+    def test_track_settings_load_with_the_project(self):
+        trailer = b"TRKS" + struct.pack("<H", 16) + bytes([0, 1] + [0] * 14) + bytes([2, 1] + [0] * 14)
+        g = self.rig(files={r"\Projects\H\curves.bnt": sidecar(self.CURVES) + trailer})
+        g.u.mem_write(0x3003DF40, struct.pack("<II", 0x31544541, 1) + bytes([1] * 32))   # previous project's
+        self.load(g, 0)                                       # any note: the sidecar loads
+        at = bytes(g.u.mem_read(0x3003DF40 + 8, 32))
+        self.assertEqual((at[0], at[1], at[16], at[17]), (0, 1, 2, 1), "rec/out from the sidecar")
+        self.assertEqual(at[2:16], bytes(14), "others back to defaults")
+
+    def test_project_without_sidecar_resets_settings(self):
+        g = self.rig(files={})
+        g.u.mem_write(0x3003DF40, struct.pack("<II", 0x31544541, 1) + bytes([1] * 32))
+        self.load(g, 0)
+        self.assertEqual(bytes(g.u.mem_read(0x3003DF40 + 8, 32)), bytes(32))
 
     def test_patch_documents_never_open_a_sidecar(self):
         g = self.rig(project=r"\Patches\P\patch.xml")

@@ -98,8 +98,10 @@ __attribute__((used, retain)) void step_save(void *node, const void *rec) {
     if (a) FN(XML_SET_U32, void (*)(void *, u32))(a, w);
 }
 
+static void doc_first_note(void);
 __attribute__((used, retain)) void step_load(void *node, void *rec) {
     if (B(rec, 0) != 1) return;
+    doc_first_note();                               /* the project's sidecar: curves + track settings */
     u32 w = 0, x = 0;
     void *a = FN(XML_FIND, void *(*)(void *, const char *))(node, ATTR);
     if (a && !FN(XML_GET_U32, int (*)(void *, u32 *))(a, &x) && step_any(x)) w = x;
@@ -120,18 +122,20 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
 
 /* ---- registry keys -------------------------------------------------------- */
 
-typedef struct { u32 magic, gen, ok; u16 key[4]; u32 r[3]; } StepUI;   /* one M4-only line */
+typedef struct { u32 magic, gen, ok; u16 key[6]; u32 r[2]; } StepUI;   /* one M4-only line */
 #define SU ((volatile StepUI *)0x3003C880u)
-#define SU_MAGIC 0x31505453u /* "STP1" */
+#define SU_MAGIC 0x32505453u /* "STP2": six keys since v3.30 */
 _Static_assert(sizeof(StepUI) <= 32, "step UI state is one cache line");
 
-static const char *const TITLES[4] = {"Condition", "Retrig", "Division", "Ramp"};
-static const char *const *const CHOICES[4] = {COND_LABELS, HITS_LABELS, DIV_LABELS, RAMP_LABELS};
-static const u32 COUNTS[4] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N};
+static const char *const AT_REC_LABELS[2] = {"Off", "On"};
+static const char *const AT_OUT_LABELS[3] = {"Off", "Poly", "Channel"};
+static const char *const TITLES[6] = {"Condition", "Retrig", "Division", "Ramp", "AT Rec", "AT Out"};
+static const char *const *const CHOICES[6] = {COND_LABELS, HITS_LABELS, DIV_LABELS, RAMP_LABELS, AT_REC_LABELS, AT_OUT_LABELS};
+static const u32 COUNTS[6] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u};
 
 static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
 
-/* Claim four empty registry keys (from the top), once per boot. */
+/* Claim six empty registry keys (from the top), once per boot. */
 static int claim(void) {
     if (SU->magic != SU_MAGIC || SU->gen != boot_gen()) {
         SU->ok = 0; SU->r[0] = SU->r[1] = SU->r[2] = 0; SU->gen = boot_gen(); SU->magic = SU_MAGIC;
@@ -139,11 +143,11 @@ static int claim(void) {
     if (SU->ok) return 1;
     u32 r = REGISTRY;
     if (!r) return 0;
-    u16 keys[4]; u32 n = 0;
-    for (u32 k = REG_KEYS - 1; k >= 0x100 && n < 4; k--)
+    u16 keys[6]; u32 n = 0;
+    for (u32 k = REG_KEYS - 1; k >= 0x100 && n < 6; k--)
         if (!H(r + k * 32, 0)) keys[n++] = (u16)k;
-    if (n < 4) return 0;
-    for (u32 i = 0; i < 4; i++) {
+    if (n < 6) return 0;
+    for (u32 i = 0; i < 6; i++) {
         u32 d = r + keys[i] * 32u;
         for (u32 j = 0; j < 8; j++) W(d, j * 4) = 0;
         H(d, 0) = keys[i]; B(d, 2) = 7;                 /* list parameter, as Lab's pickers */
@@ -454,7 +458,9 @@ static int piano_selected(void *v, u32 *rec) {
     return (rec[0] & 0xFFu) == 1u;
 }
 
+static void at_header(void *v);
 __attribute__((used, retain)) void piano_header_after(void *v) {
+    if (v && B(v, 0x125DAC) && claim()) { at_header(v); return; }   /* Sequence view: AT settings */
     if (!piano_note_view(v) || !claim()) return;
     if (H(v, 0x11BCC0 + PIANO_SLOT * 2)) return;           /* slot taken (stock changed?): leave it */
     u32 rec[6];
@@ -472,8 +478,11 @@ __attribute__((used, retain)) void piano_header_after(void *v) {
 
 /* Piano-roll event handler entry 0x0815A598 (view, event). 1 = handled. */
 int strike_event(void *v, const u16 *ev);
+static int at_event(void *v, const u32 *ev);
 __attribute__((used, retain)) int piano_event(void *v, const u32 *ev) {
     if ((ev[0] & 0xFFFFu) == STRIKE_ACTION) return strike_event(v, (const u16 *)ev);
+    if (SU->ok && v && B(v, 0x125DAC) && (ev[0] & 0xFFFFu) == 0xCFu && (ev[2] == SU->key[4] || ev[2] == SU->key[5]))
+        return at_event(v, ev);
     if (!SU->ok || !piano_note_view(v) || (ev[0] & 0xFFFFu) != 0xCFu || ev[2] != SU->key[0]) return 0;
     void *sel = (u8 *)v + PIANO_SEL;
     u32 e[6], changed = 0;
@@ -738,8 +747,10 @@ static void bind_pitch(const u32 *rec) {
     volatile Bind *e = &BINDS[BINDS_NEXT++ & 15u];
     e->pitch = (rec[4] & 0xFFFFu) | 0x10000u; e->pad = bp; e->seq = best->seq;
 }
+static int at_rec_off(void);
 __attribute__((used, retain)) void curve_update(u32 *rec, u32 lr) {
     if ((lr & ~1u) != MEL_NOTE_OFF || (rec[0] & 0xFFu) != 1u || !rec[2] || drum_track_selected()) return;
+    if (at_rec_off()) return;                       /* AT Rec Off on this track */
     volatile CapBlock *b = cap_block4();
     u32 pitch = (rec[4] & 0xFFFFu) | 0x10000u, pad = 16, idx = 0;
     volatile CapSlot *s = 0;
@@ -802,6 +813,9 @@ __attribute__((used, retain)) void doc_begin(const char *path) {
     ls->magic = LOADSTATE_MAGIC;
 }
 
+static volatile AtSet *at_set(void);
+static void at_defaults(void);
+static void at_publish(void);
 typedef struct { u32 *file; volatile u8 *buf; u32 n, pos, eof; } Reader;
 static int rd_byte(Reader *r) {
     if (r->pos == r->n) {
@@ -832,6 +846,7 @@ static void load_sidecar(volatile LoadState *ls, volatile CurveState *c) {
         if (ch != want[i]) { ls->status = 1; return; }
     }
     for (u32 i = 0; i < sizeof(side); i++) name[cut + i] = side[i];
+    at_defaults();                                  /* a project's own settings, or the defaults */
     u32 file[22];
     for (u32 i = 0; i < 22; i++) file[i] = 0;
     if (F_OPEN(file, name, 0x01u)) { ls->status = 2; return; }
@@ -878,17 +893,113 @@ static void load_sidecar(volatile LoadState *ls, volatile CurveState *c) {
         c->next++;
         ls->count++;
     }
+    if (ls->status == 4) {                          /* optional trailer: "TRKS" u16 n, rec_off[n], out_mode[n] */
+        int t0 = rd_byte(&r), t1 = rd_byte(&r), t2 = rd_byte(&r), t3 = rd_byte(&r), tn = rd_u16(&r);
+        if (t0 == 'T' && t1 == 'R' && t2 == 'K' && t3 == 'S' && tn > 0) {
+            volatile AtSet *a = at_set();
+            for (int i = 0; i < tn; i++) { int v = rd_byte(&r); if (i < 16 && v >= 0) a->rec_off[i] = (u8)(v ? 1 : 0); }
+            for (int i = 0; i < tn; i++) { int v = rd_byte(&r); if (i < 16 && v >= 0) a->out_mode[i] = (u8)(v <= 2 ? v : 0); }
+        }
+    }
     F_CLOSE(file);
+}
+
+static void doc_first_note(void) {
+    volatile LoadState *ls = LOADSTATE;
+    if (ls->magic != LOADSTATE_MAGIC || ls->attempted) return;
+    ls->attempted = 1;
+    volatile CurveState *c = curves();
+    if (!c || !c->wbuf) { ls->status = 9; return; }
+    load_sidecar(ls, c);
+    at_publish();
 }
 
 static u32 curve_for_index(u32 idx) {
     volatile LoadState *ls = LOADSTATE;
     if (ls->magic != LOADSTATE_MAGIC) return 0;
-    if (!ls->attempted) {
-        ls->attempted = 1;
-        volatile CurveState *c = curves();
-        if (!c || !c->wbuf) { ls->status = 9; return 0; }
-        load_sidecar(ls, c);
-    }
+    doc_first_note();
     return idx && idx <= ls->count ? ls->base + idx - 1u : 0u;
+}
+
+
+/* ---- M2-5: per-track aftertouch settings ------------------------------------
+ * Piano roll, Sequence view: encoder 5 "AT Rec" (Off/On), 6 "AT Out"
+ * (Off/Poly/Channel) for the selected track. Recording checks AT Rec when a
+ * curve attaches; the M7 checks AT Out by the note's MIDI port/channel in the
+ * published destination table. Saved in the project's sidecar (TRKS). */
+#define AT_SLOT_REC 4u
+#define AT_SLOT_OUT 5u
+static u32 sel_track(void) { return FN(0x0812DC74u, u32 (*)(void *, u32))((u8 *)MODEL + 4, 0x131); }
+
+static volatile AtSet *at_set(void) {
+    volatile AtSet *a = AT_SET;
+    if (a->magic != AT_SET_MAGIC || a->gen != boot_gen()) {
+        for (u32 i = 0; i < 16; i++) { a->rec_off[i] = 0; a->out_mode[i] = 0; }
+        a->gen = boot_gen(); a->magic = AT_SET_MAGIC;
+    }
+    return a;
+}
+static void at_defaults(void) {
+    volatile AtSet *a = at_set();
+    for (u32 i = 0; i < 16; i++) { a->rec_off[i] = 0; a->out_mode[i] = 0; }
+}
+static int at_rec_off(void) {
+    u32 t = sel_track();
+    return t < 16u && at_set()->rec_off[t];
+}
+
+/* Each track's MIDI out port/channel (registry keys 0x0F/0x10 on its model
+ * object) with its send mode, for the M7. */
+static void at_publish(void) {
+    volatile AtSet *a = at_set();
+    volatile AtDestTable *t = AT_DEST;
+    t->magic = 0;
+    for (u32 i = 0; i < 8; i++) {
+        u32 h = 0; void *obj = 0;
+        t->d[i].valid = 0;
+        if (!FN(0x08133960u, u32 (*)(void *, u32, u32 *))(MODEL, i, &h)) continue;
+        if (!FN(0x0812D80Eu, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) || !obj) continue;
+        t->d[i].port = (u8)FN(0x0812DC74u, u32 (*)(void *, u32))(obj, 0x0F);
+        t->d[i].ch = (u8)FN(0x0812DC74u, u32 (*)(void *, u32))(obj, 0x10);
+        t->d[i].mode = a->out_mode[i];
+        t->d[i].valid = 1;
+    }
+    t->seq++;
+    t->magic = AT_DEST_MAGIC;
+}
+
+static const u8 OUT_TO_INDEX[3] = {1, 0, 2};   /* mode Poly/Off/Channel -> list Off/Poly/Channel */
+static const u8 INDEX_TO_OUT[3] = {AT_OFF, AT_POLY, AT_CHAN};
+
+static void at_slot(void *v, u32 s, u32 which, u32 value) {
+    if (H(v, 0x11BCC0 + s * 2) && H(v, 0x11BCC0 + s * 2) != SU->key[which]) return;   /* stock uses it */
+    void *bar = (u8 *)v + 0x55F0, *slot = (u8 *)bar + 0x38 + s * 0x468;
+    H(v, 0x11BCC0 + s * 2) = SU->key[which];
+    W(v, 0x11BCD0 + s * 4) = value;
+    W(v, 0x11BCA0 + s * 4) = W(v, 0x11CD00);
+    FN(BAR_TEXT, void (*)(void *, u32, const char *))(bar, s, 0);
+    FN(SLOT_SET, void (*)(void *, u32, int, u32))(slot, SU->key[which], (int)value, 1);
+    FN(SLOT_TITLE, void (*)(void *, const char *))((u8 *)slot + 0x3C8, TITLES[which]);
+}
+
+static void at_header(void *v) {
+    u32 t = sel_track();
+    at_publish();                                   /* ports/channels may have changed on INST */
+    if (t >= 16u) return;
+    volatile AtSet *a = at_set();
+    at_slot(v, AT_SLOT_REC, 4, a->rec_off[t] ? 0u : 1u);
+    at_slot(v, AT_SLOT_OUT, 5, OUT_TO_INDEX[a->out_mode[t] <= 2 ? a->out_mode[t] : 0]);
+}
+
+static int at_event(void *v, const u32 *ev) {
+    u32 t = sel_track();
+    int value = (int)ev[3];
+    if (t < 16u) {
+        volatile AtSet *a = at_set();
+        if (ev[2] == SU->key[4]) a->rec_off[t] = value <= 0;
+        else a->out_mode[t] = INDEX_TO_OUT[value < 0 ? 0 : value > 2 ? 2 : value];
+        at_publish();
+    }
+    FN(PIANO_HEADER, void (*)(void *))(v);
+    return 1;
 }

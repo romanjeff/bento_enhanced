@@ -328,6 +328,15 @@ static void counters(Out *o) {
         puts_(o, " late="); dec(o, cs[2]); puts_(o, " skipped="); dec(o, cs[3]);
         volatile u32 *cp = (volatile u32 *)(CFG->region + REGION_CURVE_PEAK);
         puts_(o, " peak players="); dec(o, cp[0]); puts_(o, " thinned="); dec(o, cp[1]);
+        puts_(o, " last dest="); hex(o, cp[2], 6);
+        if (AT_DEST->magic == AT_DEST_MAGIC) {
+            puts_(o, " | AT tracks port/ch/mode:");
+            for (u32 i = 0; i < 8; i++) {
+                if (!AT_DEST->d[i].valid) continue;
+                puts_(o, " "); dec(o, i); puts_(o, "="); dec(o, AT_DEST->d[i].port); puts_(o, "/");
+                dec(o, AT_DEST->d[i].ch); puts_(o, "/"); dec(o, AT_DEST->d[i].mode);
+            }
+        }
     }
     ram(o);
     if (STRIKE_SET->magic == STRIKE_SET_MAGIC) {   /* Strike Vel header button (m4_step.c) */
@@ -706,6 +715,11 @@ static void write_sidecar(const char *path) {
         so_u16(&so, d ? cn : 0); so_u16(&so, len);
         if (d) encode(d, cn, &so);
     }
+    /* M2-5 trailer: per-track AT settings (older loaders ignore it). */
+    so_put(&so, 'T'); so_put(&so, 'R'); so_put(&so, 'K'); so_put(&so, 'S'); so_u16(&so, 16);
+    int at_ok = AT_SET->magic == AT_SET_MAGIC;
+    for (u32 i = 0; i < 16; i++) so_put(&so, at_ok ? AT_SET->rec_off[i] : 0u);
+    for (u32 i = 0; i < 16; i++) so_put(&so, at_ok ? AT_SET->out_mode[i] : 0u);
     u32 done = 0;
     if (so.n && !so.err && (F_WRITE(file, (const void *)so.buf, so.n, &done) || done != so.n)) so.err = 1;
     F_CLOSE(file);
