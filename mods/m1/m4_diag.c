@@ -635,6 +635,14 @@ __attribute__((used, retain)) void dump_after_save(void) {
     if (M4H->magic != DIAG_MAGIC || M4H->r[1] <= 1u) return;
     Out o = {(char *)M4H->r[1], M4H->r[2]};
     curve_lines(&o);
+    if (INSLOG->magic == INSLOG_MAGIC) {            /* who inserted notes this boot */
+        puts_(&o, "INSERTS total="); dec(&o, INSLOG->total);
+        puts_(&o, " last rec0="); hex(&o, INSLOG->last_kind, 8); puts_(&o, " by caller:");
+        for (u32 i = 0; i < 8 && INSLOG->lr[i]; i++) {
+            puts_(&o, " "); hex(&o, INSLOG->lr[i], 8); puts_(&o, "x"); dec(&o, INSLOG->count[i]);
+        }
+        puts_(&o, "\r\n");
+    }
     puts_(&o, "# saved: "); counters(&o);
     puts_(&o, " at ms "); dec(&o, TICK_MS); puts_(&o, "\r\n");
     M4H->r[2] = o.len;

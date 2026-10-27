@@ -679,8 +679,25 @@ static void attach_curve(u32 *rec) {
     log_curve(h, pad, rec, s, n_out, dst + 2);
 }
 
+/* M2-1 diagnosis: who inserts notes? The last 8 distinct callers (return
+ * addresses) with counts, and a total; printed by the black box at save. */
+static void log_inserter(u32 lr, const u32 *rec) {
+    volatile InsLog *g = INSLOG;
+    if (g->magic != INSLOG_MAGIC || g->gen != boot_gen()) {
+        for (u32 i = 0; i < 8; i++) { g->lr[i] = 0; g->count[i] = 0; }
+        g->total = 0; g->gen = boot_gen(); g->magic = INSLOG_MAGIC;
+    }
+    g->total++;
+    g->last_kind = rec[0];
+    for (u32 i = 0; i < 8; i++) {
+        if (g->lr[i] == (lr & ~1u)) { g->count[i]++; return; }
+        if (!g->lr[i]) { g->lr[i] = lr & ~1u; g->count[i] = 1; return; }
+    }
+}
+
 __attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr) {
     volatile PadState *ps;
+    log_inserter(lr, rec);
     if ((lr & ~1u) == REC_INSERT_RET) attach_curve(rec);
     if ((rec[0] & 0xFFu) != 1u || strike_off() || !(ps = pads()) || !drum_track_selected()) return;
     /* Which pad made this note? The Sequence page's pads are the 16 steps of the

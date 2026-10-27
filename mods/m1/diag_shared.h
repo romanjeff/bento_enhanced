@@ -231,6 +231,10 @@ _Static_assert(sizeof(CurveLogEntry) == 64, "curve log entry is 64 bytes");
 #define CURVELOG ((volatile CurveLogEntry *)0x3003D880u)
 #define CURVELOG_N 16u
 #define CLAIMED ((volatile u32 *)0x3003DC80u)   /* [pad*2 + slot]: claimed press seq (M4) */
+/* M2-1 diagnosis (M4): callers of stock's note insert, by return address. */
+typedef struct { u32 magic, gen, total, last_kind, lr[8], count[8]; } InsLog;
+#define INSLOG ((volatile InsLog *)0x3003DD00u)
+#define INSLOG_MAGIC 0x31534E49u /* "INS1" */
 _Static_assert(0x3003D880u + CURVELOG_N * sizeof(CurveLogEntry) <= 0x3003DC80u, "curve log");
 
 #define PROF ((volatile Prof *)0x3003D000u)
