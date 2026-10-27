@@ -792,6 +792,17 @@ class NoCardWrites(FatFsRig):
         self.assertFalse(any(k.endswith("curves.bnt") for k in self.fs))
         self.assertEqual(r32(self.u, 0x3003D840 + 36), 0, "save list cleared anyway")
 
+    def test_cold_boot_with_garbage_in_reserved_ram(self):
+        """v3.25-v3.31 boot loop: init() printed the previous boot's counters, which
+        followed CFG->region (reset-surviving D2 RAM) checking only for non-zero. After
+        a cold start D2 holds its power-up pattern: the M4 faulted before re-initialising
+        CFG, and every warm reset kept the same garbage."""
+        for junk in (0xDEADBEE0, 0x00000004, 0xFFFFFFF0):
+            self.setUp()
+            self.u.mem_write(0x3003C1E0, struct.pack("<8I", 0x5A5A5A5A, junk, 0x1234, 7, 9, junk, junk, junk))
+            self.tick(1000)                                   # first poll: init must not fault
+            self.assertEqual(r32(self.u, M4H), MAGIC, "black box up")
+
     def test_header_still_built_in_ram(self):
         self.tick(1000)
         buf, n = r32(self.u, M4H + 12), r32(self.u, M4H + 16)

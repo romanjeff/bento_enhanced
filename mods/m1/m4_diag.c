@@ -127,6 +127,8 @@ static void history(const char *why) {
     puts_(&o, " core="); hex(&o, BKP[27], 8);
     puts_(&o, " lr="); hex(&o, BKP[11], 8);
     puts_(&o, " frame_pc="); hex(&o, BKP[12], 8);
+    puts_(&o, " bkp=");
+    for (u32 i = 0; i < 32; i++) { if (i) puts_(&o, ","); hex(&o, BKP[i], 8); }
     puts_(&o, "\r\n");
     u32 file[22], done = 0;
     zero(file, sizeof(file));
@@ -322,11 +324,17 @@ static void counters(Out *o) {
     }
     puts_(o, " min_sp="); hex(o, RINGSTAT->min_sp, 8);
     puts_(o, " heartbeat="); dec(o, RINGSTAT->heartbeat);
-    if (CFG->region) {                               /* M2-2 curve playback (M7 region, uncached) */
-        volatile u32 *cs = (volatile u32 *)(CFG->region + REGION_CURVE_STATS);
+    /* M2-2 curve playback (M7 region, uncached). CFG survives resets and holds
+     * D2's power-up pattern after a cold start: follow its pointer only if the
+     * line is ours and the pointer is a bump allocation in SDRAM (v3.25-v3.31
+     * checked only for non-zero: the M4 faulted here at boot, before
+     * re-initialising CFG, so every warm reset looped). */
+    u32 rg = CFG->region;
+    if (CFG->magic == DIAG_MAGIC && rg >= 0xC6000000u && rg < 0xC8000000u && !(rg & 31u)) {
+        volatile u32 *cs = (volatile u32 *)(rg + REGION_CURVE_STATS);
         puts_(o, " | curves started="); dec(o, cs[0]); puts_(o, " sent="); dec(o, cs[1]);
         puts_(o, " late="); dec(o, cs[2]); puts_(o, " skipped="); dec(o, cs[3]);
-        volatile u32 *cp = (volatile u32 *)(CFG->region + REGION_CURVE_PEAK);
+        volatile u32 *cp = (volatile u32 *)(rg + REGION_CURVE_PEAK);
         puts_(o, " peak players="); dec(o, cp[0]); puts_(o, " thinned="); dec(o, cp[1]);
         puts_(o, " last dest="); hex(o, cp[2], 6);
         if (AT_DEST->magic == AT_DEST_MAGIC) {
@@ -682,7 +690,7 @@ static u32 encode(const volatile u8 *s, u32 n, SideOut *so) {
 /* path = the file stock just wrote; only ...\project.xml gets a sidecar. */
 static void write_sidecar(const char *path) {
     volatile CurveState *c = CURVES;
-    if (c->magic != CURVES_MAGIC || !c->pool || !c->table || !c->savelist || !c->wbuf || !path) return;
+    if (c->magic != CURVES_MAGIC || c->gen != CFG->r[0] || !c->pool || !c->table || !c->savelist || !c->wbuf || !path) return;   /* this boot only: reset-surviving pointers */
     char name[160];
     u32 n = 0, cut = 0;
     while (path[n] && n < sizeof(name) - 12u) { name[n] = path[n]; if (path[n] == '\\' || path[n] == '/') cut = n + 1u; n++; }
