@@ -585,12 +585,12 @@ static void poll(void) {
         }
         return;
     }
-    if (M4H->r[4] == 0 && o.len && now >= BOOT_WRITE_MS && now - M4H->r[5] >= IDLE_MS) {
-        puts_(&o, "# "); counters(&o);
-        puts_(&o, " at ms "); dec(&o, now); puts_(&o, "\r\n");
-        M4H->r[2] = o.len;
-        flush();
-    }
+    /* v3.21: no card access at all by default. v3.19's boot write kept retrying
+     * when f_open failed (flush() returned without recording progress) and each
+     * FatFS call can re-mount the volume under stock's open files: suspected
+     * cause of PROJ crashes, empty project lists and "insert microSD card".
+     * Everything stays in reset-surviving RAM until an explicit, safe dump exists. */
+    (void)now;
 }
 
 /* Replaces `bl 0x08101c78` at 0x08114b10 in the defaultTask loop. */

@@ -661,31 +661,25 @@ class M4EndToEnd(FatFsRig):
         self.assertEqual(r32(self.u, M7H + 8), 0)
         self.assertEqual(len(records(self.u)), 1)
 
-class BootOnlyWrites(FatFsRig):
-    """v3.19 default: the card is written once per boot, >= 20 s after boot with
-    pads idle (stock's FatFS/SD driver take no locks; live writes collided)."""
+class NoCardWrites(FatFsRig):
+    """v3.21 default: the black box never touches the card (stock's FatFS and SD
+    driver take no locks; any access from our code risked re-mounting the volume
+    under stock's open files). Diagnostics stay in reset-surviving RAM."""
     live = False
 
-    def test_nothing_before_20_s_then_one_write(self):
+    def test_no_fatfs_calls_ever(self):
         self.tick(1000); self.send(0x5B)
-        self.tick(3000); self.tick(19000)
-        self.assertEqual(self.files, [], "nothing written before 20 s")
-        self.tick(21000)
-        self.assertEqual(len(self.files), 1)
-        self.assertIn("BENTO black box, firmware BE", self.files[0].decode())
-
-    def test_no_later_writes_even_for_a_live_crash(self):
-        self.tick(1000); self.tick(21000)
-        n = len(self.writes)
-        self.send(0x5B); self.tick(30000)
+        for ms in (3000, 21000, 40000, 60000):
+            self.tick(ms)
         w32(self.u, 0x58004050 + 24 * 4, r32(self.u, 0x58004050 + 24 * 4) + 1)   # new stock crash record
-        self.tick(31000); self.tick(40000)
-        self.assertEqual(len(self.writes), n, "no card access after the boot write")
+        self.tick(61000); self.tick(90000)
+        self.tick(50); self.tick(25000)                    # reset and a new boot
+        self.assertEqual(self.writes, [], "no f_open of any kind")
 
-    def test_next_boot_writes_again(self):
-        self.tick(1000); self.tick(21000)
-        self.tick(50); self.tick(21000)                    # reset: time went back
-        self.assertEqual(len(self.files), 2)
+    def test_header_still_built_in_ram(self):
+        self.tick(1000)
+        buf, n = r32(self.u, M4H + 12), r32(self.u, M4H + 16)
+        self.assertIn(b"BENTO black box, firmware", bytes(self.u.mem_read(buf, n)))
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])
