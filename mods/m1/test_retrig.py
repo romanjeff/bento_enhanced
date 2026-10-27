@@ -149,6 +149,68 @@ class Retrig(unittest.TestCase):
         g = Rig(region=False); g.accept(g.t1, pad=15, tick=1000); g.emit(g.t1, 0, 2000)
         self.assertEqual(len(g.calls), 1)
 
+class RetrigMidi(unittest.TestCase):
+    """R4: on a MIDI-out track each retrigger hit also goes to MIDI, straight to
+    the queue (not through the poly cap). Original still held: Note Off + Note On
+    (stock's Note Off ends the last); already released: Note On, closed by our
+    own Note Off half a division (80 ticks) later. Nothing is left hanging."""
+    QUEUE = ROUTER + 0x7C8
+    SYM = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["m7_symbols"].items()}
+
+    def midi(self, g):
+        n = r32(g.u, self.QUEUE + 0x600)
+        evs = [struct.unpack("<6I", g.u.mem_read(self.QUEUE + 24 * i, 24)) for i in range(n)]
+        return [(e[0], e[1], e[4], e[5] & 0xFFFF) for e in evs]
+
+    def hold(self, g, note=36):
+        """The original Note On through the poly cap (its voice list)."""
+        ev = 0x24070000
+        g.u.mem_write(ev, struct.pack("<6I", 0x5B, 0, 0, 0, note, 100))
+        g.u.reg_write(UC_ARM_REG_R0, self.QUEUE); g.u.reg_write(UC_ARM_REG_R1, ev); g.u.reg_write(UC_ARM_REG_R2, g.t1)
+        g.u.reg_write(UC_ARM_REG_SP, 0x2407F000); g.u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        g.u.emu_start(self.SYM["h_note"] | 1, SENT, count=200000)
+        w32(g.u, self.QUEUE + 0x600, 0)                            # forget the original in the log
+
+    def test_released_original_hits_close_themselves(self):
+        g = Rig(); g.accept(g.t1, pad=15, tick=1000); g.emit(g.t1, 0, 1000)
+        self.assertEqual(self.midi(g), [(0x5B, 160, 36, 80), (0x5C, 240, 36, 0x64),
+                                        (0x5B, 320, 36, 60), (0x5C, 400, 36, 0x64),
+                                        (0x5B, 480, 36, 40), (0x5C, 560, 36, 0x64)])
+
+    def test_held_original_rearticulates(self):
+        g = Rig(); self.hold(g); g.accept(g.t1, pad=15, tick=1000); g.emit(g.t1, 0, 1000)
+        self.assertEqual(self.midi(g), [(0x5C, 160, 36, 0x64), (0x5B, 160, 36, 80),
+                                        (0x5C, 320, 36, 0x64), (0x5B, 320, 36, 60),
+                                        (0x5C, 480, 36, 0x64), (0x5B, 480, 36, 40)])
+
+    def test_close_waits_for_its_block(self):
+        g = Rig(); g.accept(g.t1, pad=15, tick=1000)
+        g.emit(g.t1, 0, 200)                                       # hit at 160; its Note Off (240) later
+        self.assertEqual(self.midi(g), [(0x5B, 160, 36, 80)])
+        g.emit(g.t1, 200, 100)
+        self.assertEqual(self.midi(g)[-1], (0x5C, 240, 36, 0x64))
+
+    def test_new_note_on_the_pad_closes_an_open_hit(self):
+        g = Rig(); g.accept(g.t1, pad=15, tick=1000); g.emit(g.t1, 0, 200)
+        g.accept(g.t1, pad=15, tick=1210, word=0)                  # plain note cuts the burst off
+        self.assertEqual(self.midi(g)[-1][:1] + self.midi(g)[-1][2:], (0x5C, 36, 0x64))
+        g.emit(g.t1, 200, 2000)
+        self.assertEqual(len(self.midi(g)), 2, "nothing more from the old burst")
+
+    def test_stopped_transport_closes_an_open_hit(self):
+        g = Rig(); g.accept(g.t1, pad=15, tick=1000); g.emit(g.t1, 0, 200)
+        g.emit(g.t1, 9000, 100)                                    # far later: late
+        self.assertEqual([e[0] for e in self.midi(g)], [0x5B, 0x5C])
+        g.emit(g.t1, 9100, 100)
+        self.assertEqual(len(self.midi(g)), 2)
+
+    def test_midi_off_track_sends_no_midi(self):
+        g = Rig(); g.u.mem_write(g.t1 + 0x86D1, b"\x00")
+        g.accept(g.t1, pad=15, tick=1000); g.emit(g.t1, 0, 1000)
+        self.assertEqual(self.midi(g), [])
+        self.assertEqual(len(g.hits()), 3, "internal hits unchanged")
+
+
 class CurvePlayback(unittest.TestCase):
     """M2-2: a note whose word carries a curve handle (tag 0xB7) plays its recorded
     pressure as poly aftertouch (0x5F) on its External track. v3.27: per block only

@@ -15,10 +15,16 @@
  * Hits more than LATE_SAMPLES behind (transport stopped, clip changed) are
  * dropped. Velocity of hit k (1..N) = vel * (1 + ramp% * k / N), 1..127.
  *
- * Prototype scope: settings are hard-coded for pad 16 (index 15) until the
- * per-note storage and encoders exist (R3/R4); hits go to the internal sound
- * only (MIDI out is masked while a hit is posted; MIDI retriggers need their
- * own note-offs).
+ * Hits go to the internal sound through note_route with MIDI out masked; on a
+ * MIDI-out track each hit also goes straight to the MIDI queue (R4), not
+ * through the poly cap's same-note rule (that would owe a native Note Off per
+ * hit, which never comes: the last note would hang):
+ *   - original note still sounding (voice list): Note Off + Note On, so the
+ *     voice re-articulates and stock's own Note Off still ends it;
+ *   - original already released (short gate): Note On, closed by our own
+ *     Note Off half a division later.
+ * An own note still open when the burst ends early (late, cut off by a new
+ * note on the pad) is closed at once: nothing hangs.
  */
 #include "diag_shared.h"
 
@@ -33,7 +39,7 @@ typedef struct {
     u32 track, router;
     u32 tick_lo, tick_hi;            /* the stock hit (k = 0) */
     u16 note, pad, vel, div;         /* div in playback ticks */
-    u8 n, k, used, pad_;
+    u8 n, k, used, open;             /* open: our own MIDI Note On awaits its Note Off */
     int ramp;                        /* percent, -100..100 */
 } Burst; /* 32 bytes */
 
@@ -44,6 +50,19 @@ void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bu
 void curve_emit(u32 track, u32 clock, int start, int len);
 
 typedef void (*route_fn)(u32 track, u32 note, u32 vel, u32 timing, u32 pad, u32 router);
+int m1_note_sounding(u32 track, u32 note);   /* m7_polyat.c: the poly cap's voice list */
+
+#define MSG_SEND 0x08065600u
+/* A MIDI note event as note_route builds it: {type, timing, port, ch, note, vel}. */
+static void midi_note(u32 router, u32 type, u32 track, u32 note, u32 vel, u32 timing) {
+    u32 ev[6] = {type, timing, *(volatile u8 *)(track + 0x31u), *(volatile u8 *)(track + 0x32u), note & 0x7Fu, vel};
+    FN(MSG_SEND, void (*)(u32, const u32 *))(router + 0x7C8u, ev);
+}
+static void close_open(volatile Burst *x, u32 timing) {
+    if (!x->open) return;
+    midi_note(x->router, 0x5C, x->track, x->note, 0x64, timing);
+    x->open = 0;
+}
 typedef int (*offset_fn)(u32 clock, const u32 *tick64);
 
 static const u16 DIV_TICKS[11] = {480, 320, 720, 240, 160, 360, 120, 80, 180, 60, 40};
@@ -74,14 +93,14 @@ __attribute__((used, retain)) void retrig_accept(u32 track, u32 note, const u32 
     int ramp;
     volatile Burst *free_b = 0;
     for (u32 i = 0; i < BURSTS; i++) {
-        if (b[i].used && b[i].track == track && b[i].pad == pad) b[i].used = 0;   /* cut off */
+        if (b[i].used && b[i].track == track && b[i].pad == pad) { close_open(&b[i], 0); b[i].used = 0; }   /* cut off */
         if (!b[i].used && !free_b) free_b = &b[i];
     }
     if (!settings(pad, &csp[0x3C / 4], &n, &div, &ramp) || !free_b) return;
     free_b->track = track; free_b->router = csp[1];
     free_b->tick_lo = csp[0x20 / 4]; free_b->tick_hi = csp[0x24 / 4];
     free_b->note = (u16)note; free_b->pad = (u16)pad; free_b->vel = (u16)vel; free_b->div = (u16)div;
-    free_b->n = (u8)n; free_b->k = 1; free_b->ramp = ramp;
+    free_b->n = (u8)n; free_b->k = 1; free_b->ramp = ramp; free_b->open = 0;
     free_b->used = 1;
 }
 
@@ -94,21 +113,44 @@ __attribute__((used, retain)) void retrig_emit(u32 track, u32 clock, int start, 
     for (u32 i = 0; i < BURSTS; i++) {
         volatile Burst *x = &b[i];
         if (!x->used || x->track != track) continue;
-        while (x->used && x->k <= x->n) {
+        for (;;) {
+            if (x->open) {                                     /* our own note: close at hit + div / 2 */
+                u32 add = (u32)x->div * (x->k - 1u) + x->div / 2u, t[2];
+                t[0] = x->tick_lo + add;
+                t[1] = x->tick_hi + (t[0] < add);
+                int off = FN(TICK_TO_OFFSET, offset_fn)(clock, t);
+                if (off >= start + len) break;
+                close_open(x, (u32)(off < start ? start : off));
+                continue;
+            }
+            if (x->k > x->n) break;
             u32 add = (u32)x->div * x->k, t[2];
             t[0] = x->tick_lo + add;
             t[1] = x->tick_hi + (t[0] < add);
             int off = FN(TICK_TO_OFFSET, offset_fn)(clock, t);
             if (off >= start + len) break;                     /* due in a later block */
-            if (off < start - LATE_SAMPLES) { x->used = 0; break; }
+            if (off < start - LATE_SAMPLES) { x->k = (u8)(x->n + 1u); break; }   /* late: give up */
             if (off < start) off = start;
+            u32 vel = ramp_vel(x->vel, x->ramp, x->k, x->n);
             volatile u8 *midi = (volatile u8 *)(track + MIDI_OUT_FLAG);
             u8 keep = *midi;
             *midi = 0;
-            FN(NOTE_ROUTE, route_fn)(track, x->note, ramp_vel(x->vel, x->ramp, x->k, x->n), (u32)off, x->pad, x->router);
+            FN(NOTE_ROUTE, route_fn)(track, x->note, vel, (u32)off, x->pad, x->router);
             *midi = keep;
+#ifdef BE_NO_RMIDI
+            keep = 0;                                          /* BE_DISABLE=rmidi: internal hits only */
+#endif
+            if (keep) {                                        /* R4: the MIDI hit */
+                if (m1_note_sounding(track, x->note)) {
+                    midi_note(x->router, 0x5C, track, x->note, 0x64, (u32)off);
+                    midi_note(x->router, 0x5B, track, x->note, vel, (u32)off);
+                } else {
+                    midi_note(x->router, 0x5B, track, x->note, vel, (u32)off);
+                    x->open = 1;
+                }
+            }
             x->k++;
         }
-        if (x->k > x->n) x->used = 0;
+        if (x->k > x->n && !x->open) x->used = 0;     /* an open note closes first (late: at once) */
     }
 }

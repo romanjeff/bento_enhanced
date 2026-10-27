@@ -116,6 +116,20 @@ _Static_assert(__builtin_offsetof(Region, int_dest) == REGION_INTERNAL, "interna
 #define REGION_MAGIC 0x33424D31u /* "1MB3": + internal instruments (v3.37) */
 
 static volatile Region *region(void);
+/* m7_retrig.c (R4): is this note sounding on the track (voice list)? */
+static volatile Voices *voices(volatile Region *r, u32 track, int create);
+static int find(volatile Voices *v, u32 note);
+static inline u32 irq_save(void);
+static inline void irq_restore(u32 p);
+int m1_note_sounding(u32 track, u32 note) {
+    volatile Region *r = region();
+    u32 p = irq_save();
+    volatile Voices *v = r ? voices(r, track, 0) : 0;
+    int s = v && find(v, note & 0x7Fu) >= 0;
+    irq_restore(p);
+    return s;
+}
+
 /* m7_retrig.c: the burst table, valid only for this boot's region (0 if none). */
 void *m1_retrig_table(void) {
     volatile Region *r = region();
