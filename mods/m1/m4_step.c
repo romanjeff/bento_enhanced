@@ -933,6 +933,8 @@ static u32 curve_for_index(u32 idx) {
  * (Off/Poly/Channel) for the selected track. Recording checks AT Rec when a
  * curve attaches; the M7 checks AT Out by the note's MIDI port/channel in the
  * published destination table. Saved in the project's sidecar (TRKS). */
+#define PROJECT_DIRTY 0x36C4u     /* app byte: project modified (Save enabled) */
+#define PROJECT_TOUCH 0x0813130Cu /* (app): stock's refresh after an edit */
 #define AT_SLOT_REC 4u
 #define AT_SLOT_OUT 5u
 static u32 sel_track(void) { return FN(0x0812DC74u, u32 (*)(void *, u32))((u8 *)MODEL + 4, 0x131); }
@@ -1006,6 +1008,10 @@ static int at_event(void *v, const u32 *ev) {
         if (ev[2] == SU->key[4]) a->rec_off[t] = value <= 0;
         else a->out_mode[t] = INDEX_TO_OUT[value < 0 ? 0 : value > 2 ? 2 : value];
         at_publish();
+        /* Mark the project modified so Save lights up, as stock's own edits do
+         * (e.g. the recording handler: strb 1 -> app + 0x36C4, then 0x0813130C). */
+        B(MODEL, PROJECT_DIRTY) = 1;
+        FN(PROJECT_TOUCH, void (*)(void *))(MODEL);
     }
     FN(PIANO_HEADER, void (*)(void *))(v);
     return 1;

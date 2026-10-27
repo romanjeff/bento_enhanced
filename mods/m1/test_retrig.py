@@ -237,12 +237,21 @@ class CurveDestMode(unittest.TestCase):
         pb.start(g)
         pb.emit(g, g.t1, 0, 100, 1010)
         self.assertEqual((g.sent, r32(g.u, REGION + 44)), ([], 1), "skipped")
-        self.assertEqual(r32(g.u, REGION + 60), 2 | (5 << 8) | (1 << 16), "mapping recorded")
+        self.assertEqual(r32(g.u, REGION + 60), 2 | (5 << 8) | (1 << 16) | (1 << 24), "exact match recorded")
+
+    def test_channel_list_index_one_above_the_m7_byte(self):
+        pb = CurvePlayback(); g = pb.rig()
+        g.u.mem_write(g.t1 + 0x31, bytes([2, 5]))               # M7: channel byte 5
+        self.table(g, 2, 6, 1)                                  # M4 list index 6
+        pb.start(g)
+        pb.emit(g, g.t1, 0, 100, 1010)
+        self.assertEqual(g.sent, [], "Off via the off-by-one match")
+        self.assertEqual(r32(g.u, REGION + 60) >> 24, 2, "matched on the second pass")
 
     def test_other_destination_or_no_table_plays(self):
         pb = CurvePlayback(); g = pb.rig()
         g.u.mem_write(g.t1 + 0x31, bytes([2, 5]))
-        self.table(g, 2, 6, 1)                                  # Off, but for channel 6
+        self.table(g, 2, 9, 1)                                  # Off, but for another channel
         pb.start(g)
         pb.emit(g, g.t1, 0, 40, 1010)
         self.assertTrue(g.sent, "default poly")

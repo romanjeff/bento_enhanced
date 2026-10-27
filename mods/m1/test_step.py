@@ -159,6 +159,8 @@ class Rig:
             self.log.append(("set", step, r(2))); self.ret()
         elif a == 0x0815D1F0:                                     # rest of stock's press handler
             self.log.append(("press", r(1))); self.ret()
+        elif a == 0x0813130C:                                     # stock: refresh after an edit
+            self.log.append("touch"); self.ret()
         elif a == 0x0812DC74 and r(1) == 0x131:                 # selected track index
             self.ret(getattr(self, "selected", 2))
         elif a == 0x0812DC74 and r(1) in (0x0F, 0x10):          # a track's MIDI out port / channel
@@ -409,6 +411,13 @@ class AtSettings(unittest.TestCase):
         self.assertEqual(tuple(d), (1, 3, 1, 1), "track 2: port 1, ch 3, mode Off, valid")
         self.turn(g, self.slot_key(g, 4), 0)
         self.assertEqual(bytes(g.u.mem_read(self.AT_SET + 8 + 2, 1))[0], 1, "track 2: rec Off")
+
+    def test_a_change_marks_the_project_modified(self):
+        g = self.rig()
+        g.u.mem_write(0x30024B00 + 0x36C4, b"\x00")
+        self.turn(g, self.slot_key(g, 5), 0)
+        self.assertEqual(bytes(g.u.mem_read(0x30024B00 + 0x36C4, 1))[0], 1, "modified: Save enabled")
+        self.assertIn("touch", g.log)
 
     def test_rec_off_stops_curves_attaching(self):
         c = CurveAttach(); g = c.rig()
