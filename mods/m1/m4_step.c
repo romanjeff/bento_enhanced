@@ -600,12 +600,9 @@ static u32 fresh_vel(volatile PadState *ps, u32 p) {
 }
 
 /* ---- M2-1: pressure curves for live-recorded melodic notes ------------------
- * Stock's recording handler (0x0813B2F8, event 0xE9 at note-off) inserts the
- * note through 0x0812E070; the insert stub passes us its return address, so
- * REC_INSERT_RET marks a just-recorded note. Its pad's capture slot (M7,
- * CapBlock) is resampled to 16 samples per step over the note's length and
- * stored in the pool; the handle goes into the note word (tag 0xB7). */
-#define REC_INSERT_RET 0x0813B4BAu
+ * The pad's capture slot (M7, CapBlock) is resampled to 16 samples per step
+ * over the note's final length and stored in the pool; the handle goes into
+ * the note word (tag 0xB7). See bind_pitch / curve_update for the trigger. */
 static volatile CurveState *curves(void) {
     volatile CurveState *c = CURVES;
     if (c->magic == CURVES_MAGIC && c->gen == boot_gen()) return c->pool ? c : 0;
@@ -649,11 +646,8 @@ static void log_curve(u32 handle, u32 pad, const u32 *rec, volatile CapSlot *s, 
     e->seq = newest + 1u;
 }
 
-static void attach_curve(u32 *rec) {
-    if ((rec[0] & 0xFFu) != 1u || drum_track_selected()) return;   /* melodic notes only */
+static void attach_from(u32 *rec, volatile CapSlot *s, u32 pad, u32 idx) {
     volatile CurveState *c = curves();
-    u32 pad = 16, idx = 0;
-    volatile CapSlot *s = pick_slot(rec[0] >> 16, &pad, &idx);
     if (!c || !s || c->next >= CURVE_HANDLES) {
         if (c) c->misses++;
         log_curve(0, pad, rec, s, 0, 0);
@@ -695,10 +689,56 @@ static void log_inserter(u32 lr, const u32 *rec) {
     }
 }
 
+/* Melodic live recording (FUN_081373EE): note-on inserts the note with length
+ * 0 (insert returns to MEL_NOTE_ON), note-off sets its length through the
+ * model update 0x0812E0CE (returns to MEL_NOTE_OFF). The record carries no pad,
+ * so note-on binds the note's pitch to the oldest held pad not yet bound
+ * (note-ons arrive in press order, so chords map pad by pad) and note-off
+ * attaches that slot's curve. */
+#define MEL_NOTE_ON 0x081377CEu
+#define MEL_NOTE_OFF 0x081378F8u
+static volatile CapBlock *cap_block4(void) {
+    u32 b = CAPCFG->block;
+    return CAPCFG->magic == CAPCFG_MAGIC && CAPCFG->check == ~b && b ? (volatile CapBlock *)b : 0;
+}
+static void bind_pitch(const u32 *rec) {
+    volatile CapBlock *b = cap_block4();
+    if (!b || (rec[0] & 0xFFu) != 1u || drum_track_selected()) return;
+    volatile CapSlot *best = 0; u32 bp = 16;
+    for (u32 p = 0; p < 16; p++)
+        for (u32 k = 0; k < 2; k++) {
+            volatile CapSlot *s = &b->slot[p][k];
+            if (s->done || !s->n) continue;
+            int taken = 0;
+            for (u32 i = 0; i < 16; i++) if (BINDS[i].pad == p && BINDS[i].seq == s->seq && BINDS[i].pitch) taken = 1;
+            if (taken) continue;
+            if (!best || (int)(s->t0 - best->t0) < 0) { best = s; bp = p; }   /* oldest: note-ons arrive in press order */
+        }
+    if (!best) return;
+    volatile Bind *e = &BINDS[BINDS_NEXT++ & 15u];
+    e->pitch = (rec[4] & 0xFFFFu) | 0x10000u; e->pad = bp; e->seq = best->seq;
+}
+__attribute__((used, retain)) void curve_update(u32 *rec, u32 lr) {
+    if ((lr & ~1u) != MEL_NOTE_OFF || (rec[0] & 0xFFu) != 1u || !rec[2] || drum_track_selected()) return;
+    volatile CapBlock *b = cap_block4();
+    u32 pitch = (rec[4] & 0xFFFFu) | 0x10000u, pad = 16, idx = 0;
+    volatile CapSlot *s = 0;
+    for (u32 i = 0; b && i < 16; i++) {
+        volatile Bind *e = &BINDS[i];
+        if (e->pitch != pitch || e->pad >= 16u) continue;   /* the table survives resets */
+        volatile CapSlot *c = &b->slot[e->pad][e->seq & 1u];
+        e->pitch = 0;
+        if (c->seq == e->seq && c->n) { s = c; pad = e->pad; idx = e->pad * 2u + (e->seq & 1u); }
+        break;
+    }
+    if (!s) s = pick_slot(16, &pad, &idx);               /* no binding: the latest release */
+    attach_from(rec, s, pad, idx);
+}
+
 __attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr) {
     volatile PadState *ps;
     log_inserter(lr, rec);
-    if ((lr & ~1u) == REC_INSERT_RET) attach_curve(rec);
+    if ((lr & ~1u) == MEL_NOTE_ON) bind_pitch(rec);
     if ((rec[0] & 0xFFu) != 1u || strike_off() || !(ps = pads()) || !drum_track_selected()) return;
     /* Which pad made this note? The Sequence page's pads are the 16 steps of the
      * shown page (as in the Step view); live entry uses the drum's own pad;

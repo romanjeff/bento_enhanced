@@ -633,75 +633,94 @@ class StrikeInsert(unittest.TestCase):
         self.assertEqual(self.insert(g, note(2, nid=0), 10100)[4] >> 16, 100)
 
 class CurveAttach(unittest.TestCase):
-    """M2-1: a note inserted by stock's recording handler (return 0x0813B4BA) gets the
-    pressure curve of its pad, resampled to 16 samples per step (word tag 0xB7)."""
-    BLOCK, SLOT, REC_LR = 0x20200000, 1056, 0x0813B4BB
+    """M2-1: melodic live recording (FUN_081373EE). Note-on inserts the note with length 0
+    (insert returns to 0x081377CE) and binds its pitch to the oldest held, unbound pad;
+    note-off sets the length through the model update 0x0812E0CE (returns to
+    0x081378F8), which attaches that pad's pressure curve (16 samples/step, tag 0xB7)."""
+    BLOCK, SLOT, ON_LR, OFF_LR = 0x20200000, 1056, 0x081377CF, 0x081378F9
 
     def rig(self, kind=0x10):                               # melodic (piano roll)
         g = StrikeButton().rig(kind)
         w32(g.u, 0x3000004C, 0x20280000); w32(g.u, 0x30000048, 0x203C0000)   # room for the pool
         w32(g.u, 0x3003D820 + 4, self.BLOCK); w32(g.u, 0x3003D820 + 8, ~self.BLOCK & 0xFFFFFFFF)
         w32(g.u, 0x3003D820, 0x31504143)
+        g.u.mem_write(0x3003DD60, bytes(0x104))               # binding table: empty
         return g
 
-    def slot(self, g, pad, k, seq, samples, t0=1000, t_end=1056):
+    def slot(self, g, pad, k, seq, samples, t0=1000, t_end=1056, done=1):
         a = self.BLOCK + (pad * 2 + k) * self.SLOT
-        g.u.mem_write(a, struct.pack("<8I", seq, t0, t_end, len(samples), 0, 1, 0, 0) + bytes(samples))
+        g.u.mem_write(a, struct.pack("<8I", seq, t0, t_end, len(samples), 0, done, 0, 0) + bytes(samples))
+
+    def release(self, g, pad, k):
+        w32(g.u, self.BLOCK + (pad * 2 + k) * self.SLOT + 20, 1)
 
     insert = StrikeInsert.insert                            # the real patched insert entry
 
-    def insert_rec(self, g, rec, lr=None):
-        g.u.reg_write(UC_ARM_REG_LR, self.REC_LR if lr is None else lr)
-        return self.insert(g, rec, 10000)
+    def note_on(self, g, pitch, lr=None):
+        g.u.reg_write(UC_ARM_REG_LR, self.ON_LR if lr is None else lr)
+        return self.insert(g, [1, 2 * 960, 0, 0, pitch | (90 << 16), 0], 10000)
 
-    def test_recorded_note_gets_its_pads_curve(self):
-        g = self.rig()
-        self.slot(g, 5, 1, 1, [10, 20, 30, 40, 50, 60, 70, 80])
-        out = self.insert_rec(g, note(2, pad=5, nid=0))
-        w = out[5]
-        self.assertEqual(w >> 24, 0xB7, "curve word")
-        self.assertEqual((w >> 3) & 0x3FFF, 1, "first handle")
+    def note_off(self, g, pitch, length=960, word=0, lr=None):
+        at = 0x20110000
+        g.u.mem_write(at, struct.pack("<6I", 1, 2 * 960, length, 7, pitch | (90 << 16), word))
+        g.u.reg_write(UC_ARM_REG_SP, STACK)
+        for i, v in enumerate((0x30024B00, 0x1234, at)):
+            g.u.reg_write(UC_ARM_REG_R0 + i, v)
+        g.u.reg_write(UC_ARM_REG_LR, self.OFF_LR if lr is None else lr)
+        g.u.emu_start(0x0812E0CE | 1, 0x0812E0D2, count=200000)
+        self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 8 - 8, "replayed push + sub")
+        return list(struct.unpack("<6I", g.u.mem_read(at, 24)))
+
+    def curve(self, g, h):
         pool, table = r32(g.u, 0x3003D840 + 8), r32(g.u, 0x3003D840 + 16)
-        off = r32(g.u, table + 4)
+        off = r32(g.u, table + 4 * h)
         n = struct.unpack("<H", g.u.mem_read(pool + off, 2))[0]
-        data = list(g.u.mem_read(pool + off + 2, n))
-        self.assertEqual(n, 16, "960 ticks = one step = 16 samples")
-        self.assertEqual((data[0], data[-1]), (10, 80), "ends match")
-        self.assertEqual(data, sorted(data), "linear resample of a ramp stays monotonic")
-        log = g.u.mem_read(0x3003D880 + 64, 64)               # entry seq 1 -> slot 1
-        self.assertEqual(struct.unpack_from("<I", log, 0)[0], 1)
-        self.assertEqual(struct.unpack_from("<HH", log, 8), (5, 5), "capture pad, record pad")
+        return list(g.u.mem_read(pool + off + 2, n))
 
-    def test_falls_back_to_the_latest_release(self):
+    def test_note_on_binds_note_off_attaches(self):
+        g = self.rig()
+        self.slot(g, 5, 1, 1, [10, 20, 30, 40, 50, 60, 70, 80], done=0)   # pad 5 held
+        self.note_on(g, 60)
+        self.release(g, 5, 1)
+        w = self.note_off(g, 60)[5]
+        self.assertEqual((w >> 24, (w >> 3) & 0x3FFF), (0xB7, 1))
+        data = self.curve(g, 1)
+        self.assertEqual(len(data), 16, "960 ticks = one step = 16 samples")
+        self.assertEqual((data[0], data[-1]), (10, 80))
+        self.assertEqual(data, sorted(data))
+        log = g.u.mem_read(0x3003D880 + 64, 64)
+        self.assertEqual(struct.unpack_from("<IHHH", log, 0), (1, 1, 16, 5), "seq, handle, n_out, pad")
+
+    def test_chord_maps_pad_by_pad(self):
+        g = self.rig()
+        self.slot(g, 5, 1, 1, [100] * 4, t0=1000, done=0)    # pressed first
+        self.slot(g, 9, 1, 1, [20] * 4, t0=1004, done=0)     # pressed 4 ms later
+        self.note_on(g, 60); self.note_on(g, 64)               # note-ons in press order
+        self.release(g, 5, 1); self.release(g, 9, 1)
+        w64 = self.note_off(g, 64)[5]; w60 = self.note_off(g, 60)[5]   # released in any order
+        self.assertEqual(self.curve(g, (w64 >> 3) & 0x3FFF)[0], 20, "pitch 64 <- pad 9")
+        self.assertEqual(self.curve(g, (w60 >> 3) & 0x3FFF)[0], 100, "pitch 60 <- pad 5")
+
+    def test_unbound_note_off_takes_the_latest_release(self):
         g = self.rig()
         self.slot(g, 1, 1, 1, [5, 5], t_end=2000)
-        self.slot(g, 9, 1, 1, [99, 99], t_end=3000)           # most recent release
-        w = self.insert_rec(g, note(2, pad=0, nid=0))[5]       # record pad 0 has no capture
-        self.assertEqual(w >> 24, 0xB7)
-        log = g.u.mem_read(0x3003D880 + 64, 64)
-        self.assertEqual(struct.unpack_from("<H", log, 8)[0], 9)
+        self.slot(g, 9, 1, 1, [99, 99], t_end=3000)
+        w = self.note_off(g, 62)[5]
+        self.assertEqual(self.curve(g, (w >> 3) & 0x3FFF)[0], 99)
 
-    def test_a_curve_is_claimed_once(self):
+    def test_other_callers_and_drum_tracks_get_no_curve(self):
         g = self.rig()
         self.slot(g, 5, 1, 1, [10, 20])
-        self.insert_rec(g, note(2, pad=5, nid=0))
-        self.assertEqual(self.insert_rec(g, note(3, pad=5, nid=0))[5], 0, "no unclaimed capture left")
-
-    def test_other_inserts_and_drum_tracks_get_no_curve(self):
-        g = self.rig()
-        self.slot(g, 5, 1, 1, [10, 20])
-        self.assertEqual(self.insert_rec(g, note(2, pad=5, nid=0), lr=0x08159001)[5], 0, "not the recording handler")
+        self.assertEqual(self.note_off(g, 60, lr=0x08159001)[5], 0, "not the recording note-off")
         g = self.rig(kind=0x0E)
         self.slot(g, 5, 1, 1, [10, 20])
-        self.assertEqual(self.insert_rec(g, note(2, pad=5, nid=0))[5] >> 24, 0, "drum track")
+        self.assertEqual(self.note_off(g, 60)[5], 0, "drum track")
 
     def test_condition_and_locks_kept_alongside_the_curve(self):
         g = self.rig()
         self.slot(g, 5, 1, 1, [10, 20])
-        word = (0xB6 << 24) | (12 << 17) | 1                   # condition 12, velocity locked
-        w = self.insert_rec(g, note(2, pad=5, nid=0, word=word))[5]
+        w = self.note_off(g, 60, word=(0xB6 << 24) | (12 << 17) | 1)[5]
         self.assertEqual((w >> 24, (w >> 17) & 0x7F, w & 7), (0xB7, 12, 1))
-
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

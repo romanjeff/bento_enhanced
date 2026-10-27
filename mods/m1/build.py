@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x3800   # 14 KB since v3.22 (curve log + save dump)
-VERSION = "3.23"                       # bump for every build that goes on the device
+VERSION = "3.24"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -56,7 +56,7 @@ DEFAULT_OFF = {"stall", "irq30"}
 DISABLED = (DEFAULT_OFF - {g for g in os.environ.get("BE_ENABLE", "").split(",") if g})     | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
 DISPLAY = os.environ.get("BE_LABEL", DISPLAY)
 VERSION = VERSION + (f"-{os.environ['BE_TAG']}" if os.environ.get("BE_TAG") else "")
-PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection")),
+PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection", "Curves")),
                 ("hold", ("Hold shortcuts",)),
                 ("cond", ("Conditions", "Probability:")),
                 ("retrig", ("Retrigger",)),
@@ -153,7 +153,7 @@ CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (b
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x3003C8A0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
-STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x2400   # m4_step.c (9 KB since v3.22)
+STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x2800   # m4_step.c (10 KB since v3.24)
 M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B)
 # Per-step Condition / Retrigger (m4_step.c)
 STEP_SAVE_SITE, STEP_LOAD_SITE = 0x0812F4F0, 0x0812FBB4
@@ -163,6 +163,7 @@ PIANO_HEADER, PIANO_EVENT = 0x081599BC, 0x0815A598
 STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
 HEADER_GEN, DRUM_EVENT = 0x08134800, 0x0815D600   # header description generator; drum view events
 NOTE_INSERT = 0x0812E070                            # stock: assign ID + insert (model, seq, record)
+NOTE_UPDATE = 0x0812E0CE                            # stock: replace a note (model, seq, record)
 HOLD_TAP_SITES = (0x0815D284, 0x0815D484)          # pad release / touch release: "< 1000 ms = tap"
 HOLD_TAP_MS = 150   # Jeff: 400 -> 150 ms, confirmed on device v3.13
 STRIKE_ACTION = 0x10F0
@@ -671,6 +672,10 @@ def build(base_img, out):
     a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #60]; bl {ss['strike_insert']:#x}; " + restore   # record, caller lr
                + f"push {{r4, r5, r6, lr}}; sub sp, #0x20; b.w {NOTE_INSERT + 4:#x}", {ss["strike_insert"], NOTE_INSERT + 4}, "note insert")
     patch(NOTE_INSERT, asm(f"b.w {a:#x}", NOTE_INSERT), bytes.fromhex("70b588b0"), "Strike velocity: notes created by any view")
+    # M2-1: melodic recording sets a note's length at note-off through this update
+    a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #60]; bl {ss['curve_update']:#x}; " + restore   # record, caller lr
+               + f"push {{r4, lr}}; sub sp, #8; b.w {NOTE_UPDATE + 4:#x}", {ss["curve_update"], NOTE_UPDATE + 4}, "note update")
+    patch(NOTE_UPDATE, asm(f"b.w {a:#x}", NOTE_UPDATE), bytes.fromhex("10b582b0"), "Curves: note update (recording note-off) -> curve_update")
     # shorter tap/hold boundary for step inspection (Jeff: 400 ms)
     for site in HOLD_TAP_SITES:
         patch(site, asm(f"cmp.w r3, #{HOLD_TAP_MS}", site), bytes.fromhex("b3f57a7f"),

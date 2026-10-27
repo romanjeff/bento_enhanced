@@ -235,6 +235,11 @@ _Static_assert(sizeof(CurveLogEntry) == 64, "curve log entry is 64 bytes");
 typedef struct { u32 magic, gen, total, last_kind, lr[8], count[8]; } InsLog;
 #define INSLOG ((volatile InsLog *)0x3003DD00u)
 #define INSLOG_MAGIC 0x31534E49u /* "INS1" */
+/* M4: melodic note-on binds a pitch to the capture slot just pressed (pitch
+ * | 0x10000 so 0 means free); note-off looks it up. */
+typedef struct { u32 pitch, pad, seq, r_; } Bind;
+#define BINDS ((volatile Bind *)0x3003DD60u)
+#define BINDS_NEXT (*(volatile u32 *)0x3003DE60u)
 _Static_assert(0x3003D880u + CURVELOG_N * sizeof(CurveLogEntry) <= 0x3003DC80u, "curve log");
 
 #define PROF ((volatile Prof *)0x3003D000u)
