@@ -227,26 +227,29 @@ class CurvePlayback(unittest.TestCase):
 class CurveDestMode(unittest.TestCase):
     """M2-5: the player looks its track's MIDI port/channel up in the M4's table;
     AT Out Off (or Channel, until v3.31) starts nothing; no match = poly."""
-    def table(self, g, port, ch, mode):
-        g.u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + bytes([port, ch, mode, 1]) + bytes(28))
+    def table(self, g, port, ch, mode, *more):
+        e = bytes([port, ch, mode, 1]) + b"".join(bytes([p, c, m, 1]) for p, c, m in more)
+        g.u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + e + bytes(32 - len(e)))
 
     def test_off_for_this_destination(self):
         pb = CurvePlayback(); g = pb.rig()
-        g.u.mem_write(g.t1 + 0x31, bytes([2, 5]))               # this track: port 2, ch 5
-        self.table(g, 2, 5, 1)
+        g.u.mem_write(g.t1 + 0x31, bytes([2, 5]))               # M7: port 2, channel byte 5
+        self.table(g, 2, 6, 1)                                  # M4: channel 6 (1-based), Off
         pb.start(g)
         pb.emit(g, g.t1, 0, 100, 1010)
         self.assertEqual((g.sent, r32(g.u, REGION + 44)), ([], 1), "skipped")
-        self.assertEqual(r32(g.u, REGION + 60), 2 | (5 << 8) | (1 << 16) | (1 << 24), "exact match recorded")
+        self.assertEqual(r32(g.u, REGION + 60), 2 | (5 << 8) | (1 << 16) | (1 << 24), "track 1's entry")
 
-    def test_channel_list_index_one_above_the_m7_byte(self):
+    def test_device_v333_non_external_tracks_never_match(self):
+        """v3.33 on the device: track 1 = 0/1/Off, tracks 2-4 = 0/0/Poly (M4 channel
+        0 = not External); M7 byte 0. The exact pass hit track 2: Off ignored."""
         pb = CurvePlayback(); g = pb.rig()
-        g.u.mem_write(g.t1 + 0x31, bytes([2, 5]))               # M7: channel byte 5
-        self.table(g, 2, 6, 1)                                  # M4 list index 6
+        g.u.mem_write(g.t1 + 0x31, bytes([0, 0]))
+        self.table(g, 0, 1, 1, (0, 0, 0), (0, 0, 0), (0, 0, 0))
         pb.start(g)
         pb.emit(g, g.t1, 0, 100, 1010)
-        self.assertEqual(g.sent, [], "Off via the off-by-one match")
-        self.assertEqual(r32(g.u, REGION + 60) >> 24, 2, "matched on the second pass")
+        self.assertEqual(g.sent, [], "Off honoured")
+        self.assertEqual(r32(g.u, REGION + 60) >> 24, 1, "matched track 1, not track 2")
 
     def test_other_destination_or_no_table_plays(self):
         pb = CurvePlayback(); g = pb.rig()

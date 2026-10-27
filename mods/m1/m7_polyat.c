@@ -345,17 +345,16 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
     u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u), mode = AT_POLY;
     DCIMVAC = (u32)AT_DEST & ~31u; DCIMVAC = ((u32)AT_DEST + 32u) & ~31u;   /* M4-written lines */
     __asm volatile("dsb" ::: "memory");
-    /* Exact port/channel first; then the M4's channel list index one above the
-     * M7's byte (list 0 = omni/all?, M7 0-based?): unconfirmed, see the log's
-     * "last dest" (M7 side, bit 24 = off-by-one match) vs "AT tracks" (M4 side). */
+    /* The M4's channel parameter is 1-based (1 = MIDI ch 1), the M7's byte
+     * 0-based; M4 value 0 (non-External tracks) never matches. Device log v3.33:
+     * track 1 = M4 0/1/Off, M7 port 0 byte 0; tracks 2-4 = M4 0/0/Poly. v3.33
+     * tried an exact match first and hit track 2's entry, so Off was ignored. */
     u32 how = 0;
-    if (AT_DEST->magic == AT_DEST_MAGIC) {
-        for (u32 pass = 0; pass < 2 && !how; pass++)
-            for (u32 i = 0; i < 8; i++)
-                if (AT_DEST->d[i].valid && AT_DEST->d[i].port == port && AT_DEST->d[i].ch == ch + pass) {
-                    mode = AT_DEST->d[i].mode; how = pass + 1u; break;
-                }
-    }
+    if (AT_DEST->magic == AT_DEST_MAGIC)
+        for (u32 i = 0; i < 8; i++)
+            if (AT_DEST->d[i].valid && AT_DEST->d[i].port == port && AT_DEST->d[i].ch == ch + 1u) {
+                mode = AT_DEST->d[i].mode; how = 1u + i; break;   /* which track's entry */
+            }
     r->curve_dest = port | (ch << 8) | (mode << 16) | (how << 24);
     if (mode != AT_POLY) { r->curve_skipped++; return; }   /* Off (Channel: v3.31) */
     volatile Player *slot = 0;

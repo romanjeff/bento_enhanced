@@ -336,7 +336,7 @@ static void counters(Out *o) {
         puts_(o, " late="); dec(o, cs[2]); puts_(o, " skipped="); dec(o, cs[3]);
         volatile u32 *cp = (volatile u32 *)(rg + REGION_CURVE_PEAK);
         puts_(o, " peak players="); dec(o, cp[0]); puts_(o, " thinned="); dec(o, cp[1]);
-        puts_(o, " last dest="); hex(o, cp[2], 6);
+        puts_(o, " last dest="); hex(o, cp[2], 8);   /* [31:24] 1 + matched track, 0 = none */
         if (AT_DEST->magic == AT_DEST_MAGIC) {
             puts_(o, " | AT tracks port/ch/mode:");
             for (u32 i = 0; i < 8; i++) {
