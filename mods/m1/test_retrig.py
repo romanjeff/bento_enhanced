@@ -392,7 +392,8 @@ class CurveInternal(unittest.TestCase):
         g = pb.rig(samples=samples)
         u = g.u
         u.mem_write(g.t1 + 0x86D1, b"\x00\x01")                    # no MIDI out; instrument
-        u.mem_write(g.t1 + 0x10, struct.pack("<H", self.KEY))
+        u.mem_write(g.t1 + 0x10, struct.pack("<H", 0))             # device: +0x10 was 0 on a granular track
+        w32(u, g.t1 + 0x86DC, self.KEY)                           # its per-pad key (pad 0), as note_route reads it
         w32(u, g.t1 + 0x86D4, self.IDX)
         if mode is not None:
             e = bytes(4 * self.IDX) + bytes([0, 5 if ext_entry else 0, mode, 1])
@@ -416,6 +417,13 @@ class CurveInternal(unittest.TestCase):
         n = len(g.posts); pb.emit(g, g.t1, 80, 40, 1050)
         self.assertEqual(len(g.posts), n, "finished")
         self.assertEqual(r32(g.u, REGION + 64), self.KEY | (self.IDX << 16), "int_dest: key, idx, Poly")
+
+    def test_key_falls_back_to_the_track_word(self):
+        pb, g = self.rig(0)
+        w32(g.u, g.t1 + 0x86DC, 0xFFFFFF00)                       # no per-pad key
+        g.u.mem_write(g.t1 + 0x10, struct.pack("<H", 0x0456))
+        pb.start(g); pb.emit(g, g.t1, 0, 40, 1010)
+        self.assertEqual(g.posts[0][2], 0x0456)
 
     def test_off_posts_nothing(self):
         pb, g = self.rig(1)

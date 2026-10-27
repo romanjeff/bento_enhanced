@@ -431,7 +431,20 @@ static u32 int_mode(u32 idx) {
     return AT_POLY;
 }
 
-static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus) {
+/* The instrument's bus key for a note, exactly as note_route picks it for its
+ * 0x12 note event: the per-pad table track+0x86DC[pad] unless 0xFFFFFF00,
+ * else the track's u16 at +0x10. v3.37-3.39 used +0x10 alone: 0 on a granular
+ * track whose key (table, as the pad router's) was 0xF4 - every post was lost. */
+static u32 inst_key(u32 track, u32 pad) {
+    u32 key = *(volatile u16 *)(track + 0x10u);
+    if (pad < 16u) {
+        u32 k = *(volatile u32 *)(track + (pad + 0x21B6u) * 4u + 4u);
+        if (k != 0xFFFFFF00u) key = k;
+    }
+    return key & 0xFFFFu;
+}
+
+static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus, u32 pad) {
     volatile Region *r = region();
     u32 h = step_handle(word), n = 0, data;
     int ext = *(volatile u8 *)(track + 0x86D1u), inst = *(volatile u8 *)(track + 0x86D2u);
@@ -448,7 +461,7 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
     inst = 0;                                       /* group inta off: External only */
 #endif
     if (inst && bus) {                              /* M2-2b: the track's own instrument */
-        u32 key = *(volatile u16 *)(track + 0x10u), idx = *(volatile u32 *)(track + 0x86D4u);
+        u32 key = inst_key(track, pad), idx = *(volatile u32 *)(track + 0x86D4u);
         u32 mode = int_mode(idx);
         r->bus = bus;
         r->int_dest = (key & 0xFFFFu) | ((idx & 0xFFu) << 16) | (mode << 24);
@@ -704,9 +717,9 @@ __attribute__((used, retain)) void h_live(u32 bus, const u32 *ev, u32 router) {
     irq_restore(p);
 }
 
-void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus) {
+void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus, u32 pad) {
     u32 p = irq_save();
-    curve_start_body(track, note, word, tick_lo, tick_hi, bus);
+    curve_start_body(track, note, word, tick_lo, tick_hi, bus, pad);
     irq_restore(p);
 }
 void curve_emit(u32 track, u32 clock, int start, int len) {
