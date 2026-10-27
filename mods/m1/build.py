@@ -10,7 +10,7 @@ every write reproduces the base exactly. Run with Lab's venv (ziglang +
 keystone). Earlier versions (<= v2.2) were built on Lab's CH10; CH10 itself
 crashed on the device without any of this code, so M1 moved to stock.
 """
-import argparse, hashlib, json, re, struct, subprocess, sys
+import argparse, hashlib, json, os, re, struct, subprocess, sys
 from pathlib import Path
 from keystone import Ks, KS_ARCH_ARM, KS_MODE_THUMB
 
@@ -44,6 +44,21 @@ M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x3000   # 12 KB since v3.17 (stall profile printer)
 VERSION = "3.19"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
+# Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
+# call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
+# the boot label (<= 6 chars) and BE_TAG suffixes the kit version.
+DISABLED = {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
+DISPLAY = os.environ.get("BE_LABEL", DISPLAY)
+VERSION = VERSION + (f"-{os.environ['BE_TAG']}" if os.environ.get("BE_TAG") else "")
+PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection")),
+                ("hold", ("Hold shortcuts",)),
+                ("cond", ("Conditions", "Probability:")),
+                ("retrig", ("Retrigger",)),
+                ("poly", ("M1 poly AT: External", "M1b poly cap", "M1 poly AT: MIDI task")),
+                ("diag", ("M1 diag: h_", "Stall", "M4 watchdog profile: IRQ30", "M1 diag: defaultTask"))]
+def patch_group(why):
+    return next((g for g, prefixes in PATCH_GROUPS if why.startswith(prefixes)), None)
+assert len(DISPLAY) <= 6, "boot label slot copies 6 bytes"
 MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:stock-1.6.1".encode() + bytes(1)
 # Stock's version string "1.6.1" (8-byte slot). Its two users: the boot-screen label
 # (FUN_08162950 copies only the first 6 bytes) and "%s-cont-%d" (FUN_08131024).
@@ -269,8 +284,11 @@ def build(base_img, out):
     out.mkdir(parents=True, exist_ok=False)
     img = bytearray(base_img)
     writes = []
+    skipped = []
 
     def patch(addr, new, expect, why):
+        if len(new) <= 8 and patch_group(why) in DISABLED:   # bisect build: leave stock's site alone
+            skipped.append((addr, why)); return
         o = addr - BASE
         old = bytes(img[o:o + len(new)])
         if expect is not None and old != expect:
@@ -698,6 +716,10 @@ def build(base_img, out):
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
     print(f"built {man['label']} sha256={man['sha256']}")
+    if skipped:
+        print(f"BISECT build: disabled {sorted(DISABLED)}; {len(skipped)} stock sites left unpatched:")
+        for a, why in skipped:
+            print(f"  {a:#x} {why}")
     print(f"  M7 code {len(code7)} B at {M7_CODE:#x}, trampolines {len(tramps)} B; M4 code {len(code4)} B at {M4_CODE:#x}")
     print(f"  image {len(img):#x} bytes (proven max {PROVEN_MAX_SIZE:#x}); {len(writes)} writes, reversal to stock verified")
     return img, man
