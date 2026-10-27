@@ -55,11 +55,14 @@ PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection"))
                 ("cond", ("Conditions", "Probability:")),
                 ("retrig", ("Retrigger",)),
                 ("poly", ("M1 poly AT: External", "M1b poly cap", "M1 poly AT: MIDI task")),
-                ("diag7", ("M1 diag: h_", "Stall")),                 # M7 tracing, stall record, SysTick profile
+                ("trace", ("M1 diag: h_",)),                        # M7 event tracing hooks
+                ("stall", ("Stall",)),                              # M7 stall record + SysTick profile
                 ("irq30", ("M4 watchdog profile: IRQ30",)),         # M4 heartbeat-supervisor profile
                 ("bbox", ("M1 diag: defaultTask",))]                # M4 black box (also hands poly AT its region)
+if "diag7" in DISABLED:
+    DISABLED |= {"trace", "stall"}
 if "diag" in DISABLED:
-    DISABLED |= {"diag7", "irq30", "bbox"}
+    DISABLED |= {"trace", "stall", "irq30", "bbox"}
 def patch_group(why):
     return next((g for g, prefixes in PATCH_GROUPS if why.startswith(prefixes)), None)
 assert len(DISPLAY) <= 6, "boot label slot copies 6 bytes"
