@@ -266,7 +266,10 @@ class ExtRows(unittest.TestCase):
         self.assertEqual(self.event(g, 0x10F1), 0, "handled")
         self.assertEqual(r32(g.u, self.HEAD + 20), 1, "LFO 1")
         bars = [x for x in g.log if isinstance(x, tuple) and x[0] == "bar"]
-        self.assertEqual(bars[-1][2], [0x4A, 0x4B, 0x4E, 0x4C, 0x4D, 0, 0, 0], "Shape, Rate, Beat Sync, Depth, Restart")
+        k = bars[-1][2]
+        self.assertEqual((k[0], k[1], k[3], k[5:]), (0x4A, 0x4B, 0x4C, [0, 0, 0]), "Shape, Rate, Depth")
+        self.assertEqual([cstr(g.u, r32(g.u, REG + k[i] * 32 + 4)) for i in (2, 4)], ["Beat Sync", "Triggered"])
+        self.assertEqual([cstr(g.u, r32(g.u, r32(g.u, REG + k[2] * 32 + 8) + 4 * i)) for i in (0, 1)], ["Off", "On"])
         self.assertEqual(bars[-1][1], VIEW + 0x3D0, "the view's bar")
         for want in (2, 3, 4, 0):
             self.event(g, 0x10F1)
@@ -280,10 +283,11 @@ class ExtRows(unittest.TestCase):
         self.assertEqual(self.lfo(g, 2, 0)[0], 4)
         self.assertEqual(self.lfo(g, 0, 0)[0], 0, "other tracks untouched")
         self.assertEqual(r32(g.u, self.CFGB + 8), 4, "seq even, moved on (M7 re-reads)")
-        self.event(g, 0xCF, 0x4321, 0x4E, 1000)                     # Beat Sync on
+        sync_key = [x for x in g.log if isinstance(x, tuple) and x[0] == "bar"][-1][2][2]
+        self.event(g, 0xCF, 0x4321, sync_key, 1)                    # Beat Sync: On
         bars = [x for x in g.log if isinstance(x, tuple) and x[0] == "bar"]
         self.assertEqual(bars[-1][2][1], 0x4F, "synced: the Sync Rate list replaces Rate")
-        self.assertEqual(bars[-1][3][2], 1000)
+        self.assertEqual(bars[-1][3][2], 1, "list index On (v3.46 wrote 1000: blank after a page change)")
         self.event(g, 0xCF, 0x4321, 0x4F, 10)                       # 1/16
         self.assertEqual(self.lfo(g, 2, 0)[1:3], (1, 10))
 
@@ -389,8 +393,8 @@ class DrumEncoders(unittest.TestCase):
     def test_four_keys_claimed_and_put_in_slots_5_to_8(self):
         g = self.setup()
         keys = g.keys()
-        self.assertEqual(len(keys), 7, "4 step keys + AT Rec + AT Out (v3.30) + Loop (v3.46)")
-        self.assertEqual(sorted(keys, reverse=True), [0x1F1, 0x1EF, 0x1EE, 0x1ED, 0x1EC, 0x1EB, 0x1EA], "empty keys from the top")
+        self.assertEqual(len(keys), 9, "4 step keys + AT Rec + AT Out (v3.30) + Loop, Beat Sync, Triggered")
+        self.assertEqual(sorted(keys, reverse=True), [0x1F1, 0x1EF, 0x1EE, 0x1ED, 0x1EC, 0x1EB, 0x1EA, 0x1E9, 0x1E8], "empty keys from the top")
         table = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))
         self.assertEqual(table[4:], (0x1F1, 0x1EF, 0x1EE, 0x1ED))
         titles = [cstr(g.u, r32(g.u, REG + k * 32 + 4)) for k in table[4:]]

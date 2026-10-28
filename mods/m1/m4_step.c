@@ -122,10 +122,10 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
 
 /* ---- registry keys -------------------------------------------------------- */
 
-typedef struct { u32 magic, gen, ok; u16 key[8]; u32 r0; } StepUI;   /* one M4-only line */
+typedef struct { u32 magic, gen, ok; u16 key[10]; } StepUI;   /* one M4-only line */
 #define SU ((volatile StepUI *)0x3003C880u)
-#define SU_MAGIC 0x33505453u /* "STP3": seven keys (+ Loop) since v3.46; v3.30-3.45 wrote r[2] past the line */
-#define SU_KEYS 7u
+#define SU_MAGIC 0x34505453u /* "STP4": nine keys (+ Loop, Beat Sync, Triggered) since v3.47 */
+#define SU_KEYS 9u
 _Static_assert(sizeof(StepUI) <= 32, "step UI state is one cache line");
 
 static const char *const AT_REC_LABELS[2] = {"Off", "On"};
@@ -133,9 +133,13 @@ static const char *const AT_OUT_LABELS[3] = {"Off", "Poly", "Channel"};
 static const char *const LOOP_LABELS[34] = {"Off", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
     "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
     "32", "Forever"};
-static const char *const TITLES[SU_KEYS] = {"Condition", "Retrig", "Division", "Ramp", "AT Rec", "AT Out", "Loop"};
-static const char *const *const CHOICES[SU_KEYS] = {COND_LABELS, HITS_LABELS, DIV_LABELS, RAMP_LABELS, AT_REC_LABELS, AT_OUT_LABELS, LOOP_LABELS};
-static const u32 COUNTS[SU_KEYS] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u, 34u};
+/* Beat Sync / Triggered are our own Off/On lists: stock's toggle keys (0x4E, 0x4D,
+ * type 6) showed a blank value when our row was refilled with them on (v3.46). */
+static const char *const TITLES[SU_KEYS] = {"Condition", "Retrig", "Division", "Ramp", "AT Rec", "AT Out", "Loop",
+                                            "Beat Sync", "Triggered"};
+static const char *const *const CHOICES[SU_KEYS] = {COND_LABELS, HITS_LABELS, DIV_LABELS, RAMP_LABELS, AT_REC_LABELS,
+                                                    AT_OUT_LABELS, LOOP_LABELS, AT_REC_LABELS, AT_REC_LABELS};
+static const u32 COUNTS[SU_KEYS] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u, 34u, 2u, 2u};
 
 static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
 static void mod_defaults(void);
@@ -146,7 +150,7 @@ static void mod_write_end(volatile ModCfg *m);
 /* Claim SU_KEYS empty registry keys (from the top), once per boot. */
 static int claim(void) {
     if (SU->magic != SU_MAGIC || SU->gen != boot_gen()) {
-        SU->ok = 0; SU->r0 = 0; SU->gen = boot_gen(); SU->magic = SU_MAGIC;
+        SU->ok = 0; SU->gen = boot_gen(); SU->magic = SU_MAGIC;
     }
     if (SU->ok) return 1;
     u32 r = REGISTRY;
@@ -1045,8 +1049,6 @@ static void mod_cfg(void) {
 #define K_LFO_SHAPE 0x4Au
 #define K_LFO_RATE 0x4Bu
 #define K_LFO_DEPTH 0x4Cu
-#define K_LFO_RESTART 0x4Du
-#define K_LFO_SYNC 0x4Eu
 #define K_LFO_SRATE 0x4Fu
 #define K_ENV_A 0x1Eu
 #define K_ENV_D 0x1Fu
@@ -1076,9 +1078,11 @@ static void row_desc(u32 r, volatile ModTrack *t, u16 *key, u32 *val) {
         volatile ModLfo *l = &t->lfo[r - 1u];
         key[0] = K_LFO_SHAPE; val[0] = l->shape < 9u ? l->shape : 0u;
         key[1] = l->sync ? K_LFO_SRATE : K_LFO_RATE; val[1] = l->sync ? (l->srate < 15u ? l->srate : 6u) : l->rate;
-        key[2] = K_LFO_SYNC; val[2] = l->sync ? 1000u : 0u;
         key[3] = K_LFO_DEPTH; val[3] = l->depth;
-        key[4] = K_LFO_RESTART; val[4] = l->restart ? 1000u : 0u;
+        if (claim()) {
+            key[2] = SU->key[7]; val[2] = l->sync ? 1u : 0u;        /* Beat Sync: Off / On */
+            key[4] = SU->key[8]; val[4] = l->restart ? 1u : 0u;     /* Triggered: Off / On */
+        }
     } else if (r == 3u || r == 4u) {
         volatile ModEnv *e = &t->env[r - 3u];
         key[0] = K_ENV_A; val[0] = e->a; key[1] = K_ENV_D; val[1] = e->d;
@@ -1128,9 +1132,9 @@ __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
         if (key == K_LFO_SHAPE) l->shape = (u8)(value < 9u ? value : 8u);
         else if (key == K_LFO_RATE) l->rate = (u16)(value > 1000u ? 1000u : value);
         else if (key == K_LFO_SRATE) l->srate = (u8)(value < 15u ? value : 14u);
-        else if (key == K_LFO_SYNC) l->sync = value != 0;
+        else if (key == SU->key[7]) l->sync = value != 0;
         else if (key == K_LFO_DEPTH) l->depth = (u16)(value > 1000u ? 1000u : value);
-        else if (key == K_LFO_RESTART) l->restart = value != 0;
+        else if (key == SU->key[8]) l->restart = value != 0;
     } else {
         volatile ModEnv *e = &t->env[r - 3u];
         u16 v16 = (u16)(value > 1000u ? 1000u : value);
