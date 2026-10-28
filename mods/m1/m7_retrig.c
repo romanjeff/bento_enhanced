@@ -46,7 +46,7 @@ typedef struct {
 _Static_assert(BURSTS * sizeof(Burst) <= RETRIG_BYTES, "burst table larger than its slot");
 void *m1_retrig_table(void); /* m7_polyat.c: validated for this boot, zeroed with the region */
 static volatile Burst *bursts(void) { return (volatile Burst *)m1_retrig_table(); }
-void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus, u32 pad);   /* m7_polyat.c (M2-2) */
+void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus, u32 pad, u32 len);   /* m7_polyat.c (M2-2) */
 void curve_emit(u32 track, u32 clock, int start, int len);
 
 typedef void (*route_fn)(u32 track, u32 note, u32 vel, u32 timing, u32 pad, u32 router);
@@ -85,7 +85,8 @@ static int settings(u32 pad, const u32 *rec_word, u32 *n, u32 *div, int *ramp) {
 
 /* csp = the caller's stack: [0] pad, [1] router, +0x20 tick64, +0x3C note word. */
 __attribute__((used, retain)) void retrig_accept(u32 track, u32 note, const u32 *csp, u32 clock, u32 vel) {
-    curve_start(track, note, csp[0x3C / 4], csp[0x20 / 4], csp[0x24 / 4], csp[1], csp[0] & 0xFFFFu);   /* bus = router */
+    curve_start(track, note, csp[0x3C / 4], csp[0x20 / 4], csp[0x24 / 4], csp[1], csp[0] & 0xFFFFu,
+                csp[0x30 / 4]);   /* bus = router; the note record (sp+0x28): length at +8 */
     volatile Burst *b = bursts();
     if (!b) return;
     (void)clock;

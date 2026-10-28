@@ -74,7 +74,8 @@ typedef struct {
     u16 n, k;                        /* samples, next due */
     u8 note, last, want, used, port, ch, chan, kind;   /* chan: AT Out Channel (aggregated);
                                                           kind 1: internal instrument, port|ch<<8 = bus key */
-} Player; /* 32 bytes */
+    u32 sp16;                        /* ticks between samples x 16: the note's duration / samples (v3.43) */
+} Player; /* 36 bytes */
 
 /* M2-5b: one channel-pressure destination (port/channel) for AT Out Channel:
  * sends the highest current value of its sounding curve notes. */
@@ -86,7 +87,12 @@ typedef struct {
 #define PLAYERS 64u                  /* 8 tracks x 8 voices: no curve is ever cut off by another */
 #define CURVE_MIN_GAP (8u * MS_CYC)  /* per note, when alone on its port */
 #define CURVE_SHARE (MS_CYC * 5u / 2u)   /* + one token interval per curve note on the port */
-#define CURVE_TICKS 15u              /* 16 samples per step = 240 playback ticks */
+#define CURVE_TICKS 15u              /* 16 samples per step at 1/16 (240 ticks per step): fallback */
+/* Ticks per step for the sequence's step-size index: stock's float table
+ * 0x080BDBEC (quarter notes per step: 32, 16, 8, 4, 2, 4/3, 1, 2/3, 1/2, 1/3,
+ * 1/4, 1/6, 1/8, 1/12, 1/16) x 960, as the timed-note processor (0x08060820)
+ * scales a note's length: duration = ticks per step x length / 960. */
+static const u16 STEP_TICKS[15] = {30720, 15360, 7680, 3840, 1920, 1280, 960, 640, 480, 320, 240, 160, 120, 80, 60};
 #define LATE_SAMPLES 2400            /* 50 ms at 48 kHz: transport stopped / clip changed */
 
 typedef struct {
@@ -114,7 +120,7 @@ _Static_assert(__builtin_offsetof(Region, curve_starts) == REGION_CURVE_STATS, "
 _Static_assert(__builtin_offsetof(Region, curve_peak) == REGION_CURVE_PEAK, "curve peak offset");
 _Static_assert(__builtin_offsetof(Region, int_dest) == REGION_INTERNAL, "internal stats offset");
 
-#define REGION_MAGIC 0x34424D31u /* "1MB4": + modulation runtime (v3.41) */
+#define REGION_MAGIC 0x35424D31u /* "1MB5": Player 36 B (v3.43) */
 
 static volatile Region *region(void);
 /* m7_retrig.c (R4): is this note sounding on the track (voice list)? */
@@ -437,8 +443,30 @@ static u32 at_mode(u32 port, u32 ch, u32 *how) {
     return AT_POLY;
 }
 
+/* The curve spans the note as it plays NOW: sample spacing = the note's current
+ * duration / its samples, with stock's duration = ticks per step x length / 960
+ * (the timed-note processor). So a new step size or a longer/shorter note
+ * stretches or squeezes the curve (v3.42 and earlier: 15 ticks, right only for
+ * an unedited note at 1/16). Sequence object track+0x86C0: word 0 = step-size
+ * index, byte +0x38 = lengths in steps (else raw ticks). Without a usable
+ * length: 16 samples per step (the recorded spacing, 60 length units each). */
+static u32 sample_ticks16(u32 track, u32 len, u32 n) {
+    u32 seq = *(volatile u32 *)(track + 0x86C0u), tps = 240u, steps = 1u;
+    if (seq && !(seq & 3u) && ((seq >= 0x24000000u && seq < 0x24080000u) || (seq >= 0xC0000000u && seq < 0xC8000000u))) {
+        steps = *(volatile u8 *)(seq + 0x38u) != 0;
+        u32 idx = *(volatile u32 *)seq;
+        if (idx < 15u) tps = STEP_TICKS[idx];
+    }
+    if (len && n && len < 0x10000u) {                          /* < 68 steps: tps x len fits */
+        u32 dur = steps ? tps * len / 960u : len;              /* ticks */
+        u32 sp = dur * 16u / n;
+        return sp ? sp : 1u;
+    }
+    return steps ? tps : 60u * 16u;                            /* (ticks per step / 16) x 16 */
+}
+
 static void start_player(volatile Region *r, u32 track, u32 note, u32 data, u32 n, u32 tick_lo, u32 tick_hi,
-                         u32 kind, u32 port, u32 ch, u32 chan) {
+                         u32 kind, u32 port, u32 ch, u32 chan, u32 len) {
     volatile Player *slot = 0;
     for (u32 i = 0; i < PLAYERS; i++) {
         volatile Player *p = &r->pl[i];
@@ -452,6 +480,7 @@ static void start_player(volatile Region *r, u32 track, u32 note, u32 data, u32 
     slot->cyc = CYCCNT - CURVE_MIN_GAP * 8u;        /* the first value may go at once */
     slot->port = (u8)port; slot->ch = (u8)ch;
     slot->chan = (u8)chan; slot->kind = (u8)kind;
+    slot->sp16 = sample_ticks16(track, len, n);
     slot->used = 1;
     r->curve_starts++;
 }
@@ -481,7 +510,7 @@ static u32 inst_key(u32 track, u32 pad) {
     return key & 0xFFFFu;
 }
 
-static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus, u32 pad) {
+static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus, u32 pad, u32 len) {
     volatile Region *r = region();
     u32 h = step_handle(word), n = 0, data;
     int ext = *(volatile u8 *)(track + 0x86D1u), inst = *(volatile u8 *)(track + 0x86D2u);
@@ -491,7 +520,7 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
         u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u), how;
         u32 mode = at_mode(port, ch, &how);
         r->curve_dest = port | (ch << 8) | (mode << 16) | (how << 24);
-        if (mode == AT_POLY || mode == AT_CHAN) start_player(r, track, note, data, n, tick_lo, tick_hi, 0, port, ch, mode == AT_CHAN);
+        if (mode == AT_POLY || mode == AT_CHAN) start_player(r, track, note, data, n, tick_lo, tick_hi, 0, port, ch, mode == AT_CHAN, len);
         else r->curve_skipped++;                    /* Off */
     }
 #ifdef BE_NO_INTA
@@ -502,7 +531,7 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
         u32 mode = int_mode(idx);
         r->bus = bus;
         r->int_dest = (key & 0xFFFFu) | ((idx & 0xFFu) << 16) | (mode << 24);
-        if (mode == AT_POLY || mode == AT_CHAN) start_player(r, track, note, data, n, tick_lo, tick_hi, 1, key & 0xFF, (key >> 8) & 0xFF, mode == AT_CHAN);
+        if (mode == AT_POLY || mode == AT_CHAN) start_player(r, track, note, data, n, tick_lo, tick_hi, 1, key & 0xFF, (key >> 8) & 0xFF, mode == AT_CHAN, len);
         else r->curve_skipped++;
     }
 }
@@ -625,7 +654,7 @@ static void curve_emit_body(u32 track, u32 clock, int start, int len) {
         volatile Player *p = &r->pl[i];
         if (!p->used || p->track != track) continue;
         while (p->k < p->n) {
-            u32 add = CURVE_TICKS * p->k, t[2];
+            u32 add = (p->sp16 * p->k) >> 4, t[2];
             t[0] = p->tick_lo + add;
             t[1] = p->tick_hi + (t[0] < add);
             int off = FN7(TICK_TO_OFFSET, offset_fn)(clock, t);
@@ -754,9 +783,9 @@ __attribute__((used, retain)) void h_live(u32 bus, const u32 *ev, u32 router) {
     irq_restore(p);
 }
 
-void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus, u32 pad) {
+void curve_start(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus, u32 pad, u32 len) {
     u32 p = irq_save();
-    curve_start_body(track, note, word, tick_lo, tick_hi, bus, pad);
+    curve_start_body(track, note, word, tick_lo, tick_hi, bus, pad, len);
     irq_restore(p);
 }
 void curve_emit(u32 track, u32 clock, int start, int len) {

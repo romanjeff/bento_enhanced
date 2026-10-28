@@ -59,12 +59,13 @@ class Rig:
             return
         u.reg_write(UC_ARM_REG_PC, u.reg_read(UC_ARM_REG_LR))
 
-    def accept(self, track, pad, tick, note=36, vel=100, clock0=1000, word=None):
+    def accept(self, track, pad, tick, note=36, vel=100, clock0=1000, word=None, length=0):
         u = self.u
         w32(u, CLOCK, clock0)
         u.mem_write(S, bytes(0x90))
         w32(u, S, pad); w32(u, S + 4, ROUTER); w32(u, S + 0x20, tick); w32(u, S + 0x24, 0)
         w32(u, S + 0x3C, (WORD if pad == 15 else 0) if word is None else word)
+        w32(u, S + 0x30, length)                                    # the note record's length (+8)
         for i, v in enumerate((track, note, vel, tick - clock0)):
             u.reg_write(UC_ARM_REG_R0 + i, v)
         u.reg_write(UC_ARM_REG_R6, CLOCK); u.reg_write(UC_ARM_REG_SP, S)
@@ -235,8 +236,8 @@ class CurvePlayback(unittest.TestCase):
         w32(u, self.CYC, 1000 * self.MS)
         return g
 
-    def start(self, g, track=None, note=60, word=(0xB7 << 24) | (1 << 3), tick=1000):
-        g.accept(g.t1 if track is None else track, pad=0, tick=tick, note=note, word=word)
+    def start(self, g, track=None, note=60, word=(0xB7 << 24) | (1 << 3), tick=1000, length=0):
+        g.accept(g.t1 if track is None else track, pad=0, tick=tick, note=note, word=word, length=length)
         w32(g.u, REGION + 48, 0x2403A118)                           # MIDI-out queue seen at a note-on
 
     def emit(self, g, track, start, length, ms):
@@ -286,6 +287,55 @@ class CurvePlayback(unittest.TestCase):
         g = self.rig(); self.start(g)
         self.emit(g, g.t1, 5000, 40, 1010)                          # transport jumped far ahead
         self.assertEqual((g.sent, r32(g.u, REGION + 40)), ([], 1), "late")
+
+
+class CurveStepSize(unittest.TestCase):
+    """v3.43: curve samples follow the sequence's step size (stock: duration = ticks
+    per step x length / 960), so changing 1/8 -> 1/2 stretches the curve with its
+    notes. Sequence object at track+0x86C0: word 0 = step-size index, +0x38 = steps."""
+    SEQ = 0x24072000
+
+    def due(self, idx, steps=1, length=0):
+        pb = CurvePlayback(); g = pb.rig(samples=(10, 20, 30, 40, 50, 60, 70, 80))
+        w32(g.u, g.t1 + 0x86C0, self.SEQ)
+        g.u.mem_write(self.SEQ, struct.pack("<I", idx) + bytes(0x34) + bytes([steps]))
+        pb.start(g, length=length)
+        times = {}
+        for start in range(0, 1200, 4):                        # 4-tick blocks: when does each value appear
+            pb.emit(g, g.t1, start, 4, 1010 + start)
+            for _, _, _, note, v, _ in g.sent[len(times):]:
+                times.setdefault(v, start)
+        return times
+
+    def test_sixteenth_steps_keep_15_ticks(self):
+        t = self.due(10)
+        self.assertAlmostEqual(t[80] - t[10], 7 * 15, delta=4)   # 4-tick blocks
+
+    def test_half_note_steps_stretch_8x(self):
+        t = self.due(4)                                        # 1/2: 1920 ticks per step -> 120 per sample
+        self.assertAlmostEqual(t[30] - t[10], 2 * 120, delta=4)
+
+    def test_eighth_steps(self):
+        t = self.due(8)                                        # 1/8: 480 -> 30 per sample
+        self.assertAlmostEqual(t[40] - t[10], 3 * 30, delta=4)
+
+    def test_raw_tick_lengths(self):
+        t = self.due(8, steps=0)                               # lengths in ticks: 60 per sample
+        self.assertAlmostEqual(t[20] - t[10], 60, delta=4)
+
+    def test_lengthened_note_stretches_its_curve(self):
+        """8 samples recorded over half a step (480 units); the note was then
+        lengthened to a whole step (960) at 1/16: 240 ticks / 8 = 30 per sample."""
+        t = self.due(10, length=960)
+        self.assertAlmostEqual(t[80] - t[10], 7 * 30, delta=4)
+
+    def test_shortened_note_squeezes_its_curve(self):
+        t = self.due(10, length=240)                          # quarter step: 60 ticks / 8 = 7.5
+        self.assertAlmostEqual(t[80] - t[10], 52, delta=4)
+
+    def test_note_length_and_step_size_combine(self):
+        t = self.due(4, length=960)                           # 1/2 steps, one step: 1920 / 8 = 240
+        self.assertAlmostEqual(t[20] - t[10], 240, delta=4)
 
 
 class CurveDestMode(unittest.TestCase):
