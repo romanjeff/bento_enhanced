@@ -1,6 +1,6 @@
 # External track modulation: design (draft for review)
 
-Status: **design, not built.** It comes out of the F0 research sprint (2026-10-27) and
+Status: **design, not built.** Decisions below; F1 (engine) next. It comes out of the F0 research sprint (2026-10-27) and
 the planning decisions recorded below. Addresses are stock 1.6.1.
 
 ## Goal
@@ -46,13 +46,13 @@ External (MIDI) tracks get what internal instruments have, sent as MIDI:
    proven by the AT settings (v3.33). Stacked rows like internal dashboards would mean
    building new widgets: possible later if this feels clumsy.
    - LFO row: Shape, Rate (free) or Sync Rate, Beat Sync, Depth, Restart (+ spare).
-   - Env row: Attack, Decay, Sustain, Release, Loop (Off / 1–32 / ∞) (+ spare).
+   - Env row: Attack, Decay, Sustain, Release, Loop (Off / 1–32 / ∞, attack–decay cycles) (+ spare).
 2. **Modulation page**: stock's Mod Matrix page, opened from a header button on the
    External INST page (External has no hamburger menu). Its own "Dashboard" button
    returns. For an External track, the hooked row builder supplies:
-   - **rows** = MIDI destinations (≤ ~59: the view's arrays are that large), with names
-     like "Mod Wheel", "Breath", "Pitch Bend", "CC 74". Keys are private numbers, so
-     **no registry keys are used**;
+   - **rows** = 16 destination slots (the view's arrays hold up to ~59). Each row shows its
+     chosen destination's name ("Mod Wheel", "Cutoff (74)", "CC 85"). Keys are private
+     numbers, so **no registry keys are used**. Encoder 8 ("Dest") picks the destination;
    - **sources** = the ones our engine provides (LFO 1–2, Env 1–2, Velocity, Pressure, …);
    - the **CC column** shows each row's CC number.
    Routing reads and writes for an External context go to our storage.
@@ -99,16 +99,19 @@ External (MIDI) tracks get what internal instruments have, sent as MIDI:
 - **Ring overflow** (16 slots, no check): modulation must stay within the existing
   per-port budget, and notes keep priority.
 
-## Open decisions (for Jeff)
+## Decisions (Jeff, 2026-10-27)
 
-1. **Destination rows** (≤ ~59). Proposal: Pitch Bend, Channel Pressure, Mod Wheel (1),
-   Breath (2), Foot (4), Volume (7), Pan (10), Expression (11), Effect 1–2 (12–13),
-   General Purpose 1–4 (16–19), Sound Controllers 1–10 (70–79: includes Resonance 71,
-   Release 72, Attack 73, Cutoff 74), Effects depths 91–95, plus **8 user rows "CC A–H"**
-   whose CC numbers are set on an INST row. That's about 43 rows.
-2. **Sources**: LFO 1–2, Env 1–2, Velocity, Pressure (highest of the held notes), Key
-   (note number)? Anything else (e.g. incoming MIDI mod wheel)?
-3. **Row switching on the INST page**: a header button, or the arrow buttons? (Jeff, on
-   the device: what do the arrows currently do on the External INST page?)
-4. **LFO shapes**: stock's nine (reuse their list), or a MIDI-oriented subset?
-5. **Envelope loop**: loop the whole AD(S)R, or attack–decay only (cycling)?
+1. **16 destination rows.** Each row picks its destination from one list: named messages
+   first (**Pitch Bend, Channel Pressure, Mod Wheel, Breath, Volume, Pan**, then other
+   standard-named CCs such as Expression, Foot, Cutoff 74, Resonance 71, Attack 73,
+   Release 72), then **CC 0–127 by number**, still showing a standard name where one
+   exists. The matrix page uses 7 encoders (Line, Source 1–3, Amount 1–3), so **encoder
+   8 becomes "Dest"** for the selected row, and the rightmost column shows the choice.
+2. **Sources**: LFO 1–2, Env 1–2, Velocity, Pressure (highest held note), Key. **No incoming
+   MIDI.**
+3. **Row selection on the INST page**: native pages show several rows and **touch selects
+   the row** that the encoders edit. F2a first checks whether the External view can show
+   stacked rows with touch selection (new bar widgets). Fallback: one bar with a header
+   button that switches row sets. Jeff hears about it before it is built.
+4. **LFO shapes**: stock's nine.
+5. **Envelope loop**: attack–decay cycling (sustain/release are not looped).
