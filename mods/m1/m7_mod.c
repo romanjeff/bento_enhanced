@@ -24,6 +24,8 @@
 #define DCIMVAC (*(volatile u32 *)0xE000EF5Cu)
 #define MS_CYC 480000u
 #define DEST_GAP (8u * MS_CYC)
+#define RING_PTR (*(volatile u32 *)0x2401BD3Cu)   /* M7->M4 ring object (Lab's PRODUCER_GLOBAL) */
+#define RING_MAX_FILL 6u                       /* leave >= 10 of 16 slots for notes and UI events */
 #define MOD_STAGE_OFF 0u
 #define MOD_STAGE_A 1u
 #define MOD_STAGE_D 2u
@@ -184,6 +186,18 @@ static void env_step(ModRun *r, u32 k, volatile ModEnv *e, u32 dt_us) {
     r->env[k] = lvl;
 }
 
+/* Unread entries in the M7->M4 ring (16 slots, no full check: an overwrite can
+ * drop a Note Off or a button press). rd (+0x2340) is written only by the M4 and
+ * sits alone in its cache line (as the black box's h_ring reads it). BE-MT4
+ * peaked at 12 with modulation running: modulation waits while it is busy. */
+static int ring_busy(void) {
+    u32 obj = RING_PTR;
+    if (!obj || (obj & 3u)) return 0;
+    DCIMVAC = (obj + 0x2340u) & ~31u;
+    __asm volatile("dsb" ::: "memory");
+    return *(volatile u32 *)(obj + 0x2360u) - *(volatile u32 *)(obj + 0x2340u) >= RING_MAX_FILL;
+}
+
 static void mod_block_body(u32 track, const u32 *clock, int start, u32 router) {
     ModState *st = state();
     if (!st || !router || !*(volatile u8 *)(track + 0x86D1u)) return;   /* MIDI out off */
@@ -248,6 +262,7 @@ static void mod_block_body(u32 track, const u32 *clock, int start, u32 router) {
         if (d->type == MOD_DEST_PB) { v = 8192 + acc / 4000; v = v < 0 ? 0 : v > 16383 ? 16383 : v; }
         else { v = acc / 258000; v = v < 0 ? 0 : v > 127 ? 127 : v; }   /* full scale (32767 x 1000) = 127; base 0 until CC pairs (F3) */
         if ((u32)v == r->last[i] || now - r->dcyc[i] < DEST_GAP) continue;
+        if (ring_busy()) break;                                /* notes and UI first: next block */
         if (!m1_token(port, now)) break;                       /* port budget spent: next block */
         /* Stock's CC case writes the value with its 14-bit writer (0x08105D10: status
          * & 0xEF == 0xA0 -> data byte = value >> 7), so a 7-bit value goes in as v << 7

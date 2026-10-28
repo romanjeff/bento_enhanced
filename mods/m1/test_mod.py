@@ -259,6 +259,31 @@ class WireFormat(unittest.TestCase):
         self.assertEqual((raw >> 7, raw & 0x7F), (100, 0), "data byte = word 5 >> 7 (0x08105D10)")
 
 
+class RingGuard(unittest.TestCase):
+    """v3.45: modulation waits while the M7->M4 ring (*0x2401BD3C, 16 slots, no
+    full check) holds >= 6 unread entries; BE-MT4 peaked at 12 of 16."""
+    RING = 0x24078000
+
+    def rig(self, fill):
+        g = Rig()
+        w32(g.u, 0x2401BD3C, self.RING)
+        w32(g.u, self.RING + 0x2340, 100); w32(g.u, self.RING + 0x2360, 100 + fill)
+        g.track_cfg(dests=[(CC, 20, (VEL, 0, 0), (1000, 0, 0))])
+        g.block(0)
+        return g
+
+    def test_quiet_ring_sends(self):
+        self.assertEqual(len(self.rig(5).cc(20)), 1)
+
+    def test_busy_ring_waits_then_catches_up(self):
+        g = self.rig(6)
+        g.note(60, vel=90); g.block(20)
+        self.assertEqual(g.cc(20), [], "6 unread: nothing")
+        w32(g.u, self.RING + 0x2340, 104)                         # the M4 caught up (2 unread)
+        g.block(30)
+        self.assertEqual(g.cc(20)[-1][0], 90, "the current value goes out")
+
+
 class Output(unittest.TestCase):
     def test_changed_values_only_and_8_ms_per_destination(self):
         g = Rig()
