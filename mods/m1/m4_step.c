@@ -1308,6 +1308,13 @@ static void mod_defaults(void) {
     if (!m) return;
     mod_write_begin(m);
     for (u32 i = 0; i < sizeof(m->t); i++) ((volatile u8 *)m->t)[i] = 0;
+    for (u32 t = 0; t < MOD_TRACKS; t++) {          /* usable starting points; no routing (nothing is sent) */
+        volatile ModTrack *x = &m->t[t];
+        for (u32 k = 0; k < 2; k++) {
+            x->lfo[k].shape = 4; x->lfo[k].rate = 400; x->lfo[k].depth = 1000;            /* Sine, ~0.8 Hz */
+            x->env[k].a = 100; x->env[k].d = 300; x->env[k].s = 500; x->env[k].r = 300;   /* 0.1 s, 0.9 s, 50 %, 0.9 s */
+        }
+    }
 #ifndef BE_NO_MODTEST
     for (u32 t = 0; t < MOD_TRACKS; t++) {
         volatile ModTrack *x = &m->t[t];

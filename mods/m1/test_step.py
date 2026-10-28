@@ -1151,7 +1151,7 @@ class SidecarLoad(unittest.TestCase):
         trailer = (b"TRKS" + struct.pack("<H", 16) + bytes(32) + b"MODS" + struct.pack("<HH", 8, 232)
                    + bytes(232) + bytes(rec) + bytes(232 * 6))
         for files, want in (({r"\Projects\H\curves.bnt": sidecar(self.CURVES) + trailer}, (4, 700)),
-                            ({r"\Projects\H\curves.bnt": sidecar(self.CURVES)}, (0, 0))):
+                            ({r"\Projects\H\curves.bnt": sidecar(self.CURVES)}, (4, 1000))):
             g = self.rig(files=files)
             g.u.mem_map(0xC6000000, 0x400000)
             g.u.mem_write(CFGB, struct.pack("<3I", MAG, 1, 2) + bytes([9]) * (8 * 232))   # previous project's
@@ -1159,7 +1159,12 @@ class SidecarLoad(unittest.TestCase):
             self.load(g, 0)
             t1 = bytes(g.u.mem_read(CFGB + 12 + 232, 8))
             self.assertEqual((t1[0], struct.unpack_from("<H", t1, 6)[0]), want)
-            self.assertEqual(bytes(g.u.mem_read(CFGB + 12, 232)), bytes(232), "track 0: nothing")
+            t0 = bytes(g.u.mem_read(CFGB + 12, 232))
+            if want == (4, 1000):                             # no MODS: defaults, no routing
+                self.assertEqual((t0[0], struct.unpack_from("<H", t0, 6)[0]), (4, 1000), "track 0: defaults (Sine, full depth)")
+            else:                                             # MODS: exactly what the file holds
+                self.assertEqual(t0, bytes(232), "track 0 as saved")
+            self.assertEqual(t0[40:], bytes(192), "track 0: no routing")
             self.assertEqual(r32(g.u, CFGB + 8) % 2, 0, "seq even after the load")
 
     def test_loading_never_walks_the_track_model(self):
