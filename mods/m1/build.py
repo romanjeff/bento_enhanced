@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x4000   # 16 KB since v3.26 (curve sidecar writer)
-VERSION = "3.40"                       # bump for every build that goes on the device
+VERSION = "3.41"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -52,7 +52,7 @@ DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced)
 # (SPACED) crash-restarted and the SD card dropped out ("insert microSD card");
 # BS-C (stall off) was fine, BS-D (stall on) failed. irq30 (v3.18) is unproven.
 # Code stays in the image, unreachable. BE_ENABLE="stall,irq30" turns them back on.
-DEFAULT_OFF = {"stall", "irq30"}
+DEFAULT_OFF = {"stall", "irq30", "modtest"}   # modtest: F1 fixed routing (test builds only)
 DISABLED = (DEFAULT_OFF - {g for g in os.environ.get("BE_ENABLE", "").split(",") if g})     | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
 DISPLAY = os.environ.get("BE_LABEL", DISPLAY)
 VERSION = VERSION + (f"-{os.environ['BE_TAG']}" if os.environ.get("BE_TAG") else "")
@@ -158,7 +158,7 @@ CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (b
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x3003C8A0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
-STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x3000   # m4_step.c (12 KB since v3.29)
+STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x5000   # m4_step.c (20 KB since v3.41; 12 KB since v3.29)
 M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B), 0x60 handler at +0x80
 M4_CHAN = M4_POLY + 0x80
 # Per-step Condition / Retrigger (m4_step.c)
@@ -325,7 +325,7 @@ def build(base_img, out):
             raise SystemExit(f"heap literal at {a:#x} is not stock")
 
     # --- M7: compile, place, trampolines, entry patches
-    m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c", HERE / "m7_conditions.c", HERE / "m7_stall.c", HERE / "m7_retrig.c"],
+    m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c", HERE / "m7_conditions.c", HERE / "m7_stall.c", HERE / "m7_retrig.c", HERE / "m7_mod.c"],
                          "cortex_m7", HERE / "m7.ld", out / "m7.elf", M7_CODE, M7_LIMIT)
     va, code7, s7 = elf_load(m7_elf, M7_CODE, M7_LIMIT)
     if va != M7_CODE or M7_CODE + len(code7) > M7_LIMIT:

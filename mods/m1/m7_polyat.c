@@ -108,12 +108,13 @@ typedef struct {
     Chan cd[CHANS];
     u32 chan_sent, live_off;
     Chan ic[CHANS];                  /* M2-2b: internal channel aggregates (port|ch<<8 = key) */
+    u32 mod[MOD_RUN_BYTES / 4u];     /* F1: m7_mod.c runtime (zeroed with the region) */
 } Region;
 _Static_assert(__builtin_offsetof(Region, curve_starts) == REGION_CURVE_STATS, "curve stats offset");
 _Static_assert(__builtin_offsetof(Region, curve_peak) == REGION_CURVE_PEAK, "curve peak offset");
 _Static_assert(__builtin_offsetof(Region, int_dest) == REGION_INTERNAL, "internal stats offset");
 
-#define REGION_MAGIC 0x33424D31u /* "1MB3": + internal instruments (v3.37) */
+#define REGION_MAGIC 0x34424D31u /* "1MB4": + modulation runtime (v3.41) */
 
 static volatile Region *region(void);
 /* m7_retrig.c (R4): is this note sounding on the track (voice list)? */
@@ -134,6 +135,39 @@ int m1_note_sounding(u32 track, u32 note) {
 void *m1_retrig_table(void) {
     volatile Region *r = region();
     return r ? (void *)r->bursts : 0;
+}
+
+/* m7_mod.c (F1): its runtime slice, the port budget, and what it modulates from. */
+static int take_token(volatile Region *r, u32 port, u32 now);
+void *m1_mod_run(void) {
+    volatile Region *r = region();
+    return r ? (void *)r->mod : 0;
+}
+int m1_token(u32 port, u32 now) {
+    volatile Region *r = region();
+    return r && take_token(r, port, now);
+}
+int m1_notes_held(u32 track) {
+    volatile Region *r = region();
+    volatile Voices *v = r ? voices(r, track, 0) : 0;
+    return v ? v->n : 0;
+}
+u32 m1_track_pressure(u32 track) {                   /* highest live or recorded pressure now */
+    volatile Region *r = region();
+    u32 best = 0;
+    if (!r) return 0;
+    volatile Voices *v = voices(r, track, 0);
+    for (u32 i = 0; i < PENT; i++) {
+        volatile PEnt *e = &r->p[i];
+        if (!e->used || e->track != track || !v || find(v, e->note) < 0) continue;
+        u32 val = e->chan ? e->pval : e->last;
+        if (val <= 0x7Fu && val > best) best = val;
+    }
+    for (u32 i = 0; i < PLAYERS; i++) {
+        volatile Player *p = &r->pl[i];
+        if (p->used && p->track == track && !p->kind && p->want <= 0x7Fu && p->want > best) best = p->want;
+    }
+    return best;
 }
 _Static_assert(sizeof(Region) <= M1_REGION_BYTES, "region larger than the M4 allocates");
 
@@ -194,6 +228,7 @@ static void note_off(u32 q, const u32 *like, u32 note) {
 
 /* Called from the five redirected post sites: (queue, event, track). */
 static void note_body(u32 q, const u32 *ev, u32 track);
+void mod_note(u32 track, u32 note, u32 vel, int on);   /* m7_mod.c (F1) */
 static void poly_body(u32 track, const u32 *ev, u32 engine);
 
 /* Voice lists and pressure state are shared by every caller; if any of the
@@ -248,6 +283,7 @@ static void note_body(u32 q, const u32 *ev, u32 track) {
         }
         v->notes[v->n++] = (u8)note;
         MSG_SEND(q, ev);
+        mod_note(track, note, ev[5], 1);           /* F1: retrigger LFOs/envelopes */
     } else {
         if (v->owed[note]) {                       /* its voice was already released */
             v->owed[note]--;
@@ -259,6 +295,7 @@ static void note_body(u32 q, const u32 *ev, u32 track) {
         int i = find(v, note);
         if (i >= 0) drop(v, (u32)i);
         MSG_SEND(q, ev);
+        mod_note(track, note, 0, 0);               /* F1: envelope gate */
         if (r->midi_q) { u32 on_port[PORTS] = {0}; chan_pass(r, CYCCNT, on_port); }   /* AT Channel: drop it now */
     }
     stats(r);

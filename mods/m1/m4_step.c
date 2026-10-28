@@ -574,9 +574,11 @@ static int drum_track_selected(void) {
  * r[0] calls on page 0x27, r[1] last: drum | slot << 4 (0xF = none) | change << 8. */
 static volatile AtSet *at_set(void);
 static void at_publish(void);
+static void mod_cfg(void);
 __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int changed) {
     (void)model;
     if (at_set()->pending) at_publish();            /* after a project load (UI context) */
+    mod_cfg();                                      /* F1: once per boot */
     strike_init();
     volatile PadState *ps = pads();
     for (u32 p = 0; ps && p < 16; p++)
@@ -980,6 +982,36 @@ static void at_publish(void) {
     t->seq++;
     t->magic = AT_DEST_MAGIC;
     a->pending = 0;
+}
+
+/* F1: the External modulation settings, once per boot: an SDRAM block (32-byte
+ * aligned: the M7 invalidates it by cache line) published in the D2 header with
+ * a check word. Empty settings until F2 edits them; a modtest build
+ * (BE_ENABLE=modtest) routes LFO 1 -> Mod Wheel (Pos Tri, 1/4), Env 1 -> CC 74 and
+ * LFO 2 -> Pitch Bend (Sine, 1 bar, 15 %) on every External track. */
+static void mod_cfg(void) {
+    volatile ModHead *h = MODHEAD;
+    if (h->magic == MODHEAD_MAGIC && h->gen == boot_gen() && h->check == ~h->cfg) return;
+    h->magic = 0;
+    u32 need = sizeof(ModCfg) + 32u, cur = BUMP_CUR, end = BUMP_END;
+    if (!boot_gen() || end <= cur || end - cur < need + 192u) return;
+    u32 p = FN(BUMP_ALLOC, u32 (*)(u32))(need);
+    if (p != cur) return;
+    volatile ModCfg *c = (volatile ModCfg *)((p + 31u) & ~31u);
+    for (u32 i = 0; i < sizeof(ModCfg); i++) ((volatile u8 *)c)[i] = 0;
+#ifndef BE_NO_MODTEST
+    for (u32 t = 0; t < MOD_TRACKS; t++) {
+        volatile ModTrack *m = &c->t[t];
+        m->lfo[0].shape = 3; m->lfo[0].sync = 1; m->lfo[0].srate = 6; m->lfo[0].depth = 1000;
+        m->lfo[1].shape = 4; m->lfo[1].sync = 1; m->lfo[1].srate = 3; m->lfo[1].depth = 1000;
+        m->env[0].a = 100; m->env[0].d = 300; m->env[0].s = 0; m->env[0].r = 300;
+        m->d[0].type = MOD_DEST_CC; m->d[0].num = 1; m->d[0].src[0] = MOD_SRC_LFO1; m->d[0].amt[0] = 1000;
+        m->d[1].type = MOD_DEST_CC; m->d[1].num = 74; m->d[1].src[0] = MOD_SRC_ENV1; m->d[1].amt[0] = 1000;
+        m->d[2].type = MOD_DEST_PB; m->d[2].src[0] = MOD_SRC_LFO2; m->d[2].amt[0] = 150;
+    }
+#endif
+    c->gen = boot_gen(); c->seq = 2; c->magic = MODHEAD_MAGIC;
+    h->cfg = (u32)c; h->check = ~(u32)c; h->gen = boot_gen(); h->magic = MODHEAD_MAGIC;
 }
 
 static const u8 OUT_TO_INDEX[3] = {1, 0, 2};   /* mode Poly/Off/Channel -> list Off/Poly/Channel */

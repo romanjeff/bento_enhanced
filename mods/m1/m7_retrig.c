@@ -105,8 +105,10 @@ __attribute__((used, retain)) void retrig_accept(u32 track, u32 note, const u32 
 }
 
 /* Called at the timed-note processor's entry: (track, clock, start, len, router). */
+void mod_block(u32 track, const u32 *clock, int start, u32 router);   /* m7_mod.c (F1) */
 __attribute__((used, retain)) void retrig_emit(u32 track, u32 clock, int start, int len, u32 router) {
     curve_emit(track, clock, start, len);
+    mod_block(track, (const u32 *)clock, start, router);
     volatile Burst *b = bursts();
     if (!b) return;
     (void)router;

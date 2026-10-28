@@ -79,8 +79,8 @@ python test_<suite>.py <stock 1.6.1 bento1.bin> <out dir>     # or test_m1.sh: a
 ```
 
 The suites are `test_diag`, `test_polyat`, `test_conditions`, `test_holdstep`,
-`test_controls`, `test_retrig` and `test_step`: 259 emulated tests (5 skipped in a default
-build). They run the patched image's real code under Unicorn, including stock functions,
+`test_controls`, `test_retrig`, `test_step` and `test_mod`: 279 emulated tests (5 skipped in a
+default build). They run the patched image's real code under Unicorn, including stock functions,
 with hardware, FatFS and a few stock functions stubbed.
 
 The builder checks:
@@ -100,17 +100,19 @@ Tool gotchas it guards against:
   to the compiler. Groups: `step`, `hold`, `cond`, `retrig`, `poly`, `inta` (internal
   aftertouch), `rmidi` (MIDI retriggers), `trace`, `bbox`, `stall`, `irq30`; `diag`
   covers the four diagnostic groups.
-- `stall` and `irq30` are off by default; use `BE_ENABLE=` to turn them on.
+- `stall`, `irq30` and `modtest` are off by default; use `BE_ENABLE=` to turn them on.
+  `modtest` (v3.41+, External modulation test): LFO 1 → Mod Wheel (Pos Tri, 1/4), Env 1 →
+  CC 74, LFO 2 → Pitch Bend (Sine, 1 bar, 15 %) on every External track.
 - `BE_LABEL=` sets the boot-screen label (6 characters at most) and `BE_TAG=` the
   version suffix.
 
-## Memory and code placement (v3.40)
+## Memory and code placement (v3.41)
 
 - **M7 code**: `0x080DA000–0x080DE000`, inside stock's all-zero gap after the M7 image's
   data. The gap runs to `0x080E0000`, and nothing in the image references it.
 - **M4 code** is appended after stock's end: `0x081B5000` black box (16 KB), hold-step
-  `0x081B9000`, controls `0x081B9400`, step/curves UI `0x081BA400` (12 KB), MIDI-out
-  handlers `0x081BD400` (`0x5F` poly, `0x60` channel). The image is `0x17D500` bytes.
+  `0x081B9000`, controls `0x081B9400`, step/curves UI `0x081BA400` (20 KB since v3.41), MIDI-out
+  handlers `0x081BF400` (`0x5F` poly, `0x60` channel). The image is `0x17F500` bytes (v3.41).
 - **Never touch `0x081E0000`+.** The M7's MPU maps it as a 128 KB read-only data
   region (most likely persistent storage), and the bootloader refused an image reaching it.
 - **M7 heap end lowered** from `0x24048DA0` to `0x24048400` (three literals), reserving
@@ -119,7 +121,8 @@ Tool gotchas it guards against:
   capture, curve state, load state, AT settings and the destination table. Every
   structure has a magic word, and its pointers are validated before use (see
   [the boot loop](#the-v325v331-boot-loop)).
-- **SDRAM**, bump-allocated once per boot: the M7 state region (8 KB) and the curve pool
+- **SDRAM**, bump-allocated once per boot: the M7 state region (12 KB since v3.41), the External
+  modulation settings (v3.41, published at `0x3003DFC0`) and the curve pool
   (1 MB, 16384 handles, plus the save list and a 4 KB sidecar buffer).
 
 ## Not yet

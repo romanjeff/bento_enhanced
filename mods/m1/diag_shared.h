@@ -80,7 +80,8 @@ typedef struct {
     u32 r[5];          /* r[0] = M4 boot generation the region belongs to */
 } Cfg; /* 32 bytes */
 #define CFG ((volatile Cfg *)0x3003C1E0u)
-#define M1_REGION_BYTES 0x2000u   /* 8 KB since v3.25 (curve players) */
+#define M1_REGION_BYTES 0x3000u   /* 12 KB since v3.41 (8 KB since v3.25: curve players) */
+#define MOD_RUN_BYTES 0x600u       /* F1: modulation runtime (m7_mod.c) inside the region */
 #define REGION_CURVE_STATS 32u     /* curve_starts, curve_sent, curve_late, curve_skipped (m7_polyat.c) */
 #define REGION_CURVE_PEAK 52u      /* curve_peak, curve_thinned, curve_dest (port | ch << 8 | mode << 16) */
 #define REGION_INTERNAL 64u        /* int_dest, live_int, int_sent (M2-2b internal instruments) */
@@ -283,6 +284,25 @@ typedef struct { u32 magic, seq; AtDest d[8]; } AtDestTable;
 #define AT_DEST ((volatile AtDestTable *)0x3003DF80u)
 #define AT_DEST_MAGIC 0x31544441u /* "ADT1" */
 _Static_assert(0x3003DF80u + sizeof(AtDestTable) <= 0x3003DFC0u, "AT dest table");
+/* F1 (External modulation): per-track LFO/envelope/destination settings. The M4
+ * owns them (UI, sidecar) in an SDRAM block; this D2 header publishes it. The M7
+ * reads the block in place: seq is odd while the M4 writes, and the M7 re-reads
+ * (cache-invalidates) the block whenever seq changes. Values use stock's ranges:
+ * LFO rate/depth and envelope times 0..1000, shapes = stock's list (0x0819F25C),
+ * synced rates = stock's 15 (8 bars .. 1/64), amounts -1000..1000. */
+#define MOD_TRACKS 8u
+#define MOD_DESTS 16u
+enum { MOD_SRC_NONE, MOD_SRC_LFO1, MOD_SRC_LFO2, MOD_SRC_ENV1, MOD_SRC_ENV2, MOD_SRC_VEL, MOD_SRC_PRESS, MOD_SRC_KEY, MOD_SRC_N };
+enum { MOD_DEST_NONE, MOD_DEST_CC, MOD_DEST_PB, MOD_DEST_AT };
+typedef struct { u8 shape, sync, srate, restart; u16 rate, depth; } ModLfo;        /* 8 B */
+typedef struct { u16 a, d, s, r; u8 loop, pad_[3]; } ModEnv;                      /* 12 B; loop 0 off, 1-32, 33 = forever */
+typedef struct { u8 type, num, src[3], pad_; short amt[3]; } ModDest;              /* 12 B */
+typedef struct { ModLfo lfo[2]; ModEnv env[2]; ModDest d[MOD_DESTS]; } ModTrack;  /* 232 B */
+typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; } ModCfg;
+typedef struct { u32 magic, gen, cfg, check; } ModHead;
+#define MODHEAD ((volatile ModHead *)0x3003DFC0u)
+#define MODHEAD_MAGIC 0x31444F4Du /* "MOD1" */
+_Static_assert(0x3003DFC0u + sizeof(ModHead) <= 0x3003E000u, "mod header");
 /* status: 0 none yet, 1 not a project.xml, 2 no sidecar, 3 bad data, 4 ok,
  * 5 pool/handles full (partial), 9 no curve memory */
 _Static_assert(0x3003D880u + CURVELOG_N * sizeof(CurveLogEntry) <= 0x3003DC80u, "curve log");
