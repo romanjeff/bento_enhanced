@@ -771,6 +771,15 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
         }
         puts_(&o, "\r\n");
     }
+    volatile ModHead *mh = MODHEAD;
+    if (mh->magic == MODHEAD_MAGIC) {               /* F2b: what the Mod Matrix hooks saw */
+        puts_(&o, "MX mx_ctx="); hex(&o, mh->mx_ctx, 8);
+        puts_(&o, " build v="); hex(&o, mh->dbg_build_v, 8); puts_(&o, " ctx="); hex(&o, mh->dbg_build_ctx, 8);
+        puts_(&o, " | last edit/event v="); hex(&o, mh->dbg_ev_v, 8); puts_(&o, " ctx="); hex(&o, mh->dbg_ev_ctx, 8);
+        puts_(&o, " type|key<<16="); hex(&o, mh->dbg_ev_tk, 8);
+        puts_(&o, " | builds="); dec(&o, mh->dbg_n & 0x3FFu); puts_(&o, " edits="); dec(&o, (mh->dbg_n >> 10) & 0x3FFu);
+        puts_(&o, " events="); dec(&o, mh->dbg_n >> 20); puts_(&o, "\r\n");
+    }
     puts_(&o, "# saved: "); counters(&o);
     puts_(&o, " at ms "); dec(&o, TICK_MS); puts_(&o, "\r\n");
     M4H->r[2] = o.len;

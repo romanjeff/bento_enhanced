@@ -244,7 +244,7 @@ class ExtRows(unittest.TestCase):
     (header button ROWS_ACTION); our rows use stock's LFO/env keys and our Loop
     list; turning one edits the selected track's ModTrack (odd seq while writing)."""
     EV, CFGB, HEAD = 0x20150000, 0xC6200000, 0x3003DFC0
-    MAGIC = 0x34444F4D
+    MAGIC = 0x35444F4D
 
     def rig(self, track=2, page=0x21):
         g = Rig()
@@ -350,8 +350,8 @@ class ModMatrix(unittest.TestCase):
 
     def rig(self):
         g = ExtRows().rig(track=2)
-        g.u.mem_write(ExtRows.HEAD, struct.pack("<9I", 0x34444F4D, 1, ExtRows.CFGB, ~ExtRows.CFGB & 0xFFFFFFFF, 2, 0, 0, 0, 0))
-        g.u.mem_write(ExtRows.CFGB, struct.pack("<I", 0x34444F4D))
+        g.u.mem_write(ExtRows.HEAD, struct.pack("<9I", 0x35444F4D, 1, ExtRows.CFGB, ~ExtRows.CFGB & 0xFFFFFFFF, 2, 0, 0, 0, 0))
+        g.u.mem_write(ExtRows.CFGB, struct.pack("<I", 0x35444F4D))
         return g
 
     def open(self, g):
@@ -379,7 +379,7 @@ class ModMatrix(unittest.TestCase):
         self.assertEqual(list(struct.unpack("<16H", g.u.mem_read(self.MXV + 0x8AC50, 32))), [0xF000 + i for i in range(16)])
         src = r32(g.u, self.MXV + 0x8ACC8)
         self.assertEqual(list(struct.unpack("<8H", g.u.mem_read(src, 16))), [0, 4, 5, 1, 2, 0xD, 0x20, 0xE])
-        self.assertEqual(cstr(g.u, self.MXV + 0x8AE04), "---", "unassigned row")
+        self.assertEqual(cstr(g.u, self.MXV + 0x8AE04), "(empty)", "unassigned row")
         self.assertIn("redraw", g.log)
 
     def test_other_contexts_stay_stocks(self):
@@ -431,6 +431,26 @@ class ModMatrix(unittest.TestCase):
         g.call(0x0814C690, self.MXV, ExtRows.EV)
         self.assertEqual(self.dest(g, 0)[0], 2)
         self.assertEqual(g.u.mem_read(self.MXV + 0x8ADBC, 1)[0], 0, "no CC number")
+
+    def test_edits_stay_ours_when_the_views_context_changes(self):
+        """BE3.49 on the device: the rows were ours, but edits, Dest and Dashboard all
+        fell through to stock (context check). Ours is now decided by the rows."""
+        g = self.open(self.rig())
+        w32(g.u, self.MXV + 0x8AC44, 0x7777)                       # stock re-set the context
+        w32(g.u, self.MXV + 0x86B5C, 2)
+        g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, 0x7777, 0x171, 1))   # Source 1 = LFO 1
+        g.log.clear(); g.call(0x0814BFF0, self.MXV, ExtRows.EV)
+        self.assertNotIn(("stock", 0x0814BFF4), g.log)
+        self.assertEqual(self.dest(g, 2)[2], 1, "stored")
+        n = r32(g.u, ExtRows.HEAD + 56)
+        self.assertEqual(((n >> 10) & 0x3FF, r32(g.u, ExtRows.HEAD + 48)), (1, 0x7777), "diagnostics: one edit, its context")
+
+    def test_a_synths_rows_are_not_ours(self):
+        g = self.open(self.rig())
+        g.u.mem_write(self.MXV + 0x8AC50, struct.pack("<H", 0x2))  # stock rebuilt rows for a synth
+        g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, 0x171, 1))
+        g.log.clear(); g.call(0x0814BFF0, self.MXV, ExtRows.EV)
+        self.assertIn(("stock", 0x0814BFF4), g.log)
 
     def test_dashboard_button_is_ignored_for_external(self):
         g = self.open(self.rig())
@@ -1146,7 +1166,7 @@ class SidecarLoad(unittest.TestCase):
     def test_modulation_settings_load_with_the_project(self):
         """F2a: the MODS chunk after TRKS restores each track's ModTrack; a project
         without one leaves nothing from the previous project."""
-        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x34444F4D
+        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x35444F4D
         rec = bytearray(232); rec[0] = 4; rec[6:8] = struct.pack("<H", 700)      # LFO 1: Sine, depth 700
         trailer = (b"TRKS" + struct.pack("<H", 16) + bytes(32) + b"MODS" + struct.pack("<HH", 8, 232)
                    + bytes(232) + bytes(rec) + bytes(232 * 6))

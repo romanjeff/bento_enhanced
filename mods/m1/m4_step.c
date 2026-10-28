@@ -1187,7 +1187,18 @@ static const u16 MX_SOURCES[8] = {0x00, 0x04, 0x05, 0x01, 0x02, 0x0D, 0x20, 0x0E
 static const u8 MX_TO_OURS[8] = {MOD_SRC_NONE, MOD_SRC_LFO1, MOD_SRC_LFO2, MOD_SRC_ENV1, MOD_SRC_ENV2,
                                  MOD_SRC_VEL, MOD_SRC_PRESS, MOD_SRC_KEY};
 
-static int mx_ours(void *v) { u32 c = MODHEAD->mx_ctx; return c && W(v, MX_CTX) == c; }
+/* Is this matrix view showing our External rows? Structural, not by context:
+ * v3.48-3.49 compared the view's context with the one the Mod button recorded,
+ * and on the device edits, Dest and Dashboard all fell through to stock (the
+ * rows themselves were ours). Stock's builder overwrites the row keys for any
+ * synth, so private keys in a 16-row matrix can only be ours. */
+static int mx_ours(void *v) { return B(v, 0x8AC4Du) == MX_ROWS && H(v, 0x8AC50u) == MX_KEY && H(v, 0x8AC50u + 2u * (MX_ROWS - 1u)) == MX_KEY + MX_ROWS - 1u; }
+static void mx_note(void *v, const u32 *ev, u32 what) {    /* diagnostics: what = 1 edit, 2 event */
+    volatile ModHead *h = MODHEAD;
+    h->dbg_ev_v = (u32)v; h->dbg_ev_ctx = W(v, MX_CTX);
+    h->dbg_ev_tk = (ev[0] & 0xFFFFu) | (ev[2] << 16);
+    h->dbg_n += what == 1u ? (1u << 10) : (1u << 20);
+}
 
 static u32 dest_index(volatile ModDest *d) {
     for (u32 i = 0; i < DEST_N; i++)
@@ -1197,7 +1208,7 @@ static u32 dest_index(volatile ModDest *d) {
 
 static void mx_row(void *v, u32 i, volatile ModDest *d) {
     u32 k = dest_index(d);
-    const char *s = k ? DEST_LABELS[k] : "---";
+    const char *s = k ? DEST_LABELS[k] : "(empty)";
     volatile char *n = (volatile char *)v + 0x8AE04u + i * 16u;
     u32 j = 0;
     for (; s[j] && j < 15u; j++) n[j] = s[j];
@@ -1215,7 +1226,9 @@ static void mx_redraw(void *v) {
 __attribute__((used, retain)) int mx_build(void *v, const u32 *ctx) {
     u32 c = MODHEAD->mx_ctx;
     volatile ModTrack *t = mod_track();
+    MODHEAD->dbg_build_v = (u32)v; MODHEAD->dbg_build_ctx = ctx ? *ctx : 0u;
     if (!c || !ctx || *ctx != c || !t) return 0;
+    MODHEAD->dbg_n += 1u;
     if (W(v, MX_CTX) != c) {                          /* another track: back to the top, as stock */
         FN(0x0816B9FAu, void (*)(void *, u32))((u8 *)v + MX_LIST, 0);
         FN(0x0816BB5Cu, void (*)(void *, u32))((u8 *)v + MX_LIST, 0);
@@ -1251,6 +1264,7 @@ __attribute__((used, retain)) int mx_route(u32 key, u32 slot, u32 *out) {
 
 /* Matrix edit (view, ev {.., key, value}): 1 = ours. */
 __attribute__((used, retain)) int mx_edit(void *v, const u32 *ev) {
+    mx_note(v, ev, 1);
     if (!mx_ours(v)) return 0;
     volatile ModCfg *m = mod_cfg_block();
     volatile ModTrack *t = mod_track();
@@ -1284,6 +1298,7 @@ __attribute__((used, retain)) void mx_bar_after(void *v) {
 
 /* Matrix events (view, ev): 1 = ours. */
 __attribute__((used, retain)) int mx_event(void *v, const u32 *ev) {
+    if ((ev[0] & 0xFFFFu) == 2u || (ev[0] & 0xFFFFu) == 0xCFu) mx_note(v, ev, 2);
     if (!mx_ours(v)) return 0;
     u32 type = ev[0] & 0xFFFFu;
     if (type == 2u) return 1;                         /* "Dashboard": not for External (use INST) */

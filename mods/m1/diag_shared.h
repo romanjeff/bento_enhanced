@@ -303,10 +303,14 @@ typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; } ModCfg;
  * INST page's row set (F2a, M4 only): 0 Main, 1-2 LFO, 3-4 Env; the External view
  * and the page id its bar builder last ran on (the header button shows there). */
 /* mx_ctx: the External track context our "Mod" button opened the Mod Matrix with (F2b). */
-typedef struct { u32 magic, gen, cfg, check, tried, row, view, page, mx_ctx; } ModHead;
+/* dbg_*: what the matrix hooks saw (black box "MX" line at each save). */
+typedef struct {
+    u32 magic, gen, cfg, check, tried, row, view, page, mx_ctx;
+    u32 dbg_build_v, dbg_build_ctx, dbg_ev_v, dbg_ev_ctx, dbg_ev_tk, dbg_n;
+} ModHead;
 #define MODHEAD ((volatile ModHead *)0x3003DFC0u)
-#define MODHEAD_MAGIC 0x34444F4Du /* "MOD4": + mx_ctx (v3.48) */
-_Static_assert(0x3003DFC0u + 36u <= 0x3003E000u, "mod header");
+#define MODHEAD_MAGIC 0x35444F4Du /* "MOD5": + matrix diagnostics (v3.50) */
+_Static_assert(0x3003DFC0u + sizeof(ModHead) <= 0x3003E000u, "mod header");
 #define ROWS_ACTION 0x10F1u        /* External INST header buttons (unused by stock) */
 #define MOD_ACTION 0x10F2u
 _Static_assert(0x3003DFC0u + sizeof(ModHead) <= 0x3003E000u, "mod header");
