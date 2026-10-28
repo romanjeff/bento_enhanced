@@ -794,8 +794,10 @@ class NoCardWrites(FatFsRig):
         blob = self.fs[r"\Projects\X\curves.bnt"]
         ver, curves = self.decode(blob)
         self.assertEqual((ver, curves), (1, [(len(samples), samples)]))
-        self.assertEqual(blob[-38:-32], b"TRKS" + struct.pack("<H", 16), "per-track AT settings trailer")
-        self.assertLess(len(blob), 8 + 4 + len(samples), "smaller than raw")
+        mods = 8 + 8 * 232                                          # v3.46: "MODS" u16 8, u16 232, 8 records
+        self.assertEqual(blob[-mods - 38:-mods - 32], b"TRKS" + struct.pack("<H", 16), "per-track AT settings trailer")
+        self.assertEqual(blob[-mods:-mods + 8], b"MODS" + struct.pack("<HH", 8, 232), "External modulation chunk")
+        self.assertLess(len(blob) - mods - 38, 8 + 4 + len(samples), "curves smaller than raw")
         self.assertEqual(r32(self.u, 0x3003D840 + 36), 0, "save list cleared")
         self.assertIn("sidecar status=4 curves=1", self.files[-1].decode())
         d2 = [hex(b) for b in self.write_bufs if 0x30000000 <= b < 0x30080000 or b < 0x24000000]

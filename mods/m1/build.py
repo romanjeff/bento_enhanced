@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x4000   # 16 KB since v3.26 (curve sidecar writer)
-VERSION = "3.45"                       # bump for every build that goes on the device
+VERSION = "3.46"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -168,6 +168,7 @@ PIANO_HEADER, PIANO_EVENT = 0x081599BC, 0x0815A598
 # Strike velocity: drum step pad press / step toggle (always on since v3.8)
 STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
 HEADER_GEN, DRUM_EVENT = 0x08134800, 0x0815D600   # header description generator; drum view events
+EXT_EVENT, EXT_BUILD = 0x08146B80, 0x08147138           # External INST view: event handler, bar builder (F2a)
 NOTE_INSERT = 0x0812E070                            # stock: assign ID + insert (model, seq, record)
 NOTE_UPDATE = 0x0812E0CE                            # stock: replace a note (model, seq, record)
 DOC_READ = 0x08130A18                               # stock: open + read + parse an XML document (path, ..., doc)
@@ -685,6 +686,15 @@ def build(base_img, out):
                + restore + "movs r0, #0; bx lr; stock: " + restore + f"push {{lr}}; sub sp, #0x6c; b.w {DRUM_EVENT + 4:#x}",
                {ss["strike_event"], DRUM_EVENT + 4}, "drum event")
     patch(DRUM_EVENT, asm(f"b.w {a:#x}", DRUM_EVENT), bytes.fromhex("00b59bb0"), "Strike Vel: button action in the drum view")
+    # F2a: External INST page row sets: the bar builder (view) and the view's events (view, ev)
+    a = sblock(save + f"ldr r0, [sp, #8]; bl {ss['ext_build']:#x}; cmp r0, #0; beq stock; " + restore + "bx lr; "
+               "stock: " + restore + f"push.w {{r4, r5, r6, r7, r8, r9, r10, r11, lr}}; b.w {EXT_BUILD + 4:#x}",
+               {ss["ext_build"], EXT_BUILD + 4}, "external bar builder")
+    patch(EXT_BUILD, asm(f"b.w {a:#x}", EXT_BUILD), bytes.fromhex("2de9f04f"), "Per-step: External bar builder -> LFO/Env rows")
+    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['ext_event']:#x}; cmp r0, #0; beq stock; "
+               + restore + "movs r0, #0; bx lr; stock: " + restore + f"ldrh r3, [r1]; cmp r3, #0xcf; b.w {EXT_EVENT + 4:#x}",
+               {ss["ext_event"], EXT_EVENT + 4}, "external event")
+    patch(EXT_EVENT, asm(f"b.w {a:#x}", EXT_EVENT), bytes.fromhex("0b88cf2b"), "Per-step: External view events -> row button + row encoders")
     # strike velocity for notes created by any view (drum Sequence page)
     a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #60]; bl {ss['strike_insert']:#x}; " + restore   # record, caller lr
                + f"push {{r4, r5, r6, lr}}; sub sp, #0x20; b.w {NOTE_INSERT + 4:#x}", {ss["strike_insert"], NOTE_INSERT + 4}, "note insert")

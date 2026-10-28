@@ -122,32 +122,40 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
 
 /* ---- registry keys -------------------------------------------------------- */
 
-typedef struct { u32 magic, gen, ok; u16 key[6]; u32 r[2]; } StepUI;   /* one M4-only line */
+typedef struct { u32 magic, gen, ok; u16 key[8]; u32 r0; } StepUI;   /* one M4-only line */
 #define SU ((volatile StepUI *)0x3003C880u)
-#define SU_MAGIC 0x32505453u /* "STP2": six keys since v3.30 */
+#define SU_MAGIC 0x33505453u /* "STP3": seven keys (+ Loop) since v3.46; v3.30-3.45 wrote r[2] past the line */
+#define SU_KEYS 7u
 _Static_assert(sizeof(StepUI) <= 32, "step UI state is one cache line");
 
 static const char *const AT_REC_LABELS[2] = {"Off", "On"};
 static const char *const AT_OUT_LABELS[3] = {"Off", "Poly", "Channel"};
-static const char *const TITLES[6] = {"Condition", "Retrig", "Division", "Ramp", "AT Rec", "AT Out"};
-static const char *const *const CHOICES[6] = {COND_LABELS, HITS_LABELS, DIV_LABELS, RAMP_LABELS, AT_REC_LABELS, AT_OUT_LABELS};
-static const u32 COUNTS[6] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u};
+static const char *const LOOP_LABELS[34] = {"Off", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+    "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31",
+    "32", "Forever"};
+static const char *const TITLES[SU_KEYS] = {"Condition", "Retrig", "Division", "Ramp", "AT Rec", "AT Out", "Loop"};
+static const char *const *const CHOICES[SU_KEYS] = {COND_LABELS, HITS_LABELS, DIV_LABELS, RAMP_LABELS, AT_REC_LABELS, AT_OUT_LABELS, LOOP_LABELS};
+static const u32 COUNTS[SU_KEYS] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u, 34u};
 
 static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
+static void mod_defaults(void);
+static volatile ModCfg *mod_cfg_block(void);
+static void mod_write_begin(volatile ModCfg *m);
+static void mod_write_end(volatile ModCfg *m);
 
-/* Claim six empty registry keys (from the top), once per boot. */
+/* Claim SU_KEYS empty registry keys (from the top), once per boot. */
 static int claim(void) {
     if (SU->magic != SU_MAGIC || SU->gen != boot_gen()) {
-        SU->ok = 0; SU->r[0] = SU->r[1] = SU->r[2] = 0; SU->gen = boot_gen(); SU->magic = SU_MAGIC;
+        SU->ok = 0; SU->r0 = 0; SU->gen = boot_gen(); SU->magic = SU_MAGIC;
     }
     if (SU->ok) return 1;
     u32 r = REGISTRY;
     if (!r) return 0;
-    u16 keys[6]; u32 n = 0;
-    for (u32 k = REG_KEYS - 1; k >= 0x100 && n < 6; k--)
+    u16 keys[SU_KEYS]; u32 n = 0;
+    for (u32 k = REG_KEYS - 1; k >= 0x100 && n < SU_KEYS; k--)
         if (!H(r + k * 32, 0)) keys[n++] = (u16)k;
-    if (n < 6) return 0;
-    for (u32 i = 0; i < 6; i++) {
+    if (n < SU_KEYS) return 0;
+    for (u32 i = 0; i < SU_KEYS; i++) {
         u32 d = r + keys[i] * 32u;
         for (u32 j = 0; j < 8; j++) W(d, j * 4) = 0;
         H(d, 0) = keys[i]; B(d, 2) = 7;                 /* list parameter, as Lab's pickers */
@@ -548,7 +556,7 @@ static void header_sync(void *out) {
     if (*(volatile u32 *)HEADER_ROOT != HEADER_ROOT_VTABLE) return;
     for (u32 i = 0; i < 6; i++) {
         volatile u8 *a = REC(out, i), *b = REC(HEADER_ROOT + 0x34, i);
-        if (rid(a) != STRIKE_ACTION && rid(b) != STRIKE_ACTION) continue;
+        if (rid(a) != STRIKE_ACTION && rid(b) != STRIKE_ACTION && rid(a) != ROWS_ACTION && rid(b) != ROWS_ACTION) continue;
         if (rid(a) != rid(b) || a[0x20] != b[0x20] || a[0x21] != b[0x21] || a[0x22] != b[0x22]) {
             HEADER_ROOT[0x117C] = 1;
             return;
@@ -575,6 +583,7 @@ static int drum_track_selected(void) {
 static volatile AtSet *at_set(void);
 static void at_publish(void);
 static void mod_cfg(void);
+static void ext_toolbar(void *out, int *changed);
 __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int changed) {
     (void)model;
     if (at_set()->pending) at_publish();            /* after a project load (UI context) */
@@ -583,6 +592,7 @@ __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int cha
     volatile PadState *ps = pads();
     for (u32 p = 0; ps && p < 16; p++)
         if (STRIKES->seq[p] != ps->seen[p]) { ps->seen[p] = STRIKES->seq[p]; ps->seen_ms[p] = UI_TICK_MS; }
+    ext_toolbar(out, &changed);
     if (MODEL_PAGE == 0x27) {
         int drum = drum_track_selected(), ins = 0;
         if (drum) ins = header_action_lit(out, STRIKE_ACTION, STRIKE_LABEL, !STRIKE_SET->off);
@@ -852,6 +862,7 @@ static void load_sidecar(volatile LoadState *ls, volatile CurveState *c) {
     }
     for (u32 i = 0; i < sizeof(side); i++) name[cut + i] = side[i];
     at_defaults();                                  /* a project's own settings, or the defaults */
+    mod_defaults();                                 /* F2a: likewise the External modulation */
     /* M2-4: a project load replaces every note, so no earlier curve can still be
      * referenced: start the pool over (it grew by a whole project per load).
      * Nothing referenced is moved; players still holding old data are dropped
@@ -909,6 +920,19 @@ static void load_sidecar(volatile LoadState *ls, volatile CurveState *c) {
             volatile AtSet *a = at_set();
             for (int i = 0; i < tn; i++) { int v = rd_byte(&r); if (i < 16 && v >= 0) a->rec_off[i] = (u8)(v ? 1 : 0); }
             for (int i = 0; i < tn; i++) { int v = rd_byte(&r); if (i < 16 && v >= 0) a->out_mode[i] = (u8)(v <= 2 ? v : 0); }
+            /* F2a: optional "MODS" u16 tracks, u16 record size, then the records */
+            int m0 = rd_byte(&r), m1 = rd_byte(&r), m2 = rd_byte(&r), m3 = rd_byte(&r), mn = rd_u16(&r), sz = rd_u16(&r);
+            volatile ModCfg *mc = mod_cfg_block();
+            if (m0 == 'M' && m1 == 'O' && m2 == 'D' && m3 == 'S' && mn > 0 && sz > 0 && mc) {
+                mod_write_begin(mc);
+                for (int t = 0; t < mn; t++)
+                    for (int i = 0; i < sz; i++) {
+                        int v = rd_byte(&r);
+                        if (v < 0) break;
+                        if (t < (int)MOD_TRACKS && i < (int)sizeof(ModTrack)) ((volatile u8 *)&mc->t[t])[i] = (u8)v;
+                    }
+                mod_write_end(mc);
+            }
         }
     }
     F_CLOSE(file);
@@ -1001,19 +1025,151 @@ static void mod_cfg(void) {
     if (p != cur) return;
     volatile ModCfg *c = (volatile ModCfg *)((p + 31u) & ~31u);
     for (u32 i = 0; i < sizeof(ModCfg); i++) ((volatile u8 *)c)[i] = 0;
-#ifndef BE_NO_MODTEST
-    for (u32 t = 0; t < MOD_TRACKS; t++) {
-        volatile ModTrack *m = &c->t[t];
-        m->lfo[0].shape = 3; m->lfo[0].sync = 1; m->lfo[0].srate = 6; m->lfo[0].depth = 1000;
-        m->lfo[1].shape = 4; m->lfo[1].sync = 1; m->lfo[1].srate = 3; m->lfo[1].depth = 1000;
-        m->env[0].a = 100; m->env[0].d = 300; m->env[0].s = 0; m->env[0].r = 300;
-        m->d[0].type = MOD_DEST_CC; m->d[0].num = 1; m->d[0].src[0] = MOD_SRC_LFO1; m->d[0].amt[0] = 1000;
-        m->d[1].type = MOD_DEST_CC; m->d[1].num = 74; m->d[1].src[0] = MOD_SRC_ENV1; m->d[1].amt[0] = 1000;
-        m->d[2].type = MOD_DEST_PB; m->d[2].src[0] = MOD_SRC_LFO2; m->d[2].amt[0] = 150;
-    }
-#endif
     c->gen = boot_gen(); c->seq = 2; c->magic = MODHEAD_MAGIC;
     h->cfg = (u32)c; h->check = ~(u32)c; h->gen = boot_gen(); h->magic = MODHEAD_MAGIC;
+    mod_defaults();                                 /* nothing, or the modtest routing */
+}
+
+/* ---- F2a: LFO / envelope rows on the External INST page -----------------------
+ * The External view (vtable 0x0819DB08) has one 8-encoder bar (view+0x3D0),
+ * filled by FUN_08147138 from a descriptor {u32 ctx[8]; u16 key[8]; u32 val[8]}
+ * through 0x08170394. A header button cycles the bar between stock's Main row and
+ * our rows LFO 1, LFO 2, Env 1, Env 2, built from stock's own LFO / envelope keys
+ * (their titles, lists and display formats) plus our Loop list. The builder hook
+ * fills our rows; the view's event hook takes their encoder turns (0xCF) and the
+ * button (ROWS_ACTION). Edits go to the selected track's ModTrack (odd seq while
+ * writing, so the M7 re-reads it). */
+#define EXT_BAR 0x3D0u
+#define BAR_SET 0x08170394u
+#define EXT_BUILD 0x08147138u
+#define K_LFO_SHAPE 0x4Au
+#define K_LFO_RATE 0x4Bu
+#define K_LFO_DEPTH 0x4Cu
+#define K_LFO_RESTART 0x4Du
+#define K_LFO_SYNC 0x4Eu
+#define K_LFO_SRATE 0x4Fu
+#define K_ENV_A 0x1Eu
+#define K_ENV_D 0x1Fu
+#define K_ENV_S 0x20u
+#define K_ENV_R 0x21u
+#define ROWS 5u
+static const char *const ROW_NAMES[ROWS] = {"Main", "LFO 1", "LFO 2", "Env 1", "Env 2"};
+
+static volatile ModCfg *mod_cfg_block(void) {
+    volatile ModHead *h = MODHEAD;
+    u32 c = h->cfg;
+    if (h->magic != MODHEAD_MAGIC || h->check != ~c || c < 0xC0000000u || c >= 0xC8000000u || (c & 31u)) return 0;
+    volatile ModCfg *m = (volatile ModCfg *)c;
+    return m->magic == MODHEAD_MAGIC ? m : 0;
+}
+static volatile ModTrack *mod_track(void) {
+    volatile ModCfg *m = mod_cfg_block();
+    u32 t = sel_track();
+    return m && t < MOD_TRACKS ? &m->t[t] : 0;
+}
+static u32 row_now(void) { u32 r = MODHEAD->row; return r < ROWS ? r : 0u; }
+
+/* The keys and values of row r (1-4) for track t. */
+static void row_desc(u32 r, volatile ModTrack *t, u16 *key, u32 *val) {
+    for (u32 i = 0; i < 8; i++) { key[i] = 0; val[i] = 0; }
+    if (r == 1u || r == 2u) {
+        volatile ModLfo *l = &t->lfo[r - 1u];
+        key[0] = K_LFO_SHAPE; val[0] = l->shape < 9u ? l->shape : 0u;
+        key[1] = l->sync ? K_LFO_SRATE : K_LFO_RATE; val[1] = l->sync ? (l->srate < 15u ? l->srate : 6u) : l->rate;
+        key[2] = K_LFO_SYNC; val[2] = l->sync ? 1000u : 0u;
+        key[3] = K_LFO_DEPTH; val[3] = l->depth;
+        key[4] = K_LFO_RESTART; val[4] = l->restart ? 1000u : 0u;
+    } else if (r == 3u || r == 4u) {
+        volatile ModEnv *e = &t->env[r - 3u];
+        key[0] = K_ENV_A; val[0] = e->a; key[1] = K_ENV_D; val[1] = e->d;
+        key[2] = K_ENV_S; val[2] = e->s; key[3] = K_ENV_R; val[3] = e->r;
+        if (claim()) { key[4] = SU->key[6]; val[4] = e->loop <= 33u ? e->loop : 0u; }
+    }
+}
+
+/* Builder hook (view): 1 = our row filled the bar, 0 = stock builds Main. */
+__attribute__((used, retain)) int ext_build(void *v) {
+    MODHEAD->view = (u32)v; MODHEAD->page = MODEL_PAGE;
+    u32 r = row_now();
+    volatile ModTrack *t = mod_track();
+    if (!r || !t) return 0;
+    struct { u32 ctx[8]; u16 key[8]; u32 val[8]; } d;
+    row_desc(r, t, d.key, d.val);
+    for (u32 i = 0; i < 8; i++) d.ctx[i] = W(v, 0x34);
+    FN(BAR_SET, void (*)(void *, void *))((u8 *)v + EXT_BAR, &d);
+    return 1;
+}
+
+static void mod_write_begin(volatile ModCfg *m) { m->seq |= 1u; }
+static void mod_write_end(volatile ModCfg *m) { m->seq = (m->seq | 1u) + 1u; }
+
+/* Event hook (view, ev): 1 = ours (handled), 0 = stock's. */
+__attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
+    u32 type = ev[0] & 0xFFFFu;
+    if (type == ROWS_ACTION) {
+        MODHEAD->row = (row_now() + 1u) % ROWS;
+        FN(EXT_BUILD, void (*)(void *))(v);            /* refill (our hook or stock's Main) */
+        return 1;
+    }
+    u32 r = row_now();
+    if (type != 0xCFu || !r) return 0;
+    volatile ModCfg *m = mod_cfg_block();
+    volatile ModTrack *t = mod_track();
+    if (!m || !t) return 0;
+    u32 key = ev[2], value = ev[3];
+    u16 keys[8]; u32 vals[8];
+    row_desc(r, t, keys, vals);
+    int mine = 0;
+    for (u32 i = 0; i < 8; i++) if (keys[i] && keys[i] == key) mine = 1;
+    if (!mine) return 0;
+    mod_write_begin(m);
+    if (r <= 2u) {
+        volatile ModLfo *l = &t->lfo[r - 1u];
+        if (key == K_LFO_SHAPE) l->shape = (u8)(value < 9u ? value : 8u);
+        else if (key == K_LFO_RATE) l->rate = (u16)(value > 1000u ? 1000u : value);
+        else if (key == K_LFO_SRATE) l->srate = (u8)(value < 15u ? value : 14u);
+        else if (key == K_LFO_SYNC) l->sync = value != 0;
+        else if (key == K_LFO_DEPTH) l->depth = (u16)(value > 1000u ? 1000u : value);
+        else if (key == K_LFO_RESTART) l->restart = value != 0;
+    } else {
+        volatile ModEnv *e = &t->env[r - 3u];
+        u16 v16 = (u16)(value > 1000u ? 1000u : value);
+        if (key == K_ENV_A) e->a = v16; else if (key == K_ENV_D) e->d = v16;
+        else if (key == K_ENV_S) e->s = v16; else if (key == K_ENV_R) e->r = v16;
+        else e->loop = (u8)(value <= 33u ? value : 33u);
+    }
+    mod_write_end(m);
+    ext_build(v);                                   /* show the new value (and Rate <-> Sync Rate) */
+    if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) HEADER_ROOT[0x117C] = 1;
+    return 1;
+}
+
+/* Header (every UI tick): our button while the External INST page is shown. */
+static void ext_toolbar(void *out, int *changed) {
+    volatile ModHead *h = MODHEAD;
+    if (h->magic != MODHEAD_MAGIC || !h->view || MODEL_PAGE != (u8)h->page) return;
+    u32 r = row_now();
+    *changed |= header_action_lit(out, ROWS_ACTION, ROW_NAMES[r], r != 0u);
+}
+
+/* Project load: a project's own settings, or none (modtest: the test routing). */
+static void mod_defaults(void) {
+    volatile ModCfg *m = mod_cfg_block();
+    if (!m) return;
+    mod_write_begin(m);
+    for (u32 i = 0; i < sizeof(m->t); i++) ((volatile u8 *)m->t)[i] = 0;
+#ifndef BE_NO_MODTEST
+    for (u32 t = 0; t < MOD_TRACKS; t++) {
+        volatile ModTrack *x = &m->t[t];
+        x->lfo[0].shape = 3; x->lfo[0].sync = 1; x->lfo[0].srate = 6; x->lfo[0].depth = 1000;
+        x->lfo[1].shape = 4; x->lfo[1].sync = 1; x->lfo[1].srate = 3; x->lfo[1].depth = 1000;
+        x->env[0].a = 100; x->env[0].d = 300; x->env[0].s = 0; x->env[0].r = 300;
+        x->d[0].type = MOD_DEST_CC; x->d[0].num = 1; x->d[0].src[0] = MOD_SRC_LFO1; x->d[0].amt[0] = 1000;
+        x->d[1].type = MOD_DEST_CC; x->d[1].num = 74; x->d[1].src[0] = MOD_SRC_ENV1; x->d[1].amt[0] = 1000;
+        x->d[2].type = MOD_DEST_PB; x->d[2].src[0] = MOD_SRC_LFO2; x->d[2].amt[0] = 150;
+    }
+#endif
+    mod_write_end(m);
 }
 
 static const u8 OUT_TO_INDEX[3] = {1, 0, 2};   /* mode Poly/Off/Channel -> list Off/Poly/Channel */

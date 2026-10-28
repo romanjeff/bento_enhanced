@@ -299,9 +299,13 @@ typedef struct { u16 a, d, s, r; u8 loop, pad_[3]; } ModEnv;                    
 typedef struct { u8 type, num, src[3], pad_; short amt[3]; } ModDest;              /* 12 B */
 typedef struct { ModLfo lfo[2]; ModEnv env[2]; ModDest d[MOD_DESTS]; } ModTrack;  /* 232 B */
 typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; } ModCfg;
-typedef struct { u32 magic, gen, cfg, check, tried; } ModHead;   /* tried: boot gen + 1 of the last attempt */
+/* tried: boot gen + 1 of the last allocation attempt. row/view/page: the External
+ * INST page's row set (F2a, M4 only): 0 Main, 1-2 LFO, 3-4 Env; the External view
+ * and the page id its bar builder last ran on (the header button shows there). */
+typedef struct { u32 magic, gen, cfg, check, tried, row, view, page; } ModHead;
 #define MODHEAD ((volatile ModHead *)0x3003DFC0u)
-#define MODHEAD_MAGIC 0x32444F4Du /* "MOD2": + tried (v3.42) */
+#define MODHEAD_MAGIC 0x33444F4Du /* "MOD3": + row/view/page (v3.46) */
+#define ROWS_ACTION 0x10F1u        /* External INST header button (unused by stock) */
 _Static_assert(0x3003DFC0u + sizeof(ModHead) <= 0x3003E000u, "mod header");
 /* status: 0 none yet, 1 not a project.xml, 2 no sidecar, 3 bad data, 4 ok,
  * 5 pool/handles full (partial), 9 no curve memory */

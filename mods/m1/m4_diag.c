@@ -732,6 +732,15 @@ static void write_sidecar(const char *path) {
     int at_ok = AT_SET->magic == AT_SET_MAGIC;
     for (u32 i = 0; i < 16; i++) so_put(&so, at_ok ? AT_SET->rec_off[i] : 0u);
     for (u32 i = 0; i < 16; i++) so_put(&so, at_ok ? AT_SET->out_mode[i] : 0u);
+    /* F2a: External modulation settings, raw ModTrack records (older loaders stop at TRKS). */
+    so_put(&so, 'M'); so_put(&so, 'O'); so_put(&so, 'D'); so_put(&so, 'S');
+    so_u16(&so, MOD_TRACKS); so_u16(&so, sizeof(ModTrack));
+    volatile ModHead *mh = MODHEAD;
+    u32 mc = mh->cfg;
+    int mod_ok = mh->magic == MODHEAD_MAGIC && mh->check == ~mc && mc >= 0xC0000000u && mc < 0xC8000000u && !(mc & 31u);
+    for (u32 t = 0; t < MOD_TRACKS; t++)
+        for (u32 i = 0; i < sizeof(ModTrack); i++)
+            so_put(&so, mod_ok ? ((volatile u8 *)&((volatile ModCfg *)mc)->t[t])[i] : 0u);
     u32 done = 0;
     if (so.n && !so.err && (F_WRITE(file, (const void *)so.buf, so.n, &done) || done != so.n)) so.err = 1;
     F_CLOSE(file);
