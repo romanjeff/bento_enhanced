@@ -358,6 +358,21 @@ class NativeFunctions(unittest.TestCase):
         call(b, 0x08082640, obj, ev)
         self.assertEqual(len(records(b)), 1)
 
+    def test_modulation_streams_are_not_traced(self):
+        """v3.44: bend 0x5D, CC 0x5E and channel pressure 0x60 arrive as streams
+        (External modulation, up to 400/s per port). Tracing them filled the
+        256 KB session log within seconds (BE-MT3: first save wrote 0 bytes)."""
+        a, b = self.pair()
+        obj, ev = 0x24050000, 0x24070000
+        for t in (0x5D, 0x5E, 0x60) * 5:
+            b.mem_write(ev, bytes([t]) + bytes(23))
+            call(b, 0x08082640, obj, ev)
+            w32(b, obj + 0x2340, r32(b, obj + 0x2360))           # the M4 keeps up: no overwrite
+        self.assertEqual(records(b), [], "no trace records for the streams")
+        b.mem_write(ev, bytes([0x5B]) + bytes(23))
+        call(b, 0x08082640, obj, ev)
+        self.assertEqual(len(records(b)), 1, "notes are still traced")
+
     def test_ring_fill_and_overflow(self):
         a, b = self.pair()
         obj, ev = 0x24050000, 0x24070000

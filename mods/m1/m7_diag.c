@@ -104,7 +104,7 @@ static void put(u32 kind, u32 lr, u32 obj, const u32 *ev, u32 extra) {
 
 static int interesting_send(u32 t) {
     switch (t) {
-    case 0x5B: case 0x5C: case 0x5D: case 0x5E: /* MIDI-out note on/off, bend, CC */
+    case 0x5B: case 0x5C:                       /* MIDI-out note on/off (bend 0x5D / CC 0x5E: streams, v3.44) */
     case 0xB9: case 0xBA:                       /* note on/off to an object (seen in FUN_0805d200) */
     case 0x02: case 0x03:                       /* internal note on/off to a track (FUN_08062020) */
     /* (pad 0xAC/0xAD are covered by the PAD records; their 3-4 queue copies are not logged) */
@@ -226,6 +226,12 @@ __attribute__((used, retain)) void h_ring(u32 obj, const u32 *ev) {
         return;
     }
     if (t >= 0x61 && t <= 0x63) return; /* clock/start/stop: too frequent, not needed */
+    /* Bend, CC and channel pressure come as modulation streams (v3.41+: up to
+     * 400/s per port). Tracing each one filled the 256 KB session log within
+     * seconds and kept the UI task formatting records (BE-MT1 froze its UI loop
+     * after 142 s; BE-MT3's first save then wrote 0 bytes and later saves had
+     * nothing left to add). Overwrites are still logged above. */
+    if (t == 0x5D || t == 0x5E || t == 0x60) return;
     if (t == 0x5F) {                     /* our pressure: first after each press only */
         if (!FLAGS[4]) return;
         FLAGS[4] = 0;
