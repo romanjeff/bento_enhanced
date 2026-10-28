@@ -302,10 +302,13 @@ typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; } ModCfg;
 /* tried: boot gen + 1 of the last allocation attempt. row/view/page: the External
  * INST page's row set (F2a, M4 only): 0 Main, 1-2 LFO, 3-4 Env; the External view
  * and the page id its bar builder last ran on (the header button shows there). */
-typedef struct { u32 magic, gen, cfg, check, tried, row, view, page; } ModHead;
+/* mx_ctx: the External track context our "Mod" button opened the Mod Matrix with (F2b). */
+typedef struct { u32 magic, gen, cfg, check, tried, row, view, page, mx_ctx; } ModHead;
 #define MODHEAD ((volatile ModHead *)0x3003DFC0u)
-#define MODHEAD_MAGIC 0x33444F4Du /* "MOD3": + row/view/page (v3.46) */
-#define ROWS_ACTION 0x10F1u        /* External INST header button (unused by stock) */
+#define MODHEAD_MAGIC 0x34444F4Du /* "MOD4": + mx_ctx (v3.48) */
+_Static_assert(0x3003DFC0u + 36u <= 0x3003E000u, "mod header");
+#define ROWS_ACTION 0x10F1u        /* External INST header buttons (unused by stock) */
+#define MOD_ACTION 0x10F2u
 _Static_assert(0x3003DFC0u + sizeof(ModHead) <= 0x3003E000u, "mod header");
 /* status: 0 none yet, 1 not a project.xml, 2 no sidecar, 3 bad data, 4 ok,
  * 5 pool/handles full (partial), 9 no curve memory */

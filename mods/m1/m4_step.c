@@ -124,8 +124,8 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
 
 typedef struct { u32 magic, gen, ok; u16 key[10]; } StepUI;   /* one M4-only line */
 #define SU ((volatile StepUI *)0x3003C880u)
-#define SU_MAGIC 0x34505453u /* "STP4": nine keys (+ Loop, Beat Sync, Triggered) since v3.47 */
-#define SU_KEYS 9u
+#define SU_MAGIC 0x35505453u /* "STP5": ten keys (+ Dest) since v3.48 */
+#define SU_KEYS 10u
 _Static_assert(sizeof(StepUI) <= 32, "step UI state is one cache line");
 
 static const char *const AT_REC_LABELS[2] = {"Off", "On"};
@@ -136,10 +136,10 @@ static const char *const LOOP_LABELS[34] = {"Off", "1", "2", "3", "4", "5", "6",
 /* Beat Sync / Triggered are our own Off/On lists: stock's toggle keys (0x4E, 0x4D,
  * type 6) showed a blank value when our row was refilled with them on (v3.46). */
 static const char *const TITLES[SU_KEYS] = {"Condition", "Retrig", "Division", "Ramp", "AT Rec", "AT Out", "Loop",
-                                            "Beat Sync", "Triggered"};
+                                            "Beat Sync", "Triggered", "Dest"};
 static const char *const *const CHOICES[SU_KEYS] = {COND_LABELS, HITS_LABELS, DIV_LABELS, RAMP_LABELS, AT_REC_LABELS,
-                                                    AT_OUT_LABELS, LOOP_LABELS, AT_REC_LABELS, AT_REC_LABELS};
-static const u32 COUNTS[SU_KEYS] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u, 34u, 2u, 2u};
+                                                    AT_OUT_LABELS, LOOP_LABELS, AT_REC_LABELS, AT_REC_LABELS, DEST_LABELS};
+static const u32 COUNTS[SU_KEYS] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u, 34u, 2u, 2u, DEST_N};
 
 static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
 static void mod_defaults(void);
@@ -560,7 +560,9 @@ static void header_sync(void *out) {
     if (*(volatile u32 *)HEADER_ROOT != HEADER_ROOT_VTABLE) return;
     for (u32 i = 0; i < 6; i++) {
         volatile u8 *a = REC(out, i), *b = REC(HEADER_ROOT + 0x34, i);
-        if (rid(a) != STRIKE_ACTION && rid(b) != STRIKE_ACTION && rid(a) != ROWS_ACTION && rid(b) != ROWS_ACTION) continue;
+        u32 ia = rid(a), ib = rid(b);
+        if (ia != STRIKE_ACTION && ib != STRIKE_ACTION && ia != ROWS_ACTION && ib != ROWS_ACTION && ia != MOD_ACTION && ib != MOD_ACTION)
+            continue;
         if (rid(a) != rid(b) || a[0x20] != b[0x20] || a[0x21] != b[0x21] || a[0x22] != b[0x22]) {
             HEADER_ROOT[0x117C] = 1;
             return;
@@ -1044,6 +1046,7 @@ static void mod_cfg(void) {
  * button (ROWS_ACTION). Edits go to the selected track's ModTrack (odd seq while
  * writing, so the M7 re-reads it). */
 #define EXT_BAR 0x3D0u
+#define UI_POST 0x0816FC34u        /* (view, event): bubbles up the view tree */
 #define BAR_SET 0x08170394u
 #define EXT_BUILD 0x08147138u
 #define K_LFO_SHAPE 0x4Au
@@ -1110,6 +1113,15 @@ static void mod_write_end(volatile ModCfg *m) { m->seq = (m->seq | 1u) + 1u; }
 /* Event hook (view, ev): 1 = ours (handled), 0 = stock's. */
 __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
     u32 type = ev[0] & 0xFFFFu;
+    if (type == MOD_ACTION) {                       /* open the Mod Matrix as stock's "Modulation" menu item does */
+        u32 ctx = W(v, 0x34);
+        MODHEAD->mx_ctx = ctx;
+        struct { u16 type, pad; u32 a, b, c, d; } m = {0xA8u, 0, ctx, 0, 0, 0};
+        FN(UI_POST, void (*)(void *, void *))(v, &m);   /* the matrix view takes this track */
+        m.type = 0x0Au;
+        FN(UI_POST, void (*)(void *, void *))(v, &m);   /* page change (as the INST dashboard posts) */
+        return 1;
+    }
     if (type == ROWS_ACTION) {
         MODHEAD->row = (row_now() + 1u) % ROWS;
         FN(EXT_BUILD, void (*)(void *))(v);            /* refill (our hook or stock's Main) */
@@ -1154,6 +1166,140 @@ static void ext_toolbar(void *out, int *changed) {
     if (h->magic != MODHEAD_MAGIC || !h->view || MODEL_PAGE != (u8)h->page) return;
     u32 r = row_now();
     *changed |= header_action_lit(out, ROWS_ACTION, ROW_NAMES[r], r != 0u);
+    *changed |= header_action_lit(out, MOD_ACTION, "Mod", 0);
+}
+
+/* ---- F2b: stock's Mod Matrix page for External tracks ----------------------------
+ * Opened by our "Mod" button with the External track's context (MODHEAD->mx_ctx).
+ * For that context the matrix view (vtable 0x0819DE20) gets 16 rows of MIDI
+ * destinations instead of a synth's parameters: private row keys 0xF000+i (no
+ * registry keys), names and the CC column from the row's destination, our
+ * sources (stock ids: None, LFO 1-2, Env 1-2, Velocity, Pressure, Key). Routing
+ * reads (0x08131244) and edits (0x0814BFF0) for those keys use the selected
+ * track's ModTrack. Encoder 8 is "Dest" (stock's matrix uses 7). Back: INST. */
+#define MX_ROWS 16u
+#define MX_KEY 0xF000u
+#define MX_LIST 0x2970u            /* view: the row list widget */
+#define MX_LINE 0x86B5Cu           /* view: selected row (-1 none) */
+#define MX_CTX 0x8AC44u
+#define MX_DESC 0x8ABF4u           /* view: bar descriptor {ctx[8]; key[8]; val[8]} */
+static const u16 MX_SOURCES[8] = {0x00, 0x04, 0x05, 0x01, 0x02, 0x0D, 0x20, 0x0E};
+static const u8 MX_TO_OURS[8] = {MOD_SRC_NONE, MOD_SRC_LFO1, MOD_SRC_LFO2, MOD_SRC_ENV1, MOD_SRC_ENV2,
+                                 MOD_SRC_VEL, MOD_SRC_PRESS, MOD_SRC_KEY};
+
+static int mx_ours(void *v) { u32 c = MODHEAD->mx_ctx; return c && W(v, MX_CTX) == c; }
+
+static u32 dest_index(volatile ModDest *d) {
+    for (u32 i = 0; i < DEST_N; i++)
+        if (DEST_TYPE[i] == d->type && (d->type != MOD_DEST_CC || DEST_NUM[i] == d->num)) return i;
+    return 0;
+}
+
+static void mx_row(void *v, u32 i, volatile ModDest *d) {
+    u32 k = dest_index(d);
+    const char *s = k ? DEST_LABELS[k] : "---";
+    volatile char *n = (volatile char *)v + 0x8AE04u + i * 16u;
+    u32 j = 0;
+    for (; s[j] && j < 15u; j++) n[j] = s[j];
+    for (; j < 16u; j++) n[j] = 0;
+    B(v, 0x8ADBCu + i) = d->type == MOD_DEST_CC ? d->num : 0;   /* the CC column (0 = blank) */
+}
+
+static void mx_redraw(void *v) {
+    struct { u16 type, pad; u32 a, b, c, d; } e = {0xC3u, 0, 0, 0, 0, 0};
+    FN(0x0814C568u, void (*)(void *))(v);              /* bar (our hook adds Dest) */
+    FN(0x0814C7C4u, void (*)(void *, void *))(v, &e);  /* every row */
+}
+
+/* Row builder (view, &ctx): 1 = ours. */
+__attribute__((used, retain)) int mx_build(void *v, const u32 *ctx) {
+    u32 c = MODHEAD->mx_ctx;
+    volatile ModTrack *t = mod_track();
+    if (!c || !ctx || *ctx != c || !t) return 0;
+    if (W(v, MX_CTX) != c) {                          /* another track: back to the top, as stock */
+        FN(0x0816B9FAu, void (*)(void *, u32))((u8 *)v + MX_LIST, 0);
+        FN(0x0816BB5Cu, void (*)(void *, u32))((u8 *)v + MX_LIST, 0);
+    }
+    W(v, MX_CTX) = c; W(v, 0x8AC48u) = c;
+    B(v, 0x8AC4Cu) = 0x20;                            /* no stock instrument kind */
+    W(v, 0x8ACC8u) = (u32)MX_SOURCES; B(v, 0x8AC4Eu) = 8; B(v, 0x8AC4Du) = MX_ROWS;
+    W(v, 0x8ADF8u) = sel_track(); W(v, 0x8ADFCu) = 0;
+    for (u32 i = 0; i < MX_ROWS; i++) {
+        H(v, 0x8AC50u + i * 2u) = (u16)(MX_KEY + i);
+        W(v, 0x8ACCCu + i * 4u) = c;
+        mx_row(v, i, &t->d[i]);
+    }
+    if ((int)W(v, MX_LINE) < 0 || W(v, MX_LINE) >= MX_ROWS) W(v, MX_LINE) = 0;
+    FN(0x0814C4FCu, void (*)(void *))(v);
+    mx_redraw(v);
+    return 1;
+}
+
+/* Routing read (key, slot, out): -1 = stock's, else found (out: amount, source id). */
+__attribute__((used, retain)) int mx_route(u32 key, u32 slot, u32 *out) {
+    if (key < MX_KEY || key >= MX_KEY + MX_ROWS) return -1;
+    volatile ModTrack *t = mod_track();
+    if (!t || slot > 2u || !out) return 0;
+    volatile ModDest *d = &t->d[key - MX_KEY];
+    u32 s = d->src[slot];
+    if (!s || s >= MOD_SRC_N) return 0;
+    out[0] = (u32)(int)d->amt[slot];
+    out[1] = 0; out[2] = 0;
+    ((volatile u16 *)out)[2] = MX_SOURCES[s];        /* ours -> stock id (same order) */
+    return 1;
+}
+
+/* Matrix edit (view, ev {.., key, value}): 1 = ours. */
+__attribute__((used, retain)) int mx_edit(void *v, const u32 *ev) {
+    if (!mx_ours(v)) return 0;
+    volatile ModCfg *m = mod_cfg_block();
+    volatile ModTrack *t = mod_track();
+    u32 line = W(v, MX_LINE), key = ev[2];
+    int value = (int)ev[3];
+    if (!m || !t || line >= MX_ROWS || key < 0x171u || key > 0x176u) return 1;
+    u32 j = (key - 0x171u) / 2u;
+    volatile ModDest *d = &t->d[line];
+    mod_write_begin(m);
+    if (!((key - 0x171u) & 1u)) {                     /* Source 1-3: list index */
+        if (value >= 0 && value < 8) d->src[j] = MX_TO_OURS[value];
+    } else {                                          /* Amount 1-3: -1000..1000 */
+        d->amt[j] = (short)(value < -1000 ? -1000 : value > 1000 ? 1000 : value);
+    }
+    mod_write_end(m);
+    mx_redraw(v);
+    return 1;
+}
+
+/* After stock refreshed the bar: Dest on encoder 8 for the selected row. */
+__attribute__((used, retain)) void mx_bar_after(void *v) {
+    if (!mx_ours(v) || !claim()) return;
+    volatile ModTrack *t = mod_track();
+    u32 line = W(v, MX_LINE);
+    if (!t || line >= MX_ROWS) return;
+    H(v, MX_DESC + 0x20u + 7u * 2u) = SU->key[9];
+    W(v, MX_DESC + 0x30u + 7u * 4u) = dest_index(&t->d[line]);
+    W(v, MX_DESC + 7u * 4u) = W(v, MX_CTX);
+    FN(BAR_SET, void (*)(void *, void *))((u8 *)v + 0x38u, (u8 *)v + MX_DESC);
+}
+
+/* Matrix events (view, ev): 1 = ours. */
+__attribute__((used, retain)) int mx_event(void *v, const u32 *ev) {
+    if (!mx_ours(v)) return 0;
+    u32 type = ev[0] & 0xFFFFu;
+    if (type == 2u) return 1;                         /* "Dashboard": not for External (use INST) */
+    if (type != 0xCFu || !claim() || ev[2] != SU->key[9]) return 0;
+    volatile ModCfg *m = mod_cfg_block();
+    volatile ModTrack *t = mod_track();
+    u32 line = W(v, MX_LINE), k = ev[3];
+    if (!m || !t || line >= MX_ROWS) return 1;
+    if (k >= DEST_N) k = DEST_N - 1u;
+    volatile ModDest *d = &t->d[line];
+    mod_write_begin(m);
+    d->type = DEST_TYPE[k]; d->num = DEST_NUM[k];
+    mod_write_end(m);
+    mx_row(v, line, d);
+    mx_redraw(v);
+    return 1;
 }
 
 /* Project load: a project's own settings, or none (modtest: the test routing). */

@@ -153,6 +153,23 @@ class Rig:
             u.reg_write(UC_ARM_REG_SP, sp + 36); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 32))
         elif a == 0x08146B84:                                     # rest of stock's External event handler
             self.log.append("stock-event"); self.ret(1)
+        elif a == 0x0816FC34:                                     # UI post (view, event): bubbles up
+            self.log.append(("post", r32(u, r(1)) & 0xFFFF, r32(u, r(1) + 4))); self.ret()
+        elif a in (0x0816B9FA, 0x0816BB5C, 0x0814C4FC):
+            self.log.append(("list", a)); self.ret()
+        elif a == 0x0814C7C4:                                     # matrix: redraw rows
+            self.log.append("redraw"); self.ret()
+        elif a in (0x0814C56C, 0x0814CC18, 0x08131248, 0x0814BFF4):   # stock bodies after a replayed push.w
+            n = 7 if a == 0x0814C56C else 9
+            self.log.append(("stock", a))
+            sp = u.reg_read(UC_ARM_REG_SP)
+            u.reg_write(UC_ARM_REG_R0, 0)
+            u.reg_write(UC_ARM_REG_SP, sp + 4 * n); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 4 * (n - 1)))
+        elif a == 0x0814C694:                                     # stock matrix events after push {r4, lr}; sub sp, #0x18
+            self.log.append(("stock", a))
+            sp = u.reg_read(UC_ARM_REG_SP) + 0x18
+            u.reg_write(UC_ARM_REG_R0, 1)
+            u.reg_write(UC_ARM_REG_SP, sp + 8); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 4))
         elif a == SLOT_TITLE:
             self.log.append(("title", cstr(u, r(1)))); self.ret()
         elif a == BAR_TEXT:
@@ -227,7 +244,7 @@ class ExtRows(unittest.TestCase):
     (header button ROWS_ACTION); our rows use stock's LFO/env keys and our Loop
     list; turning one edits the selected track's ModTrack (odd seq while writing)."""
     EV, CFGB, HEAD = 0x20150000, 0xC6200000, 0x3003DFC0
-    MAGIC = 0x33444F4D
+    MAGIC = 0x34444F4D
 
     def rig(self, track=2, page=0x21):
         g = Rig()
@@ -324,6 +341,104 @@ class ExtRows(unittest.TestCase):
         self.assertNotIn(0x10F1, recs)
 
 
+class ModMatrix(unittest.TestCase):
+    """F2b: stock's Mod Matrix page for External tracks: the "Mod" button posts what
+    the Modulation menu item posts; for that context the rows are 16 MIDI
+    destinations (private keys 0xF000+i), routing reads/edits use our ModTrack,
+    encoder 8 is Dest. Other contexts stay stock's."""
+    MXV, CTX = 0x20200000, 0x4321
+
+    def rig(self):
+        g = ExtRows().rig(track=2)
+        g.u.mem_write(ExtRows.HEAD, struct.pack("<9I", 0x34444F4D, 1, ExtRows.CFGB, ~ExtRows.CFGB & 0xFFFFFFFF, 2, 0, 0, 0, 0))
+        g.u.mem_write(ExtRows.CFGB, struct.pack("<I", 0x34444F4D))
+        return g
+
+    def open(self, g):
+        g.u.mem_write(ExtRows.EV, struct.pack("<I", 0x10F2)); g.log.clear()
+        g.call(0x08146B80, VIEW, ExtRows.EV)
+        ctx = 0x20210000; w32(g.u, ctx, self.CTX)
+        g.log.clear(); g.call(0x0814CC14, self.MXV, ctx)
+        return g
+
+    def dest(self, g, i):
+        o = ExtRows.CFGB + 12 + 2 * 232 + 40 + i * 12
+        return struct.unpack("<5Bx3h", g.u.mem_read(o, 12))      # type, num, src[3], amt[3]
+
+    def test_mod_button_posts_like_the_modulation_menu(self):
+        g = self.rig()
+        g.u.mem_write(ExtRows.EV, struct.pack("<I", 0x10F2))
+        self.assertEqual(g.call(0x08146B80, VIEW, ExtRows.EV), 0)
+        self.assertEqual([x for x in g.log if x[0] == "post"], [("post", 0xA8, self.CTX), ("post", 0x0A, self.CTX)])
+        self.assertEqual(r32(g.u, ExtRows.HEAD + 32), self.CTX, "mx_ctx")
+
+    def test_rows_for_the_external_context(self):
+        g = self.open(self.rig())
+        self.assertNotIn(("stock", 0x0814CC18), g.log)
+        self.assertEqual(g.u.mem_read(self.MXV + 0x8AC4D, 2), bytes([16, 8]), "16 rows, 8 sources")
+        self.assertEqual(list(struct.unpack("<16H", g.u.mem_read(self.MXV + 0x8AC50, 32))), [0xF000 + i for i in range(16)])
+        src = r32(g.u, self.MXV + 0x8ACC8)
+        self.assertEqual(list(struct.unpack("<8H", g.u.mem_read(src, 16))), [0, 4, 5, 1, 2, 0xD, 0x20, 0xE])
+        self.assertEqual(cstr(g.u, self.MXV + 0x8AE04), "---", "unassigned row")
+        self.assertIn("redraw", g.log)
+
+    def test_other_contexts_stay_stocks(self):
+        g = self.rig()
+        ctx = 0x20210000; w32(g.u, ctx, 0x9999)
+        g.call(0x0814CC14, self.MXV, ctx)
+        self.assertIn(("stock", 0x0814CC18), g.log)
+
+    def test_routing_read_and_edit(self):
+        g = self.open(self.rig())
+        w32(g.u, self.MXV + 0x86B5C, 3)                             # row 4 selected
+        for key, val in ((0x173, 2), (0x174, (-250) & 0xFFFFFFFF), (0x171, 6)):   # Source 2 = LFO 2, Amount 2, Source 1 = Pressure
+            g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, key, val))
+            g.call(0x0814BFF0, self.MXV, ExtRows.EV)
+        t, n, s1, s2, s3, a1, a2, a3 = self.dest(g, 3)
+        self.assertEqual((s1, s2, a2), (6, 2, -250), "Pressure, LFO 2 at -25 %")
+        self.assertNotIn(("stock", 0x0814BFF4), g.log)
+        # the matrix reads it back through the model's routing call
+        out, ctx = 0x20220000, 0x20210000
+        u = g.u
+        sp = STACK - 0x20
+        u.mem_write(sp, struct.pack("<I", out))
+        for i, v in enumerate((0x30024B00, ctx, 0xF003, 1)):
+            u.reg_write(UC_ARM_REG_R0 + i, v)
+        u.reg_write(UC_ARM_REG_SP, sp); u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        u.emu_start(0x08131244 | 1, SENT, count=200000)
+        self.assertEqual(u.reg_read(UC_ARM_REG_R0), 1, "found")
+        amt, src = struct.unpack("<iH", u.mem_read(out, 6))
+        self.assertEqual((amt, src), (-250, 5), "stock source id 5 = LFO 2")
+
+    def test_dest_on_encoder_8(self):
+        g = self.open(self.rig())
+        w32(g.u, self.MXV + 0x86B5C, 0)
+        g.log.clear(); g.call(0x0814C568, self.MXV)
+        bars = [x for x in g.log if isinstance(x, tuple) and x[0] == "bar"]
+        dest_key = bars[-1][2][7]
+        self.assertEqual(cstr(g.u, r32(g.u, REG + dest_key * 32 + 4)), "Dest")
+        self.assertEqual(bars[-1][1], self.MXV + 0x38)
+        labels = r32(g.u, REG + dest_key * 32 + 8)
+        names = [cstr(g.u, r32(g.u, labels + 4 * i)) for i in range(13)]
+        self.assertEqual(names[:4], ["None", "Pitch Bend", "Aftertouch", "Mod Wheel"])
+        self.assertEqual(cstr(g.u, r32(g.u, labels + 4 * (13 + 74))), "CC 74 Cutoff")
+        g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, dest_key, 9))   # Cutoff
+        self.assertEqual(g.call(0x0814C690, self.MXV, ExtRows.EV), 0, "handled")
+        self.assertEqual(self.dest(g, 0)[:2], (1, 74))
+        self.assertEqual(cstr(g.u, self.MXV + 0x8AE04), "Cutoff")
+        self.assertEqual(g.u.mem_read(self.MXV + 0x8ADBC, 1)[0], 74, "CC column")
+        g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, dest_key, 1))   # Pitch Bend
+        g.call(0x0814C690, self.MXV, ExtRows.EV)
+        self.assertEqual(self.dest(g, 0)[0], 2)
+        self.assertEqual(g.u.mem_read(self.MXV + 0x8ADBC, 1)[0], 0, "no CC number")
+
+    def test_dashboard_button_is_ignored_for_external(self):
+        g = self.open(self.rig())
+        g.u.mem_write(ExtRows.EV, struct.pack("<I", 2)); g.log.clear()
+        self.assertEqual(g.call(0x0814C690, self.MXV, ExtRows.EV), 0)
+        self.assertNotIn(("stock", 0x0814C694), g.log)
+
+
 class SaveLoad(unittest.TestCase):
     def run_save(self, rec):
         g = Rig(); sp = STACK - 0x100
@@ -393,8 +508,8 @@ class DrumEncoders(unittest.TestCase):
     def test_four_keys_claimed_and_put_in_slots_5_to_8(self):
         g = self.setup()
         keys = g.keys()
-        self.assertEqual(len(keys), 9, "4 step keys + AT Rec + AT Out (v3.30) + Loop, Beat Sync, Triggered")
-        self.assertEqual(sorted(keys, reverse=True), [0x1F1, 0x1EF, 0x1EE, 0x1ED, 0x1EC, 0x1EB, 0x1EA, 0x1E9, 0x1E8], "empty keys from the top")
+        self.assertEqual(len(keys), 10, "4 step keys + AT Rec + AT Out (v3.30) + Loop, Beat Sync, Triggered, Dest")
+        self.assertEqual(sorted(keys, reverse=True), [0x1F1, 0x1EF, 0x1EE, 0x1ED, 0x1EC, 0x1EB, 0x1EA, 0x1E9, 0x1E8, 0x1E7], "empty keys from the top")
         table = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))
         self.assertEqual(table[4:], (0x1F1, 0x1EF, 0x1EE, 0x1ED))
         titles = [cstr(g.u, r32(g.u, REG + k * 32 + 4)) for k in table[4:]]
@@ -1031,7 +1146,7 @@ class SidecarLoad(unittest.TestCase):
     def test_modulation_settings_load_with_the_project(self):
         """F2a: the MODS chunk after TRKS restores each track's ModTrack; a project
         without one leaves nothing from the previous project."""
-        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x33444F4D
+        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x34444F4D
         rec = bytearray(232); rec[0] = 4; rec[6:8] = struct.pack("<H", 700)      # LFO 1: Sine, depth 700
         trailer = (b"TRKS" + struct.pack("<H", 16) + bytes(32) + b"MODS" + struct.pack("<HH", 8, 232)
                    + bytes(232) + bytes(rec) + bytes(232 * 6))

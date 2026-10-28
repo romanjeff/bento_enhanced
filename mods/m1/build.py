@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x4000   # 16 KB since v3.26 (curve sidecar writer)
-VERSION = "3.47"                       # bump for every build that goes on the device
+VERSION = "3.48"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -158,7 +158,7 @@ CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (b
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x3003C8A0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
-STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x300; STEP_LIMIT = STEP_WRAP + 0x5000   # m4_step.c (20 KB since v3.41; 12 KB since v3.29)
+STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x600; STEP_LIMIT = STEP_WRAP + 0x5000   # m4_step.c (20 KB since v3.41; 12 KB since v3.29)
 M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B), 0x60 handler at +0x80
 M4_CHAN = M4_POLY + 0x80
 # Per-step Condition / Retrigger (m4_step.c)
@@ -169,6 +169,8 @@ PIANO_HEADER, PIANO_EVENT = 0x081599BC, 0x0815A598
 STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
 HEADER_GEN, DRUM_EVENT = 0x08134800, 0x0815D600   # header description generator; drum view events
 EXT_EVENT, EXT_BUILD = 0x08146B80, 0x08147138           # External INST view: event handler, bar builder (F2a)
+# F2b Mod Matrix view: row builder, routing read (model), routing edit, bar refresh, events
+MX_BUILD, MX_ROUTE, MX_EDIT, MX_BAR, MX_EVENT = 0x0814CC14, 0x08131244, 0x0814BFF0, 0x0814C568, 0x0814C690
 NOTE_INSERT = 0x0812E070                            # stock: assign ID + insert (model, seq, record)
 NOTE_UPDATE = 0x0812E0CE                            # stock: replace a note (model, seq, record)
 DOC_READ = 0x08130A18                               # stock: open + read + parse an XML document (path, ..., doc)
@@ -237,6 +239,32 @@ def bcond_w(cond, src, dst):
 DIV_LABELS = ["1/8", "1/8T", "1/8.", "1/16", "1/16T", "1/16.", "1/32", "1/32T", "1/32.", "1/64", "1/64T"]
 RAMP_STEP = 5   # percent per encoder click: -100..+100 = 41 values
 
+# F2b destination list (Jeff): named messages first, then every CC by number, a
+# standard name attached where one exists. type: 0 none, 1 CC, 2 pitch bend, 3 channel AT.
+CC_NAMES = {0: "Bank", 1: "Mod Wheel", 2: "Breath", 4: "Foot", 5: "Porta Time", 7: "Volume", 8: "Balance",
+            10: "Pan", 11: "Expr", 12: "Effect 1", 13: "Effect 2", 64: "Sustain", 65: "Porta",
+            66: "Sostenuto", 67: "Soft", 68: "Legato", 69: "Hold 2", 70: "Variation", 71: "Resonance",
+            72: "Release", 73: "Attack", 74: "Cutoff", 75: "Decay", 76: "Vib Rate", 77: "Vib Depth",
+            78: "Vib Delay", 84: "Porta Ctl", 91: "Reverb", 92: "Tremolo", 93: "Chorus", 94: "Detune", 95: "Phaser"}
+DEST_NAMED = [("None", 0, 0), ("Pitch Bend", 2, 0), ("Aftertouch", 3, 0), ("Mod Wheel", 1, 1), ("Breath", 1, 2),
+              ("Volume", 1, 7), ("Pan", 1, 10), ("Expression", 1, 11), ("Foot", 1, 4), ("Cutoff", 1, 74),
+              ("Resonance", 1, 71), ("Attack", 1, 73), ("Release", 1, 72)]
+
+def dest_list():
+    out = list(DEST_NAMED)
+    for n in range(128):
+        out.append((f"CC {n} {CC_NAMES[n]}" if n in CC_NAMES else f"CC {n}", 1, n))
+    for label, _, _ in out:
+        assert len(label) <= 15, label
+    return out
+
+def dest_tables():
+    d = dest_list()
+    return (f"#define DEST_N {len(d)}\n"
+            + f"static const char *const DEST_LABELS[{len(d)}] = {{" + ", ".join(f'"{x[0]}"' for x in d) + "};\n"
+            + f"static const unsigned char DEST_TYPE[{len(d)}] = {{" + ", ".join(str(x[1]) for x in d) + "};\n"
+            + f"static const unsigned char DEST_NUM[{len(d)}] = {{" + ", ".join(str(x[2]) for x in d) + "};\n")
+
 def write_step_tables(path):
     """Generated C tables for m4_step.c (single source: the lists above)."""
     def strs(name, items):
@@ -248,7 +276,8 @@ def write_step_tables(path):
             + strs("HITS_LABELS", ["Off"] + [str(i) for i in range(1, 16)])
             + strs("DIV_LABELS", DIV_LABELS)
             + strs("RAMP_LABELS", ramp)
-            + f"static const unsigned char COND_STORED[{COND_N}] = {{" + ", ".join(map(str, COND_STORED)) + "};\n")
+            + f"static const unsigned char COND_STORED[{COND_N}] = {{" + ", ".join(map(str, COND_STORED)) + "};\n"
+            + dest_tables())
     path.write_text(text)
 
 def compile_elf(srcs, cpu, ld, out, origin, limit):
@@ -695,6 +724,28 @@ def build(base_img, out):
                + restore + "movs r0, #0; bx lr; stock: " + restore + f"ldrh r3, [r1]; cmp r3, #0xcf; b.w {EXT_EVENT + 4:#x}",
                {ss["ext_event"], EXT_EVENT + 4}, "external event")
     patch(EXT_EVENT, asm(f"b.w {a:#x}", EXT_EVENT), bytes.fromhex("0b88cf2b"), "Per-step: External view events -> row button + row encoders")
+    # F2b: the Mod Matrix page for External tracks
+    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['mx_build']:#x}; cmp r0, #0; beq stock; " + restore + "bx lr; "
+               "stock: " + restore + f"push.w {{r4, r5, r6, r7, r8, r9, r10, r11, lr}}; b.w {MX_BUILD + 4:#x}",
+               {ss["mx_build"], MX_BUILD + 4}, "matrix rows")
+    patch(MX_BUILD, asm(f"b.w {a:#x}", MX_BUILD), bytes.fromhex("2de9f04f"), "Per-step: Mod Matrix rows -> MIDI destinations (External)")
+    a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #20]; ldr r2, [sp, #64]; bl {ss['mx_route']:#x}; "
+               "cmn r0, #1; beq stock; str r0, [sp, #8]; " + restore + "bx lr; "
+               "stock: " + restore + f"push.w {{r4, r5, r6, r7, r8, r9, r10, r11, lr}}; b.w {MX_ROUTE + 4:#x}",
+               {ss["mx_route"], MX_ROUTE + 4}, "matrix routing read")
+    patch(MX_ROUTE, asm(f"b.w {a:#x}", MX_ROUTE), bytes.fromhex("2de9f04f"), "Per-step: modulation routing read -> ours for External rows")
+    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['mx_edit']:#x}; cmp r0, #0; beq stock; " + restore + "bx lr; "
+               "stock: " + restore + f"push.w {{r4, r5, r6, r7, r8, r9, r10, r11, lr}}; b.w {MX_EDIT + 4:#x}",
+               {ss["mx_edit"], MX_EDIT + 4}, "matrix edit")
+    patch(MX_EDIT, asm(f"b.w {a:#x}", MX_EDIT), bytes.fromhex("2de9f04f"), "Per-step: Mod Matrix edits -> ours for External rows")
+    orig_bar = sblock(f"push.w {{r4, r5, r6, r7, r8, r9, lr}}; b.w {MX_BAR + 4:#x}", {MX_BAR + 4}, "matrix bar replay")
+    a = sblock(f"push {{r4, lr}}; mov r4, r0; bl {orig_bar:#x}; mov r0, r4; bl {ss['mx_bar_after']:#x}; pop {{r4, pc}}",
+               {orig_bar, ss["mx_bar_after"]}, "matrix bar")
+    patch(MX_BAR, asm(f"b.w {a:#x}", MX_BAR), bytes.fromhex("2de9f043"), "Per-step: Mod Matrix bar -> Dest on encoder 8 (External)")
+    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['mx_event']:#x}; cmp r0, #0; beq stock; "
+               + restore + "movs r0, #0; bx lr; stock: " + restore + f"push {{r4, lr}}; sub sp, #0x18; b.w {MX_EVENT + 4:#x}",
+               {ss["mx_event"], MX_EVENT + 4}, "matrix event")
+    patch(MX_EVENT, asm(f"b.w {a:#x}", MX_EVENT), bytes.fromhex("10b586b0"), "Per-step: Mod Matrix events -> Dest encoder (External)")
     # strike velocity for notes created by any view (drum Sequence page)
     a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #60]; bl {ss['strike_insert']:#x}; " + restore   # record, caller lr
                + f"push {{r4, r5, r6, lr}}; sub sp, #0x20; b.w {NOTE_INSERT + 4:#x}", {ss["strike_insert"], NOTE_INSERT + 4}, "note insert")
