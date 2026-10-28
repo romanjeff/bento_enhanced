@@ -21,3 +21,20 @@ Caveat: the public repo has only `main`. The `release/*` refs pinned in
 `release_targets.json` aren't published, so `prepare_tester.py` can't resolve
 them, and older builders (e.g. `build_eu10.py`) run against current sources
 and fail. Build the target that matches `main`.
+
+## bento_enhanced (mods/m1)
+
+Uses the same venv and `~/bento/stock-1.6.1` from step 1. The scripts hard-code this
+checkout's `/mnt/c/...` path: edit it for yours.
+
+- `build_m1.sh`: builds into `~/bento/out/m1-<timestamp>`. Passes `BE_DISABLE`,
+  `BE_ENABLE`, `BE_LABEL`, `BE_TAG` through (see [`mods/m1/README.md`](../../mods/m1/README.md#build-and-test)).
+- `test_m1.sh`: runs every emulated suite against the newest build.
+- `package_m1.sh`: makes a flashing kit under `flash/bento_enhanced-v<version>/`. It
+  contains your stock firmware: keep it private.
+
+```
+tr -d '\r' < build_m1.sh | bash        # e.g. BE_DISABLE=inta,rmidi to bisect
+tr -d '\r' < test_m1.sh | bash
+tr -d '\r' < package_m1.sh | bash
+```

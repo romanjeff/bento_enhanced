@@ -1,43 +1,49 @@
 # Roadmap
 
-Status as of 2026-10-25 (Milestone 1 reached). **Target firmware: stock Bento 1.6.1**, building on
-[bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s
-work. Their CH10 / 1.6HA release reproduces byte for byte with our toolchain
-(see [`tools/lab-build-wsl/`](tools/lab-build-wsl/)). Our first feature (poly aftertouch) runs on
-hardware ([`mods/m1/`](mods/m1/)). Earlier research was done on 1.5.32 and is being re-located in 1.6.1
-([`tools/ghidra-1.6.1/anchors_1532_to_161.txt`](tools/ghidra-1.6.1/anchors_1532_to_161.txt)).
+Status as of 2026-10-27, **release [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40)**.
+**Target firmware: stock Bento 1.6.1.** Since v2.3 our builds sit directly on stock;
+several features are ports of
+[bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work.
+Details of everything below are in [`mods/m1/`](mods/m1/).
 
-## Priority order
+## Done (on hardware)
 
-**0. Hardware loop (prerequisite).** Flash Lab's CH10 as-is and confirm it boots.
-Then flash a minimal build of our own inside their build system. Stock 1.6.1's
-"Last crash info" page (core, fault address, CFSR) is the first debugging tool.
+- **A — pad pressure out of External tracks.** Poly aftertouch (`0xA0`) since Milestone 1
+  (2026-10-25), with a polyphony cap of 6 (oldest stolen, same note retriggers its voice).
+- **M2 — aftertouch sequencing** (2026-10-27). Per-note pressure is recorded in the piano
+  roll at 16 points per step and saved in a `curves.bnt` sidecar, so projects stay
+  stock-readable. It plays back on External tracks (poly or channel pressure) and on
+  internal instruments (stock's per-voice pressure). **AT Rec** and **AT Out**
+  (Off / Poly / Channel) are set per track, and live pad pressure follows AT Out too.
+- **Sequencer:** trigger conditions; per-step retriggers (hits, division, ramp); pad
+  defaults with per-step locks; strike velocity; hold-to-inspect steps.
+- **UI:** hold shortcuts (TRACKS / LAUNCH / MIXER / INST).
+- **Diagnostics:** black box on the SD card (crash records, audio stall records).
 
-**1. A — External-track pad pressure out over MIDI.** *Top priority.* Bento's 16
-pads each have an independent pressure sensor, and the raw per-pad values reach
-the audio core unmerged (see [`docs/external-tracks.md`](docs/external-tracks.md)).
-Plan: Polyphonic Key Pressure (0xA0) by default, Channel Pressure (0xD0) as an
-option. Source: [`mods/m1/`](mods/m1/).
-- **Milestone 1: reached 2026-10-25.** Poly aftertouch out of an External
-  track on hardware, verified on a MIDI monitor and a poly-AT synth (per-note
-  LFO rate following each pad). How it works: stock already computes per-note
-  pressure (same curve as velocity, correct note from the keyboard mapping)
-  and delivers it to the External track, which drops it. The mod forwards it
-  as `0xA0 note value` on the track's MIDI port/channel at up to 100 Hz per
-  note (changed values only), under a global output budget.
-- Next for A: polyphony cap (default 6, max 8; oldest-first stealing with
-  forced note-offs, sequencer notes included), then a settings UI (cap,
-  linear/exp/log curves for pressure and MIDI-out velocity), pressure for all
-  MIDI-out track types. A repeated note number retriggers the same voice.
-- **M2 — record poly pressure into the sequencer.** Per-note pressure curves
-  stored as **16 points per sequencer step** (8 acceptable), tempo-relative,
-  interpolated on playback at up to 100 Hz through the same output limits. The
-  curve belongs to its note (follows move/copy/delete/Undo/save). Storage grows
-  with held note length, so: delta compression, a per-project budget that falls
-  back to 8 points/step when full. Channel pressure into an automation lane is
-  an acceptable but not preferred fallback.
+## Now: stability
 
-**2. F — LFO + envelope + mod matrix with CC destinations for External tracks.**
+- **S3 — soak test** of v3.40 in real use: long sessions, many simultaneous aftertouch
+  notes on internal and External tracks, repeated project loads.
+- **Verify on hardware:** MIDI retriggers with their own note-offs (v3.39), and the
+  curve pool clearing on each project load (v3.38).
+
+## Next: generative sequencing
+
+Euclidean patterns and other generative sequencer ideas built around Bento's
+touchscreen. They need far more new interface than anything so far, so they start with
+a full planning pass (requirements, UI, interaction with existing notes, risks) once
+v3.40 has proven stable. Generators should write ordinary notes, so their results save,
+load and stay stock-readable like anything else.
+
+## Later
+
+- **Settings UI** for the polyphony cap, and pressure / MIDI-out velocity response
+  curves (linear / exp / log).
+- **Aftertouch on drum (one-shot) tracks** (recording is piano-roll only for now).
+
+## Further plans
+
+**F — LFO + envelope + mod matrix with CC destinations for External tracks.**
 Channel-level (per-track) modulation: **2 LFOs and 2 envelopes**.
 - Each envelope can optionally retrigger per note, and optionally loop with a
   repeat count (1–32 or infinite).
@@ -51,7 +57,7 @@ have no voices, which may make the native route a poor fit.
 - **E — Mod Wheel amount** is planned as a CC1 destination inside F rather than
   a separate control.
 
-**3. D — Saturation.** Stock 1.6 added a native sidechain ducker
+**D — Saturation.** Stock 1.6 added a native sidechain ducker
 (Source Track / ext input / pad / MIDI note / clock; attack/hold/release/
 depth/threshold), so the sidechain part of D is dropped. The remaining scope is
 a **master saturator next to the compressor**, with character-setting
@@ -60,7 +66,7 @@ soft clipper doesn't cover this. Registry IDs must avoid Lab's
 `0x128–0x12D` (chord editor), which overlap the compressor-range gap we
 found in 1.5.32.
 
-**4. B — MIDI note (Key) as a mod source for Multisample.** Only if cheap.
+**B — MIDI note (Key) as a mod source for Multisample.** Only if cheap.
 The native voice binding for Key is known (`source 14 → voice+0xBC`).
 
 ## Parked

@@ -6,7 +6,14 @@ Community firmware research and (eventually) mods for the [1010music Bento](http
 
 ## Status
 
-This repo holds research, documentation, tooling, and **firmware mods**. The first one, [poly aftertouch out of External tracks](mods/m1/), works on hardware. Target firmware is **stock 1.6.1**, building on [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab). See [`ROADMAP.md`](ROADMAP.md) for priorities and where each feature stands.
+**Current release: [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40)**, a set of firmware mods for **stock Bento 1.6.1** that run on hardware. Highlights:
+
+- **Aftertouch sequencing**: record per-note pad pressure in the piano roll and play it back. It works on External tracks (MIDI poly aftertouch or channel pressure) and on Bento's own instruments. **AT Rec** and **AT Out** (Off / Poly / Channel) are set per track and saved with the project.
+- **Live poly aftertouch** out of External tracks, with a polyphony cap of 6.
+- **Sequencer extras**: trigger conditions (`A:B`, `1ST`, `PRE` and their inverses), per-step retriggers with velocity ramps, pad defaults with per-step locks, strike velocity, and hold-to-inspect steps.
+- **Hold shortcuts** for tracks, clip launch and mixer, and an on-card **black box** for crash and stall records.
+
+Projects saved with these mods still open on stock 1.6.1. Features, usage, installation and internals are in [`mods/m1/`](mods/m1/); [`ROADMAP.md`](ROADMAP.md) covers what's next. Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
 
 ## Why this exists
 
