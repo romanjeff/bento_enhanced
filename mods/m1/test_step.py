@@ -157,6 +157,8 @@ class Rig:
             self.log.append(("post", r32(u, r(1)) & 0xFFFF, r32(u, r(1) + 4))); self.ret()
         elif a in (0x0816B9FA, 0x0816BB5C, 0x0814C4FC):
             self.log.append(("list", a)); self.ret()
+        elif a == 0x0817048E:                                     # bar slot range (bar, slot, value, min, max)
+            self.log.append(("range", r(1), r(2), r(3), r32(u, u.reg_read(UC_ARM_REG_SP)))); self.ret()
         elif a == 0x0814C7C4:                                     # matrix: redraw rows
             self.log.append("redraw"); self.ret()
         elif a in (0x0814C56C, 0x0814CC18, 0x08131248, 0x0814BFF4):   # stock bodies after a replayed push.w
@@ -452,11 +454,22 @@ class ModMatrix(unittest.TestCase):
         g.log.clear(); g.call(0x0814BFF0, self.MXV, ExtRows.EV)
         self.assertIn(("stock", 0x0814BFF4), g.log)
 
-    def test_dashboard_button_is_ignored_for_external(self):
+    def test_dashboard_goes_back_to_the_external_page(self):
+        """BE3.50: the header's Dashboard (action 3 = the sample dashboard page) went
+        to a dummy dashboard. For our rows it posts page 0x21 (External) instead."""
         g = self.open(self.rig())
-        g.u.mem_write(ExtRows.EV, struct.pack("<I", 2)); g.log.clear()
-        self.assertEqual(g.call(0x0814C690, self.MXV, ExtRows.EV), 0)
-        self.assertNotIn(("stock", 0x0814C694), g.log)
+        for action in (3, 0x16):
+            g.u.mem_write(ExtRows.EV, struct.pack("<I", action)); g.log.clear()
+            self.assertEqual(g.call(0x0814C690, self.MXV, ExtRows.EV), 0)
+            self.assertEqual([x for x in g.log if x[0] == "post"], [("post", 0x21, self.CTX)])
+            self.assertNotIn(("stock", 0x0814C694), g.log)
+
+    def test_dest_slot_gets_its_full_range(self):
+        g = self.open(self.rig())
+        w32(g.u, self.MXV + 0x86B5C, 0)
+        g.log.clear(); g.call(0x0814C568, self.MXV)
+        rng = [x for x in g.log if x[0] == "range"]
+        self.assertEqual((rng[-1][1], rng[-1][3], rng[-1][4]), (7, 0, 140), "slot 8: all 141 destinations")
 
 
 class SaveLoad(unittest.TestCase):

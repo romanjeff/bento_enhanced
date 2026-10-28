@@ -1294,14 +1294,22 @@ __attribute__((used, retain)) void mx_bar_after(void *v) {
     W(v, MX_DESC + 0x30u + 7u * 4u) = dest_index(&t->d[line]);
     W(v, MX_DESC + 7u * 4u) = W(v, MX_CTX);
     FN(BAR_SET, void (*)(void *, void *))((u8 *)v + 0x38u, (u8 *)v + MX_DESC);
+    /* the slot's range: stock sets ranges per slot (0x0817048E) and slot 8 kept a
+     * leftover one (v3.50: Dest stopped at "CC 0 Bank") */
+    FN(0x0817048Eu, void (*)(void *, u32, u32, u32, u32))((u8 *)v + 0x38u, 7u, dest_index(&t->d[line]), 0u, DEST_N - 1u);
 }
 
 /* Matrix events (view, ev): 1 = ours. */
 __attribute__((used, retain)) int mx_event(void *v, const u32 *ev) {
-    if ((ev[0] & 0xFFFFu) == 2u || (ev[0] & 0xFFFFu) == 0xCFu) mx_note(v, ev, 2);
-    if (!mx_ours(v)) return 0;
     u32 type = ev[0] & 0xFFFFu;
-    if (type == 2u) return 1;                         /* "Dashboard": not for External (use INST) */
+    if (type == 2u || type == 3u || type == 0x16u || type == 0xCFu) mx_note(v, ev, 2);
+    if (!mx_ours(v)) return 0;
+    if (type == 2u) return 1;
+    if (type == 3u || type == 0x16u) {                /* the header's "Dashboard" (action = destination page) */
+        struct { u16 type, pad; u32 a, b, c, d; } m = {0x21u, 0, MODHEAD->mx_ctx, 0, 0, 0};
+        FN(UI_POST, void (*)(void *, void *))(v, &m);   /* back to the External INST page (page 0x21) */
+        return 1;
+    }
     if (type != 0xCFu || !claim() || ev[2] != SU->key[9]) return 0;
     volatile ModCfg *m = mod_cfg_block();
     volatile ModTrack *t = mod_track();
