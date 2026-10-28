@@ -17,7 +17,7 @@ BASE, SENT, STACK, CYC = 0x08040000, 0x08000100, 0x2407F000, 0xE0001004
 ENGINE = 0x24060000
 QUEUE = ENGINE + 0x7C8
 CFG, REGION, MAGIC = 0x3003C1E0, 0xC6100000, 0x31474144
-MODHEAD, MODCFG, MOD_MAGIC = 0x3003DFC0, 0xC6200000, 0x31444F4D
+MODHEAD, MODCFG, MOD_MAGIC = 0x3003DFC0, 0xC6200000, 0x32444F4D
 CLOCK, TRACK = 0x24071000, 0x24064000
 MSG_SEND = 0x08065600
 MS = 480000
@@ -90,7 +90,8 @@ class Rig:
         self.call(SYM7["h_note"], QUEUE, ev, track)
 
     def cc(self, num):
-        return [(e[4], e[5]) for e in self.sent if e[0] == 0x5E and e[3] == num]
+        """(7-bit value as sent on the wire, ms): stock's CC case sends event word 5 >> 7."""
+        return [(e[4] >> 7, e[5]) for e in self.sent if e[0] == 0x5E and e[3] == num]
 
     def pb(self):
         return [(e[3], e[5]) for e in self.sent if e[0] == 0x5D]
@@ -247,6 +248,15 @@ class Sources(unittest.TestCase):
         g.track_cfg(dests=[(AT, 0, (VEL, 0, 0), (1000, 0, 0))])
         g.block(0); g.note(60, vel=90); g.block(20)
         self.assertEqual([e[3] for e in g.sent if e[0] == 0x60][-1], 90)
+
+
+class WireFormat(unittest.TestCase):
+    def test_cc_value_is_scaled_for_stocks_14_bit_writer(self):
+        g = Rig()
+        g.track_cfg(dests=[(CC, 20, (VEL, 0, 0), (1000, 0, 0))])
+        g.block(0); g.note(60, vel=100); g.block(20)
+        raw = [e[4] for e in g.sent if e[0] == 0x5E][-1]
+        self.assertEqual((raw >> 7, raw & 0x7F), (100, 0), "data byte = word 5 >> 7 (0x08105D10)")
 
 
 class Output(unittest.TestCase):

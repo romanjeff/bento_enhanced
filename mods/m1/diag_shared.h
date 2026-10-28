@@ -299,9 +299,9 @@ typedef struct { u16 a, d, s, r; u8 loop, pad_[3]; } ModEnv;                    
 typedef struct { u8 type, num, src[3], pad_; short amt[3]; } ModDest;              /* 12 B */
 typedef struct { ModLfo lfo[2]; ModEnv env[2]; ModDest d[MOD_DESTS]; } ModTrack;  /* 232 B */
 typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; } ModCfg;
-typedef struct { u32 magic, gen, cfg, check; } ModHead;
+typedef struct { u32 magic, gen, cfg, check, tried; } ModHead;   /* tried: boot gen + 1 of the last attempt */
 #define MODHEAD ((volatile ModHead *)0x3003DFC0u)
-#define MODHEAD_MAGIC 0x31444F4Du /* "MOD1" */
+#define MODHEAD_MAGIC 0x32444F4Du /* "MOD2": + tried (v3.42) */
 _Static_assert(0x3003DFC0u + sizeof(ModHead) <= 0x3003E000u, "mod header");
 /* status: 0 none yet, 1 not a project.xml, 2 no sidecar, 3 bad data, 4 ok,
  * 5 pool/handles full (partial), 9 no curve memory */

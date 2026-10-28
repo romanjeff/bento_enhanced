@@ -249,7 +249,10 @@ static void mod_block_body(u32 track, const u32 *clock, int start, u32 router) {
         else { v = acc / 258000; v = v < 0 ? 0 : v > 127 ? 127 : v; }   /* full scale (32767 x 1000) = 127; base 0 until CC pairs (F3) */
         if ((u32)v == r->last[i] || now - r->dcyc[i] < DEST_GAP) continue;
         if (!m1_token(port, now)) break;                       /* port budget spent: next block */
-        u32 ev[6] = {0x5E, 0, port, ch, d->num & 0x7Fu, (u32)v};
+        /* Stock's CC case writes the value with its 14-bit writer (0x08105D10: status
+         * & 0xEF == 0xA0 -> data byte = value >> 7), so a 7-bit value goes in as v << 7
+         * (v3.41 sent 0..127 and every CC went out as 0). */
+        u32 ev[6] = {0x5E, 0, port, ch, d->num & 0x7Fu, (u32)v << 7};
         if (d->type == MOD_DEST_PB) { ev[0] = 0x5D; ev[4] = (u32)v; ev[5] = 0; }
         else if (d->type == MOD_DEST_AT) { ev[0] = 0x60; ev[4] = (u32)v; ev[5] = 0; }
         ((void (*)(u32, const u32 *))(MSG_SEND | 1u))(router + 0x7C8u, ev);

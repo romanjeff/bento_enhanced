@@ -992,6 +992,8 @@ static void at_publish(void) {
 static void mod_cfg(void) {
     volatile ModHead *h = MODHEAD;
     if (h->magic == MODHEAD_MAGIC && h->gen == boot_gen() && h->check == ~h->cfg) return;
+    if (!boot_gen() || h->tried == boot_gen() + 1u) return;   /* once per boot, success or not */
+    h->tried = boot_gen() + 1u;
     h->magic = 0;
     u32 need = sizeof(ModCfg) + 32u, cur = BUMP_CUR, end = BUMP_END;
     if (!boot_gen() || end <= cur || end - cur < need + 192u) return;
