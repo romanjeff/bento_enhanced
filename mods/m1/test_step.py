@@ -127,8 +127,10 @@ class Rig:
             for n in self.notes:
                 if n[3] == rec[3]: n[:] = rec
             self.log.append(("put", rec[3])); self.ret()
-        elif a == 0x0812DFE8:                                     # lab_seq_root_lookup (model, seq, &container)
+        elif a == 0x0812DFE8:                                     # lab_seq_root_lookup (model, seq, &root)
             w32(u, r(2), 0x20170000); self.ret(1)
+        elif a == 0x0812E6D8:                                     # copy a sequence's notes (model, seq, dest)
+            self.log.append(("copy", r(1), r(2))); self.ret(1)
         elif a in (PUBLISH, GRID, PIANO_COMMIT):
             self.log.append({PUBLISH: "publish", GRID: "grid", PIANO_COMMIT: "commit"}[a]); self.ret()
         elif a == STEP_MATCH:
@@ -785,6 +787,26 @@ class Defaults(unittest.TestCase):
         g.call(self.OFFSET, VIEW, 12)                                # 120 ticks
         self.assertEqual([n[1] for n in g.notes], [120, 960 + 120])
 
+    def test_default_set_with_every_step_locked_survives_stocks_reset(self):
+        """Jeff: with no unlocked step the pad default fell back to 100 after stock's
+        reset. A default set by hand is kept per sequence and pad (v3.57)."""
+        g = self.rig([note(0, vel=60, word=step_make(locks=1), nid=1), note(1, vel=40, word=step_make(locks=1), nid=2)])
+        g.call(self.VEL, VIEW, 77)
+        self.assertEqual([self.vel(n) for n in g.notes], [60, 40], "locked steps keep theirs")
+        w32(g.u, VIEW + 0x114C0, 100); g.drum_header()          # stock's reset, then the header
+        self.assertEqual(r32(g.u, VIEW + 0x114C0), 77, "the default you set")
+        w32(g.u, VIEW + 0x11400, 5); w32(g.u, VIEW + 0x114C0, 100); g.drum_header()
+        self.assertEqual(r32(g.u, VIEW + 0x114C0), 100, "another pad: not this pad's default")
+        w32(g.u, VIEW + 0x11400, 2); w32(g.u, VIEW + 0x113E4, 0x99); w32(g.u, VIEW + 0x114C0, 100); g.drum_header()
+        self.assertEqual(r32(g.u, VIEW + 0x114C0), 100, "another sequence: not this one's default")
+
+    def test_unlocked_steps_still_set_the_default(self):
+        g = self.rig([note(0, vel=60, word=step_make(locks=1), nid=1)])
+        g.call(self.VEL, VIEW, 77)
+        g.notes.append(note(2, vel=50, nid=2))                 # an unlocked step at 50
+        w32(g.u, VIEW + 0x114C0, 100); g.drum_header()
+        self.assertEqual(r32(g.u, VIEW + 0x114C0), 50, "the notes win while any step is unlocked")
+
     def test_switching_pad_loads_its_defaults(self):
         g = self.rig([note(0, vel=80, nid=1), note(1, vel=80, nid=2), note(2, vel=50, nid=3),
                       note(3, vel=30, word=step_make(locks=1), nid=4), note(0, pad=5, vel=64, nid=5)])
@@ -1007,6 +1029,7 @@ class StrikeInsert(unittest.TestCase):
         g.log.clear(); w32(g.u, 0x30035F40, 10070); StrikeButton().generate(g)
         self.assertEqual((g.notes[0][4] >> 16, locks(g.notes[0][5])), (88, 1), "settled velocity, locked")
         self.assertIn("publish", g.log)
+        self.assertIn(("copy", 0x1234, 0x30024B00 + 0x3C80), g.log, "a copy in stock's working container, not the root")
         g.log.clear(); w32(g.u, 0x30035F40, 10200); StrikeButton().generate(g)
         self.assertNotIn("publish", g.log, "done once")
 

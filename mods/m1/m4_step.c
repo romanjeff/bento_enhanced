@@ -40,7 +40,8 @@
 #define NOTE_GET 0x0810D2C0u      /* (container, i, rec) -> ok */
 #define NOTE_PUT 0x0810D1AAu      /* (container, rec) */
 #define PUBLISH 0x08136544u       /* (MODEL, view+0x113E4, container) */
-#define SEQ_LOOKUP 0x0812DFE8u    /* lab_seq_root_lookup (model, sequence handle, &container) */
+#define SEQ_COPY 0x0812E6D8u      /* (model, sequence handle, dest container): the sequence's notes -> dest */
+#define MODEL_SCRATCH ((void *)((u8 *)MODEL + 0x3C80))   /* stock's shared working container (12 KB), refilled per use */
 #define GRID 0x0815C4B8u          /* (view) */
 #define STEP_MATCH 0x0815B9C0u    /* (view, absolute step) -> held/selected */
 #define ANY_SELECTED 0x0815BAB0u  /* (view) */
@@ -235,6 +236,8 @@ __attribute__((used, retain)) u32 param_pre(void *v, u32 f) {
     return W(v, DEFAULT_AT[f]);
 }
 
+static int stored_default(void *v, u32 f, u32 *out);
+static void store_default(void *v, u32 f, u32 val);
 /* The edit log in this boot's PadState (gen, LateStats, ParamLog: see diag_shared.h). */
 static volatile ParamLog *param_log(void) {
     u32 p = STRIKE_SET->pads;
@@ -254,6 +257,7 @@ __attribute__((used, retain)) void param_post(void *v, u32 f, u32 old) {
         pl->b[k] = (dflt & 0xFFFFu) | (old << 16);
     }
     if (!selected && dflt == old) return;
+    if (!selected) store_default(v, f, dflt);
     for (u32 j = 0; j < 511; j++) {
         if (!FN(NOTE_GET, int (*)(void *, u32, u32 *))(container, j, e)) break;
         if ((e[0] & 0xFFu) != 1u || (e[0] >> 16) != pad) continue;
@@ -298,7 +302,7 @@ static int pad_default(void *v, u32 f, u32 *out) {
         if (bin < 128 && count[bin] < 255) count[bin]++;
         any = 1;
     }
-    if (!any) return 0;
+    if (!any) return stored_default(v, f, out);     /* no unlocked step: the value you set, if any */
     u32 best = 0;
     for (u32 i = 1; i < 128; i++)
         if (count[i] > count[best]) best = i;
@@ -396,6 +400,12 @@ typedef struct {
     ParamLog pl;        /* ... and these (PadState + 4 + sizeof(LateStats)) */
     ToggleLog tl;       /* ... and these (after ParamLog) */
     u32 dview, dpad, dflt[3], dvalid;   /* a new step's defaults, worked out before the toggle */
+    struct {            /* defaults you set, per sequence and drum (v3.57): used when no unlocked step */
+        u32 seq;        /* holds the default (all locked, or none yet), else stock's reset gives 100 */
+        u8 pad, mask, vel, prob;
+        short offs; u16 age;
+    } defs[32];
+    u32 defs_clock;
     u8 used[16];        /* press counter last used to set a velocity, per pad */
     u8 seen[16];        /* press counter last seen by a UI tick, per pad */
     u32 seen_ms[16];    /* ... and when */
@@ -451,6 +461,44 @@ __attribute__((used, retain)) void strike_press(void *v, u32 pad) {
     ps->used[pad] = (u8)seq;
     ps->pend |= (u16)(1u << pad);
     ps->pend_ms = UI_TICK_MS;
+}
+
+static int stored_default(void *v, u32 f, u32 *out) {
+    volatile PadState *ps = pads();
+    if (!ps || f >= 3) return 0;
+    u32 seq = W(v, 0x113E4), pad = W(v, 0x11400);
+    for (u32 i = 0; i < 32; i++) {
+        if (!(ps->defs[i].mask & (1u << f)) || ps->defs[i].seq != seq || ps->defs[i].pad != pad) continue;
+        *out = f == F_VEL ? ps->defs[i].vel : f == F_PROB ? ps->defs[i].prob : (u32)(int)ps->defs[i].offs;
+        return 1;
+    }
+    return 0;
+}
+
+static void store_default(void *v, u32 f, u32 val) {
+    volatile PadState *ps = pads();
+    if (!ps || f >= 3) return;
+    u32 seq = W(v, 0x113E4), pad = W(v, 0x11400), k = 32, free = 32, oldest = 0;
+    for (u32 i = 0; i < 32; i++) {
+        if (ps->defs[i].mask && ps->defs[i].seq == seq && ps->defs[i].pad == pad) { k = i; break; }
+        if (!ps->defs[i].mask) { if (free == 32) free = i; }
+        else if (ps->defs[i].age < ps->defs[oldest].age) oldest = i;
+    }
+    if (k == 32) {                                  /* new: a free slot, else the least recently set */
+        k = free < 32 ? free : oldest;
+        ps->defs[k].mask = 0;
+    }
+    ps->defs[k].seq = seq; ps->defs[k].pad = (u8)pad; ps->defs[k].age = (u16)++ps->defs_clock;
+    if (f == F_VEL) ps->defs[k].vel = (u8)val;
+    else if (f == F_PROB) ps->defs[k].prob = (u8)val;
+    else ps->defs[k].offs = (short)(int)val;
+    ps->defs[k].mask |= (u8)(1u << f);
+}
+
+/* A project load brings new sequences (their handles can repeat): forget the set defaults. */
+static void defs_clear(void) {
+    volatile PadState *ps = pads();
+    if (ps) for (u32 i = 0; i < 32; i++) ps->defs[i].mask = 0;
 }
 
 static void sync_defaults(void *v);
@@ -883,8 +931,12 @@ static void strike_late(void) {
         ps->ls.last = (ps->ls.last & 0xFFFFu) | (vel << 16);     /* + settled velocity */
         if (p >= 16u || STRIKES->seq[p] != ps->late[i].sseq) { ps->ls.s_press++; continue; }   /* another press since */
         if (!vel) { ps->ls.s_vel0++; continue; }
-        void *container = 0;
-        if (!FN(SEQ_LOOKUP, int (*)(u32, u32, void **))(ps->late[i].model, seqh, &container) || !container) { ps->ls.s_lookup++; continue; }
+        /* v3.53-3.56 searched lab_seq_root_lookup's result: the sequence's root record,
+         * not a note container, so the note was never found (BE3.55: notfound=3). Stock
+         * edits a copy (0x0812E6D8 into its working container MODEL+0x3C80, as ~19 of
+         * its own paths do) and publishes it; same here. */
+        void *container = MODEL_SCRATCH;
+        if (!FN(SEQ_COPY, int (*)(u32, u32, void *))(ps->late[i].model, seqh, container)) { ps->ls.s_lookup++; continue; }
         u32 e[6], found = 0;
         for (u32 j = 0; j < 511; j++) {
             if (!FN(NOTE_GET, int (*)(void *, u32, u32 *))(container, j, e)) break;
@@ -986,6 +1038,7 @@ static void load_sidecar(volatile LoadState *ls, volatile CurveState *c) {
     for (u32 i = 0; i < sizeof(side); i++) name[cut + i] = side[i];
     at_defaults();                                  /* a project's own settings, or the defaults */
     mod_defaults();                                 /* F2a: likewise the External modulation */
+    defs_clear();                                   /* v3.57: defaults set by hand belong to the old project */
     /* M2-4: a project load replaces every note, so no earlier curve can still be
      * referenced: start the pool over (it grew by a whole project per load).
      * Nothing referenced is moved; players still holding old data are dropped
