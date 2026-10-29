@@ -307,9 +307,10 @@ typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; } ModCfg;
 typedef struct {
     u32 magic, gen, cfg, check, tried, row, view, page, mx_ctx;
     u32 dbg_build_v, dbg_build_ctx, dbg_ev_v, dbg_ev_ctx, dbg_ev_tk, dbg_n;
+    u32 inst_pending;              /* matrix Dashboard: press INST at the next UI tick (v3.52) */
 } ModHead;
 #define MODHEAD ((volatile ModHead *)0x3003DFC0u)
-#define MODHEAD_MAGIC 0x35444F4Du /* "MOD5": + matrix diagnostics (v3.50) */
+#define MODHEAD_MAGIC 0x36444F4Du /* "MOD6": + inst_pending (v3.52) */
 _Static_assert(0x3003DFC0u + sizeof(ModHead) <= 0x3003E000u, "mod header");
 #define ROWS_ACTION 0x10F1u        /* External INST header buttons (unused by stock) */
 #define MOD_ACTION 0x10F2u

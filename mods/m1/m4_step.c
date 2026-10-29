@@ -135,10 +135,11 @@ static const char *const LOOP_LABELS[34] = {"Off", "1", "2", "3", "4", "5", "6",
     "32", "Forever"};
 /* Beat Sync / Triggered are our own Off/On lists: stock's toggle keys (0x4E, 0x4D,
  * type 6) showed a blank value when our row was refilled with them on (v3.46). */
+static const char *const BEHAVIOR_LABELS[2] = {"Free-run", "Triggered"};
 static const char *const TITLES[SU_KEYS] = {"Condition", "Retrig", "Division", "Ramp", "AT Rec", "AT Out", "Loop",
-                                            "Beat Sync", "Triggered", "Dest"};
+                                            "Beat Sync", "Behavior", "Dest"};
 static const char *const *const CHOICES[SU_KEYS] = {COND_LABELS, HITS_LABELS, DIV_LABELS, RAMP_LABELS, AT_REC_LABELS,
-                                                    AT_OUT_LABELS, LOOP_LABELS, AT_REC_LABELS, AT_REC_LABELS, DEST_LABELS};
+                                                    AT_OUT_LABELS, LOOP_LABELS, AT_REC_LABELS, BEHAVIOR_LABELS, DEST_LABELS};
 static const u32 COUNTS[SU_KEYS] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u, 34u, 2u, 2u, DEST_N};
 
 static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
@@ -1084,7 +1085,7 @@ static void row_desc(u32 r, volatile ModTrack *t, u16 *key, u32 *val) {
         key[3] = K_LFO_DEPTH; val[3] = l->depth;
         if (claim()) {
             key[2] = SU->key[7]; val[2] = l->sync ? 1u : 0u;        /* Beat Sync: Off / On */
-            key[4] = SU->key[8]; val[4] = l->restart ? 1u : 0u;     /* Triggered: Off / On */
+            key[4] = SU->key[8]; val[4] = l->restart ? 1u : 0u;     /* Behavior: Free-run / Triggered */
         }
     } else if (r == 3u || r == 4u) {
         volatile ModEnv *e = &t->env[r - 3u];
@@ -1163,6 +1164,11 @@ __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
 /* Header (every UI tick): our button while the External INST page is shown. */
 static void ext_toolbar(void *out, int *changed) {
     volatile ModHead *h = MODHEAD;
+    if (h->inst_pending) {                          /* matrix Dashboard: the INST button, as the hold shortcuts press it */
+        u32 e[5] = {0x73u, 0, 10u, 0, 0};
+        h->inst_pending = 0;
+        FN(0x08142AFCu, void (*)(void *, u32 *))(MODEL, e);
+    }
     if (h->magic != MODHEAD_MAGIC || !h->view || MODEL_PAGE != (u8)h->page) return;
     u32 r = row_now();
     *changed |= header_action_lit(out, ROWS_ACTION, ROW_NAMES[r], r != 0u);
@@ -1306,8 +1312,7 @@ __attribute__((used, retain)) int mx_event(void *v, const u32 *ev) {
     if (!mx_ours(v)) return 0;
     if (type == 2u) return 1;
     if (type == 3u || type == 0x16u) {                /* the header's "Dashboard" (action = destination page) */
-        struct { u16 type, pad; u32 a, b, c, d; } m = {0x21u, 0, MODHEAD->mx_ctx, 0, 0, 0};
-        FN(UI_POST, void (*)(void *, void *))(v, &m);   /* back to the External INST page (page 0x21) */
+        MODHEAD->inst_pending = 1;                    /* press INST at the next UI tick (v3.51's page 0x21 did nothing) */
         return 1;
     }
     if (type != 0xCFu || !claim() || ev[2] != SU->key[9]) return 0;

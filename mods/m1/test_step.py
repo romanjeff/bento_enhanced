@@ -157,6 +157,8 @@ class Rig:
             self.log.append(("post", r32(u, r(1)) & 0xFFFF, r32(u, r(1) + 4))); self.ret()
         elif a in (0x0816B9FA, 0x0816BB5C, 0x0814C4FC):
             self.log.append(("list", a)); self.ret()
+        elif a == 0x08142AFC:                                     # native button event (model, {code, ctx, id})
+            self.log.append(("button", r32(u, r(1)), r32(u, r(1) + 8))); self.ret()
         elif a == 0x0817048E:                                     # bar slot range (bar, slot, value, min, max)
             self.log.append(("range", r(1), r(2), r(3), r32(u, u.reg_read(UC_ARM_REG_SP)))); self.ret()
         elif a == 0x0814C7C4:                                     # matrix: redraw rows
@@ -246,7 +248,7 @@ class ExtRows(unittest.TestCase):
     (header button ROWS_ACTION); our rows use stock's LFO/env keys and our Loop
     list; turning one edits the selected track's ModTrack (odd seq while writing)."""
     EV, CFGB, HEAD = 0x20150000, 0xC6200000, 0x3003DFC0
-    MAGIC = 0x35444F4D
+    MAGIC = 0x36444F4D
 
     def rig(self, track=2, page=0x21):
         g = Rig()
@@ -287,7 +289,8 @@ class ExtRows(unittest.TestCase):
         bars = [x for x in g.log if isinstance(x, tuple) and x[0] == "bar"]
         k = bars[-1][2]
         self.assertEqual((k[0], k[1], k[3], k[5:]), (0x4A, 0x4B, 0x4C, [0, 0, 0]), "Shape, Rate, Depth")
-        self.assertEqual([cstr(g.u, r32(g.u, REG + k[i] * 32 + 4)) for i in (2, 4)], ["Beat Sync", "Triggered"])
+        self.assertEqual([cstr(g.u, r32(g.u, REG + k[i] * 32 + 4)) for i in (2, 4)], ["Beat Sync", "Behavior"])
+        self.assertEqual([cstr(g.u, r32(g.u, r32(g.u, REG + k[4] * 32 + 8) + 4 * i)) for i in (0, 1)], ["Free-run", "Triggered"])
         self.assertEqual([cstr(g.u, r32(g.u, r32(g.u, REG + k[2] * 32 + 8) + 4 * i)) for i in (0, 1)], ["Off", "On"])
         self.assertEqual(bars[-1][1], VIEW + 0x3D0, "the view's bar")
         for want in (2, 3, 4, 0):
@@ -352,8 +355,8 @@ class ModMatrix(unittest.TestCase):
 
     def rig(self):
         g = ExtRows().rig(track=2)
-        g.u.mem_write(ExtRows.HEAD, struct.pack("<9I", 0x35444F4D, 1, ExtRows.CFGB, ~ExtRows.CFGB & 0xFFFFFFFF, 2, 0, 0, 0, 0))
-        g.u.mem_write(ExtRows.CFGB, struct.pack("<I", 0x35444F4D))
+        g.u.mem_write(ExtRows.HEAD, struct.pack("<9I", 0x36444F4D, 1, ExtRows.CFGB, ~ExtRows.CFGB & 0xFFFFFFFF, 2, 0, 0, 0, 0))
+        g.u.mem_write(ExtRows.CFGB, struct.pack("<I", 0x36444F4D))
         return g
 
     def open(self, g):
@@ -423,7 +426,8 @@ class ModMatrix(unittest.TestCase):
         labels = r32(g.u, REG + dest_key * 32 + 8)
         names = [cstr(g.u, r32(g.u, labels + 4 * i)) for i in range(13)]
         self.assertEqual(names[:4], ["None", "Pitch Bend", "Aftertouch", "Mod Wheel"])
-        self.assertEqual(cstr(g.u, r32(g.u, labels + 4 * (13 + 74))), "CC 74 Cutoff")
+        self.assertEqual(cstr(g.u, r32(g.u, labels + 4 * 13)), "CC 3", "numbered part: CC 0 (Bank), 1, 2 are not repeated")
+        self.assertEqual(cstr(g.u, r32(g.u, labels + 4 * 120)), "CC 119", "last: CC 119 (no channel-mode messages)")
         g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, dest_key, 9))   # Cutoff
         self.assertEqual(g.call(0x0814C690, self.MXV, ExtRows.EV), 0, "handled")
         self.assertEqual(self.dest(g, 0)[:2], (1, 74))
@@ -454,22 +458,25 @@ class ModMatrix(unittest.TestCase):
         g.log.clear(); g.call(0x0814BFF0, self.MXV, ExtRows.EV)
         self.assertIn(("stock", 0x0814BFF4), g.log)
 
-    def test_dashboard_goes_back_to_the_external_page(self):
-        """BE3.50: the header's Dashboard (action 3 = the sample dashboard page) went
-        to a dummy dashboard. For our rows it posts page 0x21 (External) instead."""
+    def test_dashboard_presses_inst(self):
+        """BE3.50: the header's Dashboard (action 3) went to a dummy dashboard; v3.51's
+        page 0x21 post did nothing. Now: INST at the next UI tick (as the hold shortcuts)."""
         g = self.open(self.rig())
         for action in (3, 0x16):
             g.u.mem_write(ExtRows.EV, struct.pack("<I", action)); g.log.clear()
             self.assertEqual(g.call(0x0814C690, self.MXV, ExtRows.EV), 0)
-            self.assertEqual([x for x in g.log if x[0] == "post"], [("post", 0x21, self.CTX)])
             self.assertNotIn(("stock", 0x0814C694), g.log)
+            self.assertEqual(r32(g.u, ExtRows.HEAD + 60), 1, "pending")
+            g.log.clear(); g.call(0x08134800, 0x30024B00, 0x20160000)      # next UI tick (header)
+            self.assertIn(("button", 0x73, 10), g.log)
+            self.assertEqual(r32(g.u, ExtRows.HEAD + 60), 0)
 
     def test_dest_slot_gets_its_full_range(self):
         g = self.open(self.rig())
         w32(g.u, self.MXV + 0x86B5C, 0)
         g.log.clear(); g.call(0x0814C568, self.MXV)
         rng = [x for x in g.log if x[0] == "range"]
-        self.assertEqual((rng[-1][1], rng[-1][3], rng[-1][4]), (7, 0, 140), "slot 8: all 141 destinations")
+        self.assertEqual((rng[-1][1], rng[-1][3], rng[-1][4]), (7, 0, 120), "slot 8: all 121 destinations (<= 128)")
 
 
 class SaveLoad(unittest.TestCase):
@@ -1179,7 +1186,7 @@ class SidecarLoad(unittest.TestCase):
     def test_modulation_settings_load_with_the_project(self):
         """F2a: the MODS chunk after TRKS restores each track's ModTrack; a project
         without one leaves nothing from the previous project."""
-        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x35444F4D
+        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x36444F4D
         rec = bytearray(232); rec[0] = 4; rec[6:8] = struct.pack("<H", 700)      # LFO 1: Sine, depth 700
         trailer = (b"TRKS" + struct.pack("<H", 16) + bytes(32) + b"MODS" + struct.pack("<HH", 8, 232)
                    + bytes(232) + bytes(rec) + bytes(232 * 6))
