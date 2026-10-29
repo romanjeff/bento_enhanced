@@ -241,7 +241,7 @@ class LabUI(unittest.TestCase):
 
 class Input(Receiver):
  def __init__(self):
-  super().__init__(False);self.u.mem_map(0x30000000,0x40000);self.u.mem_write(0x08040000,IMAGE)
+  super().__init__(False);self.u.mem_map(0x30000000,0x40000);self.u.mem_write(0x08040000,IMAGE[:0x180000])  # Lab fixture maps 0x180000 B of flash; the image grew past it (v3.54)
   self.word(STATE,0x31534d42);self.u.mem_write(STATE+12,b'\1');self.u.mem_write(STATE+16,bytes(range(16)))
  def callback(self,u,a,size,data):
   if a==0x0808d1fe:return # Actual firmware branch executes.

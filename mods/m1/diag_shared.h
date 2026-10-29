@@ -151,6 +151,8 @@ typedef struct { u8 seq[16]; u8 vel[16]; } Strikes;
  * Reserved RAM survives resets: change the magic whenever this layout changes
  * (v3.12 kept v3.11's magic, read its old tick field as a pointer: boot loop). */
 typedef struct { u32 magic, off, pads, r[3]; } StrikeSet;
+/* Sequence-page late velocity (v3.54 diagnostics): at PadState + 4 (after gen). */
+typedef struct { u32 queued, applied, s_press, s_vel0, s_lookup, s_notfound, s_same, last; } LateStats;
 #define STRIKE_SET ((volatile StrikeSet *)0x3003C948u)
 #define STRIKE_SET_MAGIC 0x33455653u /* "SVE3" */
 #define STRIKE_ACTION 0x10F0u        /* header button action id (unused by stock) */

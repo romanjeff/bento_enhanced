@@ -148,8 +148,13 @@ static void flush(void) {
     u32 file[22];
     zero(file, sizeof(file));
     if (F_OPEN(file, LOG, saved ? FA_APPEND_WRITE : FA_CREATE_WRITE)) return;
-    u32 done = 0;
-    F_WRITE(file, (const char *)M4H->r[1] + saved, len - saved, &done);
+    /* In 16 KB pieces: a ~250 KB single write (a long session's first save) left a
+     * 0-byte log (BE-MT3, v3.53); ~100 KB in one went through (BE-MT4). */
+    for (u32 at = saved; at < len; ) {
+        u32 n = len - at > 0x4000u ? 0x4000u : len - at, done = 0;
+        if (F_WRITE(file, (const char *)M4H->r[1] + at, n, &done) || done != n) break;
+        at += n;
+    }
     F_CLOSE(file);
     M4H->r[4] = len;
 }
@@ -770,6 +775,16 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
             puts_(&o, " "); hex(&o, INSLOG->lr[i], 8); puts_(&o, "x"); dec(&o, INSLOG->count[i]);
         }
         puts_(&o, "\r\n");
+    }
+    volatile u32 *pads = (volatile u32 *)STRIKE_SET->pads;
+    if (pads && STRIKE_SET->r[2] == ~(u32)pads && pads[0] == CFG->r[0]) {   /* Sequence-page late velocity */
+        volatile LateStats *l = (volatile LateStats *)(pads + 1);
+        puts_(&o, "STRIKE-LATE queued="); dec(&o, l->queued); puts_(&o, " applied="); dec(&o, l->applied);
+        puts_(&o, " skip press="); dec(&o, l->s_press); puts_(&o, " vel0="); dec(&o, l->s_vel0);
+        puts_(&o, " lookup="); dec(&o, l->s_lookup); puts_(&o, " notfound="); dec(&o, l->s_notfound);
+        puts_(&o, " same="); dec(&o, l->s_same);
+        puts_(&o, " | last pad="); dec(&o, l->last & 0xFFu); puts_(&o, " vel insert="); dec(&o, (l->last >> 8) & 0xFFu);
+        puts_(&o, " settled="); dec(&o, l->last >> 16); puts_(&o, "\r\n");
     }
     volatile ModHead *mh = MODHEAD;
     if (mh->magic == MODHEAD_MAGIC) {               /* F2b: what the Mod Matrix hooks saw */

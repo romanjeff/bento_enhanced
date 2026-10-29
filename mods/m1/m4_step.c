@@ -373,6 +373,7 @@ __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
 
 typedef struct {
     u32 gen;
+    LateStats ls;       /* the black box reads these (PadState + 4) */
     u8 used[16];        /* press counter last used to set a velocity, per pad */
     u8 seen[16];        /* press counter last seen by a UI tick, per pad */
     u32 seen_ms[16];    /* ... and when */
@@ -804,6 +805,8 @@ static void late_queue(volatile PadState *ps, u32 model, u32 seq, const u32 *rec
     ps->late[k].model = model; ps->late[k].seq = seq; ps->late[k].pos = rec[1];
     ps->late[k].note_pad = (u8)(rec[0] >> 16); ps->late[k].pad = (u8)pad;
     ps->late[k].sseq = STRIKES->seq[pad]; ps->late[k].t0 = UI_TICK_MS; ps->late[k].live = 1;
+    ps->ls.queued++;
+    ps->ls.last = pad | ((rec[4] >> 16 & 0xFFu) << 8);       /* pad, velocity at insert */
 }
 
 /* Each UI tick: once a Sequence-page note's strike has settled, give the note the
@@ -817,20 +820,25 @@ static void strike_late(void) {
         if (!ps->late[i].live || UI_TICK_MS - ps->late[i].t0 < STRIKE_SETTLE_MS) continue;
         ps->late[i].live = 0;
         u32 p = ps->late[i].pad, vel = STRIKES->vel[p], seqh = ps->late[i].seq;
-        if (p >= 16u || STRIKES->seq[p] != ps->late[i].sseq || !vel) continue;   /* another press since */
+        ps->ls.last = (ps->ls.last & 0xFFFFu) | (vel << 16);     /* + settled velocity */
+        if (p >= 16u || STRIKES->seq[p] != ps->late[i].sseq) { ps->ls.s_press++; continue; }   /* another press since */
+        if (!vel) { ps->ls.s_vel0++; continue; }
         void *container = 0;
-        if (!FN(SEQ_LOOKUP, int (*)(u32, u32, void **))(ps->late[i].model, seqh, &container) || !container) continue;
-        u32 e[6];
+        if (!FN(SEQ_LOOKUP, int (*)(u32, u32, void **))(ps->late[i].model, seqh, &container) || !container) { ps->ls.s_lookup++; continue; }
+        u32 e[6], found = 0;
         for (u32 j = 0; j < 511; j++) {
             if (!FN(NOTE_GET, int (*)(void *, u32, u32 *))(container, j, e)) break;
             if ((e[0] & 0xFFu) != 1u || e[1] != ps->late[i].pos || (e[0] >> 16) != ps->late[i].note_pad) continue;
-            if ((e[4] >> 16) == vel) break;
+            found = 1;
+            if ((e[4] >> 16) == vel) { ps->ls.s_same++; break; }
             e[4] = (e[4] & 0xFFFFu) | (vel << 16);
             e[5] = with_locks(e[5], step_locks(e[5]) | LOCK_VEL);
             FN(NOTE_PUT, void (*)(void *, u32 *))(container, e);
             FN(PUBLISH, void (*)(void *, void *, void *))(MODEL, &seqh, container);
+            ps->ls.applied++;
             break;
         }
+        if (!found) ps->ls.s_notfound++;
     }
 }
 
