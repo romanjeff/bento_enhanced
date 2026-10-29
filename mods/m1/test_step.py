@@ -127,6 +127,8 @@ class Rig:
             for n in self.notes:
                 if n[3] == rec[3]: n[:] = rec
             self.log.append(("put", rec[3])); self.ret()
+        elif a == 0x0812DFE8:                                     # lab_seq_root_lookup (model, seq, &container)
+            w32(u, r(2), 0x20170000); self.ret(1)
         elif a in (PUBLISH, GRID, PIANO_COMMIT):
             self.log.append({PUBLISH: "publish", GRID: "grid", PIANO_COMMIT: "commit"}[a]); self.ret()
         elif a == STEP_MATCH:
@@ -937,10 +939,12 @@ class StrikeInsert(unittest.TestCase):
         if tick:
             StrikeButton().generate(g)                # a UI tick sees the strike (stamp)
 
-    def insert(self, g, rec, ms):
+    def insert(self, g, rec, ms, caller=None):
         w32(g.u, 0x30035F40, ms)
         at = 0x20110000; g.u.mem_write(at, struct.pack("<6I", *rec))
         g.u.reg_write(UC_ARM_REG_SP, STACK)
+        if caller is not None:
+            g.u.reg_write(UC_ARM_REG_LR, caller | 1)                # else: the caller set LR (e.g. CurveAttach)
         for i, v in enumerate((0x30024B00, 0x1234, at)):
             g.u.reg_write(UC_ARM_REG_R0 + i, v)
         g.u.emu_start(0x0812E070 | 1, 0x0812E074, count=200000)
@@ -953,6 +957,29 @@ class StrikeInsert(unittest.TestCase):
         self.assertEqual((rec[4] >> 16, locks(rec[5])), (44, 1))
         rec = self.insert(g, note(3, nid=0), 10250)
         self.assertEqual((rec[4] >> 16, rec[5]), (100, 0), "a strike is used once")
+
+    def test_sequence_page_velocity_settles_after_the_press(self):
+        """BE3.52 on the device: Sequence-page steps got 100 (first-contact pressure 0).
+        The page inserts at press time; 60 ms later the settled peak goes into the note."""
+        g = self.rig(); self.press(g, 5, 3, 10000, pad=2)          # first contact: barely pressed
+        rec = self.insert(g, note(2, pad=7, nid=0), 10005, caller=0x0813B4BA)
+        g.notes = [rec]
+        g.u.mem_write(0x3003C970 + 2, bytes([88]))                 # the peak over the next samples
+        w32(g.u, 0x30035F40, 10040); StrikeButton().generate(g)
+        self.assertEqual(g.notes[0][4] >> 16, 3, "not yet: still measuring")
+        g.log.clear(); w32(g.u, 0x30035F40, 10070); StrikeButton().generate(g)
+        self.assertEqual((g.notes[0][4] >> 16, locks(g.notes[0][5])), (88, 1), "settled velocity, locked")
+        self.assertIn("publish", g.log)
+        g.log.clear(); w32(g.u, 0x30035F40, 10200); StrikeButton().generate(g)
+        self.assertNotIn("publish", g.log, "done once")
+
+    def test_sequence_page_new_press_cancels_the_late_fix(self):
+        g = self.rig(); self.press(g, 5, 30, 10000, pad=2)
+        rec = self.insert(g, note(2, pad=7, nid=0), 10005, caller=0x0813B4BA)
+        g.notes = [rec]
+        g.u.mem_write(0x3003C960 + 2, bytes([6])); g.u.mem_write(0x3003C970 + 2, bytes([120]))   # pad hit again
+        w32(g.u, 0x30035F40, 10100); StrikeButton().generate(g)
+        self.assertEqual(g.notes[0][4] >> 16, 30, "the other press's velocity is not this note's")
 
     def test_stale_strike_is_ignored(self):
         g = self.rig(); self.press(g, 5, 44, 10000)

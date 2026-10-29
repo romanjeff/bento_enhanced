@@ -40,6 +40,7 @@
 #define NOTE_GET 0x0810D2C0u      /* (container, i, rec) -> ok */
 #define NOTE_PUT 0x0810D1AAu      /* (container, rec) */
 #define PUBLISH 0x08136544u       /* (MODEL, view+0x113E4, container) */
+#define SEQ_LOOKUP 0x0812DFE8u    /* lab_seq_root_lookup (model, sequence handle, &container) */
 #define GRID 0x0815C4B8u          /* (view) */
 #define STEP_MATCH 0x0815B9C0u    /* (view, absolute step) -> held/selected */
 #define ANY_SELECTED 0x0815BAB0u  /* (view) */
@@ -378,6 +379,10 @@ typedef struct {
     u32 pend_ms;        /* time of the latest pending Step-view press */
     u16 pend;           /* Step view: pads pressed, awaiting their toggle */
     u16 r_;
+    struct {            /* Sequence page: notes made at press time, velocity settled later (v3.53) */
+        u32 model, seq, pos, t0;
+        u8 note_pad, pad, sseq, live;
+    } late[8];
 } PadState;
 
 static void strike_init(void) {
@@ -590,11 +595,13 @@ static int drum_track_selected(void) {
 static volatile AtSet *at_set(void);
 static void at_publish(void);
 static void mod_cfg(void);
+static void strike_late(void);
 static void ext_toolbar(void *out, int *changed);
 __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int changed) {
     (void)model;
     if (at_set()->pending) at_publish();            /* after a project load (UI context) */
     mod_cfg();                                      /* F1: once per boot */
+    strike_late();                                  /* Sequence-page strike velocities settle */
     strike_init();
     volatile PadState *ps = pads();
     for (u32 p = 0; ps && p < 16; p++)
@@ -788,7 +795,46 @@ __attribute__((used, retain)) void curve_update(u32 *rec, u32 lr) {
     attach_from(rec, s, pad, idx);
 }
 
-__attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr) {
+#define SEQ_PAGE_INSERT 0x0813B4BAu   /* drum Sequence page: creates the note at pad press */
+#define STRIKE_SETTLE_MS 60u          /* the M7's peak covers the press + 8 pressure samples */
+static void late_queue(volatile PadState *ps, u32 model, u32 seq, const u32 *rec, u32 pad) {
+    u32 k = 0;
+    for (u32 i = 0; i < 8; i++)
+        if (!ps->late[i].live) { k = i; break; } else if (ps->late[i].t0 < ps->late[k].t0) k = i;
+    ps->late[k].model = model; ps->late[k].seq = seq; ps->late[k].pos = rec[1];
+    ps->late[k].note_pad = (u8)(rec[0] >> 16); ps->late[k].pad = (u8)pad;
+    ps->late[k].sseq = STRIKES->seq[pad]; ps->late[k].t0 = UI_TICK_MS; ps->late[k].live = 1;
+}
+
+/* Each UI tick: once a Sequence-page note's strike has settled, give the note the
+ * measured velocity. v3.11-3.52 used the reading at insert time: the Sequence page
+ * inserts at pad press, before the peak over the first pressure samples, so most
+ * notes got first-contact pressure 0 -> stock's 100. */
+static void strike_late(void) {
+    volatile PadState *ps = (volatile PadState *)STRIKE_SET->pads;
+    if (!ps || STRIKE_SET->r[2] != ~(u32)ps || ps->gen != boot_gen()) return;
+    for (u32 i = 0; i < 8; i++) {
+        if (!ps->late[i].live || UI_TICK_MS - ps->late[i].t0 < STRIKE_SETTLE_MS) continue;
+        ps->late[i].live = 0;
+        u32 p = ps->late[i].pad, vel = STRIKES->vel[p], seqh = ps->late[i].seq;
+        if (p >= 16u || STRIKES->seq[p] != ps->late[i].sseq || !vel) continue;   /* another press since */
+        void *container = 0;
+        if (!FN(SEQ_LOOKUP, int (*)(u32, u32, void **))(ps->late[i].model, seqh, &container) || !container) continue;
+        u32 e[6];
+        for (u32 j = 0; j < 511; j++) {
+            if (!FN(NOTE_GET, int (*)(void *, u32, u32 *))(container, j, e)) break;
+            if ((e[0] & 0xFFu) != 1u || e[1] != ps->late[i].pos || (e[0] >> 16) != ps->late[i].note_pad) continue;
+            if ((e[4] >> 16) == vel) break;
+            e[4] = (e[4] & 0xFFFFu) | (vel << 16);
+            e[5] = with_locks(e[5], step_locks(e[5]) | LOCK_VEL);
+            FN(NOTE_PUT, void (*)(void *, u32 *))(container, e);
+            FN(PUBLISH, void (*)(void *, void *, void *))(MODEL, &seqh, container);
+            break;
+        }
+    }
+}
+
+__attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr, u32 model, u32 seq) {
     volatile PadState *ps;
     log_inserter(lr, rec);
     if ((lr & ~1u) == MEL_NOTE_ON) bind_pitch(rec);
@@ -810,6 +856,7 @@ __attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr) {
     ps->used[pad] = STRIKES->seq[pad];
     rec[4] = (rec[4] & 0xFFFFu) | (vel << 16);
     rec[5] = with_locks(rec[5], step_locks(rec[5]) | LOCK_VEL);
+    if ((lr & ~1u) == SEQ_PAGE_INSERT) late_queue(ps, model, seq, rec, pad);   /* settle it later */
 }
 
 

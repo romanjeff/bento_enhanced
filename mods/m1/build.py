@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x4000   # 16 KB since v3.26 (curve sidecar writer)
-VERSION = "3.52"                       # bump for every build that goes on the device
+VERSION = "3.53"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -754,7 +754,7 @@ def build(base_img, out):
                {ss["mx_event"], MX_EVENT + 4}, "matrix event")
     patch(MX_EVENT, asm(f"b.w {a:#x}", MX_EVENT), bytes.fromhex("10b586b0"), "Per-step: Mod Matrix events -> Dest encoder (External)")
     # strike velocity for notes created by any view (drum Sequence page)
-    a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #60]; bl {ss['strike_insert']:#x}; " + restore   # record, caller lr
+    a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #60]; ldr r2, [sp, #8]; ldr r3, [sp, #12]; bl {ss['strike_insert']:#x}; " + restore   # record, caller lr, model, sequence
                + f"push {{r4, r5, r6, lr}}; sub sp, #0x20; b.w {NOTE_INSERT + 4:#x}", {ss["strike_insert"], NOTE_INSERT + 4}, "note insert")
     patch(NOTE_INSERT, asm(f"b.w {a:#x}", NOTE_INSERT), bytes.fromhex("70b588b0"), "Strike velocity: notes created by any view")
     # M2-1: melodic recording sets a note's length at note-off through this update
