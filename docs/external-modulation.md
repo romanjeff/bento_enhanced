@@ -115,3 +115,27 @@ External (MIDI) tracks get what internal instruments have, sent as MIDI:
    button that switches row sets. Jeff hears about it before it is built.
 4. **LFO shapes**: stock's nine.
 5. **Envelope loop**: attack–decay cycling (sustain/release are not looped).
+
+## Planned: Note Mod (scale-quantized note modulation, all tracks)
+
+Decisions (Jeff, 2026-10-28):
+
+- **When**: the offset is sampled when a sequenced note starts and kept for the whole
+  note (its Note Off goes out for the transposed pitch). Held notes are never re-pitched.
+- **Which notes**: sequenced notes only; live pads play what is pressed.
+- **Rolls**: every hit of a roll repeats the first hit's transposed pitch; the next real
+  sequenced note samples again.
+- **Where**: its own small **Note Mod** section per track, on External *and* internal
+  tracks (independent of stock's synth LFOs, which run per voice and can't be read).
+  Settings: source shape (stock's nine, incl. Random = new value each cycle), rate or
+  synced rate, Triggered, amount, and **Range ±1–4 octaves**.
+- **Quantizing**: offsets count **scale steps** of the project's scale and root; a note
+  outside the scale snaps to the nearest scale note first.
+
+Engineering notes:
+- Hook point: the sequencer's note path (`note_route`, before stock posts the MIDI
+  0x5B and internal 0x12 events), so both track kinds are covered in one place.
+- A per-note map (original -> sent pitch) per track: Note Offs, the poly cap's voice
+  list, retrigger bursts and aftertouch curve players must all use the sent pitch.
+- Open research: where the project's scale and root live at runtime
+  ([`project-settings.md`](project-settings.md) has the stored settings).
