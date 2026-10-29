@@ -817,6 +817,15 @@ class StrikeVelocity(unittest.TestCase):
         self.tap(g, 4); self.tap(g, 4)                # off, on again: no new press of pad 4
         self.assertEqual([n[4] >> 16 for n in g.notes][-1], 100, "a strike is used once")
 
+    def test_new_step_takes_the_pad_default_not_stocks_100(self):
+        """Jeff (v3.54): a new step came in at 100 and the pad default showed 100 again.
+        Stock resets its new-step fields; the toggle now refreshes them first."""
+        g = self.rig()
+        g.notes = [note(1, pad=2, vel=64, nid=1), note(3, pad=2, vel=64, nid=2)]   # unlocked, default 64
+        w32(g.u, VIEW + 0x114C0, 100)                 # stock reset its new-step velocity
+        g.call(0x0815D114, VIEW, 6)                   # touch: a new step, no strike
+        self.assertEqual([n[4] >> 16 for n in g.notes], [64, 64, 64], "the new step takes the pad default")
+
     def test_pads_hit_together_each_get_their_own_velocity(self):
         g = self.rig()
         for pad, vel in ((2, 30), (5, 90), (9, 61)):

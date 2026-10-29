@@ -235,11 +235,24 @@ __attribute__((used, retain)) u32 param_pre(void *v, u32 f) {
     return W(v, DEFAULT_AT[f]);
 }
 
+/* The edit log in this boot's PadState (gen, LateStats, ParamLog: see diag_shared.h). */
+static volatile ParamLog *param_log(void) {
+    u32 p = STRIKE_SET->pads;
+    if (!p || STRIKE_SET->r[2] != ~p || *(volatile u32 *)p != boot_gen()) return 0;
+    return (volatile ParamLog *)(p + 4u + sizeof(LateStats));
+}
 __attribute__((used, retain)) void param_post(void *v, u32 f, u32 old) {
     if (f >= 3 || !drum_step_view(v)) return;
     void *container = (void *)W(v, 0x113DC);
     u32 pad = W(v, 0x11400), dflt = W(v, DEFAULT_AT[f]), bit = LOCK_BIT[f], e[6], changed = 0;
+    u32 followed = 0, locked = 0, skipped = 0;
     int selected = FN(ANY_SELECTED, int (*)(void *))(v);
+    volatile ParamLog *pl = param_log();
+    if (pl) {                                       /* diagnostics: what this edit saw */
+        u32 k = pl->n++ & 3u;
+        pl->a[k] = f | ((selected ? 1u : 0u) << 2);
+        pl->b[k] = (dflt & 0xFFFFu) | (old << 16);
+    }
     if (!selected && dflt == old) return;
     for (u32 j = 0; j < 511; j++) {
         if (!FN(NOTE_GET, int (*)(void *, u32, u32 *))(container, j, e)) break;
@@ -248,16 +261,22 @@ __attribute__((used, retain)) void param_post(void *v, u32 f, u32 old) {
         if (selected) {
             if (!matches(v, e)) continue;
             w = with_locks(e[5], val != dflt ? locks | bit : locks & ~bit);
+            if (val != dflt) locked++;
         } else if (!(locks & bit)) {
-            if (val == old) note_set(e, f, dflt);
-            else w = with_locks(e[5], locks | bit);     /* an individual value: keep it */
+            if (val == old) { note_set(e, f, dflt); followed++; }
+            else { w = with_locks(e[5], locks | bit); locked++; }   /* an individual value: keep it */
         } else {
+            skipped++;
             continue;
         }
         if (w == e[5] && !(!selected && val == old)) continue;
         e[5] = w;
         FN(NOTE_PUT, void (*)(void *, u32 *))(container, e);
         changed = 1;
+    }
+    if (pl) {
+        u32 k = (pl->n - 1u) & 3u;
+        pl->a[k] |= (followed & 0xFFu) << 8 | (locked & 0xFFu) << 16 | (skipped & 0xFFu) << 24;
     }
     if (changed) publish(v);
 }
@@ -374,6 +393,7 @@ __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
 typedef struct {
     u32 gen;
     LateStats ls;       /* the black box reads these (PadState + 4) */
+    ParamLog pl;        /* ... and these (PadState + 4 + sizeof(LateStats)) */
     u8 used[16];        /* press counter last used to set a velocity, per pad */
     u8 seen[16];        /* press counter last seen by a UI tick, per pad */
     u32 seen_ms[16];    /* ... and when */
@@ -429,8 +449,14 @@ __attribute__((used, retain)) void strike_press(void *v, u32 pad) {
     ps->pend_ms = UI_TICK_MS;
 }
 
+static void sync_defaults(void *v);
 __attribute__((used, retain)) u32 toggle_pre(void *v, u32 idx) {
-    return idx < 32 && drum_step_view(v) ? (u32)FN(STEP_HAS_NOTE, int (*)(void *, u32))(v, idx) : 1u;
+    if (idx >= 32 || !drum_step_view(v)) return 1u;
+    /* A new step takes the pad's defaults: stock resets its new-step fields to 100 /
+     * Always / 0 (0x0815C060, 0x0815CDB2) and they were refreshed only with the
+     * header, so a step could start at 100 and reset the pad default (Jeff, v3.54). */
+    sync_defaults(v);
+    return (u32)FN(STEP_HAS_NOTE, int (*)(void *, u32))(v, idx);
 }
 
 static int pad_default(void *v, u32 f, u32 *out);

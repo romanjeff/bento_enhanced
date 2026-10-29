@@ -153,6 +153,10 @@ typedef struct { u8 seq[16]; u8 vel[16]; } Strikes;
 typedef struct { u32 magic, off, pads, r[3]; } StrikeSet;
 /* Sequence-page late velocity (v3.54 diagnostics): at PadState + 4 (after gen). */
 typedef struct { u32 queued, applied, s_press, s_vel0, s_lookup, s_notfound, s_same, last; } LateStats;
+/* Step-page parameter edits (v3.55 diagnostics), after LateStats: the last four, each
+ * a = f | selected << 2 | followed << 8 | locked << 16 | skipped(locked) << 24,
+ * b = default after | old default << 16. */
+typedef struct { u32 n; u32 a[4], b[4]; } ParamLog;
 #define STRIKE_SET ((volatile StrikeSet *)0x3003C948u)
 #define STRIKE_SET_MAGIC 0x33455653u /* "SVE3" */
 #define STRIKE_ACTION 0x10F0u        /* header button action id (unused by stock) */

@@ -785,6 +785,18 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
         puts_(&o, " same="); dec(&o, l->s_same);
         puts_(&o, " | last pad="); dec(&o, l->last & 0xFFu); puts_(&o, " vel insert="); dec(&o, (l->last >> 8) & 0xFFu);
         puts_(&o, " settled="); dec(&o, l->last >> 16); puts_(&o, "\r\n");
+        volatile ParamLog *pl = (volatile ParamLog *)(l + 1);   /* Step-page parameter edits */
+        static const char *const F[3] = {"vel", "prob", "offs"};
+        puts_(&o, "PARAM edits="); dec(&o, pl->n);
+        for (u32 i = 0; i < 4 && i < pl->n; i++) {
+            u32 k = (pl->n - 1u - i) & 3u, a = pl->a[k], b = pl->b[k];
+            puts_(&o, " | "); puts_(&o, F[(a & 3u) < 3u ? (a & 3u) : 0]);
+            puts_(&o, (a >> 2) & 1u ? " held/selected" : " default");
+            puts_(&o, " old="); dec(&o, b >> 16); puts_(&o, " new="); dec(&o, b & 0xFFFFu);
+            puts_(&o, " followed="); dec(&o, (a >> 8) & 0xFFu); puts_(&o, " locked="); dec(&o, (a >> 16) & 0xFFu);
+            puts_(&o, " already-locked="); dec(&o, a >> 24);
+        }
+        puts_(&o, "\r\n");
     }
     volatile ModHead *mh = MODHEAD;
     if (mh->magic == MODHEAD_MAGIC) {               /* F2b: what the Mod Matrix hooks saw */
