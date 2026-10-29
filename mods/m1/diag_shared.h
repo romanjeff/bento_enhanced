@@ -157,6 +157,10 @@ typedef struct { u32 queued, applied, s_press, s_vel0, s_lookup, s_notfound, s_s
  * a = f | selected << 2 | followed << 8 | locked << 16 | skipped(locked) << 24,
  * b = default after | old default << 16. */
 typedef struct { u32 n; u32 a[4], b[4]; } ParamLog;
+/* Step-page hits (v3.56 diagnostics), after ParamLog: presses seen, toggle calls, adds
+ * (no step there before) that made a step or not, removes, model inserts, our default
+ * fills at stock's read, last failed add = idx | drum << 8 | inserts during it << 16. */
+typedef struct { u32 presses, calls, add, add_ok, add_fail, removes, inserts, filled, last_fail, ins0; } ToggleLog;
 #define STRIKE_SET ((volatile StrikeSet *)0x3003C948u)
 #define STRIKE_SET_MAGIC 0x33455653u /* "SVE3" */
 #define STRIKE_ACTION 0x10F0u        /* header button action id (unused by stock) */

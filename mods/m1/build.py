@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x5000   # 20 KB since v3.54 (16 KB since v3.26: curve sidecar writer)
-VERSION = "3.55"                       # bump for every build that goes on the device
+VERSION = "3.56"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -167,6 +167,7 @@ DRUM_HEADER, DRUM_ENCODER = 0x0815C27C, 0x0815CAA0
 PIANO_HEADER, PIANO_EVENT = 0x081599BC, 0x0815A598
 # Strike velocity: drum step pad press / step toggle (always on since v3.8)
 STEP_PRESS, STEP_TOGGLE = 0x0815D1EC, 0x0815D114
+STEP_DEFAULTS_READ = 0x0815D078                      # stock add-step: new-step fields -> the new note
 HEADER_GEN, DRUM_EVENT = 0x08134800, 0x0815D600   # header description generator; drum view events
 EXT_EVENT, EXT_BUILD = 0x08146B80, 0x08147138           # External INST view: event handler, bar builder (F2a)
 # F2b Mod Matrix view: row builder, routing read (model), routing edit, bar refresh, events
@@ -713,6 +714,15 @@ def build(base_img, out):
                f"mov r0, r4; mov r1, r5; mov r2, r6; bl {ss['toggle_post']:#x}; pop {{r4, r5, r6, pc}}",
                {ss["toggle_pre"], orig_toggle, ss["toggle_post"]}, "toggle wrapper")
     patch(STEP_TOGGLE, asm(f"b.w {a:#x}", STEP_TOGGLE), bytes.fromhex("38b51f29"), "Strike velocity: step toggle")
+    # New-step defaults (v3.56): stock's add-step path copies view+0x114C0/C4/C8 into the
+    # note it just made (0x0815D07C on); refreshes before that may have reset them.
+    orig = asm("add.w r2, r4, #0x11000", STEP_DEFAULTS_READ)
+    if bytes(base_img[STEP_DEFAULTS_READ - BASE:STEP_DEFAULTS_READ - BASE + 4]) != orig:
+        raise SystemExit(f"{STEP_DEFAULTS_READ:#x}: not stock's new-step default read")
+    a = sblock(save + f"ldr r0, [sp, #24]; bl {ss['toggle_defaults']:#x}; " + restore   # view (r4)
+               + f"add.w r2, r4, #0x11000; b.w {STEP_DEFAULTS_READ + 4:#x}",
+               {ss["toggle_defaults"], STEP_DEFAULTS_READ + 4}, "new-step defaults")
+    patch(STEP_DEFAULTS_READ, asm(f"b.w {a:#x}", STEP_DEFAULTS_READ), orig, "Step page: a new step takes the pad's defaults")
     # "Strike Vel" header button: inject after stock's header generator; catch its action
     orig_gen = sblock(f"push.w {{r4, r5, r6, r7, r8, r9, r10, lr}}; b.w {HEADER_GEN + 4:#x}", {HEADER_GEN + 4}, "header replay")
     a = sblock(f"push {{r4, r5, r6, lr}}; mov r4, r0; mov r5, r1; bl {orig_gen:#x}; mov r2, r0; mov r0, r4; mov r1, r5; "

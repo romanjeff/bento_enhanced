@@ -183,6 +183,22 @@ class Rig:
         elif a == 0x0815BCB4:                                     # step has a note? (view, visible idx)
             step = r32(u, VIEW + 0x113F4) + r(1)
             self.ret(1 if any(n[1] // 960 == step and (n[0] >> 16) == r32(u, VIEW + 0x11400) for n in self.notes) else 0)
+        elif a == 0x0815CE98 and r(2) and getattr(self, "real_add", False):
+            # Stock's add path, faithfully from where it matters: the model made the note
+            # (prob 0, vel 0), a refresh reset the new-step fields, then stock's own code
+            # from 0x0815D078 copies the fields into the note (frame as at that point).
+            step = r32(u, VIEW + 0x113F4) + r(1); pad = r32(u, VIEW + 0x11400)
+            new = note(step, pad=pad, vel=0, nid=100 + step); self.notes.append(new)
+            w32(u, VIEW + 0x114C0, 100); w32(u, VIEW + 0x114C4, 0); w32(u, VIEW + 0x114C8, 0)
+            self.log.append(("set", step, r(2)))
+            sp = u.reg_read(UC_ARM_REG_SP) - 24
+            u.mem_write(sp, struct.pack("<6I", *(u.reg_read(x) for x in (UC_ARM_REG_R4, UC_ARM_REG_R5,
+                        UC_ARM_REG_R6, UC_ARM_REG_R7, UC_ARM_REG_R8, UC_ARM_REG_LR))))
+            sp -= 0x40
+            u.mem_write(sp, struct.pack("<I", 0)); u.mem_write(sp + 0x14, struct.pack("<6I", *new))
+            u.reg_write(UC_ARM_REG_SP, sp); u.reg_write(UC_ARM_REG_R4, VIEW)
+            u.reg_write(UC_ARM_REG_R8, VIEW + 0x113E4); u.reg_write(UC_ARM_REG_R3, step)
+            u.reg_write(UC_ARM_REG_PC, 0x0815D078 | 1)
         elif a == 0x0815CE98:                                     # stock set step (view, idx, on)
             step = r32(u, VIEW + 0x113F4) + r(1)
             pad = r32(u, VIEW + 0x11400)
@@ -818,13 +834,25 @@ class StrikeVelocity(unittest.TestCase):
         self.assertEqual([n[4] >> 16 for n in g.notes][-1], 100, "a strike is used once")
 
     def test_new_step_takes_the_pad_default_not_stocks_100(self):
-        """Jeff (v3.54): a new step came in at 100 and the pad default showed 100 again.
-        Stock resets its new-step fields; the toggle now refreshes them first."""
-        g = self.rig()
-        g.notes = [note(1, pad=2, vel=64, nid=1), note(3, pad=2, vel=64, nid=2)]   # unlocked, default 64
-        w32(g.u, VIEW + 0x114C0, 100)                 # stock reset its new-step velocity
+        """Jeff (v3.54, v3.55): a new step came in at 100 and the pad default showed 100
+        again. Stock resets its new-step fields between our toggle hook and its own copy
+        into the note (0x0815D078), so the defaults are filled in right there."""
+        g = self.rig(); g.real_add = True
+        g.notes = [note(1, pad=2, prob=90, vel=64, nid=1), note(3, pad=2, prob=90, vel=64, nid=2),
+                   note(5, pad=2, prob=40, vel=30, word=0xB6000003, nid=3)]   # a locked step
         g.call(0x0815D114, VIEW, 6)                   # touch: a new step, no strike
-        self.assertEqual([n[4] >> 16 for n in g.notes], [64, 64, 64], "the new step takes the pad default")
+        n = g.notes[-1]
+        self.assertEqual((n[1] // 960, n[4] >> 16, (n[0] >> 8) & 0xFF), (6, 64, 90),
+                         "the new step takes the pad's defaults (unlocked steps), not 100 / Always")
+        self.assertIn(("put", 106), g.log)
+
+    def test_new_step_after_a_reset_with_a_strike(self):
+        g = self.rig(); g.real_add = True
+        g.notes = [note(1, pad=2, prob=90, vel=64, nid=1)]
+        self.strike(g, 1, 37, pad=6); self.tap(g, 6)
+        n = g.notes[-1]
+        self.assertEqual((n[4] >> 16, (n[0] >> 8) & 0xFF, locks(n[5])), (37, 90, 1),
+                         "strike velocity (locked), default probability")
 
     def test_pads_hit_together_each_get_their_own_velocity(self):
         g = self.rig()

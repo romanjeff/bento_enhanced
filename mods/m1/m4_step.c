@@ -394,6 +394,8 @@ typedef struct {
     u32 gen;
     LateStats ls;       /* the black box reads these (PadState + 4) */
     ParamLog pl;        /* ... and these (PadState + 4 + sizeof(LateStats)) */
+    ToggleLog tl;       /* ... and these (after ParamLog) */
+    u32 dview, dpad, dflt[3], dvalid;   /* a new step's defaults, worked out before the toggle */
     u8 used[16];        /* press counter last used to set a velocity, per pad */
     u8 seen[16];        /* press counter last seen by a UI tick, per pad */
     u32 seen_ms[16];    /* ... and when */
@@ -441,7 +443,9 @@ static void apply_strike(void *v, u32 *e, u32 vel) {
 
 __attribute__((used, retain)) void strike_press(void *v, u32 pad) {
     volatile PadState *ps;
-    if (pad >= 16 || !drum_step_view(v) || strike_off() || !(ps = pads())) return;
+    if (pad >= 16 || !drum_step_view(v) || !(ps = pads())) return;
+    ps->tl.presses++;
+    if (strike_off()) return;
     u32 seq = STRIKES->seq[pad];
     if (seq == ps->used[pad]) return;                         /* no new press of this pad */
     ps->used[pad] = (u8)seq;
@@ -452,17 +456,47 @@ __attribute__((used, retain)) void strike_press(void *v, u32 pad) {
 static void sync_defaults(void *v);
 __attribute__((used, retain)) u32 toggle_pre(void *v, u32 idx) {
     if (idx >= 32 || !drum_step_view(v)) return 1u;
-    /* A new step takes the pad's defaults: stock resets its new-step fields to 100 /
-     * Always / 0 (0x0815C060, 0x0815CDB2) and they were refreshed only with the
-     * header, so a step could start at 100 and reset the pad default (Jeff, v3.54). */
     sync_defaults(v);
-    return (u32)FN(STEP_HAS_NOTE, int (*)(void *, u32))(v, idx);
+    u32 had = (u32)FN(STEP_HAS_NOTE, int (*)(void *, u32))(v, idx);
+    volatile PadState *ps = pads();
+    if (!ps) return had;
+    ps->tl.calls++;
+    if (had) { ps->tl.removes++; ps->dvalid = 0; return had; }
+    /* A new step takes the pad's defaults. Stock copies its new-step fields into the
+     * note after the model has made it (0x0815D078), but by then a refresh may have
+     * reset them to 100 / Always / 0 (0x0815C060, 0x0815CDB2): v3.55 set them here and
+     * new steps still came in at 100 (Jeff). Work them out now, before the new step
+     * exists to count, and fill them in at stock's read (toggle_defaults). */
+    ps->tl.add++; ps->tl.ins0 = ps->tl.inserts;
+    for (u32 f = 0; f < 3; f++) {
+        u32 d;
+        ps->dflt[f] = pad_default(v, f, &d) ? d : W(v, DEFAULT_AT[f]);
+    }
+    ps->dview = (u32)v; ps->dpad = W(v, 0x11400); ps->dvalid = 1;
+    return had;
+}
+
+/* At 0x0815D078, in stock's add-step path right before it copies the new-step fields
+ * into the note it just found: put the defaults worked out before the toggle back. */
+__attribute__((used, retain)) void toggle_defaults(void *v) {
+    volatile PadState *ps = pads();
+    if (!ps || !ps->dvalid || ps->dview != (u32)v || ps->dpad != W(v, 0x11400)) return;
+    for (u32 f = 0; f < 3; f++) W(v, DEFAULT_AT[f]) = ps->dflt[f];
+    ps->tl.filled++;
 }
 
 static int pad_default(void *v, u32 f, u32 *out);
 __attribute__((used, retain)) void toggle_post(void *v, u32 idx, u32 had) {
     volatile PadState *ps = pads();
     if (!ps || !drum_step_view(v)) return;
+    if (!had && idx < 32 && ps->dvalid) {           /* diagnostics: did the add make a step? */
+        if (FN(STEP_HAS_NOTE, int (*)(void *, u32))(v, idx)) ps->tl.add_ok++;
+        else {
+            ps->tl.add_fail++;
+            ps->tl.last_fail = idx | (W(v, 0x11400) & 0xFFu) << 8 | ((ps->tl.inserts - ps->tl.ins0) & 0xFFu) << 16;
+        }
+    }
+    ps->dvalid = 0;
     u32 step = W(v, 0x113F4) + idx, pad = step - W(v, 0x11404), bit = 1u << (pad & 15u);
     if (pad >= 16 || !(ps->pend & bit)) return;
     ps->pend &= (u16)~bit;
@@ -871,6 +905,7 @@ static void strike_late(void) {
 __attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr, u32 model, u32 seq) {
     volatile PadState *ps;
     log_inserter(lr, rec);
+    if ((ps = pads())) ps->tl.inserts++;
     if ((lr & ~1u) == MEL_NOTE_ON) bind_pitch(rec);
     if ((rec[0] & 0xFFu) != 1u || strike_off() || !(ps = pads()) || !drum_track_selected()) return;
     /* Which pad made this note? The Sequence page's pads are the 16 steps of the

@@ -797,6 +797,17 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
             puts_(&o, " already-locked="); dec(&o, a >> 24);
         }
         puts_(&o, "\r\n");
+        volatile ToggleLog *t = (volatile ToggleLog *)(pl + 1);  /* Step-page hits */
+        puts_(&o, "TOGGLE presses="); dec(&o, t->presses); puts_(&o, " toggles="); dec(&o, t->calls);
+        puts_(&o, " adds="); dec(&o, t->add); puts_(&o, " made="); dec(&o, t->add_ok);
+        puts_(&o, " not-made="); dec(&o, t->add_fail); puts_(&o, " removes="); dec(&o, t->removes);
+        puts_(&o, " inserts="); dec(&o, t->inserts); puts_(&o, " defaults-filled="); dec(&o, t->filled);
+        if (t->add_fail) {
+            puts_(&o, " | last not-made: step "); dec(&o, t->last_fail & 0xFFu);
+            puts_(&o, " drum "); dec(&o, (t->last_fail >> 8) & 0xFFu);
+            puts_(&o, " inserts during it "); dec(&o, t->last_fail >> 16);
+        }
+        puts_(&o, "\r\n");
     }
     volatile ModHead *mh = MODHEAD;
     if (mh->magic == MODHEAD_MAGIC) {               /* F2b: what the Mod Matrix hooks saw */
