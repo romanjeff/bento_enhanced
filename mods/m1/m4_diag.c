@@ -814,6 +814,20 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
         }
         puts_(&o, "\r\n");
         volatile ToggleLog *t = (volatile ToggleLog *)(pl + 1);  /* Step-page hits */
+        volatile HdrLog *hl = (volatile HdrLog *)(t + 1);      /* header buttons (v3.63) */
+        puts_(&o, "HDR pages:");
+        for (u32 i = 0; i < 8 && i < hl->np; i++) { puts_(&o, " "); hex(&o, hl->pages[(hl->np - 1u - i) & 7u], 2); }
+        for (u32 k = 0; k < 2; k++) {
+            volatile HdrSnap *sn = &hl->s[k];
+            puts_(&o, k ? " | drum" : " | melodic");
+            if (!sn->valid) { puts_(&o, " -"); continue; }
+            puts_(&o, " page="); hex(&o, sn->page, 2); puts_(&o, " cfg="); dec(&o, sn->cfg_ok);
+            puts_(&o, " nm_slot="); hex(&o, sn->nm_slot, 1); puts_(&o, " out=");
+            for (u32 i = 0; i < 6; i++) { char c[2] = {sn->out_c[i], 0}; puts_(&o, c); hex(&o, sn->out_id[i], 4); puts_(&o, i < 5 ? "," : ""); }
+            puts_(&o, " applied=");
+            for (u32 i = 0; i < 6; i++) { char c[2] = {sn->app_c[i], 0}; puts_(&o, c); hex(&o, sn->app_id[i], 4); puts_(&o, i < 5 ? "," : ""); }
+        }
+        puts_(&o, "\r\n");
         puts_(&o, "TOGGLE presses="); dec(&o, t->presses); puts_(&o, " toggles="); dec(&o, t->calls);
         puts_(&o, " adds="); dec(&o, t->add); puts_(&o, " made="); dec(&o, t->add_ok);
         puts_(&o, " not-made="); dec(&o, t->add_fail); puts_(&o, " removes="); dec(&o, t->removes);

@@ -161,6 +161,11 @@ typedef struct { u32 n; u32 a[4], b[4]; } ParamLog;
  * (no step there before) that made a step or not, removes, model inserts, our default
  * fills at stock's read, last failed add = idx | drum << 8 | inserts during it << 16. */
 typedef struct { u32 presses, calls, add, add_ok, add_fail, removes, inserts, filled, last_fail, ins0; } ToggleLog;
+/* Header buttons (v3.63 diagnostics), after ToggleLog: the last 8 pages seen and, per
+ * kind of SEQ view (0 melodic, 1 drum), what we put in the header description and
+ * what stock applied (root + 0x34): action ids and each label's first letter. */
+typedef struct { u8 valid, page, cfg_ok, nm_slot; u16 out_id[6], app_id[6]; char out_c[6], app_c[6]; } HdrSnap;
+typedef struct { u8 pages[8]; u32 np; HdrSnap s[2]; } HdrLog;
 #define STRIKE_SET ((volatile StrikeSet *)0x3003C948u)
 #define STRIKE_SET_MAGIC 0x33455653u /* "SVE3" */
 #define STRIKE_ACTION 0x10F0u        /* header button action id (unused by stock) */

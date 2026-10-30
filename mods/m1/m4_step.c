@@ -422,6 +422,7 @@ typedef struct {
     LateStats ls;       /* the black box reads these (PadState + 4) */
     ParamLog pl;        /* ... and these (PadState + 4 + sizeof(LateStats)) */
     ToggleLog tl;       /* ... and these (after ParamLog) */
+    HdrLog hl;          /* ... and these (after ToggleLog) */
     u32 dview, dpad, dflt[3], dvalid;   /* a new step's defaults, worked out before the toggle */
     struct {            /* defaults you set, per sequence and drum (v3.57): used when no unlocked step */
         u32 seq;        /* holds the default (all locked, or none yet), else stock's reset gives 100 */
@@ -760,6 +761,22 @@ __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int cha
         STRIKE_SET->r[1] = (u32)drum | (slot << 4) | ((u32)ins << 8);
     }
     header_sync(out);
+    if (ps) {                                       /* v3.63 diagnostics: header buttons per page */
+        volatile HdrLog *hl = &ps->hl;
+        u8 pg = MODEL_PAGE;
+        if (hl->pages[(hl->np - 1u) & 7u] != pg || !hl->np) hl->pages[hl->np++ & 7u] = pg;
+        if (pg == 0x27 || pg == 0x28) {
+            volatile HdrSnap *sn = &hl->s[drum_track_selected() ? 1 : 0];
+            sn->valid = 1; sn->page = pg; sn->cfg_ok = mod_cfg_block() != 0; sn->nm_slot = 0xF;
+            int root = *(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE;
+            for (u32 i = 0; i < 6; i++) {
+                volatile u8 *a = REC(out, i), *b = REC(HEADER_ROOT + 0x34, i);
+                sn->out_id[i] = (u16)rid(a); sn->out_c[i] = a[0] ? (char)a[0] : '.';
+                sn->app_id[i] = root ? (u16)rid(b) : 0xFFFFu; sn->app_c[i] = root && b[0] ? (char)b[0] : '.';
+                if (rid(a) == NM_ACTION) sn->nm_slot = (u8)i;
+            }
+        }
+    }
     return changed;
 }
 
