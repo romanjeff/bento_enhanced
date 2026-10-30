@@ -507,6 +507,25 @@ class M4EndToEnd(FatFsRig):
         self.tick(5000)                                  # nothing new -> no write at all
         self.assertEqual(len(self.files), 1)
 
+    def test_trace_leaves_room_for_summaries(self):
+        """BE3.57: the trace filled the 256 KB log by ~10 min, so an 18.6-min save's
+        summaries were lost. The trace stops 32 KB early; other lines still fit."""
+        limit = 0x40000 - 512 - 0x8000
+        self.tick(1000)
+        buf = r32(self.u, M4H + 12)
+        w32(self.u, M4H + 16, limit - 60)                # the trace has nearly used its share
+        for t in (0x5B, 0x5C, 0x5B): self.send(t)
+        self.tick(1100); self.tick(2700)
+        n = r32(self.u, M4H + 16)
+        text = bytes(self.u.mem_read(buf + limit - 60, n - (limit - 60))).decode()
+        self.assertEqual(text.count("# trace stopped at ms "), 1)
+        self.assertLessEqual(text.count(" SEND "), 1, "the trace stops at its limit")
+        self.assertIn("# m7 dropped=", text, "summaries still fit after it")
+        for t in (0x5B, 0x5C): self.send(t)
+        self.tick(2800); self.tick(4400)
+        more = bytes(self.u.mem_read(buf + n, r32(self.u, M4H + 16) - n)).decode()
+        self.assertNotIn(" SEND ", more, "later records are not traced either")
+
     def test_later_flushes_append_only_new_text(self):
         self.tick(1000); self.send(0x5B); self.tick(1100); self.tick(2700)
         first = self.files[0]

@@ -51,6 +51,8 @@ static void zero(void *p, u32 n) { for (u32 i = 0; i < n; i++) ((volatile u8 *)p
 typedef struct { char *buf; u32 len; } Out;
 
 #define SCRATCH_BYTES 512u /* tail of the log buffer: file-copy scratch, never text */
+#define TRACE_RESERVE 0x8000u /* v3.58: the last 32 KB are kept for save summaries and alarms */
+#define TRACE_LIMIT (BUF_BYTES - SCRATCH_BYTES - TRACE_RESERVE)
 
 static void puts_(Out *o, const char *s) {
     while (*s && o->len < BUF_BYTES - SCRATCH_BYTES - 64u) o->buf[o->len++] = *s++;
@@ -606,8 +608,16 @@ static void poll(void) {
     while (M4H->rd != M7H->wr && n < DIAG_RECORDS) {
         u32 rd = M4H->rd;
         volatile Rec *r = &RECS[rd % DIAG_RECORDS];
-        if ((r->kind >> 16) != (rd & 0xFFFFu)) puts_(&o, "!SEQ ");
-        rec_line(&o, now, r);
+        /* v3.58: the trace leaves TRACE_RESERVE for save summaries and alarms. A long
+         * session filled the buffer by ~10 min and BE3.57's 18.6-min save lost them all. */
+        if (o.len < TRACE_LIMIT) {
+            if ((r->kind >> 16) != (rd & 0xFFFFu)) puts_(&o, "!SEQ ");
+            rec_line(&o, now, r);
+            if (o.len >= TRACE_LIMIT) {
+                puts_(&o, "# trace stopped at ms "); dec(&o, now);
+                puts_(&o, ": the rest of the log is kept for save summaries\r\n");
+            }
+        }
         M4H->rd = rd + 1u;
         M4H->r[5] = now;
         n++;
