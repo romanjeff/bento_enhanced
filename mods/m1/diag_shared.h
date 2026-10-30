@@ -309,8 +309,8 @@ typedef struct { u16 a, d, s, r; u8 loop, pad_[3]; } ModEnv;                    
 typedef struct { u8 type, num, src[3], pad_; short amt[3]; } ModDest;              /* 12 B */
 typedef struct { ModLfo lfo[2]; ModEnv env[2]; ModDest d[MOD_DESTS]; } ModTrack;  /* 232 B */
 /* F5 Note Mod (v3.59): one source per track that shifts each sequenced note when it
- * starts. shape/sync/srate/rate as ModLfo; restart = Triggered (phase restarts at every
- * sequenced note); amount 0..1000 (0 = off); range 0-3 = +/-1-4 octaves (drum tracks:
+ * starts. shape/sync/srate/rate as ModLfo; restart = Triggered (v3.61: a free-running
+ * shape restarts at the first note after a stop; Random repeats its notes every run); amount 0..1000 (0 = off); range 0-3 = +/-1-4 octaves (drum tracks:
  * 4 pads per "octave"). Kept apart from ModTrack so its 232-byte records (MODS chunk)
  * and the F1/F2 layouts stay as they are; saved as its own NMOD chunk. */
 typedef struct { u8 shape, sync, srate, restart; u16 rate, amount; u8 range, pad_[3]; } ModNote;   /* 12 B */

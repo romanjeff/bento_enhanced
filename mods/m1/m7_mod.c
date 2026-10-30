@@ -324,7 +324,7 @@ typedef struct {
     u32 track, cyc, phase, last_p, rnd, tick_lo, tick_hi;
     int steps;
     short rval; u16 used;                  /* used: map slots in use (bits) */
-    u8 has_tick, pad_[3];
+    u8 has_tick, armed, pad_[2];          /* armed: Triggered, stopped: phase held at 0 until a note */
     NmMap m[NM_MAP];
 } NmRun;
 typedef struct { NmRun t[MOD_TRACKS]; u32 shifted, offs, full, alloff; } NmState;
@@ -405,8 +405,8 @@ __attribute__((used, retain)) u32 nm_on(u32 track, u32 note, u32 *pad, const u32
     if (r->has_tick && r->tick_lo == csp[8] && r->tick_hi == csp[9]) steps = r->steps;   /* a chord */
     else {
         u32 p;
-        if (nm->restart) p = 0;
-        else if (nm->sync) {
+        if (nm->restart && r->armed) { r->phase = 0; r->armed = 0; }   /* Triggered: the run starts here */
+        if (nm->sync) {
             u32 period = SYNC_TICKS[nm->srate < 15u ? nm->srate : 6u], rem;
             udiv64((unsigned long long)csp[8] | ((unsigned long long)csp[9] << 32), period, &rem);
             p = (u32)udiv64((unsigned long long)rem << 32, period, 0);
@@ -462,9 +462,15 @@ __attribute__((used, retain)) void nm_off(u32 *a) {
 __attribute__((used, retain)) void nm_all_off(u32 track, u32 timing, u32 router) {
     NmState *st = (NmState *)m1_nm_run();
     if (!st) return;
-    u32 idx = *(volatile u32 *)(track + 0x86D4u);
-    NmRun *r = idx < MOD_TRACKS ? &st->t[idx] : 0;
-    if (!r || r->track != track) return;
+    u32 idx;
+    NmRun *r = nm_track(st, track, &idx);            /* also a stop before this track's first note */
+    if (!r) return;
+    ModState *ms = state();
+    volatile ModCfg *cfg = ms ? config(ms) : 0;
+    if (cfg && cfg->nm[idx].restart) {                /* Triggered: the next run starts the shape over */
+        r->phase = 0; r->armed = 1;
+        r->rnd = 0x9E3779B9u * (idx + 1u);             /* Random: the same notes every run */
+    }
     for (u32 k = 0; k < NM_MAP; k++) {
         if (!(r->used >> k & 1u)) continue;
         r->used &= (u16)~(1u << k);
@@ -485,7 +491,7 @@ void nm_block(u32 track) {
         volatile ModNote *nm = &cfg->nm[idx];
         u32 now = CYCCNT, dt_us = (now - r->cyc) / 480u;
         r->cyc = now;
-        if (nm->amount && !nm->sync) {
+        if (nm->amount && !nm->sync && !(nm->restart && r->armed)) {
             if (dt_us > 50000u) dt_us = 50000u;
             u32 x = free_mhz(nm->rate) * dt_us;
             r->phase += x * 4u + (u32)(((unsigned long long)x * 1266874889u) >> 32);

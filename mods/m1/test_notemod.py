@@ -199,6 +199,33 @@ class NoteMod(unittest.TestCase):
         self.assertEqual(len(set(got)), 4, f"each note somewhere else on the Saw: {got}")
         self.assertEqual(got, sorted(got), "rising Saw, rising notes")
 
+    def test_triggered_restarts_at_the_first_note_after_stop(self):
+        """v3.61 (Jeff): Triggered = the shape starts over each run (not at every note)."""
+        g = Rig(); g.nm(shape=SAW, restart=1, amount=1000, rng=1)
+        run = lambda: [g.note_on(60, tick=1000 + 960 * i)[0] for i in range(3) if not self.blocks(g, 8 if i else 0)]
+        first = run(); g.all_off(); g.off.clear()
+        self.blocks(g, 20)                                                  # stopped: the phase waits
+        self.assertEqual(run(), first, "same notes from the top")
+        self.assertEqual(len(set(first)), 3, f"moving within the run: {first}")
+
+    def test_triggered_random_repeats_every_run(self):
+        g = Rig(); g.nm(shape=RANDOM, restart=1, amount=1000, rng=1)
+        g.all_off()
+        a = [g.note_on(60, tick=1000 + 100 * i)[0] for i in range(8)]; g.all_off()
+        b = [g.note_on(60, tick=9000 + 100 * i)[0] for i in range(8)]
+        self.assertEqual(a, b)
+        self.assertGreater(len(set(a)), 3, "still random within a run")
+
+    def blocks(self, g, n):
+        u = g.u
+        for _ in range(n):
+            w32(u, 0xE0001004, r32(u, 0xE0001004) + 480000 * 40)
+            w32(u, CLOCK, 1000); w32(u, S, ROUTER)
+            for i, v in enumerate((g.t, CLOCK, 0, 0)):
+                u.reg_write(UC_ARM_REG_R0 + i, v)
+            u.reg_write(UC_ARM_REG_SP, S)
+            u.emu_start(0x08060820 | 1, 0x08060824, count=400000)
+
     def test_unshifted_when_the_map_is_full(self):
         g = Rig(); g.nm(amount=286)
         for i in range(16):
