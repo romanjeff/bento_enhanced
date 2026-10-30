@@ -139,3 +139,49 @@ Engineering notes:
   list, retrigger bursts and aftertouch curve players must all use the sent pitch.
 - Open research: where the project's scale and root live at runtime
   ([`project-settings.md`](project-settings.md) has the stored settings).
+
+## Note Mod design (N0, draft for review, 2026-10-29)
+
+### Settings (per track, one Note Mod source)
+| Encoder | Values | Notes |
+|---|---|---|
+| Shape | stock's nine (Rev Saw ... Random) | Random = a new value each cycle |
+| Rate | free rate, or synced 8 bars ... 1/64 | as our External LFOs |
+| Beat Sync | Off / On | |
+| Behavior | Free-run / Triggered | Triggered restarts the phase at sequencer start |
+| Amount | 0-100 % | 0 = Note Mod off (the default) |
+| Range | +/-1, 2, 3, 4 octaves | full-scale swing at 100 % |
+
+Offset in scale steps = round(source x amount x range x steps per octave of the current
+scale). Bipolar shapes move both ways, the "Pos" shapes only up. A note outside the scale
+snaps to the nearest scale note first, then moves by that many steps; the result is
+clamped to 0-127.
+
+### Engine (M7, in note_route before stock posts 0x5B / 0x12)
+- The source is evaluated at the note's start (sample-accurate phase, as F1's LFOs).
+- Chords: notes starting on the same tick get the same offset (the chord keeps its shape
+  in scale steps).
+- Rolls: the first hit's sent pitch is reused for every hit of the roll.
+- Per-track map of sounding notes {original, sent} (16 per track): Note Offs, the poly cap
+  and voice stealing, retrigger bursts and aftertouch curve players look up the sent pitch.
+  A note-off with no map entry passes unchanged (live pads are never moved).
+- Scale and root: M4 publishes the project's Scale (key 0x8D) and Root (0x8E) to shared
+  state when they change; the 23 scales are a constant table in our code (from stock's
+  M7 table at 0x2401DA18).
+
+### UI
+- External tracks: a fourth page in the toolbar cycle (Main -> LFO 1 -> LFO 2 -> Env 1 ->
+  Env 2 -> **Note Mod**), same mechanism as F2a.
+- Internal tracks: their INST pages are new territory for us (N2); same six encoders,
+  reached the same way if the internal views allow it.
+- Saved in the MODS sidecar chunk (layout version bump).
+
+### Sprints
+- N1: engine + External page + emulated tests (note-off mapping, chords, rolls, poly cap,
+  curves, scale snapping) -> device test.
+- N2: internal tracks' page (RE of the internal INST views first).
+
+### Risks
+- Stuck notes if any note-off path bypasses the map: covered by tests per path (sequencer
+  note-off, stop/transport, poly-cap steal, retrigger close, track mute).
+- Drum tracks: a note picks a sound, so Note Mod would change which sound plays.
