@@ -34,15 +34,15 @@ HEAP_LITERALS = (0x08040588, 0x080A3BDC, 0x080A3E94)
 HEAP_END_STOCK, HEAP_END_NEW = 0x24048DA0, 0x24048400
 
 M7_TRAMP = 0x080DA000   # inside stock's zero gap after the M7 image's data (0x080CF49C..0x080E0000)
-M7_CODE = 0x080DA200
-M7_LIMIT = 0x080DE000   # 15.5 KB since v3.37 (internal AT); stock zero gap runs to 0x080E0000 (verified all zero, unreferenced)
+M7_CODE = 0x080DA400   # trampolines 1 KB since v3.59 (Note Mod stubs)
+M7_LIMIT = 0x080DF000   # 19 KB since v3.59 (Note Mod; 15.5 KB since v3.37); stock zero gap runs to 0x080E0000 (verified all zero, unreferenced)
 # M4 code is appended after stock's image end (0x081B3F3C). 0x081B4000..0x081B5000
 # is reserved for the trigger-condition UI (S2).
 APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x5000   # 20 KB since v3.54 (16 KB since v3.26: curve sidecar writer)
-VERSION = "3.58"                       # bump for every build that goes on the device
+VERSION = "3.59"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -65,7 +65,8 @@ PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection", 
                 ("stall", ("Stall",)),                              # M7 stall record + SysTick profile
                 ("irq30", ("M4 watchdog profile: IRQ30",)),         # M4 heartbeat-supervisor profile
                 ("bbox", ("M1 diag: defaultTask", "Diag dump")),                # M4 black box (also hands poly AT its region)
-                ("inta", ("Internal AT",))]                         # M2-2b internal instruments (+ -DBE_NO_INTA)
+                ("inta", ("Internal AT",)),                         # M2-2b internal instruments (+ -DBE_NO_INTA)
+                ("nmod", ("Note Mod",))]                            # F5 Note Mod (+ -DBE_NO_NMOD)
 if "diag7" in DISABLED:
     DISABLED |= {"trace", "stall"}
 if "diag" in DISABLED:
@@ -113,6 +114,9 @@ LIVE_SITE, BUS_POST = 0x08085B6C, 0x0809ECA0
 
 # Retrigger (m7_retrig.c).
 NOTE_ROUTE, RETRIG_ACCEPT_SITE, RETRIG_EMIT_SITE = 0x0805F8E0, 0x08060B9A, 0x08060820
+# F5 Note Mod: stock's sequencer Note Off (track, note, timing, pad, router) and its two
+# callers; stock's per-track stop / all-notes-off (track, timing, router).
+NM_NOTE_OFF, NM_OFF_SITES, NM_ALL_OFF = 0x0805FE00, (0x080605D2, 0x08060A4C), 0x080618E0
 
 # Audio stall snapshot (idle-restart investigation): the M7 main audio loop
 # FUN_0808DF00 refreshes the watchdog only on audio progress.
@@ -416,12 +420,16 @@ def build(base_img, out):
     # Retrigger (m7_retrig.c): accept = stub around stock's bl note_route;
     # emit = entry trampoline of the timed-note processor.
     stub = M7_TRAMP + len(tramps)
+    # F5 (v3.59): Note Mod picks the sent note / pad first (nm_on(track, note, &pad, caller sp));
+    # note_route and retrig_accept (bursts, curves) get the sent ones.
     code = asm("push {r3, r4, r5, r6, r7, lr}; mov r4, r0; mov r5, r1; mov r6, r2; mov r7, r3; "
                "ldr r0, [sp, #24]; ldr r1, [sp, #28]; sub sp, #8; str r0, [sp]; str r1, [sp, #4]; "   # pad, router
+               f"mov r0, r4; mov r1, r5; mov r2, sp; add r3, sp, #32; bl {s7['nm_on']:#x}; mov r5, r0; "
                f"mov r0, r4; mov r1, r5; mov r2, r6; mov r3, r7; bl {NOTE_ROUTE:#x}; "
-               "str r6, [sp]; mov r0, r4; mov r1, r5; add r2, sp, #32; ldr r3, [sp, #20]; "          # vel; caller sp; caller r6 (clock)
+               "ldr.w r12, [sp]; str r6, [sp]; str.w r12, [sp, #4]; "                                # vel, sent pad
+               "mov r0, r4; mov r1, r5; add r2, sp, #32; ldr r3, [sp, #20]; "                        # caller sp; caller r6 (clock)
                f"bl {s7['retrig_accept']:#x}; add sp, #8; pop {{r3, r4, r5, r6, r7, pc}}", stub)
-    check_branches(code, stub, {NOTE_ROUTE, s7["retrig_accept"]}, "retrigger accept stub")
+    check_branches(code, stub, {s7["nm_on"], NOTE_ROUTE, s7["retrig_accept"]}, "retrigger accept stub")
     tramps += code + bytes(-len(code) % 4)
     orig = asm(f"bl {NOTE_ROUTE:#x}", RETRIG_ACCEPT_SITE)
     patch(RETRIG_ACCEPT_SITE, asm(f"bl {stub:#x}", RETRIG_ACCEPT_SITE), orig, "Retrigger: accepted note -> note_route, then queue the burst")
@@ -435,6 +443,25 @@ def build(base_img, out):
     tramps += code + bytes(-len(code) % 4)
     patch(RETRIG_EMIT_SITE, asm(f"b.w {t:#x}", RETRIG_EMIT_SITE), bytes.fromhex("2de9f04f"),
           "Retrigger: timed-note processor entry -> post due hits")
+    # F5 Note Mod: stock's sequencer Note Off (two call sites) goes out as the sent pitch;
+    # stock's stop / all-notes-off ends the shifted notes first.
+    for site in NM_OFF_SITES:
+        stub = M7_TRAMP + len(tramps)
+        code = asm(f"push {{r0, r1, r2, r3, r12, lr}}; mov r0, sp; bl {s7['nm_off']:#x}; "
+                   f"pop {{r0, r1, r2, r3, r12, lr}}; b.w {NM_NOTE_OFF:#x}", stub)
+        check_branches(code, stub, {s7["nm_off"], NM_NOTE_OFF}, "Note Mod note-off stub")
+        tramps += code + bytes(-len(code) % 4)
+        orig = asm(f"bl {NM_NOTE_OFF:#x}", site)
+        if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
+            raise SystemExit(f"{site:#x}: not the expected bl to stock's Note Off")
+        patch(site, asm(f"bl {stub:#x}", site), orig, "Note Mod: sequencer Note Off -> the sent pitch")
+    t = M7_TRAMP + len(tramps)
+    code = asm(f"push {{r0, r1, r2, r3, r12, lr}}; bl {s7['nm_all_off']:#x}; pop {{r0, r1, r2, r3, r12, lr}}; "
+               f"push.w {{r4, r5, r6, r7, r8, r9, r10, r11, lr}}; b.w {NM_ALL_OFF + 4:#x}", t)
+    check_branches(code, t, {s7["nm_all_off"], NM_ALL_OFF + 4}, "Note Mod all-off trampoline")
+    tramps += code + bytes(-len(code) % 4)
+    patch(NM_ALL_OFF, asm(f"b.w {t:#x}", NM_ALL_OFF), bytes.fromhex("2de9f04f"),
+          "Note Mod: stop / all-notes-off ends the shifted notes first")
     # Audio stall snapshot: the main audio loop's two calls (see m7_stall.c).
     for site, target, fn, why in STALL_SITES:
         stub = M7_TRAMP + len(tramps)

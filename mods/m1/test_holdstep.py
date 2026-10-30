@@ -178,8 +178,8 @@ class MultiHold(unittest.TestCase):
 
     def probe(self):
         p = Probe()
-        # step UI state as claim() leaves it: magic, boot gen 1, ok, four keys
-        p.u.mem_write(0x3003C880, struct.pack("<3I4H3I", 0x31505453, 1, 1, *self.KEYS, 0, 0, 0))
+        # step UI state as claim() leaves it: magic, boot gen 1, ok, the first four keys (STP6 layout)
+        p.u.mem_write(0x3003C880, struct.pack("<2IH11H", 0x36505453, 1, 1, *self.KEYS, *[0] * 7))
         return p
 
     def encoder(self, p, which, value):

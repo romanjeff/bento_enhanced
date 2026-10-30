@@ -308,7 +308,16 @@ typedef struct { u8 shape, sync, srate, restart; u16 rate, depth; } ModLfo;     
 typedef struct { u16 a, d, s, r; u8 loop, pad_[3]; } ModEnv;                      /* 12 B; loop 0 off, 1-32, 33 = forever */
 typedef struct { u8 type, num, src[3], pad_; short amt[3]; } ModDest;              /* 12 B */
 typedef struct { ModLfo lfo[2]; ModEnv env[2]; ModDest d[MOD_DESTS]; } ModTrack;  /* 232 B */
-typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; } ModCfg;
+/* F5 Note Mod (v3.59): one source per track that shifts each sequenced note when it
+ * starts. shape/sync/srate/rate as ModLfo; restart = Triggered (phase restarts at every
+ * sequenced note); amount 0..1000 (0 = off); range 0-3 = +/-1-4 octaves (drum tracks:
+ * 4 pads per "octave"). Kept apart from ModTrack so its 232-byte records (MODS chunk)
+ * and the F1/F2 layouts stay as they are; saved as its own NMOD chunk. */
+typedef struct { u8 shape, sync, srate, restart; u16 rate, amount; u8 range, pad_[3]; } ModNote;   /* 12 B */
+/* key: the project's Scale (0-22, stock's list) | Root << 8 (0 = A .. 11 = G#) | 1 << 16 when
+ * read; nm_poll: the M4's last read (UI ms). Appended after the tracks. */
+typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; ModNote nm[MOD_TRACKS]; u32 key, nm_poll; } ModCfg;
+#define NM_RUN_BYTES 0x480u        /* F5: Note Mod runtime (m7_mod.c) inside the region */
 /* tried: boot gen + 1 of the last allocation attempt. row/view/page: the External
  * INST page's row set (F2a, M4 only): 0 Main, 1-2 LFO, 3-4 Env; the External view
  * and the page id its bar builder last ran on (the header button shows there). */
@@ -320,7 +329,7 @@ typedef struct {
     u32 inst_pending;              /* matrix Dashboard: press INST at the next UI tick (v3.52) */
 } ModHead;
 #define MODHEAD ((volatile ModHead *)0x3003DFC0u)
-#define MODHEAD_MAGIC 0x36444F4Du /* "MOD6": + inst_pending (v3.52) */
+#define MODHEAD_MAGIC 0x37444F4Du /* "MOD7": + Note Mod settings and the scale (v3.59) */
 _Static_assert(0x3003DFC0u + sizeof(ModHead) <= 0x3003E000u, "mod header");
 #define ROWS_ACTION 0x10F1u        /* External INST header buttons (unused by stock) */
 #define MOD_ACTION 0x10F2u

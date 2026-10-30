@@ -124,10 +124,10 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
 
 /* ---- registry keys -------------------------------------------------------- */
 
-typedef struct { u32 magic, gen, ok; u16 key[10]; } StepUI;   /* one M4-only line */
+typedef struct { u32 magic, gen; u16 ok, key[11]; } StepUI;   /* one M4-only line */
 #define SU ((volatile StepUI *)0x3003C880u)
-#define SU_MAGIC 0x35505453u /* "STP5": ten keys (+ Dest) since v3.48 */
-#define SU_KEYS 10u
+#define SU_MAGIC 0x36505453u /* "STP6": eleven keys (+ Range) since v3.59 */
+#define SU_KEYS 11u
 _Static_assert(sizeof(StepUI) <= 32, "step UI state is one cache line");
 
 static const char *const AT_REC_LABELS[2] = {"Off", "On"};
@@ -138,11 +138,13 @@ static const char *const LOOP_LABELS[34] = {"Off", "1", "2", "3", "4", "5", "6",
 /* Beat Sync / Triggered are our own Off/On lists: stock's toggle keys (0x4E, 0x4D,
  * type 6) showed a blank value when our row was refilled with them on (v3.46). */
 static const char *const BEHAVIOR_LABELS[2] = {"Free-run", "Triggered"};
+static const char *const RANGE_LABELS[4] = {"1 Oct", "2 Oct", "3 Oct", "4 Oct"};
 static const char *const TITLES[SU_KEYS] = {"Condition", "Retrig", "Division", "Ramp", "AT Rec", "AT Out", "Loop",
-                                            "Beat Sync", "Behavior", "Dest"};
+                                            "Beat Sync", "Behavior", "Dest", "Range"};
 static const char *const *const CHOICES[SU_KEYS] = {COND_LABELS, HITS_LABELS, DIV_LABELS, RAMP_LABELS, AT_REC_LABELS,
-                                                    AT_OUT_LABELS, LOOP_LABELS, AT_REC_LABELS, BEHAVIOR_LABELS, DEST_LABELS};
-static const u32 COUNTS[SU_KEYS] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u, 34u, 2u, 2u, DEST_N};
+                                                    AT_OUT_LABELS, LOOP_LABELS, AT_REC_LABELS, BEHAVIOR_LABELS, DEST_LABELS,
+                                                    RANGE_LABELS};
+static const u32 COUNTS[SU_KEYS] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u, 34u, 2u, 2u, DEST_N, 4u};
 
 static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
 static void mod_defaults(void);
@@ -705,11 +707,13 @@ static volatile AtSet *at_set(void);
 static void at_publish(void);
 static void mod_cfg(void);
 static void strike_late(void);
+static void nm_scale(void);
 static void ext_toolbar(void *out, int *changed);
 __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int changed) {
     (void)model;
     if (at_set()->pending) at_publish();            /* after a project load (UI context) */
     mod_cfg();                                      /* F1: once per boot */
+    nm_scale();                                     /* F5: the project's scale for Note Mod */
     strike_late();                                  /* Sequence-page strike velocities settle */
     strike_init();
     volatile PadState *ps = pads();
@@ -1107,6 +1111,15 @@ static void load_sidecar(volatile LoadState *ls, volatile CurveState *c) {
                         if (v < 0) break;
                         if (t < (int)MOD_TRACKS && i < (int)sizeof(ModTrack)) ((volatile u8 *)&mc->t[t])[i] = (u8)v;
                     }
+                /* F5: optional "NMOD" u16 tracks, u16 record size, then the records */
+                int n0 = rd_byte(&r), n1 = rd_byte(&r), n2 = rd_byte(&r), n3 = rd_byte(&r), nn = rd_u16(&r), nsz = rd_u16(&r);
+                if (n0 == 'N' && n1 == 'M' && n2 == 'O' && n3 == 'D' && nn > 0 && nsz > 0)
+                    for (int t = 0; t < nn; t++)
+                        for (int i = 0; i < nsz; i++) {
+                            int v = rd_byte(&r);
+                            if (v < 0) break;
+                            if (t < (int)MOD_TRACKS && i < (int)sizeof(ModNote)) ((volatile u8 *)&mc->nm[t])[i] = (u8)v;
+                        }
                 mod_write_end(mc);
             }
         }
@@ -1227,8 +1240,9 @@ static void mod_cfg(void) {
 #define K_ENV_D 0x1Fu
 #define K_ENV_S 0x20u
 #define K_ENV_R 0x21u
-#define ROWS 5u
-static const char *const ROW_NAMES[ROWS] = {"Main", "LFO 1", "LFO 2", "Env 1", "Env 2"};
+#define ROWS 6u
+#define ROW_NOTE 5u
+static const char *const ROW_NAMES[ROWS] = {"Main", "LFO 1", "LFO 2", "Env 1", "Env 2", "Note Mod"};
 
 static volatile ModCfg *mod_cfg_block(void) {
     volatile ModHead *h = MODHEAD;
@@ -1255,6 +1269,19 @@ static void row_desc(u32 r, volatile ModTrack *t, u16 *key, u32 *val) {
         if (claim()) {
             key[2] = SU->key[7]; val[2] = l->sync ? 1u : 0u;        /* Beat Sync: Off / On */
             key[4] = SU->key[8]; val[4] = l->restart ? 1u : 0u;     /* Behavior: Free-run / Triggered */
+        }
+    } else if (r == ROW_NOTE) {                     /* F5: Note Mod (amount shown as stock's Depth) */
+        volatile ModCfg *m = mod_cfg_block();
+        u32 i = sel_track();
+        if (!m || i >= MOD_TRACKS) return;
+        volatile ModNote *n = &m->nm[i];
+        key[0] = K_LFO_SHAPE; val[0] = n->shape < 9u ? n->shape : 0u;
+        key[1] = n->sync ? K_LFO_SRATE : K_LFO_RATE; val[1] = n->sync ? (n->srate < 15u ? n->srate : 6u) : n->rate;
+        key[3] = K_LFO_DEPTH; val[3] = n->amount;
+        if (claim()) {
+            key[2] = SU->key[7]; val[2] = n->sync ? 1u : 0u;
+            key[4] = SU->key[8]; val[4] = n->restart ? 1u : 0u;
+            key[5] = SU->key[10]; val[5] = n->range < 4u ? n->range : 0u;
         }
     } else if (r == 3u || r == 4u) {
         volatile ModEnv *e = &t->env[r - 3u];
@@ -1309,7 +1336,16 @@ __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
     for (u32 i = 0; i < 8; i++) if (keys[i] && keys[i] == key) mine = 1;
     if (!mine) return 0;
     mod_write_begin(m);
-    if (r <= 2u) {
+    if (r == ROW_NOTE) {
+        volatile ModNote *n = &m->nm[sel_track()];
+        if (key == K_LFO_SHAPE) n->shape = (u8)(value < 9u ? value : 8u);
+        else if (key == K_LFO_RATE) n->rate = (u16)(value > 1000u ? 1000u : value);
+        else if (key == K_LFO_SRATE) n->srate = (u8)(value < 15u ? value : 14u);
+        else if (key == SU->key[7]) n->sync = value != 0;
+        else if (key == K_LFO_DEPTH) n->amount = (u16)(value > 1000u ? 1000u : value);
+        else if (key == SU->key[8]) n->restart = value != 0;
+        else if (key == SU->key[10]) n->range = (u8)(value < 4u ? value : 3u);
+    } else if (r <= 2u) {
         volatile ModLfo *l = &t->lfo[r - 1u];
         if (key == K_LFO_SHAPE) l->shape = (u8)(value < 9u ? value : 8u);
         else if (key == K_LFO_RATE) l->rate = (u16)(value > 1000u ? 1000u : value);
@@ -1505,6 +1541,10 @@ static void mod_defaults(void) {
     if (!m) return;
     mod_write_begin(m);
     for (u32 i = 0; i < sizeof(m->t); i++) ((volatile u8 *)m->t)[i] = 0;
+    for (u32 i = 0; i < sizeof(m->nm); i++) ((volatile u8 *)m->nm)[i] = 0;
+    for (u32 t = 0; t < MOD_TRACKS; t++) {          /* Note Mod: Sine, ~0.8 Hz, Free-run, 1 octave, off (0 %) */
+        m->nm[t].shape = 4; m->nm[t].rate = 400;
+    }
     for (u32 t = 0; t < MOD_TRACKS; t++) {          /* usable starting points; no routing (nothing is sent) */
         volatile ModTrack *x = &m->t[t];
         for (u32 k = 0; k < 2; k++) {
@@ -1524,6 +1564,23 @@ static void mod_defaults(void) {
     }
 #endif
     mod_write_end(m);
+}
+
+/* F5: publish the project's Scale (0x8D) and Root (0x8E) for Note Mod, read as
+ * stock's own "Scale + Root" summary reads them (0x081419DE: 0x08133E54 for the
+ * context, then 0x08133614 per key), at most every 250 ms, written only on change. */
+static void nm_scale(void) {
+    volatile ModCfg *m = mod_cfg_block();
+    if (!m || UI_TICK_MS - m->nm_poll < 250u || !W(MODEL, 0)) return;   /* no model yet (early boot) */
+    m->nm_poll = UI_TICK_MS;
+    u32 ctx = 0, sc = 0, root = 0;
+    FN(0x08133E54u, void (*)(void *, u32 *))(MODEL, &ctx);
+    FN(0x08133614u, void (*)(void *, u32 *, u32, u32 *))(MODEL, &ctx, 0x8Du, &sc);
+    FN(0x08133614u, void (*)(void *, u32 *, u32, u32 *))(MODEL, &ctx, 0x8Eu, &root);
+    if (sc >= 23u || root >= 12u) return;
+    u32 key = sc | root << 8 | 1u << 16;
+    if (m->key == key) return;
+    mod_write_begin(m); m->key = key; mod_write_end(m);
 }
 
 static const u8 OUT_TO_INDEX[3] = {1, 0, 2};   /* mode Poly/Off/Channel -> list Off/Poly/Channel */

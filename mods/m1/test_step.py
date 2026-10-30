@@ -268,13 +268,13 @@ class ExtRows(unittest.TestCase):
     (header button ROWS_ACTION); our rows use stock's LFO/env keys and our Loop
     list; turning one edits the selected track's ModTrack (odd seq while writing)."""
     EV, CFGB, HEAD = 0x20150000, 0xC6200000, 0x3003DFC0
-    MAGIC = 0x36444F4D
+    MAGIC = 0x37444F4D
 
     def rig(self, track=2, page=0x21):
         g = Rig()
         g.u.mem_map(0xC6000000, 0x400000)
         g.selected = track
-        g.u.mem_write(self.CFGB, struct.pack("<3I", self.MAGIC, 1, 2) + bytes(8 * 232))
+        g.u.mem_write(self.CFGB, struct.pack("<3I", self.MAGIC, 1, 2) + bytes(8 * 232 + 8 * 12 + 8))
         g.u.mem_write(self.HEAD, struct.pack("<8I", self.MAGIC, 1, self.CFGB, ~self.CFGB & 0xFFFFFFFF, 2, 0, 0, 0))
         g.u.mem_write(0x30024B00 + 0x12C, bytes([page]))
         w32(g.u, VIEW + 0x34, 0x4321)                               # the view's track context
@@ -313,10 +313,28 @@ class ExtRows(unittest.TestCase):
         self.assertEqual([cstr(g.u, r32(g.u, r32(g.u, REG + k[4] * 32 + 8) + 4 * i)) for i in (0, 1)], ["Free-run", "Triggered"])
         self.assertEqual([cstr(g.u, r32(g.u, r32(g.u, REG + k[2] * 32 + 8) + 4 * i)) for i in (0, 1)], ["Off", "On"])
         self.assertEqual(bars[-1][1], VIEW + 0x3D0, "the view's bar")
-        for want in (2, 3, 4, 0):
+        for want in (2, 3, 4, 5, 0):                                  # ... Env 2, Note Mod (v3.59), Main
             self.event(g, 0x10F1)
             self.assertEqual(r32(g.u, self.HEAD + 20), want)
         self.assertIn("stock-build", g.log, "back to Main: stock builds")
+
+    def test_note_mod_row(self):
+        """F5 (v3.59): the sixth row edits the selected track's Note Mod (ModCfg.nm)."""
+        g = self.rig(track=2)
+        for _ in range(5): self.event(g, 0x10F1)
+        self.assertEqual(r32(g.u, self.HEAD + 20), 5, "Note Mod")
+        k, vals = [x for x in g.log if isinstance(x, tuple) and x[0] == "bar"][-1][2:4]
+        self.assertEqual((k[0], k[1], k[3], k[6:]), (0x4A, 0x4B, 0x4C, [0, 0]), "Shape, Rate, Depth (= amount)")
+        self.assertEqual([cstr(g.u, r32(g.u, REG + k[i] * 32 + 4)) for i in (2, 4, 5)], ["Beat Sync", "Behavior", "Range"])
+        self.assertEqual([cstr(g.u, r32(g.u, r32(g.u, REG + k[5] * 32 + 8) + 4 * i)) for i in range(4)],
+                         ["1 Oct", "2 Oct", "3 Oct", "4 Oct"])
+        nm = lambda t: struct.unpack("<4B2HB3x", g.u.mem_read(self.CFGB + 12 + 8 * 232 + 12 * t, 12))
+        self.event(g, 0xCF, 0x4321, 0x4C, 250)                     # amount 25 %
+        self.event(g, 0xCF, 0x4321, k[5], 2)                       # Range: 3 Oct
+        self.event(g, 0xCF, 0x4321, k[4], 1)                       # Triggered
+        self.assertEqual(nm(2)[3:], (1, 0, 250, 2), "restart, rate, amount, range on track 2")
+        self.assertEqual(nm(0)[5], 0, "other tracks untouched")
+        self.assertEqual(r32(g.u, self.CFGB + 8) & 1, 0, "seq even (M7 re-reads)")
 
     def test_lfo_edit_goes_to_the_selected_track(self):
         g = self.rig(track=2)
@@ -375,8 +393,8 @@ class ModMatrix(unittest.TestCase):
 
     def rig(self):
         g = ExtRows().rig(track=2)
-        g.u.mem_write(ExtRows.HEAD, struct.pack("<9I", 0x36444F4D, 1, ExtRows.CFGB, ~ExtRows.CFGB & 0xFFFFFFFF, 2, 0, 0, 0, 0))
-        g.u.mem_write(ExtRows.CFGB, struct.pack("<I", 0x36444F4D))
+        g.u.mem_write(ExtRows.HEAD, struct.pack("<9I", 0x37444F4D, 1, ExtRows.CFGB, ~ExtRows.CFGB & 0xFFFFFFFF, 2, 0, 0, 0, 0))
+        g.u.mem_write(ExtRows.CFGB, struct.pack("<I", 0x37444F4D))
         return g
 
     def open(self, g):
@@ -568,8 +586,8 @@ class DrumEncoders(unittest.TestCase):
     def test_four_keys_claimed_and_put_in_slots_5_to_8(self):
         g = self.setup()
         keys = g.keys()
-        self.assertEqual(len(keys), 10, "4 step keys + AT Rec + AT Out (v3.30) + Loop, Beat Sync, Triggered, Dest")
-        self.assertEqual(sorted(keys, reverse=True), [0x1F1, 0x1EF, 0x1EE, 0x1ED, 0x1EC, 0x1EB, 0x1EA, 0x1E9, 0x1E8, 0x1E7], "empty keys from the top")
+        self.assertEqual(len(keys), 11, "4 step keys + AT Rec + AT Out (v3.30) + Loop, Beat Sync, Behavior, Dest, Range (v3.59)")
+        self.assertEqual(sorted(keys, reverse=True), [0x1F1, 0x1EF, 0x1EE, 0x1ED, 0x1EC, 0x1EB, 0x1EA, 0x1E9, 0x1E8, 0x1E7, 0x1E6], "empty keys from the top")
         table = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))
         self.assertEqual(table[4:], (0x1F1, 0x1EF, 0x1EE, 0x1ED))
         titles = [cstr(g.u, r32(g.u, REG + k * 32 + 4)) for k in table[4:]]
@@ -1273,7 +1291,7 @@ class SidecarLoad(unittest.TestCase):
     def test_modulation_settings_load_with_the_project(self):
         """F2a: the MODS chunk after TRKS restores each track's ModTrack; a project
         without one leaves nothing from the previous project."""
-        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x36444F4D
+        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x37444F4D
         rec = bytearray(232); rec[0] = 4; rec[6:8] = struct.pack("<H", 700)      # LFO 1: Sine, depth 700
         trailer = (b"TRKS" + struct.pack("<H", 16) + bytes(32) + b"MODS" + struct.pack("<HH", 8, 232)
                    + bytes(232) + bytes(rec) + bytes(232 * 6))
@@ -1293,6 +1311,23 @@ class SidecarLoad(unittest.TestCase):
                 self.assertEqual(t0, bytes(232), "track 0 as saved")
             self.assertEqual(t0[40:], bytes(192), "track 0: no routing")
             self.assertEqual(r32(g.u, CFGB + 8) % 2, 0, "seq even after the load")
+
+    def test_note_mod_settings_load_with_the_project(self):
+        """F5: the NMOD chunk after MODS restores each track's Note Mod; an older
+        sidecar (MODS only) loads with Note Mod off (the defaults)."""
+        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x37444F4D
+        NM = CFGB + 12 + 8 * 232
+        base = b"TRKS" + struct.pack("<H", 16) + bytes(32) + b"MODS" + struct.pack("<HH", 8, 232) + bytes(8 * 232)
+        rec = struct.pack("<4B2HB3x", 8, 1, 3, 1, 0, 600, 2)                       # Random, synced, 1/2, Triggered, 60 %, 3 Oct
+        nmod = b"NMOD" + struct.pack("<HH", 8, 12) + bytes(12) * 3 + rec + bytes(12) * 4
+        for trailer, want in ((base + nmod, (8, 1, 3, 1, 0, 600, 2)), (base, (4, 0, 0, 0, 400, 0, 0))):
+            g = self.rig(files={r"\Projects\H\curves.bnt": sidecar(self.CURVES) + trailer})
+            g.u.mem_map(0xC6000000, 0x400000)
+            g.u.mem_write(CFGB, struct.pack("<3I", MAG, 1, 2) + bytes([9]) * (8 * 232 + 8 * 12))   # previous project's
+            g.u.mem_write(HEAD, struct.pack("<8I", MAG, 1, CFGB, ~CFGB & 0xFFFFFFFF, 2, 0, 0, 0))
+            self.load(g, 0)
+            self.assertEqual(struct.unpack("<4B2HB3x", g.u.mem_read(NM + 12 * 3, 12)), want)
+            self.assertEqual(struct.unpack("<4B2HB3x", g.u.mem_read(NM, 12))[5], 0, "track 0: off")
 
     def test_loading_never_walks_the_track_model(self):
         """v3.30 published AT destinations at the first note of a load, walking the

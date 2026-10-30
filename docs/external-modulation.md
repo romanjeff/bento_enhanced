@@ -185,3 +185,25 @@ clamped to 0-127.
 - Stuck notes if any note-off path bypasses the map: covered by tests per path (sequencer
   note-off, stop/transport, poly-cap steal, retrigger close, track mute).
 - Drum tracks: a note picks a sound, so Note Mod would change which sound plays.
+
+### N0 review answers (Jeff, 2026-10-29)
+- Own Note Mod source on External tracks too (as drafted); LFO 1/2 stay for CCs.
+- Drum tracks: allowed. Proposed: offsets count pads (chromatic, wrapping in the kit)
+  rather than scale steps; range in pads.
+- Triggered = restart the phase at every sequenced note (with per-note sampling this is
+  a fixed transpose for periodic shapes and a new value per note for Random). Default
+  Behavior: Free-run.
+
+### N1 built (v3.59, 2026-10-29)
+- Engine in `m7_mod.c` (nm_on / nm_off / nm_all_off / nm_block), settings in
+  `ModCfg.nm[8]` + `ModCfg.key` (scale | root << 8), saved as the sidecar's `NMOD` chunk.
+- Hooks: the accept stub at 0x08060B9A calls nm_on before note_route (bursts and curves
+  get the sent note/pad); stock's sequencer Note Off call sites 0x080605D2 / 0x08060A4C
+  go through nm_off; stock's stop / all-notes-off 0x080618E0 calls nm_all_off first.
+  Patch group `nmod` (BE_DISABLE=nmod).
+- Scale/Root: params 0x8D / 0x8E read as stock's own summary does (0x081419DE:
+  0x08133E54 then 0x08133614). Root's list starts at A (index 0 = A).
+- UI: External INST toolbar cycle gains "Note Mod" (Shape, Rate/Sync Rate, Beat Sync,
+  Depth = amount, Behavior, Range). The settings are per track slot, so a slot later
+  switched to an internal instrument keeps (and applies) them; N2 adds their UI there.
+- Tests: test_notemod.py (12), ExtRows.test_note_mod_row, SidecarLoad NMOD.

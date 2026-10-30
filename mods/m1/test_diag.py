@@ -813,6 +813,9 @@ class NoCardWrites(FatFsRig):
         blob = self.fs[r"\Projects\X\curves.bnt"]
         ver, curves = self.decode(blob)
         self.assertEqual((ver, curves), (1, [(len(samples), samples)]))
+        nmod = 8 + 8 * 12                                           # v3.59: "NMOD" u16 8, u16 12, 8 records
+        self.assertEqual(blob[-nmod:-nmod + 8], b"NMOD" + struct.pack("<HH", 8, 12), "Note Mod chunk")
+        blob = blob[:-nmod]
         mods = 8 + 8 * 232                                          # v3.46: "MODS" u16 8, u16 232, 8 records
         self.assertEqual(blob[-mods - 38:-mods - 32], b"TRKS" + struct.pack("<H", 16), "per-track AT settings trailer")
         self.assertEqual(blob[-mods:-mods + 8], b"MODS" + struct.pack("<HH", 8, 232), "External modulation chunk")

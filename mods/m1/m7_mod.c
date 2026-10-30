@@ -297,3 +297,199 @@ void mod_block(u32 track, const u32 *clock, int start, u32 router) {
     mod_block_body(track, clock, start, router);
     irq_restore(p);
 }
+
+/* ---- F5 Note Mod -----------------------------------------------------------------
+ * One source per track (ModCfg.nm) shifts each sequenced note when it starts:
+ *   nm_on      in the accept stub, before stock's note_route: picks the offset and
+ *              records {original -> sent} in the track's map;
+ *   nm_off     before stock's sequencer Note Off (0x0805FE00, two call sites): a
+ *              mapped original goes out as the pitch that was sent;
+ *   nm_all_off at the entry of stock's stop / all-notes-off (0x080618E0): ends every
+ *              mapped note first (stock's own list holds the original pitches);
+ *   nm_block   every audio block per track: advances the free-running phase.
+ * Melodic notes move in steps of the project's scale (a note outside it snaps to the
+ * nearest scale note first), drum notes (stock's rule: pad <= 15 with a sound) move
+ * by pads, wrapping in the kit. Notes starting on the same tick share the offset
+ * (chords keep their shape); retrigger hits and curves get the sent pitch from the
+ * stub. Stock ends a pending note before starting one with the same note and pad
+ * (0x08060A4C), so {original note, pad} is unique per track among sounding notes. */
+void *m1_nm_run(void);
+#ifndef FN
+#define FN(a, t) ((t)((a) | 1u))
+#endif
+#define NM_MAP 16u
+#define NOTE_OFF 0x0805FE00u               /* (track, note, timing, pad, router) */
+typedef struct { u8 note, sent; u16 pad, spad; } NmMap;
+typedef struct {
+    u32 track, cyc, phase, last_p, rnd, tick_lo, tick_hi;
+    int steps;
+    short rval; u16 used;                  /* used: map slots in use (bits) */
+    u8 has_tick, pad_[3];
+    NmMap m[NM_MAP];
+} NmRun;
+typedef struct { NmRun t[MOD_TRACKS]; u32 shifted, offs, full, alloff; } NmState;
+_Static_assert(sizeof(NmState) <= NM_RUN_BYTES, "Note Mod runtime larger than its slice");
+
+/* Stock's 23 scales (M7 table 0x2401DA18, Scale list order), semitones from the root. */
+static const u8 SCALE_N[23] = {12, 7, 5, 7, 5, 6, 7, 7, 7, 7, 5, 5, 5, 6, 8, 7, 7, 7, 7, 7, 7, 7, 7};
+static const u8 SCALE_OFS[23][12] = {
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, {0, 2, 4, 5, 7, 9, 11}, {0, 2, 4, 7, 9}, {0, 2, 3, 5, 7, 8, 10},
+    {0, 3, 5, 7, 10}, {0, 3, 5, 6, 7, 10}, {0, 1, 4, 5, 7, 8, 11}, {0, 1, 3, 6, 7, 8, 11}, {0, 2, 3, 6, 7, 8, 11},
+    {0, 2, 4, 5, 6, 8, 10}, {0, 2, 5, 7, 10}, {0, 1, 5, 7, 8}, {0, 4, 5, 7, 11}, {0, 2, 4, 6, 8, 10},
+    {0, 2, 3, 5, 6, 8, 9, 11}, {0, 2, 3, 5, 7, 8, 11}, {0, 2, 3, 5, 7, 9, 11}, {0, 2, 3, 5, 7, 9, 10},
+    {0, 1, 3, 5, 7, 8, 10}, {0, 2, 4, 6, 7, 9, 11}, {0, 2, 4, 5, 7, 9, 10}, {0, 2, 3, 5, 7, 8, 10},
+    {0, 1, 3, 5, 6, 8, 10}};
+
+static int fdiv(int a, int b) { int q = a / b; return (a % b && (a < 0) != (b < 0)) ? q - 1 : q; }
+
+/* note moved by steps of scale sc with root pitch class root (0 = C). */
+static u32 scale_shift(u32 note, int steps, u32 sc, u32 root) {
+    const u8 *s = SCALE_OFS[sc];
+    int n = SCALE_N[sc], rel = (int)note - (int)root, oct = fdiv(rel, 12), pc = rel - oct * 12, d = 0, best = 99;
+    for (int i = 0; i <= n; i++) {                 /* nearest degree; i == n: the next octave's root */
+        int dist = pc - (i < n ? s[i] : 12);
+        if (dist < 0) dist = -dist;
+        if (dist < best) { best = dist; d = i; }
+    }
+    int idx = oct * n + d + steps, o2 = fdiv(idx, n), out = (int)root + o2 * 12 + s[idx - o2 * n];
+    while (out > 127) out -= 12;
+    while (out < 0) out += 12;
+    return (u32)out;
+}
+
+static int nm_drum(u32 track, u32 note, u32 pad) {   /* note_route's rule for a pad's own sound */
+    if (pad > 15u) return 0;
+    if (!note) return 1;
+    return *(volatile u8 *)(track + 0x86D2u) && *(volatile u32 *)(track + 0x86DCu + 4u * pad) != 0xFFFFFF00u;
+}
+
+static NmRun *nm_track(NmState *st, u32 track, u32 *idx) {
+    *idx = *(volatile u32 *)(track + 0x86D4u);
+    if (*idx >= MOD_TRACKS) return 0;
+    NmRun *r = &st->t[*idx];
+    if (r->track != track) {                     /* a new track object in this slot */
+        for (u32 i = 0; i < sizeof(NmRun); i++) ((u8 *)r)[i] = 0;
+        r->track = track; r->cyc = CYCCNT; r->rnd = track ^ CYCCNT;
+    }
+    return r;
+}
+
+static int nm_value(NmRun *r, volatile ModNote *nm, u32 p, int fresh) {
+    if (nm->shape < 8u) {
+        ModRun tmp;                               /* the periodic shapes need no state */
+        return shape(&tmp, 0, nm->shape, p);
+    }
+    if (fresh || p < r->last_p) {                 /* Random: a new value per cycle (or per note) */
+        r->rnd = r->rnd * 1664525u + 1013904223u;
+        r->rval = (short)((int)(r->rnd >> 17) - 32767);
+    }
+    return r->rval;
+}
+
+__attribute__((used, retain)) u32 nm_on(u32 track, u32 note, u32 *pad, const u32 *csp) {
+#ifdef BE_NO_NMOD
+    (void)track; (void)pad; (void)csp; return note;
+#else
+    NmState *st = (NmState *)m1_nm_run();
+    ModState *ms = state();
+    if (!st || !ms) return note;
+    u32 p0 = irq_save(), idx;
+    volatile ModCfg *cfg = config(ms);
+    NmRun *r = cfg ? nm_track(st, track, &idx) : 0;
+    volatile ModNote *nm = r ? &cfg->nm[idx] : 0;
+    u32 sent = note, opad = *pad & 0xFFFFu, spad = opad;
+    if (!nm || !nm->amount) { irq_restore(p0); return note; }
+    int drum = nm_drum(track, note, opad), steps;
+    u32 key = cfg->key, sc = (key >> 16) & 1u && (key & 0xFFu) < 23u ? key & 0xFFu : 0u;
+    u32 root = (key >> 16) & 1u ? (((key >> 8) & 0xFFu) + 9u) % 12u : 0u;   /* stock's Root list starts at A */
+    if (r->has_tick && r->tick_lo == csp[8] && r->tick_hi == csp[9]) steps = r->steps;   /* a chord */
+    else {
+        u32 p;
+        if (nm->restart) p = 0;
+        else if (nm->sync) {
+            u32 period = SYNC_TICKS[nm->srate < 15u ? nm->srate : 6u], rem;
+            udiv64((unsigned long long)csp[8] | ((unsigned long long)csp[9] << 32), period, &rem);
+            p = (u32)udiv64((unsigned long long)rem << 32, period, 0);
+        } else p = r->phase;
+        int v = nm_value(r, nm, p, nm->restart);
+        r->last_p = p;
+        u32 range = (nm->range < 4u ? nm->range : 3u) + 1u;
+        int span = (int)(drum ? range * 4u : range * SCALE_N[sc]);
+        int num = v * (int)(nm->amount > 1000u ? 1000u : nm->amount) / 1000 * span;   /* |num| <= 32767 x 48 */
+        steps = (num >= 0 ? num + 16383 : num - 16383) / 32767;
+        r->steps = steps; r->tick_lo = csp[8]; r->tick_hi = csp[9]; r->has_tick = 1;
+    }
+    if (steps) {
+        if (drum) {
+            spad = (u32)(((int)opad + steps) % 16 + 16) % 16u;
+            if (note) { int x = (int)note + steps; sent = (u32)(x < 0 ? 0 : x > 127 ? 127 : x); }
+        } else sent = scale_shift(note & 0x7Fu, steps, sc, root);
+    }
+    if (sent != note || spad != opad) {
+        u32 k = 0;
+        while (k < NM_MAP && (r->used >> k & 1u)) k++;
+        if (k == NM_MAP) { st->full++; sent = note; spad = opad; }   /* no room: play it unshifted */
+        else {
+            r->m[k].note = (u8)note; r->m[k].sent = (u8)sent; r->m[k].pad = (u16)opad; r->m[k].spad = (u16)spad;
+            r->used |= (u16)(1u << k);
+            *pad = (*pad & 0xFFFF0000u) | spad;
+            st->shifted++;
+        }
+    }
+    irq_restore(p0);
+    return sent;
+#endif
+}
+
+/* a = the saved r0-r3 of a call to stock's Note Off: track, note, timing, pad. */
+__attribute__((used, retain)) void nm_off(u32 *a) {
+    NmState *st = (NmState *)m1_nm_run();
+    if (!st) return;
+    u32 p0 = irq_save(), idx = *(volatile u32 *)(a[0] + 0x86D4u);
+    NmRun *r = idx < MOD_TRACKS ? &st->t[idx] : 0;
+    if (r && r->track == a[0] && r->used)
+        for (u32 k = 0; k < NM_MAP; k++) {
+            if (!(r->used >> k & 1u) || r->m[k].note != (a[1] & 0xFFu) || r->m[k].pad != (a[3] & 0xFFFFu)) continue;
+            a[1] = r->m[k].sent; a[3] = (a[3] & 0xFFFF0000u) | r->m[k].spad;
+            r->used &= (u16)~(1u << k);
+            st->offs++;
+            break;
+        }
+    irq_restore(p0);
+}
+
+/* Stock's stop / all-notes-off for a track: end the shifted notes first. */
+__attribute__((used, retain)) void nm_all_off(u32 track, u32 timing, u32 router) {
+    NmState *st = (NmState *)m1_nm_run();
+    if (!st) return;
+    u32 idx = *(volatile u32 *)(track + 0x86D4u);
+    NmRun *r = idx < MOD_TRACKS ? &st->t[idx] : 0;
+    if (!r || r->track != track) return;
+    for (u32 k = 0; k < NM_MAP; k++) {
+        if (!(r->used >> k & 1u)) continue;
+        r->used &= (u16)~(1u << k);
+        st->alloff++;
+        FN(NOTE_OFF, void (*)(u32, u32, u32, u32, u32))(track, r->m[k].sent, timing, r->m[k].spad, router);
+    }
+    r->has_tick = 0;
+}
+
+void nm_block(u32 track) {
+    NmState *st = (NmState *)m1_nm_run();
+    ModState *ms = state();
+    if (!st || !ms) return;
+    u32 p0 = irq_save(), idx;
+    volatile ModCfg *cfg = config(ms);
+    NmRun *r = cfg ? nm_track(st, track, &idx) : 0;
+    if (r) {
+        volatile ModNote *nm = &cfg->nm[idx];
+        u32 now = CYCCNT, dt_us = (now - r->cyc) / 480u;
+        r->cyc = now;
+        if (nm->amount && !nm->sync) {
+            if (dt_us > 50000u) dt_us = 50000u;
+            u32 x = free_mhz(nm->rate) * dt_us;
+            r->phase += x * 4u + (u32)(((unsigned long long)x * 1266874889u) >> 32);
+        }
+    }
+    irq_restore(p0);
+}

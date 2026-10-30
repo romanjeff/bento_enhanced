@@ -115,12 +115,13 @@ typedef struct {
     u32 chan_sent, live_off;
     Chan ic[CHANS];                  /* M2-2b: internal channel aggregates (port|ch<<8 = key) */
     u32 mod[MOD_RUN_BYTES / 4u];     /* F1: m7_mod.c runtime (zeroed with the region) */
+    u32 nmod[NM_RUN_BYTES / 4u];     /* F5: Note Mod runtime (zeroed with the region) */
 } Region;
 _Static_assert(__builtin_offsetof(Region, curve_starts) == REGION_CURVE_STATS, "curve stats offset");
 _Static_assert(__builtin_offsetof(Region, curve_peak) == REGION_CURVE_PEAK, "curve peak offset");
 _Static_assert(__builtin_offsetof(Region, int_dest) == REGION_INTERNAL, "internal stats offset");
 
-#define REGION_MAGIC 0x35424D31u /* "1MB5": Player 36 B (v3.43) */
+#define REGION_MAGIC 0x36424D31u /* "1MB6": + Note Mod runtime (v3.59) */
 
 static volatile Region *region(void);
 /* m7_retrig.c (R4): is this note sounding on the track (voice list)? */
@@ -148,6 +149,10 @@ static int take_token(volatile Region *r, u32 port, u32 now);
 void *m1_mod_run(void) {
     volatile Region *r = region();
     return r ? (void *)r->mod : 0;
+}
+void *m1_nm_run(void) {
+    volatile Region *r = region();
+    return r ? (void *)r->nmod : 0;
 }
 int m1_token(u32 port, u32 now) {
     volatile Region *r = region();

@@ -83,14 +83,16 @@ static int settings(u32 pad, const u32 *rec_word, u32 *n, u32 *div, int *ramp) {
     return *n != 0;
 }
 
-/* csp = the caller's stack: [0] pad, [1] router, +0x20 tick64, +0x3C note word. */
-__attribute__((used, retain)) void retrig_accept(u32 track, u32 note, const u32 *csp, u32 clock, u32 vel) {
-    curve_start(track, note, csp[0x3C / 4], csp[0x20 / 4], csp[0x24 / 4], csp[1], csp[0] & 0xFFFFu,
+/* csp = the caller's stack: [0] pad, [1] router, +0x20 tick64, +0x3C note word.
+ * note and pad are what went to note_route (after Note Mod), so the burst and the
+ * curve follow a shifted note. */
+__attribute__((used, retain)) void retrig_accept(u32 track, u32 note, const u32 *csp, u32 clock, u32 vel, u32 pad_sent) {
+    curve_start(track, note, csp[0x3C / 4], csp[0x20 / 4], csp[0x24 / 4], csp[1], pad_sent & 0xFFFFu,
                 csp[0x30 / 4]);   /* bus = router; the note record (sp+0x28): length at +8 */
     volatile Burst *b = bursts();
     if (!b) return;
     (void)clock;
-    u32 pad = csp[0] & 0xFFFFu, n, div;
+    u32 pad = pad_sent & 0xFFFFu, n, div;
     int ramp;
     volatile Burst *free_b = 0;
     for (u32 i = 0; i < BURSTS; i++) {
@@ -107,9 +109,11 @@ __attribute__((used, retain)) void retrig_accept(u32 track, u32 note, const u32 
 
 /* Called at the timed-note processor's entry: (track, clock, start, len, router). */
 void mod_block(u32 track, const u32 *clock, int start, u32 router);   /* m7_mod.c (F1) */
+void nm_block(u32 track);                                             /* m7_mod.c (F5) */
 __attribute__((used, retain)) void retrig_emit(u32 track, u32 clock, int start, int len, u32 router) {
     curve_emit(track, clock, start, len);
     mod_block(track, (const u32 *)clock, start, router);
+    nm_block(track);
     volatile Burst *b = bursts();
     if (!b) return;
     (void)router;
