@@ -141,7 +141,7 @@ static int shape(ModRun *r, u32 k, u32 sh, u32 p) {          /* Q15: bipolar or 
     default:                                                  /* Random: new value each cycle */
         if (p < r->last_p[k]) {
             r->rnd = r->rnd * 1664525u + 1013904223u;
-            r->rval[k] = (short)((int)(r->rnd >> 17) - 32767);
+            r->rval[k] = (short)((int)(r->rnd >> 16) - 32768 < -32767 ? -32767 : (int)(r->rnd >> 16) - 32768);   /* both signs (v3.59 and earlier: -32767..0 only) */
         }
         return r->rval[k];
     }
@@ -381,7 +381,7 @@ static int nm_value(NmRun *r, volatile ModNote *nm, u32 p, int fresh) {
     }
     if (fresh || p < r->last_p) {                 /* Random: a new value per cycle (or per note) */
         r->rnd = r->rnd * 1664525u + 1013904223u;
-        r->rval = (short)((int)(r->rnd >> 17) - 32767);
+        r->rval = (short)((int)(r->rnd >> 16) - 32768 < -32767 ? -32767 : (int)(r->rnd >> 16) - 32768);   /* both signs */
     }
     return r->rval;
 }

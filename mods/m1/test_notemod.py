@@ -171,6 +171,34 @@ class NoteMod(unittest.TestCase):
         self.assertGreaterEqual(len(g.on), 2, "hits were posted")
         self.assertEqual({n for n, _ in g.on}, {64}, "every hit plays the first hit's pitch")
 
+    def test_random_goes_both_ways_across_the_range(self):
+        """BE3.59 (Jeff): Random only ever shifted down, by at most half the range."""
+        g = Rig(); g.nm(shape=RANDOM, restart=1, amount=1000, rng=1)          # +/-2 octaves = +/-14 steps
+        notes = []
+        for i in range(40):
+            notes.append(g.note_on(60, tick=1000 + 100 * i)[0]); g.note_off(60)
+        self.assertGreater(max(notes), 72, "up by more than an octave")
+        self.assertLess(min(notes), 48, "down by more than an octave")
+
+    def test_free_run_phase_moves_between_notes(self):
+        """Free-run: the shape keeps moving (per audio block), so notes get different offsets."""
+        g = Rig(); g.nm(shape=SAW, rate=400, amount=1000, rng=1)               # ~0.8 Hz
+        u = g.u
+        def blocks(n):
+            for _ in range(n):
+                w32(u, 0xE0001004, r32(u, 0xE0001004) + 480000 * 40)          # 40 ms per block
+                w32(u, CLOCK, 1000); w32(u, S, ROUTER)
+                for i, v in enumerate((g.t, CLOCK, 0, 0)):
+                    u.reg_write(UC_ARM_REG_R0 + i, v)
+                u.reg_write(UC_ARM_REG_SP, S)
+                u.emu_start(0x08060820 | 1, 0x08060824, count=400000)
+        got = []
+        for i in range(4):
+            got.append(g.note_on(60, tick=1000 + 960 * i)[0]); g.note_off(60)
+            blocks(8)                                                         # 0.32 s: ~1/4 cycle
+        self.assertEqual(len(set(got)), 4, f"each note somewhere else on the Saw: {got}")
+        self.assertEqual(got, sorted(got), "rising Saw, rising notes")
+
     def test_unshifted_when_the_map_is_full(self):
         g = Rig(); g.nm(amount=286)
         for i in range(16):
