@@ -42,7 +42,7 @@ APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
 M4_LIMIT = M4_CODE + 0x5000   # 20 KB since v3.54 (16 KB since v3.26: curve sidecar writer)
-VERSION = "3.61"                       # bump for every build that goes on the device
+VERSION = "3.62"                       # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -162,7 +162,7 @@ CTRL_INPUT, CTRL_STARTUP = 0x080D9000, 0x080D9800   # M7, in stock's zero gap (b
 CTRL_INPUT_SITE, CTRL_STARTUP_SITE = 0x0808D1FE, 0x080404B6
 CTRL_STATE = 0x3003C8A0                             # M7-only line: magic, suppress mask, drops, enable, pad map
 CTRL_WRAP = HOLD_LIMIT; CTRL_CODE = CTRL_WRAP + 0x200; CTRL_LIMIT = CTRL_WRAP + 0x1000
-STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x600; STEP_LIMIT = STEP_WRAP + 0x5000   # m4_step.c (20 KB since v3.41; 12 KB since v3.29)
+STEP_WRAP = CTRL_LIMIT; STEP_CODE = STEP_WRAP + 0x600; STEP_LIMIT = STEP_WRAP + 0x6000   # m4_step.c (24 KB since v3.62; 20 KB since v3.41)
 M4_POLY = STEP_LIMIT; M4_POLY_LIMIT = M4_POLY + 0x100   # 0x5F handler (72 B), 0x60 handler at +0x80
 M4_CHAN = M4_POLY + 0x80
 # Per-step Condition / Retrigger (m4_step.c)

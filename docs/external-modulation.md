@@ -207,3 +207,13 @@ clamped to 0-127.
   Depth = amount, Behavior, Range). The settings are per track slot, so a slot later
   switched to an internal instrument keeps (and applies) them; N2 adds their UI there.
 - Tests: test_notemod.py (12), ExtRows.test_note_mod_row, SidecarLoad NMOD.
+
+### N2 built (v3.62): Note Mod on the SEQ page, every track type
+- Jeff chose the SEQ page over each instrument's INST page (one place for all
+  track types; views we already hook; Note Mod only affects sequenced notes).
+- A "Note Mod" header button on page 0x27 (lit while on) swaps the bar: piano roll
+  (melodic tracks, External included, and drums' Sequence tab) slots 1-6; drum Step view
+  slots 3-8 (its Velocity / Probability stay; stock's slot keys are restored when off).
+- Same six encoders and settings as the External row (shared nm_desc / nm_edit / nm_slots);
+  edits mark the project modified.
+- v3.61: Triggered = the shape starts over at the first note after a stop (Random repeats).

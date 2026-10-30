@@ -922,6 +922,63 @@ class StrikeVelocity(unittest.TestCase):
         for a, n in ((0x081415F8, 2), (0x08198E00, 20)):
             self.assertEqual(IMG[a - BASE:a - BASE + n], stock[a - BASE:a - BASE + n], hex(a))
 
+class NoteModSeq(unittest.TestCase):
+    """F5 N2 (v3.62): a "Note Mod" button on the SEQ page (any track) swaps the bar to
+    Note Mod's six encoders: piano roll slots 1-6, drum Step view slots 3-8."""
+    CFGB, HEAD, MAGIC, OUT, ROOT = 0xC6200000, 0x3003DFC0, 0x37444F4D, 0x20180000, 0x30034D48
+    NM_KEYS = [0x4A, 0x4B, 0x1E9, 0x4C, 0x1E8, 0x1E6]               # Shape, Rate, Beat Sync, Depth, Behavior, Range
+    EV = 0x20100000
+
+    def rig(self, kind=0x10, track=2):
+        g = Rig(); g.u.mem_map(0xC6000000, 0x400000); g.selected = track; g.track_kind = kind
+        g.u.mem_write(self.CFGB, struct.pack("<3I", self.MAGIC, 1, 2) + bytes(8 * 232 + 8 * 12 + 32))
+        g.u.mem_write(self.HEAD, struct.pack("<8I", self.MAGIC, 1, self.CFGB, ~self.CFGB & 0xFFFFFFFF, 2, 0, 0, 0))
+        g.u.mem_write(0x30024B00 + 0x12C, bytes([0x27])); w32(g.u, self.ROOT, 0x081B3680)
+        return g
+
+    def press(self, g, handler):
+        g.u.mem_write(self.EV, struct.pack("<HH4I", 0x10F3, 0, 0, 0, 0, 0))
+        return g.call(handler, VIEW, self.EV)
+
+    def nm(self, g, t):
+        return struct.unpack("<4B2HB3x", g.u.mem_read(self.CFGB + 12 + 8 * 232 + 12 * t, 12))
+
+    def test_button_for_every_track_type(self):
+        for kind in (0x10, 0x0E):
+            g = self.rig(kind); g.drum_header()
+            recs = StrikeButton().generate(g)[1]
+            self.assertIn(("Note Mod", 0, 0x10F3), recs)
+
+    def test_piano_bar_shows_note_mod_and_edits_the_track(self):
+        g = self.rig()
+        g.u.mem_write(VIEW + 0x113E0, b"")                       # a piano view object, not the drum Step view
+        self.assertEqual(self.press(g, PIANO_EVENT), 0, "handled")
+        g.log.clear(); g.call(PIANO_HEADER, VIEW)
+        keys = [struct.unpack("<H", g.u.mem_read(VIEW + 0x11BCC0 + 2 * s, 2))[0] for s in range(6)]
+        self.assertEqual(keys, self.NM_KEYS)
+        self.assertIn(("title", "Range"), g.log)
+        self.assertIn(("Note Mod", 1, 0x10F3), StrikeButton().generate(g)[1], "lit")
+        g.u.mem_write(self.EV, struct.pack("<5I", 0xCF, 0, 0x4C, 500, 0))
+        self.assertEqual(g.call(PIANO_EVENT, VIEW, self.EV), 0)
+        self.assertEqual(self.nm(g, 2)[5], 500, "track 2: Depth 50 %")
+        self.assertEqual(self.nm(g, 0)[5], 0)
+        self.press(g, PIANO_EVENT); g.call(PIANO_HEADER, VIEW)
+        self.assertNotEqual(struct.unpack("<H", g.u.mem_read(VIEW + 0x11BCC0, 2))[0], 0x4A, "off: stock's bar again")
+
+    def test_drum_step_bar_uses_slots_3_to_8_and_restores_stocks_keys(self):
+        g = self.rig(kind=0x0E); g.drum_header()
+        before = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))
+        self.assertEqual(self.press(g, 0x0815D600), 0, "handled")
+        g.drum_header()
+        keys = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))
+        self.assertEqual(list(keys[2:]), self.NM_KEYS)
+        self.assertEqual(keys[:2], before[:2], "Velocity / Probability stay")
+        g.call(DRUM_ENCODER, VIEW, 0x1E6, 3)                          # Range: 4 Oct
+        self.assertEqual(self.nm(g, 2)[6], 3)
+        self.press(g, 0x0815D600); g.drum_header()
+        self.assertEqual(struct.unpack("<8H", g.u.mem_read(0x300000BC, 16)), before, "stock's keys back")
+
+
 class StrikeButton(unittest.TestCase):
     OUT, ROOT = 0x20180000, 0x30034D48
 

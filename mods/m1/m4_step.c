@@ -151,6 +151,12 @@ static void mod_defaults(void);
 static volatile ModCfg *mod_cfg_block(void);
 static void mod_write_begin(volatile ModCfg *m);
 static void mod_write_end(volatile ModCfg *m);
+static int nm_mode(void);
+static void nm_desc(u16 *key, u32 *val);
+static int nm_key(u32 key);
+static void nm_edit(u32 key, u32 value);
+static void nm_slots(void *v, void *bar, u32 first, u32 desc);
+#define NM_ACTION 0x10F3u          /* SEQ header button: the bar shows Note Mod (v3.62) */
 
 /* Claim SU_KEYS empty registry keys (from the top), once per boot. */
 static int claim(void) {
@@ -321,11 +327,21 @@ static void sync_defaults(void *v) {
 
 __attribute__((used, retain)) void step_header_before(void *v) {
     if (!drum_step_view(v) || !claim()) return;
+    volatile ModCfg *m = mod_cfg_block();
+    if (m && nm_mode()) {                           /* Note Mod in slots 3-8 (stock's 1-2 stay) */
+        if (!m->dk_ok) { for (u32 i = 0; i < 4; i++) m->dk[i] = DRUM_KEYS[i]; m->dk_ok = 1; }
+        u16 k[6]; u32 val[6];
+        nm_desc(k, val);
+        for (u32 i = 0; i < 6; i++) DRUM_KEYS[2 + i] = k[i];
+        return;
+    }
+    if (m && m->dk_ok) { for (u32 i = 0; i < 4; i++) DRUM_KEYS[i] = m->dk[i]; m->dk_ok = 0; }
     for (u32 i = 0; i < 4; i++) DRUM_KEYS[4 + i] = SU->key[i];
     sync_defaults(v);
 }
 
 __attribute__((used, retain)) void step_header_after(void *v) {
+    if (drum_step_view(v) && SU->ok && nm_mode()) { nm_slots(v, (u8 *)v + 0xEBF0, 2, 0); return; }
     if (!drum_step_view(v) || !SU->ok || DRUM_KEYS[4] != SU->key[0]) return;
     u32 e[6] = {0};
     int has = FN(SNAPSHOT, int (*)(void *, u32 *))(v, e) && (e[0] & 0xFFu) == 1u;
@@ -356,6 +372,11 @@ static void protect_release(void *v) {   /* same as m4_holdstep.c: no toggle on 
 /* 1 = handled (ours), 0 = stock key. */
 __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
     if (!SU->ok || !drum_step_view(v)) return 0;
+    if (nm_mode() && nm_key(key)) {                 /* Note Mod (v3.62) */
+        nm_edit(key, value < 0 ? 0u : (u32)value);
+        FN(0x0815C27Cu, void (*)(void *))(v);
+        return 1;
+    }
     u32 which = 4;
     for (u32 i = 0; i < 4; i++)
         if (key == SU->key[i]) which = i;
@@ -589,6 +610,7 @@ static int piano_selected(void *v, u32 *rec) {
 
 static void at_header(void *v);
 __attribute__((used, retain)) void piano_header_after(void *v) {
+    if (v && claim() && nm_mode()) { nm_slots(v, (u8 *)v + 0x55F0, 0, 1); return; }   /* Note Mod (v3.62) */
     if (v && B(v, 0x125DAC) && claim()) { at_header(v); return; }   /* Sequence view: AT settings */
     if (!piano_note_view(v) || !claim()) return;
     if (H(v, 0x11BCC0 + PIANO_SLOT * 2)) return;           /* slot taken (stock changed?): leave it */
@@ -609,7 +631,12 @@ __attribute__((used, retain)) void piano_header_after(void *v) {
 int strike_event(void *v, const u16 *ev);
 static int at_event(void *v, const u32 *ev);
 __attribute__((used, retain)) int piano_event(void *v, const u32 *ev) {
-    if ((ev[0] & 0xFFFFu) == STRIKE_ACTION) return strike_event(v, (const u16 *)ev);
+    if ((ev[0] & 0xFFFFu) == STRIKE_ACTION || (ev[0] & 0xFFFFu) == NM_ACTION) return strike_event(v, (const u16 *)ev);
+    if (SU->ok && v && nm_mode() && (ev[0] & 0xFFFFu) == 0xCFu && nm_key(ev[2])) {   /* Note Mod (v3.62) */
+        nm_edit(ev[2], (int)ev[3] < 0 ? 0u : ev[3]);
+        FN(PIANO_HEADER, void (*)(void *))(v);
+        return 1;
+    }
     if (SU->ok && v && B(v, 0x125DAC) && (ev[0] & 0xFFFFu) == 0xCFu && (ev[2] == SU->key[4] || ev[2] == SU->key[5]))
         return at_event(v, ev);
     if (!SU->ok || !piano_note_view(v) || (ev[0] & 0xFFFFu) != 0xCFu || ev[2] != SU->key[0]) return 0;
@@ -678,7 +705,8 @@ static void header_sync(void *out) {
     for (u32 i = 0; i < 6; i++) {
         volatile u8 *a = REC(out, i), *b = REC(HEADER_ROOT + 0x34, i);
         u32 ia = rid(a), ib = rid(b);
-        if (ia != STRIKE_ACTION && ib != STRIKE_ACTION && ia != ROWS_ACTION && ib != ROWS_ACTION && ia != MOD_ACTION && ib != MOD_ACTION)
+        if (ia != STRIKE_ACTION && ib != STRIKE_ACTION && ia != ROWS_ACTION && ib != ROWS_ACTION && ia != MOD_ACTION && ib != MOD_ACTION
+            && ia != NM_ACTION && ib != NM_ACTION)
             continue;
         if (rid(a) != rid(b) || a[0x20] != b[0x20] || a[0x21] != b[0x21] || a[0x22] != b[0x22]) {
             HEADER_ROOT[0x117C] = 1;
@@ -724,6 +752,7 @@ __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int cha
         int drum = drum_track_selected(), ins = 0;
         if (drum) ins = header_action_lit(out, STRIKE_ACTION, STRIKE_LABEL, !STRIKE_SET->off);
         changed |= ins;
+        if (mod_cfg_block()) changed |= header_action_lit(out, NM_ACTION, "Note Mod", nm_mode());
         u32 slot = 0xF;
         for (u32 i = 0; i < 6; i++)
             if (rid(REC(out, i)) == STRIKE_ACTION) slot = i;
@@ -740,7 +769,18 @@ static int drum_track_selected(void);
  * step view (0x0815D600) in Step, the piano-roll view object (0x0815A598) in
  * the Sequence tab, which stock draws with the piano view even for drum tracks. */
 __attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
-    (void)v;
+    if (ev[0] == NM_ACTION) {                       /* Note Mod on the SEQ bar, on / off */
+        volatile ModCfg *m = mod_cfg_block();
+        if (!m || !claim()) return 1;
+        if (!drum_step_view(v) && (m->nm_ui & 1u))  /* off: take our keys out of the piano bar's */
+            for (u32 s = 0; s < 6; s++)              /* slots before stock rebuilds it */
+                if (nm_key(H(v, 0x11BCC0 + s * 2))) H(v, 0x11BCC0 + s * 2) = 0;
+        m->nm_ui ^= 1u;
+        if (drum_step_view(v)) FN(0x0815C27Cu, void (*)(void *))(v);
+        else FN(PIANO_HEADER, void (*)(void *))(v);
+        if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) HEADER_ROOT[0x117C] = 1;
+        return 1;
+    }
     if (ev[0] != STRIKE_ACTION || !drum_track_selected()) return 0;
     strike_init();
     STRIKE_SET->off = !STRIKE_SET->off;
@@ -1271,18 +1311,7 @@ static void row_desc(u32 r, volatile ModTrack *t, u16 *key, u32 *val) {
             key[4] = SU->key[8]; val[4] = l->restart ? 1u : 0u;     /* Behavior: Free-run / Triggered */
         }
     } else if (r == ROW_NOTE) {                     /* F5: Note Mod (amount shown as stock's Depth) */
-        volatile ModCfg *m = mod_cfg_block();
-        u32 i = sel_track();
-        if (!m || i >= MOD_TRACKS) return;
-        volatile ModNote *n = &m->nm[i];
-        key[0] = K_LFO_SHAPE; val[0] = n->shape < 9u ? n->shape : 0u;
-        key[1] = n->sync ? K_LFO_SRATE : K_LFO_RATE; val[1] = n->sync ? (n->srate < 15u ? n->srate : 6u) : n->rate;
-        key[3] = K_LFO_DEPTH; val[3] = n->amount;
-        if (claim()) {
-            key[2] = SU->key[7]; val[2] = n->sync ? 1u : 0u;
-            key[4] = SU->key[8]; val[4] = n->restart ? 1u : 0u;
-            key[5] = SU->key[10]; val[5] = n->range < 4u ? n->range : 0u;
-        }
+        nm_desc(key, val);
     } else if (r == 3u || r == 4u) {
         volatile ModEnv *e = &t->env[r - 3u];
         key[0] = K_ENV_A; val[0] = e->a; key[1] = K_ENV_D; val[1] = e->d;
@@ -1306,6 +1335,70 @@ __attribute__((used, retain)) int ext_build(void *v) {
 
 static void mod_write_begin(volatile ModCfg *m) { m->seq |= 1u; }
 static void mod_write_end(volatile ModCfg *m) { m->seq = (m->seq | 1u) + 1u; }
+
+/* ---- F5 Note Mod controls, shared by the External row and the SEQ page bar ----
+ * Six encoders: Shape, Rate (Sync Rate when synced), Beat Sync, Depth (= amount),
+ * Behavior, Range, for the selected track's ModCfg.nm. Stock's LFO keys bring their
+ * titles, lists and formats; Beat Sync / Behavior / Range are our claimed keys. */
+static volatile ModNote *nm_sel(void) {
+    volatile ModCfg *m = mod_cfg_block();
+    u32 i = sel_track();
+    return m && i < MOD_TRACKS ? &m->nm[i] : 0;
+}
+static int nm_mode(void) { volatile ModCfg *m = mod_cfg_block(); return m && (m->nm_ui & 1u); }
+static void nm_desc(u16 *key, u32 *val) {
+    volatile ModNote *n = nm_sel();
+    for (u32 i = 0; i < 6; i++) { key[i] = 0; val[i] = 0; }
+    if (!n || !claim()) return;
+    key[0] = K_LFO_SHAPE; val[0] = n->shape < 9u ? n->shape : 0u;
+    key[1] = n->sync ? K_LFO_SRATE : K_LFO_RATE; val[1] = n->sync ? (n->srate < 15u ? n->srate : 6u) : n->rate;
+    key[2] = SU->key[7]; val[2] = n->sync ? 1u : 0u;
+    key[3] = K_LFO_DEPTH; val[3] = n->amount;
+    key[4] = SU->key[8]; val[4] = n->restart ? 1u : 0u;
+    key[5] = SU->key[10]; val[5] = n->range < 4u ? n->range : 0u;
+}
+static int nm_key(u32 key) {
+    u16 k[6]; u32 v[6];
+    nm_desc(k, v);
+    for (u32 i = 0; i < 6; i++) if (k[i] && k[i] == key) return 1;
+    return 0;
+}
+static void nm_edit(u32 key, u32 value) {
+    volatile ModCfg *m = mod_cfg_block();
+    volatile ModNote *n = nm_sel();
+    if (!m || !n || !claim()) return;
+    mod_write_begin(m);
+    if (key == K_LFO_SHAPE) n->shape = (u8)(value < 9u ? value : 8u);
+    else if (key == K_LFO_RATE) n->rate = (u16)(value > 1000u ? 1000u : value);
+    else if (key == K_LFO_SRATE) n->srate = (u8)(value < 15u ? value : 14u);
+    else if (key == SU->key[7]) n->sync = value != 0;
+    else if (key == K_LFO_DEPTH) n->amount = (u16)(value > 1000u ? 1000u : value);
+    else if (key == SU->key[8]) n->restart = value != 0;
+    else if (key == SU->key[10]) n->range = (u8)(value < 4u ? value : 3u);
+    mod_write_end(m);
+    B(MODEL, PROJECT_DIRTY) = 1;                    /* Save lights up, as for stock's edits */
+    FN(PROJECT_TOUCH, void (*)(void *))(MODEL);
+}
+/* Fill bar slots first..first+5 (desc: the piano view's slot descriptors too). */
+static void nm_slots(void *v, void *bar, u32 first, u32 desc) {
+    u16 k[6]; u32 val[6];
+    nm_desc(k, val);
+    if (!k[0]) return;
+    for (u32 i = 0; i < 6; i++) {
+        u32 s = first + i;
+        void *slot = (u8 *)bar + 0x38 + s * 0x468;
+        if (desc) {
+            H(v, 0x11BCC0 + s * 2) = k[i];
+            W(v, 0x11BCD0 + s * 4) = val[i];
+            W(v, 0x11BCA0 + s * 4) = W(v, 0x11CD00);
+        }
+        B(slot, 0x2C8) = 0;                         /* clear an old text override */
+        FN(BAR_TEXT, void (*)(void *, u32, const char *))(bar, s, 0);
+        FN(SLOT_SET, void (*)(void *, u32, int, u32))(slot, k[i], (int)val[i], 1);
+        const char *t = (const char *)W(REGISTRY + k[i] * 32u, 4);
+        if (t) FN(SLOT_TITLE, void (*)(void *, const char *))((u8 *)slot + 0x3C8, t);
+    }
+}
 
 /* Event hook (view, ev): 1 = ours (handled), 0 = stock's. */
 __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
@@ -1337,14 +1430,11 @@ __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
     if (!mine) return 0;
     mod_write_begin(m);
     if (r == ROW_NOTE) {
-        volatile ModNote *n = &m->nm[sel_track()];
-        if (key == K_LFO_SHAPE) n->shape = (u8)(value < 9u ? value : 8u);
-        else if (key == K_LFO_RATE) n->rate = (u16)(value > 1000u ? 1000u : value);
-        else if (key == K_LFO_SRATE) n->srate = (u8)(value < 15u ? value : 14u);
-        else if (key == SU->key[7]) n->sync = value != 0;
-        else if (key == K_LFO_DEPTH) n->amount = (u16)(value > 1000u ? 1000u : value);
-        else if (key == SU->key[8]) n->restart = value != 0;
-        else if (key == SU->key[10]) n->range = (u8)(value < 4u ? value : 3u);
+        mod_write_end(m);
+        nm_edit(key, value);
+        ext_build(v);
+        if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) HEADER_ROOT[0x117C] = 1;
+        return 1;
     } else if (r <= 2u) {
         volatile ModLfo *l = &t->lfo[r - 1u];
         if (key == K_LFO_SHAPE) l->shape = (u8)(value < 9u ? value : 8u);

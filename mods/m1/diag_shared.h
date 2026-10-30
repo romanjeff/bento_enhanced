@@ -316,7 +316,9 @@ typedef struct { ModLfo lfo[2]; ModEnv env[2]; ModDest d[MOD_DESTS]; } ModTrack;
 typedef struct { u8 shape, sync, srate, restart; u16 rate, amount; u8 range, pad_[3]; } ModNote;   /* 12 B */
 /* key: the project's Scale (0-22, stock's list) | Root << 8 (0 = A .. 11 = G#) | 1 << 16 when
  * read; nm_poll: the M4's last read (UI ms). Appended after the tracks. */
-typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; ModNote nm[MOD_TRACKS]; u32 key, nm_poll; } ModCfg;
+/* nm_ui (M4 only, v3.62): bit 0 = the SEQ page's bar shows Note Mod; dk/dk_ok: the drum
+ * Step view's own slot keys 1-4 while Note Mod borrows slots 3-4. */
+typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; ModNote nm[MOD_TRACKS]; u32 key, nm_poll, nm_ui; u16 dk[4]; u32 dk_ok; } ModCfg;
 #define NM_RUN_BYTES 0x480u        /* F5: Note Mod runtime (m7_mod.c) inside the region */
 /* tried: boot gen + 1 of the last allocation attempt. row/view/page: the External
  * INST page's row set (F2a, M4 only): 0 Main, 1-2 LFO, 3-4 Env; the External view
