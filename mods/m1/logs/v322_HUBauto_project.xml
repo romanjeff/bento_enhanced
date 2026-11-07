@@ -1,0 +1,751 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<document>
+    <session version="2">
+        <track type="extrack">
+            <params selcellpos="0" celldisppos="0" cellname="Track 1" trkinput="1" trkgain="2400" trkpan="0" trkmute="0" trksolo="0" trkfx1send="0" trkfx2send="0" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" outputbus="1" selseqpos="0" seqplayenable="0" midiinport="0" midiinchan="1" midioutport="0" midioutchan="1" padrowoffset="-1"/>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="8" notestepcount="64" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence>
+                    <seqevent step="0" type="note" strtks="0" pitch="63" lencount="17" lentks="16320" velocity="11"/>
+                    <seqevent step="0" type="note" strtks="0" pitch="68" lencount="8" lentks="7680" velocity="6"/>
+                    <seqevent step="9" type="note" strtks="8640" pitch="67" lencount="8" lentks="7680" velocity="6"/>
+                    <seqevent step="18" type="note" strtks="17280" pitch="53" lencount="45" lentks="43200" velocity="6"/>
+                    <seqevent step="18" type="note" strtks="17280" pitch="60" lencount="1" lentks="960" velocity="6"/>
+                    <seqevent step="20" type="note" strtks="19200" pitch="60" lencount="10" lentks="9600" velocity="6"/>
+                    <seqevent step="30" type="note" strtks="28800" pitch="56" lencount="13" lentks="12480" velocity="6"/>
+                    <seqevent step="36" type="note" strtks="34560" pitch="68" lencount="27" lentks="25920" velocity="6"/>
+                    <seqevent step="37" type="note" strtks="35520" pitch="60" lencount="26" lentks="24960" velocity="6"/>
+                    <seqevent step="43" type="note" strtks="41280" pitch="72" lencount="14" lentks="13440" velocity="7"/>
+                    <seqevent step="44" type="note" strtks="42240" pitch="48" lencount="19" lentks="18240" velocity="6"/>
+                    <seqevent step="50" type="note" strtks="48000" pitch="58" lencount="13" lentks="12480" velocity="6"/>
+                    <seqevent step="58" type="note" strtks="55680" pitch="72" lencount="5" lentks="4800" velocity="6"/>
+                </sequence>
+            </cell>
+        </track>
+        <track type="looptrack">
+            <params selcellpos="0" celldisppos="1" cellname="Track 2" selseqpos="1" seqplayenable="0" trkgain="0" trkpan="0" trkmute="0" trksolo="0" trkfx1send="0" trkfx2send="0" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" midiinport="0" midiinchan="2" padrec="0" cc1inport="0" cc1inchan="0" cc2inport="0" midioutport="0" midioutchan="0" padrowoffset="0" outputbus="0" recactive="0" recinput="1" recgain="0" recautoplay="1" recpresetlen="7" recquant="3" recmonmode="1" recusethres="1" recthresh="-30000"/>
+            <cell type="loopgroup">
+                <params cellname="RC000002" lgindex="0" lgmask="1" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="1" lgmask="2" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="2" lgmask="4" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="3" lgmask="8" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="4" lgmask="16" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="5" lgmask="32" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="6" lgmask="64" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="7" lgmask="128" lgcustom="0"/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="307" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="200" fx2send="650" overdrive="0" lfowave="2" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="1" lforatebeatsync="2" celldisppos="0" padmute="0" quantsize="3" synctype="1" beatcount="64" cliplength="61440"/>
+                <modsource dest="panpos" src="lfo1" slot="0" amount="155"/>
+                <modsource dest="dualfilcutoff" src="lfo1" slot="0" amount="-45"/>
+                <modsource dest="res" src="lfo1" slot="0" amount="45"/>
+            </cell>
+            <cell type="samasst">
+                <params filename=".\RC000002.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="2003500" loopstart="0" loopend="2003500"/>
+                <slices/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="1" padmute="0" quantsize="3" synctype="5" beatcount="0" cliplength="7864320"/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="15" padmute="0" quantsize="3" synctype="5" beatcount="0" cliplength="7864320"/>
+            </cell>
+        </track>
+        <track type="grtrack">
+            <params selcellpos="0" celldisppos="2" cellname="WaveSparkles" selseqpos="0" seqplayenable="1" trkgain="-10600" trkpan="0" trkmute="0" trksolo="0" trkfx1send="1000" trkfx2send="1000" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" granpolymode="1" grancpuamount="800" midiinport="0" midiinchan="3" cc1inport="0" cc1inchan="0" cc2inport="0" midioutport="0" midioutchan="0" padrowoffset="0" outputbus="1" graninput="0" graninputgain="0" recactive="0" recinput="0" recgain="0" recautoplay="0" recpresetlen="0" recquant="3" recmonmode="1" recusethres="0" recthresh="-30000"/>
+            <cell type="grainosc">
+                <params pitch="0" level="882" grainbeatsync="0" grainbeatrate="10" graindensity="395" grainsizeperc="837" grainshape="0" gainssrcwin="948" grainjitter="630" grainpanrnd="1000" grainfreezemode="0" grainfreezepos="139" samstart="0" samstartpercent="0" grainreadspeed="1000" grainliveinpos="0" grainliveinputfreeze="0" grainsaveattack="1" grainpitchpatt="2" graindetune="104" grainliveinput="0" loopmodes="0" samlen="1011602" wavesel="0" filename="Patches\Granular\WaveSparkles\SmallWindChimes1.wav"/>
+                <modsource dest="pitch" src="lfo1" slot="0" amount="102"/>
+            </cell>
+            <cell type="grainosc">
+                <params pitch="0" level="1000" grainbeatsync="0" grainbeatrate="10" graindensity="497" grainsizeperc="827" grainshape="0" gainssrcwin="589" grainjitter="328" grainpanrnd="480" grainfreezemode="1" grainfreezepos="373" samstart="0" samstartpercent="0" grainreadspeed="1000" grainliveinpos="0" grainliveinputfreeze="0" grainsaveattack="1" grainpitchpatt="1" graindetune="105" grainliveinput="0" loopmodes="0" samlen="526363" wavesel="0" filename="Patches\Granular\WaveSparkles\WaveBellglide.wav"/>
+                <modsource dest="pitch" src="lfo1" slot="0" amount="102"/>
+            </cell>
+            <cell type="osc">
+                <params pitch="-12000" level="737" waveform="2" dutycyc="503"/>
+                <modsource dest="pitch" src="seq" slot="0" amount="0"/>
+                <modsource dest="dutycyc" src="lfo2" slot="0" amount="464"/>
+            </cell>
+            <cell type="filter">
+                <params filtertype="0" cutoff="814" res="439" filtenable="1" filtparallel="0"/>
+                <modsource dest="cutoff" src="env2" slot="0" amount="413"/>
+            </cell>
+            <cell type="filter">
+                <params filtertype="3" cutoff="560" res="358" filtenable="1" filtparallel="1"/>
+                <modsource dest="cutoff" src="env2" slot="0" amount="27"/>
+                <modsource dest="cutoff" src="macroy" slot="1" amount="328"/>
+                <modsource dest="res" src="macroy" slot="0" amount="389"/>
+            </cell>
+            <cell type="env">
+                <params envattack="0" envdecay="306" envsus="1000" envrel="445" velamount="505"/>
+            </cell>
+            <cell type="env">
+                <params envattack="0" envdecay="607" envsus="0" envrel="500" velamount="1000"/>
+            </cell>
+            <cell type="lfo">
+                <params lfowave="2" lforate="787" lfoamount="0" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="787"/>
+                <modsource dest="lfoamount" src="modwheel" slot="0" amount="233"/>
+            </cell>
+            <cell type="lfo">
+                <params lfowave="2" lforate="153" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="153"/>
+            </cell>
+            <cell type="seqmod">
+                <params steplen="8" seqsteps="17" seqkeytrig="0" seqquant="1" seqslide="0" quantsize="0"/>
+                <sequence>
+                    <seqevent step="1" type="auto" value="3" value2="166"/>
+                    <seqevent step="2" type="auto" value="3" value2="333"/>
+                    <seqevent step="3" type="auto" value="3" value2="583"/>
+                    <seqevent step="4" type="auto" value="3" value2="750"/>
+                    <seqevent step="5" type="auto" value="3" value2="1000"/>
+                    <seqevent step="6" type="auto" value="3" value2="750"/>
+                    <seqevent step="7" type="auto" value="3" value2="583"/>
+                    <seqevent step="8" type="auto" value="3" value2="333"/>
+                    <seqevent step="9" type="auto" value="3" value2="166"/>
+                    <seqevent step="11" type="auto" value="3" value2="166"/>
+                    <seqevent step="12" type="auto" value="3" value2="333"/>
+                    <seqevent step="13" type="auto" value="3" value2="583"/>
+                    <seqevent step="14" type="auto" value="3" value2="750"/>
+                    <seqevent step="15" type="auto" value="3" value2="1000"/>
+                    <seqevent step="16" type="auto" value="3" value2="166"/>
+                </sequence>
+            </cell>
+            <cell type="partparms">
+                <params globtempo="120" midibend="2" wtblusepolymode="0" wtblpolymode="10" unisonmode="0" unisonvcount="4" oscphasereset="0" unisondetune="0" unisonspread="0" macroxsnap="0" macroysnap="0"/>
+            </cell>
+            <cell type="flangerdist">
+                <params flangeamount="478" lforate="90" feedback="562" distamount="0"/>
+                <modsource dest="lforate" src="macroy" slot="0" amount="232"/>
+            </cell>
+            <cell type="reverb">
+                <params amount="399" decay="600" predelay="681" damping="234"/>
+                <modsource dest="amount" src="macrox" slot="0" amount="127"/>
+            </cell>
+            <cell type="fxlemon">
+                <params flangeamount="478" flangelforate="90" flangefeedback="562" distamount="0" phaseamount="0" phaselforate="500" phasefeedback="500" chorusamount="0" chorusrate="500" fx1send="0" fx2send="399" fx3type="0"/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="6" notestepcount="64" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="0" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 2" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="1" quantsizeseq="1" bp_uiSeqKnobMode="0" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+        </track>
+        <track type="samtrack">
+            <params selcellpos="7" celldisppos="3" cellname="Club Kit" selseqpos="0" seqplayenable="1" trkgain="0" trkpan="0" trkmute="0" trksolo="0" trkfx1send="0" trkfx2send="0" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" midiinport="0" midiinchan="4" padrec="0" cc1inport="0" cc1inchan="0" cc2inport="0" midioutport="0" midioutchan="0" padrowoffset="0" outputbus="0" uiSequencerType="0" recactive="0" recinput="0" recgain="0" recautoplay="0" recpresetlen="0" recquant="3" recmonmode="1" recusethres="0" recthresh="-30000"/>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="8" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Kick_1_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="10639" loopstart="0" loopend="10639"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="0" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Kick_2_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="12856" loopstart="0" loopend="12856"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="9" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Snare_1_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="14662" loopstart="0" loopend="14662"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="1" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Snare_2_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="19135" loopstart="0" loopend="19135"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="15" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Tom_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="8713" loopstart="0" loopend="8713"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="7" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Plonk_Perc_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="8454" loopstart="0" loopend="8454"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="14" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Metal_Perc_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="36454" loopstart="0" loopend="36454"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="6" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Clank_Perc_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="18888" loopstart="0" loopend="18888"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="-1800" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="1" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="13" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\OH_1_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="15847" loopstart="0" loopend="15847"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="-3000" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="1" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="5" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\OH_2_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="10961" loopstart="0" loopend="10961"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="-1900" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="1" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="12" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\CH_1_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="11957" loopstart="0" loopend="11957"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="-100" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="1" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="4" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\CH_2_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="17808" loopstart="0" loopend="17808"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="-3000" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="11" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Clap_1_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="16244" loopstart="0" loopend="16244"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="3" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Clap_2_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="29683" loopstart="0" loopend="29683"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="10" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Rim_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="12567" loopstart="0" loopend="12567"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="2" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\Club Kit\Block_Club.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="12946" loopstart="0" loopend="12946"/>
+                <slices/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 2" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="1" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 3" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="2" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 4" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="3" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 5" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="4" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 6" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="5" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 7" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="6" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 8" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="7" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+        </track>
+        <track type="mastrack">
+            <params globtempo="92" swing="50" keymode="3" keyroot="3" metroopts="1" metoutbus="0" reccountdown="1" maingain="0" selscenepos="0" projmidiinport="0" projmidiinchan="0" songmode="0" quantsizesong="1" songSceneHold="0" songloop="0" fxliveatype="0" fxlivebtype="0" fxholda="0" fxholdb="0"/>
+            <cell type="fxdelay">
+                <params feedback="910" filtenable="1" cutoffFx="685" filtquality="819" delaypingpong="1" dealybeatsync="1" delay="400" delaymustime="0"/>
+            </cell>
+            <cell type="fxbluereverb">
+                <params r2style="14" r2metatime="674" r2metalevel="1000" r2highcut="762" r2lowcut="285" r2predelay="490" r2freeze="0" rvbalgo="0" shimshift="0" shimfeedbk="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 1" celldisppos="0" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 2" celldisppos="1" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 3" celldisppos="2" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 4" celldisppos="3" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 5" celldisppos="4" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 6" celldisppos="5" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 7" celldisppos="6" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 8" celldisppos="7" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="compressor">
+                <params globcomp="1" cattack="100" crelease="2500" cthreshdb="-10000" cratio="4" cgaindb="0" cautomakeup="1" peaklimit="1"/>
+            </cell>
+            <cell type="fxlemon">
+                <params flangeamount="478" flangelforate="90" flangefeedback="562" distamount="0" phaseamount="0" phaselforate="500" phasefeedback="500" chorusamount="0" chorusrate="500" fx1send="0" fx2send="399" fx3type="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 9" celldisppos="8" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 10" celldisppos="9" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 11" celldisppos="10" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 12" celldisppos="11" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 13" celldisppos="12" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 14" celldisppos="13" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 15" celldisppos="14" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 16" celldisppos="15" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="ducker">
+                <params duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0"/>
+            </cell>
+        </track>
+    </session>
+</document>

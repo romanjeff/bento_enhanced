@@ -13,14 +13,14 @@
 """
 import json, struct, sys, unittest
 from pathlib import Path
-from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
+from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_MEM_WRITE
 from unicorn.arm_const import *
 
 BASE = 0x08040000
 UWTICK = 0x2401EDB8       # stock M7 HAL tick (ms since boot)
 SENT = 0x08000100           # return sentinel (never executed: emu stops on reaching it)
 STACK = 0x2407F000
-LOG_LO, LOG_HI = 0x3003C000, 0x3003C9A0   # our reserved block (unlinked top of D2 SRAM2, v3.16): logger, monitors, strike line
+LOG_LO, LOG_HI = 0x3003C000, 0x3003CA00  # our reserved block (unlinked top of D2 SRAM2, v3.16): logger, monitors, strike line
 M7H, M4H, RECS = 0x3003C100, 0x3003C120, 0x3003C2C0
 MAGIC = 0x31474144
 RINGSTAT = 0x3003C200
@@ -41,10 +41,12 @@ def emu(img):
     u.mem_map(0x08000000, 0x200000)
     u.mem_write(BASE, img)
     u.mem_write(SENT, b"\xfe\xe7")           # b .
-    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC6000000, 0x200000), (0xE0000000, 0x100000),
+    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x200000), (0xE0000000, 0x100000),
+                 (0x10040000, 0x8000),    # SRAM3 through the alias stock's M7 uses (load ring)
                  (0x58000000, 0x10000),   # RTC (backup registers hold stock's crash record)
                  (0x40015000, 0x2000), (0x40020000, 0x1000)):  # SAI1-3, DMA2 (audio DMA monitor)
         u.mem_map(a, n)
+    u.mem_write(0x24000160, struct.pack("<2I", 3405824, 0xC6000000 - 3405824))   # stock's ext pool: left, cursor
     return u
 
 def w32(u, a, v): u.mem_write(a, struct.pack("<I", v & 0xFFFFFFFF))
@@ -428,6 +430,7 @@ class FatFsRig(unittest.TestCase):
         self.fs = {} if previous is None else {LOG: previous}
         self.open = {}      # FIL address -> [path, position]
         self.writes = []    # (path, mode, bytes written in that open)
+        self.dma_unaligned = []
         self.write_bufs = []  # buffer address of every f_write (the SD DMA cannot read D2 SRAM)
         def cstr(uc, a):
             s = b""
@@ -455,6 +458,14 @@ class FatFsRig(unittest.TestCase):
             elif addr == 0x08120604:                              # f_write(fil, buf, n, &done)
                 self.write_bufs.append(r(1))
                 f = self.open[r(0)]; data = bytes(uc.mem_read(r(1), r(2)))
+                # The real f_write: at a sector boundary with a sector or more left, the caller's
+                # pointer goes to the SD DMA, which rounds it down to 4 bytes (BE3.67-3.71 logs).
+                pos = len(self.fs[f[0]]); head = -pos & 511; run = (r(2) - head) & ~511 if r(2) >= head else 0
+                if run:
+                    src = r(1) + head
+                    if src & 3:
+                        self.dma_unaligned.append((f[0], pos + head, src & 3))
+                    data = data[:head] + bytes(uc.mem_read(src & ~3, run)) + data[head + run:]
                 self.fs[f[0]] += data; self.writes[-1][2] += data; w32(uc, r(3), len(data)); ret = 0
             elif addr == 0x08120974: self.open.pop(r(0), None); ret = 0   # f_close
             if ret is not None:
@@ -748,6 +759,473 @@ class M4EndToEnd(FatFsRig):
         self.assertEqual(r32(self.u, M7H + 8), 0)
         self.assertEqual(len(records(self.u)), 1)
 
+class ReadinessDiagnostics(FatFsRig):
+    """D0 (v3.64): render load on the M7, stock's counters, canaries over the ports' RAM."""
+    live = False
+    D0A, D0C, D0L = 0x3003C9A0, 0x3003CFC0, 0x3003CFE0
+    OBJ = 0x100451BC
+    BLOCKS = ((0x2404CDC0, 0x24050000), (0x30039100, 0x3003C000), (0x3003E000, 0x30040000))
+
+    def hb(self, n=256):
+        """h_consume reaching the n-th heartbeat, as the audio loop would."""
+        w32(self.u, RINGSTAT + 20, n - 1)
+        call(self.u, SYM7["h_consume"], 0, 0, 0)
+
+    def m7_ready(self, gen=1):
+        w32(self.u, M4H, MAGIC); w32(self.u, M4H + 8, gen)
+        call(self.u, SYM7["diag_put"], 1, 0, 0, 0, 0)     # first call this boot: resets the M7 side
+
+    def heap(self, *chunks, next_last=0):
+        w32(self.u, 0x24000178, chunks[0][0] if chunks else 0)
+        for i, (a, size) in enumerate(chunks):
+            w32(self.u, a, chunks[i + 1][0] if i + 1 < len(chunks) else next_last)
+            w32(self.u, a + 4, size)
+
+    def block(self, ratio, period=1280000):
+        """Stock's 0x08056F00: the block that just finished, at the next one's start."""
+        idx, start = r32(self.u, self.OBJ + 0x408), r32(self.u, self.OBJ + 0x414)
+        self.u.mem_write(self.OBJ + 8 + (idx & 0xFF) * 4, struct.pack("<f", ratio))
+        w32(self.u, self.OBJ + 0x414, start + period)
+        w32(self.u, self.OBJ + 0x408, idx + 1)
+        self.hb(1)
+
+    def load(self):
+        return struct.unpack("<8I", self.u.mem_read(self.D0L, 32))
+
+    def save_text(self):
+        call(self.u, SYM4["dump_after_save"], 0)
+        return self.fs["\\BENTO_SAVES.log"].decode()
+
+    def ready(self):
+        """Booted on both sides, with the M7's first publish done."""
+        self.tick(1000); self.m7_ready(); self.heap(); self.hb()
+
+    def test_m7_publishes_on_the_256th_heartbeat_only(self):
+        self.m7_ready()
+        for a, v in ((0x2401D9D8, 900), (0x2401D9D8 + 0xC, 55), (0x2401D9F8 + 0xC, 1), (0x2401D9F8 + 0x10, 3), (0x2401D9F8 + 8, 0x700),
+                     (0x2401D9F8 + 0x14, 4), (0x2401D9F8 + 0x18, 20000), (0x2401D9F8 + 0x1C, 8), (0x2401D33C, 1802),
+                     (0x2401B0B8, 131040), (0x24000448, 100288), (0x24000160, 5), (0x2400016C, 6)):
+            w32(self.u, a, v)
+        self.heap((0x24030000, 37000), (0x24040000, 776))
+        self.hb(255)
+        self.assertEqual(r32(self.u, self.D0A), 0, "not on other heartbeats")
+        self.hb(256)
+        a = struct.unpack("<15I", self.u.mem_read(self.D0A, 60))
+        self.assertEqual(a[0], 0x3137304D)
+        self.assertEqual(a[2:8], (37776, 37776, 2, 37000, 0, 131040))
+        self.assertEqual(a[8:15], (100288, 5, 6, 0, 55, 3, 0x700), "no wrong-half yet: head_min = least headroom")
+        self.assertEqual(struct.unpack("<6I", self.u.mem_read(self.D0C, 24)), (900, 901, 8, 4, 20000, 1))
+
+    def seq_fields(self, text):
+        import re
+        m = re.findall(r" seq (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+) (\d+)", text)
+        self.assertTrue(m, "seq fields on the AUDIO line")
+        return tuple(int(x) for x in m[-1])
+
+    def test_seq_timer_is_summed_peaked_and_cleared_per_stretch(self):
+        """v3.69 Stage 0: stock's per-track pass timer, once per block, read only."""
+        self.ready()
+        before = bytes(self.u.mem_read(0x2401D678, 0x14))
+        w32(self.u, 0x2401D678 + 4, 25600); self.block(0.5)
+        w32(self.u, 0x2401D678 + 4, 76800); self.block(0.5)
+        w32(self.u, 0x2401D678 + 4, 25600); self.block(0.5)
+        after = bytes(self.u.mem_read(0x2401D678, 0x14))
+        self.assertEqual(after[:4] + after[8:], before[:4] + before[8:], "stock's timer block is never written")
+        self.assertEqual(struct.unpack("<3I", self.u.mem_read(0x3003CF20, 12))[:3], (100 + 300 + 100, 3, 76800))
+        self.hb()
+        f = self.seq_fields(self.save_text())
+        self.assertEqual(f[:3], (500, 3, 76800), "sum >> 8, blocks, peak reach the save line")
+        w32(self.u, 0x2401D678 + 4, 2560); self.hb(); self.save_text(); self.hb(); self.block(0.5)
+        q = struct.unpack("<3I", self.u.mem_read(0x3003CF20, 12))
+        self.assertEqual(q, (10, 1, 2560), "a save starts a new stretch")
+
+    def test_probe_runs_rarely_touches_only_its_own_lines_and_restores_interrupts(self):
+        self.ready()
+        BLOCK, FREE = 0xC6100000, 0xC5FF0000
+        for a in (BLOCK, FREE):
+            try: self.u.mem_map(a, 0x10000)
+            except Exception: pass
+        w32(self.u, 0x3003D820 + 4, BLOCK)                 # CAPCFG->block
+        self.u.mem_write(FREE, bytes([0xA5]) * 256); self.u.mem_write(BLOCK, b"Z" * 256)
+        self.hb(256)
+        self.assertEqual(r32(self.u, 0x3003CF20 + 20), 0, "no price check on an ordinary publish")
+        reads, writes, cci = [], [], []
+        def acc(uc, kind, a, n, v, _):
+            if 0xC0000000 <= a < 0xD0000000: (writes if kind == UC_MEM_WRITE else reads).append(a)
+            if a == 0xE000EF70: cci.append(v)
+        h = self.u.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, acc)
+        self.hb(0x4000)
+        self.u.hook_del(h)
+        self.assertEqual(r32(self.u, 0x3003CF20 + 20), 1, "one price check at the 0x4000th heartbeat")
+        self.assertEqual(self.u.reg_read(UC_ARM_REG_PRIMASK), 0, "interrupts back on")
+        self.assertEqual(writes, [], "read only in SDRAM")
+        self.assertEqual(sorted(cci), [FREE + i * 32 for i in range(8)], "maintenance only on the free lines")
+        self.assertEqual(sorted(reads), sorted([BLOCK + i * 32 for i in range(8)] + [FREE + i * 32 for i in range(8)]))
+        self.assertEqual(bytes(self.u.mem_read(FREE, 256)), bytes([0xA5]) * 256)
+        self.assertLessEqual(FREE + 8 * 32, self.REGION, "its lines end below the region, which is reserved from here up")
+        w32(self.u, 0x3003D820 + 4, 0x08000000)            # a nonsense address is not followed
+        self.hb(0x8000)
+        self.assertEqual(r32(self.u, 0x3003CF20 + 20), 1)
+
+    REGION = 0xC5FFC000
+
+    def test_publish_cleans_exactly_the_region_lines_the_m4_reads(self):
+        """v3.70: the region is write-back on the M7, and the M4 has no way to see a dirty line."""
+        self.ready()
+        lines = []
+        def w(uc, k, a, n, v, _):
+            if a == 0xE000EF68: lines.append(v & 0xFFFFFFFF)
+        h = self.u.hook_add(UC_HOOK_MEM_WRITE, w)
+        self.u.ctl_flush_tb()                             # code that already ran doesn't see a later hook
+        self.hb(255)
+        self.assertEqual([a for a in lines if a >= 0xC0000000], [], "not between publishes")
+        self.hb(256)
+        self.u.hook_del(h)
+        self.assertEqual([a for a in lines if a >= 0xC0000000], [self.REGION, self.REGION + 0x20, self.REGION + 0x40])
+
+    @unittest.skipUnless({"poly", "retrig", "nmod"} <= OFF, "features-off twin only")
+    def test_features_off_twin_never_reserves_or_writes_the_pool_tail(self):
+        """The bisect twin has only the trace hooks in stock's path. If one of them reached a region
+        consumer the baseline would reserve and zero, and no longer be stock's behaviour."""
+        writes = []
+        h = self.u.hook_add(UC_HOOK_MEM_WRITE, lambda uc, k, a, n, v, _: writes.append(a), begin=0xC5FF0000, end=0xC5FFFFFF)
+        self.u.ctl_flush_tb()
+        self.ready()                                       # its publish runs h_consume too
+        self.assertEqual((r32(self.u, 0x3003C1E0), r32(self.u, 0x3003C1E0 + 4)), (MAGIC, self.REGION), "the state could come up")
+        ev, obj = 0x24070000, 0x24071000
+        for t in (0x5B, 0x5C, 0x0E, 0x5F, 0xAC, 0xAD, 0xAE):
+            self.u.mem_write(ev, struct.pack("<6I", t, 0, 1, 2, 60, 100))
+            call(self.u, SYM7["h_input"], obj, ev)
+            call(self.u, SYM7["h_send"], 0x24060000, ev, SENT | 1)
+            call(self.u, SYM7["h_ring"], obj, ev)
+        self.hb(256); self.hb(0x4000)
+        self.u.hook_del(h)
+        self.assertEqual(r32(self.u, 0x3003CF20 + 20), 1, "the probe ran")
+        self.assertEqual(struct.unpack("<2I", self.u.mem_read(0x24000160, 8)), (3405824, 0xC6000000 - 3405824), "pool counters as stock's startup left them")
+        self.assertEqual(writes, [], "nothing written at or above the probe's lines")
+
+    def test_m4_prints_the_stats_at_the_fixed_address(self):
+        self.ready()
+        self.assertEqual(r32(self.u, 0x3003C1E0 + 4), self.REGION, "published by the M4")
+        stats = (11, 22, 33, 44, 0xDDDD, 55, 66, 0x77, 0x88, 0x99, 170)    # +32..+75; +48 is midi_q, not printed
+        self.u.mem_write(self.REGION + 32, struct.pack("<11I", *stats))
+        text = self.save_text()
+        self.assertIn(" | curves started=11 sent=22 late=33 skipped=44 peak players=55 thinned=66 last dest=00000077", text)
+        self.assertIn(" | internal dest=00000088 live=00000099 posts=170", text)
+
+    def test_m4_follows_no_other_region_pointer(self):
+        self.ready()
+        for other in (0xC6100000, self.REGION + 32, self.REGION - 32, 0):
+            self.fs.clear()
+            w32(self.u, 0x3003C1E0 + 4, other)
+            self.assertNotIn("curves started=", self.save_text(), hex(other))
+        w32(self.u, 0x3003C1E0 + 4, self.REGION)
+        self.fs.clear()
+        self.assertIn("curves started=", self.save_text())
+
+    def test_m4_never_writes_the_region_and_stays_inside_its_stats(self):
+        reads, writes = [], []
+        def m(uc, k, a, n, v, _): (writes if k == UC_MEM_WRITE else reads).append(a)
+        h = self.u.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, m, begin=self.REGION, end=self.REGION + 0x3FFF)
+        self.tick(1000); self.save_text(); self.tick(2000)      # boot, publish, a save, a poll
+        self.tick(50); self.save_text()                         # a reboot: its boot print follows CFG too
+        self.u.hook_del(h)
+        self.assertEqual(writes, [])
+        self.assertTrue(reads, "the save line reads them")
+        self.assertGreaterEqual(min(reads), self.REGION + 32)
+        self.assertLessEqual(max(reads), self.REGION + 75)
+
+    def test_m4_pool_holds_only_its_own_allocations(self):
+        self.tick(1000)
+        buf = r32(self.u, M4H + 12)
+        self.assertEqual(buf, 0xC6000000)
+        self.assertEqual(r32(self.u, 0x3003D820 + 4), buf + 0x40000, "the capture block follows the log buffer: no 12 KB between")
+
+    def test_m4_preflight_no_longer_counts_the_region(self):
+        for room, ok in ((0x40000 + 33792 + 64, True), (0x40000 + 33792 + 63, False)):
+            self.setUp()
+            w32(self.u, 0x30000048, 0xC6000000 + room)
+            self.tick(1000)
+            self.assertEqual(r32(self.u, M4H + 12) == 0xC6000000, ok, room)
+            self.assertEqual(r32(self.u, 0x3003C1E0 + 4), self.REGION, "the region doesn't depend on the M4's pool")
+
+    def test_head_min_goes_negative_once_late(self):
+        self.ready()
+        w32(self.u, 0x2401D9D8 + 4, 2); w32(self.u, 0x2401D9D8 + 0x18, 0xFFFFFF00); w32(self.u, 0x2401D9D8 + 0xC, 55)
+        self.hb()
+        self.assertEqual(r32(self.u, self.D0A + 48), 0xFFFFFF00)
+        self.assertIn("wrong_half=2 head_min=-256 ", self.save_text())
+
+    def test_heap_minimum_is_kept(self):
+        self.m7_ready()
+        self.heap((0x24030000, 1000)); self.hb()
+        self.heap((0x24030000, 400)); self.hb()
+        self.heap((0x24030000, 900)); self.hb()
+        self.assertEqual(r32(self.u, self.D0A + 8), 900)
+        self.assertEqual(r32(self.u, self.D0A + 12), 400)
+
+    def test_corrupt_free_list_cannot_fault(self):
+        self.m7_ready()
+        for bad_next in (0xDEADBEEF, 0x24048DA0, 0x24030001, 0x08000000):
+            self.heap((0x24030000, 1000), next_last=bad_next); self.hb()
+            self.assertEqual(r32(self.u, self.D0A + 24), 1, hex(bad_next))
+            self.assertEqual(r32(self.u, self.D0A + 12), 0xFFFFFFFF, "a bad walk never moves the minimum")
+        w32(self.u, 0x24030000, 0x24030000)               # a loop ends at the chunk limit
+        self.hb()
+        self.assertEqual(r32(self.u, self.D0A + 24), 1)
+
+    def test_render_time_is_a_share_of_the_fixed_budget(self):
+        self.ready()
+        self.block(0.25); self.block(0.5); self.block(0.75); self.block(0.875)
+        l = self.load()
+        self.assertEqual(l[0], 4)
+        self.assertEqual(l[1], 250 + 500 + 750 + 875)
+        self.assertEqual(l[2], 875)
+        self.assertEqual(l[3:7], (1, 2, 1, 0), "<50, 50-80, 80-100, 100+")
+
+    def test_overload_reads_as_overload(self):
+        """Stock's ratio stays under 1.0 and falls when renders run late; ours doesn't."""
+        self.ready()
+        self.block(0.75, period=2 * 1280000)              # 75 % of a period two budgets long
+        l = self.load()
+        self.assertEqual(l[2], 1500, "150 % of the budget")
+        self.assertEqual(l[6], 1, "the 100+ bucket")
+
+    def test_skipped_blocks_are_counted_not_guessed(self):
+        self.ready()
+        w32(self.u, self.OBJ + 0x408, r32(self.u, self.OBJ + 0x408) + 3)
+        self.hb(1)
+        self.assertEqual(self.load()[0], 0)
+        self.assertEqual(r32(self.u, self.D0C + 24), 1)
+        self.block(0.5)
+        self.assertEqual(self.load()[0], 1, "back in step")
+
+    def test_odd_floats_cannot_overflow(self):
+        self.ready()
+        for bad in (float("nan"), float("inf"), -1.0, 1e-30):
+            self.block(bad, period=0xFFFFFF00)
+        self.assertEqual(self.load()[0], 4)
+        self.assertLessEqual(self.load()[2], 800000)
+
+    def test_cold_ram_garbage_is_cleared_at_first_publish(self):
+        self.u.mem_write(self.D0L, b"\xA5" * 32)
+        self.m7_ready(); self.heap(); self.hb()
+        self.assertEqual(self.load()[:7], (0, 0, 0, 0, 0, 0, 0))
+
+    def test_each_save_starts_a_new_stretch(self):
+        self.ready()
+        self.block(0.5); self.block(0.25)
+        text = self.save_text()
+        self.assertIn("LOAD render blocks=2 avg=37.5% peak=50.0% <50=1 50-80=1 80-100=0 100+=0 missed=0", text)
+        self.assertRegex(text, r"AUDIO blocks=\d+ events=\d+ waited=\d+ timeouts=\d+ max_polls=\d+ wrong_half=\d+ head_min=-?\d+ gap_under=\d+ gap_over=\d+ gap_max=\d+")
+        self.assertRegex(text, r"M7MEM heap free=\d+ min=\d+ chunks=\d+ largest=\d+ bad=0 \| dtcm used=\d+")
+        self.hb()                                        # the M7 acts on the request at its next publish
+        self.block(0.125)
+        self.assertIn("LOAD render blocks=1 avg=12.5% peak=12.5%", self.save_text())
+
+    def test_the_run_before_a_reset_is_reported_at_boot(self):
+        self.ready()
+        self.block(0.5)
+        w32(self.u, M4H, 0)                              # a reset: nothing was saved
+        self.tick(2000)
+        self.assertRegex(self.save_text(), r"as found at boot[^\n]*\r\nLOAD render blocks=1 avg=50\.0%")
+
+    def test_a_warm_reset_leaves_the_previous_run_for_the_boot_print(self):
+        self.ready()
+        w32(self.u, 0x2401D9D8, 900); w32(self.u, 0x2401D9D8 + 4, 7); w32(self.u, 0x2401D9D8 + 0x18, 0xFFFFFF00)
+        self.block(0.5); self.hb()
+        for a in (0x2401D9D8, 0x2401D9D8 + 4, 0x2401D9D8 + 0x18):   # stock's BSS is zero after the reset
+            w32(self.u, a, 0)
+        w32(self.u, 0x2401D9D8, 4)
+        self.block(0.25); self.hb()                      # the engine runs before the M4's first pass
+        w32(self.u, M4H, 0)
+        self.tick(2000)
+        text = self.save_text()
+        self.assertRegex(text, r"as found at boot[^\n]*\r\nLOAD render blocks=1 avg=50\.0%")
+        self.assertRegex(text, r"as found at boot[^\n]*\r\n[^\n]*\r\nAUDIO blocks=900 [^\n]*wrong_half=7 head_min=-256 ")
+
+    def test_new_boot_clears_it_once_the_generation_moves(self):
+        self.ready()
+        w32(self.u, 0x2401D9D8, 900); self.block(0.5); self.hb()
+        w32(self.u, 0x2401D9D8, 4)
+        self.tick(500)                                   # a reset (the tick went back): the M4 prints it, then a new generation
+        call(self.u, SYM7["diag_put"], 1, 0, 0, 0, 0)    # first post moves GEN
+        self.hb()
+        self.assertEqual(struct.unpack("<I", self.u.mem_read(self.D0C, 4))[0], 4)
+        self.assertEqual(self.load()[0], 0)
+
+    def test_avg_saturates_rather_than_wraps(self):
+        self.ready()
+        self.block(0.5)
+        w32(self.u, self.D0L + 4, 0xFFFFFFF0)
+        self.block(0.5)
+        self.assertEqual(self.load()[1], 0xFFFFFFFF)
+        self.block(0.5)
+        self.assertEqual(self.load()[1], 0xFFFFFFFF)
+        self.assertIn("LOAD render blocks=3 avg=- peak=50.0%", self.save_text())
+
+    def test_missed_belongs_to_the_stretch(self):
+        self.ready()
+        w32(self.u, self.OBJ + 0x408, r32(self.u, self.OBJ + 0x408) + 3); self.hb(1)
+        self.assertIn(" missed=1\r\n", self.save_text())
+        self.hb()
+        self.assertEqual(r32(self.u, self.D0C + 24), 0)
+
+    def test_link_figures_reach_the_log(self):
+        self.ready()
+        L, S = 0x2401D830, 0x2401E1B8
+        for a, v in ((L + 0x194, 5000), (L + 0x19C, 3), (L + 0x190, 5100), (0x24000450, 3)):
+            w32(self.u, a, v)
+        self.u.mem_write(L + 0x1A2, struct.pack("<H", 1))
+        self.u.mem_write(S + 0x81, bytes([5])); self.u.mem_write(0x2401D070, bytes([3]))
+        self.hb()
+        w32(self.u, L + 0x194, 10); self.hb()             # a link restart zeroes the counters
+        text = self.save_text()
+        self.assertIn("LINK rx=10 bad=3 fw_boots=0 crc_changes=0 tx=5100 restarts=1 version=0001 reboots=3 spi=5 frame_type=3 ", text)
+
+    def test_controller_boots_and_frame_changes_are_counted(self):
+        self.ready()
+        for booted, crc in ((1, 7), (1, 7), (0, 8), (0, 8), (1, 9)):
+            self.u.mem_write(0x2401D0AA, struct.pack("<H", booted)); w32(self.u, 0x2401D0B4, crc); self.block(0.1)
+        self.assertIn(" fw_boots=2 crc_changes=3 ", self.save_text_published())
+
+    def test_button_changes_are_counted_every_block(self):
+        self.ready()
+        self.u.mem_write(0x2401D078, struct.pack("<H", 0x0002)); self.block(0.1)
+        self.u.mem_write(0x2401D078, struct.pack("<H", 0x0000)); self.block(0.1)
+        self.u.mem_write(0x2401D078, struct.pack("<H", 0x0001)); self.block(0.1)
+        self.block(0.1)
+        self.assertIn("btn_changes=3 btn_or=0003 btn_now=0001", self.save_text_published())
+
+    def save_text_published(self):
+        self.hb()
+        return self.save_text()
+
+    def test_each_save_also_lands_in_a_small_file(self):
+        self.ready()
+        self.block(0.5)
+        self.save_text()
+        saves = self.fs["\\BENTO_SAVES.log"].decode()
+        self.assertIn("BENTO black box, firmware BE", saves, "the boot header, once")
+        self.assertIn("as found at boot", saves)
+        self.assertIn("LOAD render blocks=1 avg=50.0%", saves)
+        self.assertIn("# saved:", saves)
+        size = len(saves)
+        self.hb(); self.block(0.25)
+        self.save_text()
+        saves = self.fs["\\BENTO_SAVES.log"].decode()
+        self.assertEqual(saves.count("BENTO black box"), 1)
+        self.assertEqual(saves.count("# saved:"), 2)
+        self.assertIn("avg=25.0%", saves[size:])
+
+    def test_save_text_is_never_handed_unaligned_to_the_sd_dma(self):
+        self.fs["\\BENTO_SAVES.log"] = b"x"                  # file position 1: any later run is unaligned
+        self.ready()
+        self.block(0.5)
+        self.save_text()
+        self.hb(); self.block(0.25)
+        self.save_text()
+        saves = self.fs["\\BENTO_SAVES.log"]
+        self.assertGreater(len(saves), 1024, "long enough to cross whole sectors")
+        self.assertEqual(self.dma_unaligned, [])
+        self.assertEqual(saves.count(b"# saved:"), 2)
+
+    def test_a_save_never_touches_the_long_log(self):
+        self.ready()
+        self.block(0.5)
+        self.save_text(); self.save_text()
+        self.assertNotIn(LOG, self.fs, "no long write")
+        self.assertNotIn(PREV, self.fs, "no copy of the old log")
+        self.assertEqual(self.fs["\\BENTO_CRASHES.log"].count(b"boot fw="), 1, "one line per boot")
+
+    def test_canaries_armed_once_and_report_changes(self):
+        self.tick(1000)
+        for lo, hi in self.BLOCKS:
+            self.assertEqual(r32(self.u, lo), 0x32524E43, hex(lo))
+            self.assertNotEqual(r32(self.u, hi - 4), 0, "filled to the top")
+        self.assertIn("RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0", self.save_text())
+        w32(self.u, 0x30039200, 1); w32(self.u, 0x3003BFFC, 1)
+        self.assertIn("d2a changed=2 low=30039200 high=3003bffc", self.save_text())
+        w32(self.u, M4H, 0)                               # a reset: the fill isn't redone
+        self.tick(2000)
+        self.assertEqual(r32(self.u, 0x30039200), 1, "no re-fill hides what happened")
+
+    def test_ranges_stay_clear_of_their_neighbours(self):
+        for a in (0x2404CDBC, 0x24050000, 0x300390FC, 0x3003C000, 0x3003DFFC, 0x30040000, 0x3003CFC0, 0x3003CFFC):
+            w32(self.u, a, 0x11223344)
+        self.tick(1000)
+        for a in (0x2404CDBC, 0x24050000, 0x300390FC, 0x3003DFFC, 0x30040000, 0x3003CFC0, 0x3003CFFC):
+            self.assertEqual(r32(self.u, a), 0x11223344, hex(a))
+
+
+class BaseFirmwareChecks(unittest.TestCase):
+    """build.py's list of what the Region's place depends on: stock passes, each change is refused."""
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import build
+        cls.b = build
+
+    def refused(self, addr, data, want):
+        img = bytearray(CH10)
+        img[addr - self.b.BASE:addr - self.b.BASE + len(data)] = data
+        with self.assertRaises(SystemExit) as ctx:
+            self.b.check_region_assumptions(img)
+        self.assertIn(want, str(ctx.exception))
+
+    def test_stock_passes(self):
+        self.b.check_region_assumptions(CH10)
+
+    def test_changed_pool_start_is_refused(self):
+        self.refused(self.b.POOL_INIT_FLASH, struct.pack("<I", 0x04000000), "starting values")
+        self.refused(self.b.POOL_INIT_FLASH + 4, struct.pack("<I", 0xC2000000), "starting values")
+
+    def test_changed_allocator_is_refused(self):
+        self.refused(self.b.ALLOC_BUMP + 8, bytes(2), "allocator")
+
+    def test_new_user_of_the_counters_is_refused(self):
+        self.refused(0x081B3E80, struct.pack("<I", self.b.POOL_LEFT_RAM), "counters")
+        self.refused(0x081B3E80, struct.pack("<I", self.b.POOL_CUR_RAM), "counters")
+
+    def test_changed_mpu_setup_is_refused(self):
+        self.refused(self.b.MPU_SETUP[1] - 4, bytes(4), "MPU")
+
+    def test_a_pointer_into_the_reserved_range_is_refused(self):
+        self.refused(0x081B3E80, struct.pack("<I", 0xC5FFC000), "literal")
+        self.refused(0x081B3E80, struct.pack("<I", 0xC5FFFFFC), "literal")
+
+    def test_movt_into_the_reserved_range_is_refused(self):
+        self.refused(0x081B3E82, bytes.fromhex("ccf2ff50"), "movt")     # movt r0, #0xC5FF
+
+    def test_the_pool_end_word_itself_is_fine(self):
+        self.assertGreaterEqual(CH10.count(struct.pack("<I", 0xC6000000)), 1)   # stock's own, not in the range
+        self.b.check_region_assumptions(CH10)
+
+class ScanCost(unittest.TestCase):
+    """v3.66: the region is SDRAM, which the M7 then read uncached. Scanning every slot on every
+    playing track's block turned a clean SPACED into a crackling one (BE3.64). Cached since v3.70,
+    but a read of a cold line is still an SDRAM access, so the count keeps its meaning."""
+    REGION = 0xC5FFC000
+
+    def test_nothing_playing_costs_few_sdram_reads(self):
+        u = emu(DIAG)
+        w32(u, 0x3003C1E0, MAGIC); w32(u, 0x3003C1E4, self.REGION); w32(u, 0x3003C1E8, 0x3000); w32(u, 0x3003C1EC, 7)
+        call(u, SYM7["curve_emit"], 1, 0, 0, 128)        # first call zeroes the region
+        w32(u, self.REGION + 48, 0x24060000)             # midi_q: an External note has been seen
+        reads = []
+        u.hook_add(UC_HOOK_MEM_READ, lambda uc, acc, a, sz, v, _: reads.append(a), begin=self.REGION, end=self.REGION + 0x3000)
+        u.ctl_flush_tb()                                 # code that already ran doesn't see a later hook
+        call(u, SYM7["curve_emit"], 1, 0, 0, 128)
+        self.assertLess(len(reads), 30, "curve_emit, no players")
+
+    def test_slots_are_found_only_up_to_the_high_water_mark(self):
+        u = emu(DIAG)
+        w32(u, 0x3003C1E0, MAGIC); w32(u, 0x3003C1E4, self.REGION); w32(u, 0x3003C1E8, 0x3000); w32(u, 0x3003C1EC, 7)
+        call(u, SYM7["curve_emit"], 1, 0, 0, 128)
+        self.assertEqual(r32(u, 0x3003CF60), 0)
+        self.assertEqual(r32(u, 0x3003CF64), 0)
+
+
 class NoCardWrites(FatFsRig):
     """v3.21 default: the black box never touches the card (stock's FatFS and SD
     driver take no locks; any access from our code risked re-mounting the volume
@@ -764,14 +1242,15 @@ class NoCardWrites(FatFsRig):
         self.assertEqual(self.writes, [], "no f_open of any kind")
 
     def test_dump_after_save_writes_once_per_save(self):
+        SAVES = "\\BENTO_SAVES.log"
         self.tick(1000)
         call(self.u, SYM4["dump_after_save"])
-        self.assertEqual(len(self.files), 1)
-        self.assertIn("# saved: m7 dropped=", self.files[0].decode())
+        self.assertIn("# saved: m7 dropped=", self.fs[SAVES].decode())
+        n = len(self.writes)
         self.tick(2000)
-        self.assertEqual(len(self.files), 1, "no writes between saves")
+        self.assertEqual(len(self.writes), n, "no writes between saves")
         call(self.u, SYM4["dump_after_save"])
-        self.assertEqual(len(self.files), 2, "the next save appends")
+        self.assertEqual(self.fs[SAVES].count(b"# saved:"), 2, "the next save appends")
 
     def sidecar_rig(self, samples):
         u = self.u
@@ -821,7 +1300,7 @@ class NoCardWrites(FatFsRig):
         self.assertEqual(blob[-mods:-mods + 8], b"MODS" + struct.pack("<HH", 8, 232), "External modulation chunk")
         self.assertLess(len(blob) - mods - 38, 8 + 4 + len(samples), "curves smaller than raw")
         self.assertEqual(r32(self.u, 0x3003D840 + 36), 0, "save list cleared")
-        self.assertIn("sidecar status=4 curves=1", self.files[-1].decode())
+        self.assertIn("sidecar status=4 curves=1", self.fs["\BENTO_SAVES.log"].decode())
         d2 = [hex(b) for b in self.write_bufs if 0x30000000 <= b < 0x30080000 or b < 0x24000000]
         self.assertEqual(d2, [], "every f_write buffer must be DMA-reachable (not D2 SRAM / the M4 stack)")
 

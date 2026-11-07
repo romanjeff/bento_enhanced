@@ -24,10 +24,11 @@
  * Output control for pressure: per note, changed values only and at most one
  * send per 10 ms (100 Hz); per DIN port, at most 400 sends/s in bursts of 4.
  *
- * State lives in a region the M4 allocates once at boot (SDRAM bump pool) and
- * publishes in the config line; the M7 then owns it outright (initialises it,
- * the M4 never touches it again), so no cache line is shared. Until the
- * region exists, notes pass through and pressure is not sent.
+ * State lives in a fixed region at the top of the M7's own ext pool, cached
+ * write-back (v3.70; see M1_REGION_ADDR). The M4 publishes the address in the
+ * config line once it is up. The M7 reserves, initialises and owns the region;
+ * the M4 only reads its first three lines (stats), which d0_publish cleans. Until
+ * the region is usable, notes pass through and pressure is not sent.
  */
 #include "diag_shared.h"
 
@@ -124,6 +125,8 @@ _Static_assert(__builtin_offsetof(Region, int_dest) == REGION_INTERNAL, "interna
 #define REGION_MAGIC 0x36424D31u /* "1MB6": + Note Mod runtime (v3.59) */
 
 static volatile Region *region(void);
+static inline u32 players_hi(void) { u32 n = SCAN_HI[0]; return n < PLAYERS ? n : PLAYERS; }
+static inline u32 pents_hi(void) { u32 n = SCAN_HI[1]; return n < PENT ? n : PENT; }
 /* m7_retrig.c (R4): is this note sounding on the track (voice list)? */
 static volatile Voices *voices(volatile Region *r, u32 track, int create);
 static int find(volatile Voices *v, u32 note);
@@ -168,19 +171,55 @@ u32 m1_track_pressure(u32 track) {                   /* highest live or recorded
     u32 best = 0;
     if (!r) return 0;
     volatile Voices *v = voices(r, track, 0);
-    for (u32 i = 0; i < PENT; i++) {
+    for (u32 i = 0; i < pents_hi(); i++) {
         volatile PEnt *e = &r->p[i];
         if (!e->used || e->track != track || !v || find(v, e->note) < 0) continue;
         u32 val = e->chan ? e->pval : e->last;
         if (val <= 0x7Fu && val > best) best = val;
     }
-    for (u32 i = 0; i < PLAYERS; i++) {
+    for (u32 i = 0; i < players_hi(); i++) {
         volatile Player *p = &r->pl[i];
         if (p->used && p->track == track && !p->kind && p->want <= 0x7Fu && p->want > best) best = p->want;
     }
     return best;
 }
 _Static_assert(sizeof(Region) <= M1_REGION_BYTES, "region larger than the M4 allocates");
+
+/* The slow path of region(): the pool's tail isn't marked ours. 1: just taken (a new M7 boot, as
+ * stock's startup restores the counters). 0: ours after all. -1: not the pool we know, so leave
+ * it alone; the state stays off, for this call only. Stock's allocator doesn't mask interrupts
+ * and lowers left before it raises the cursor, so an allocation we interrupted reads -1 here.
+ * Taking it also drops the cached pointer, under the same mask: the caller zeroes unmasked if it
+ * wasn't masked already, and a call landing in that loop must not match the old generation and
+ * use a half-zeroed region. It zeroes as well, as it does for a new generation. */
+__attribute__((noinline)) static int region_reserve(void) {
+    u32 p = irq_save(), left = EXT_POOL_LEFT, end = EXT_POOL_CUR + left;
+    int took = end == M1_REGION_ADDR ? 0 : -1;
+    if (end == EXT_POOL_END && left >= M1_REGION_RESERVE) {
+        EXT_POOL_LEFT = left - M1_REGION_RESERVE;
+        ((volatile u32 *)M7_REGION_CACHE)[0] = 0;
+        took = 1;
+    }
+    irq_restore(p);
+    return took;
+}
+
+#ifdef BE_NO_TRACE
+/* d0_publish cleans the stats the M4 prints, but it runs from h_consume, whose site this build
+ * leaves stock. Without this the M4 would print whatever eviction happened to write back. Every
+ * writer of those stats comes through region(), at most once per 13 ms (d0_publish: about 78 Hz).
+ * What the last call before an idle stretch wrote waits for the next call. Not in normal builds. */
+#define STATS_CLEAN_LAST (*(volatile u32 *)(M7_REGION_CACHE + 12u))   /* free word of the private line */
+#define STATS_CLEAN_GAP (13u * MS_CYC)
+static inline void stats_clean(void) {
+    u32 now = CYCCNT;
+    if (now - STATS_CLEAN_LAST < STATS_CLEAN_GAP) return;
+    STATS_CLEAN_LAST = now;
+    __asm volatile("dsb" ::: "memory");
+    for (u32 i = 0; i < REGION_STATS_BYTES; i += 32u) *(volatile u32 *)0xE000EF68u = M1_REGION_ADDR + i;   /* DCCMVAC */
+    __asm volatile("dsb" ::: "memory");
+}
+#endif
 
 static volatile Region *region(void) {
     /* The config line is written only by the M4, so invalidating it is safe.
@@ -189,14 +228,26 @@ static volatile Region *region(void) {
     volatile u32 *cache = (volatile u32 *)M7_REGION_CACHE; /* [0] pointer, [1] generation */
     DCIMVAC = (u32)CFG;
     __asm volatile("dsb" ::: "memory");
-    if (CFG->magic != DIAG_MAGIC || !CFG->region) return 0;
-    if (cache[0] == CFG->region && cache[1] == CFG->r[0]) return (volatile Region *)cache[0];
-    volatile Region *r = (volatile Region *)CFG->region;
+    if (CFG->magic != DIAG_MAGIC || CFG->region != M1_REGION_ADDR) return 0;
+    /* Before the generation compare: an M7-only reset keeps the generation but restores the pool
+     * counters. This is the one check on the hot path, two loads from one cached AXI line. Being
+     * taken just now also means zeroing: that reset lost whatever of the region was still dirty
+     * in the cache, and the voices and owed Note Offs it remembers are for a stock that restarted. */
+    int took = 0;
+    if (EXT_POOL_CUR + EXT_POOL_LEFT != M1_REGION_ADDR && (took = region_reserve()) < 0) return 0;
+    if (!took && cache[0] == M1_REGION_ADDR && cache[1] == CFG->r[0]) {
+#ifdef BE_NO_TRACE
+        stats_clean();
+#endif
+        return (volatile Region *)M1_REGION_ADDR;
+    }
+    volatile Region *r = (volatile Region *)M1_REGION_ADDR;
     volatile u8 *b = (volatile u8 *)r;
     for (u32 i = 0; i < sizeof(Region); i++) b[i] = 0;
+    SCAN_HI[0] = 0; SCAN_HI[1] = 0;
     for (u32 i = 0; i < PORTS; i++) { r->b[i].refill = CYCCNT; r->b[i].tokens = TOKEN_MAX; }
     r->magic = REGION_MAGIC;
-    cache[0] = CFG->region;
+    cache[0] = M1_REGION_ADDR;
     cache[1] = CFG->r[0];
     return r;
 }
@@ -339,12 +390,14 @@ static void post(volatile Region *r, u32 engine, volatile PEnt *e, u32 value, u3
 
 static volatile PEnt *pent(volatile Region *r, u32 track, u32 note, u32 now) {
     volatile PEnt *free_e = 0, *oldest = &r->p[0];
-    for (u32 i = 0; i < PENT; i++) {
+    u32 hi = pents_hi();
+    for (u32 i = 0; i < hi; i++) {
         volatile PEnt *e = &r->p[i];
         if (e->used && e->track == track && e->note == note) return e;
         if (!e->used && !free_e) free_e = e;
         if (e->used && (now - e->cyc) > (now - oldest->cyc)) oldest = e;
     }
+    if (!free_e && hi < PENT) { free_e = &r->p[hi]; SCAN_HI[1] = hi + 1u; }
     volatile PEnt *e = free_e ? free_e : oldest;
     if (!free_e) r->pent_reuse++;
     e->used = 1;
@@ -357,7 +410,7 @@ static volatile PEnt *pent(volatile Region *r, u32 track, u32 note, u32 now) {
 }
 
 static void flush(volatile Region *r, u32 engine, u32 now) {
-    for (u32 i = 0; i < PENT; i++) {
+    for (u32 i = 0; i < pents_hi(); i++) {
         volatile PEnt *e = &r->p[i];
         if (e->used && e->pend && now - e->cyc >= MIN_GAP) {
             if (!take_token(r, e->port, now)) continue;
@@ -473,11 +526,13 @@ static u32 sample_ticks16(u32 track, u32 len, u32 n) {
 static void start_player(volatile Region *r, u32 track, u32 note, u32 data, u32 n, u32 tick_lo, u32 tick_hi,
                          u32 kind, u32 port, u32 ch, u32 chan, u32 len) {
     volatile Player *slot = 0;
-    for (u32 i = 0; i < PLAYERS; i++) {
+    u32 hi = players_hi();
+    for (u32 i = 0; i < hi; i++) {
         volatile Player *p = &r->pl[i];
         if (p->used && p->track == track && p->kind == kind && p->note == (note & 0x7Fu)) { slot = p; break; }   /* retrigger */
         if (!p->used && !slot) slot = p;
     }
+    if (!slot && hi < PLAYERS) { slot = &r->pl[hi]; SCAN_HI[0] = hi + 1u; }
     if (!slot) { r->curve_skipped++; return; }      /* 64 busy: never steal another note's curve */
     slot->track = track; slot->tick_lo = tick_lo; slot->tick_hi = tick_hi;
     slot->data = data; slot->n = (u16)n; slot->k = 0;
@@ -570,7 +625,7 @@ static u32 chan_dest(volatile Region *r, u32 port, u32 ch, u32 now) {
 
 static void chan_pass(volatile Region *r, u32 now, u32 *on_port) {
     u8 val[CHANS] = {0}, has[CHANS] = {0}, live[CHANS] = {0};
-    for (u32 i = 0; i < PENT; i++) {                    /* live notes: count while sounding */
+    for (u32 i = 0; i < pents_hi(); i++) {                    /* live notes: count while sounding */
         volatile PEnt *e = &r->p[i];
         if (!e->used || !e->chan || e->track < 0x20000u) continue;   /* internal (key tag): int_chan */
         volatile Voices *v = voices(r, e->track, 0);
@@ -580,7 +635,7 @@ static void chan_pass(volatile Region *r, u32 now, u32 *on_port) {
         live[d] = 1; has[d] = 1;
         if (e->pval > val[d]) val[d] = e->pval;
     }
-    for (u32 i = 0; i < PLAYERS; i++) {
+    for (u32 i = 0; i < players_hi(); i++) {
         volatile Player *p = &r->pl[i];
         if (!p->used || !p->chan || p->kind) continue;
         u32 d = CHANS, freed = CHANS;
@@ -620,13 +675,13 @@ static void chan_pass(volatile Region *r, u32 now, u32 *on_port) {
 static void curve_send_pass(volatile Region *r, u32 now) {
     u32 on_port[PORTS] = {0}, active = 0;
     chan_pass(r, now, on_port);
-    for (u32 i = 0; i < PLAYERS; i++)
+    for (u32 i = 0; i < players_hi(); i++)
         if (r->pl[i].used) { if (!r->pl[i].chan && !r->pl[i].kind) on_port[r->pl[i].port % PORTS]++; active++; }
     if (active > r->curve_peak) r->curve_peak = active;
     for (u32 round = 0; round < PLAYERS; round++) {
         volatile Player *best = 0;
         u32 best_age = 0;
-        for (u32 i = 0; i < PLAYERS; i++) {
+        for (u32 i = 0; i < players_hi(); i++) {
             volatile Player *p = &r->pl[i];
             if (!p->used || p->chan || p->kind) continue; /* channel: chan_pass; internal: int_pass */
             int done = p->k >= p->n;
@@ -652,10 +707,21 @@ static void curve_send_pass(volatile Region *r, u32 now) {
 }
 
 static void int_pass(volatile Region *r, u32 now);
+/* Give back trailing free slots, so a burst of curves doesn't slow every later scan. */
+static void scan_shrink(volatile Region *r) {
+    u32 n = players_hi();
+    while (n && !r->pl[n - 1u].used) n--;
+    SCAN_HI[0] = n;
+    n = pents_hi();
+    while (n && !r->p[n - 1u].used) n--;
+    SCAN_HI[1] = n;
+}
+
 static void curve_emit_body(u32 track, u32 clock, int start, int len) {
     volatile Region *r = region();
     if (!r || (!r->midi_q && !r->bus)) return;
-    for (u32 i = 0; i < PLAYERS; i++) {
+    scan_shrink(r);
+    for (u32 i = 0; i < players_hi(); i++) {
         volatile Player *p = &r->pl[i];
         if (!p->used || p->track != track) continue;
         while (p->k < p->n) {
@@ -699,13 +765,13 @@ static void int_post(volatile Region *r, u32 key, u32 note, u32 value) {
  * live notes still pressed (value > 0); posted to each of them on a change. */
 static void int_chan(volatile Region *r, u32 key, u32 now, int force) {
     u32 best = 0, any = 0;
-    for (u32 i = 0; i < PLAYERS; i++) {
+    for (u32 i = 0; i < players_hi(); i++) {
         volatile Player *p = &r->pl[i];
         if (p->used && p->kind && p->chan && (p->port | (p->ch << 8)) == key && p->want <= 0x7Fu) {
             any = 1; if (p->want > best) best = p->want;
         }
     }
-    for (u32 i = 0; i < PENT; i++) {
+    for (u32 i = 0; i < pents_hi(); i++) {
         volatile PEnt *e = &r->p[i];
         if (e->used && e->chan && e->track == (key | KEY_TAG) && e->pval && now - e->cyc > LIVE_STALE) e->used = 0;
         if (e->used && e->chan && e->track == (key | KEY_TAG) && e->pval) { any = 1; if (e->pval > best) best = e->pval; }
@@ -721,11 +787,11 @@ static void int_chan(volatile Region *r, u32 key, u32 now, int force) {
     }
     if (!any) { c->used = 0; return; }              /* voices end with their notes */
     if (best == c->last || (!force && now - c->cyc < INT_GAP)) return;
-    for (u32 i = 0; i < PLAYERS; i++) {
+    for (u32 i = 0; i < players_hi(); i++) {
         volatile Player *p = &r->pl[i];
         if (p->used && p->kind && p->chan && (p->port | (p->ch << 8)) == key) int_post(r, key, p->note, best);
     }
-    for (u32 i = 0; i < PENT; i++) {
+    for (u32 i = 0; i < pents_hi(); i++) {
         volatile PEnt *e = &r->p[i];
         if (e->used && e->chan && e->track == (key | KEY_TAG) && e->pval) int_post(r, key, e->note, best);
     }
@@ -733,7 +799,7 @@ static void int_chan(volatile Region *r, u32 key, u32 now, int force) {
 }
 
 static void int_pass(volatile Region *r, u32 now) {
-    for (u32 i = 0; i < PLAYERS; i++) {
+    for (u32 i = 0; i < players_hi(); i++) {
         volatile Player *p = &r->pl[i];
         if (!p->used || !p->kind) continue;
         u32 key = p->port | (p->ch << 8);

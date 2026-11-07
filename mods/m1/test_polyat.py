@@ -19,7 +19,7 @@ M4
 """
 import json, struct, sys, unittest
 from pathlib import Path
-from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
+from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_MEM_WRITE
 from unicorn.arm_const import *
 
 BASE = 0x08040000
@@ -29,7 +29,12 @@ CYC = 0xE0001004
 ENGINE = 0x24060000              # stock posts MIDI-out events with msg_send(ENGINE + 0x7C8, ev)
 QUEUE = ENGINE + 0x7C8
 CFG = 0x3003C1E0
-REGION = 0xC6100000
+REGION = 0xC5FFC000
+LEFT, CURSOR, POOL_END, LEFT0 = 0x24000160, 0x24000164, 0xC6000000, 3405824   # stock's ext pool
+REGION_SIZE = 9208               # sizeof(Region)
+DCCMVAC = 0xE000EF68
+OFF = set(json.loads((Path(sys.argv[2]) / "manifest.json").read_text()).get("disabled", []))
+SCAN_HI = 0x3003CF60
 MAGIC = 0x31474144
 REGS = [UC_ARM_REG_R0 + i for i in range(13)] + [UC_ARM_REG_SP, UC_ARM_REG_LR]
 NOTE_SITES = [(0x0805F92C, UC_ARM_REG_R4), (0x0805FF50, UC_ARM_REG_R4), (0x0805FE44, UC_ARM_REG_R4),
@@ -48,14 +53,18 @@ def emu(img, region=True):
     u.mem_map(0x08000000, 0x200000)
     u.mem_write(BASE, img)
     u.mem_write(SENT, b"\xfe\xe7")
-    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC6000000, 0x200000), (0xE0000000, 0x100000)):
+    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x200000), (0xE0000000, 0x100000)):
         u.mem_map(a, n)
+    pool(u)
     if region:   # what the M4 publishes at boot
         u.mem_write(CFG, struct.pack("<8I", MAGIC, REGION, 0x1000, 1, 0, 0, 0, 0))
     return u
 
 def w32(u, a, v): u.mem_write(a, struct.pack("<I", v & 0xFFFFFFFF))
 def r32(u, a): return struct.unpack("<I", u.mem_read(a, 4))[0]
+def pool(u, left=LEFT0, end=POOL_END):
+    """The ext pool's counters as stock's startup leaves them (cursor + left is constant)."""
+    w32(u, LEFT, left); w32(u, CURSOR, end - left)
 
 def track(u, port=1, ch=2, midi=1, base=0x24064000):
     u.mem_write(base, bytes(0x8800))
@@ -95,6 +104,216 @@ class Voices:
         self.u.mem_write(at, struct.pack("<6I", 0x0E, 0, 0x71, note, value, 0))
         call(self.u, SYM7["h_poly"], tr or self.t1, at, ENGINE)
     def out(self): return [(e[0], e[4]) for e in queued(self.u)]
+
+class RegionReservation(unittest.TestCase):
+    """v3.70: the region is the top 16 KB of the M7's ext pool, taken by lowering stock's counter
+    (m7_polyat.c region()). What a reset leaves differs per core: the M4's generation lives in D2,
+    the pool counters in M7 RAM that stock's startup restores."""
+
+    def setUp(self):
+        self.v = Voices()
+        self.u = self.v.u
+
+    def state(self): return r32(self.u, LEFT), r32(self.u, CURSOR)
+    def reserved(self): return LEFT0 - 0x4000, POOL_END - LEFT0
+    def new_gen(self): w32(self.u, CFG + 12, r32(self.u, CFG + 12) + 1)
+    def touch(self): call(self.u, SYM7["curve_emit"], 1, 0, 0, 128)   # region() and nothing else: midi_q is 0
+    def trash(self):
+        """Whatever a reset leaves in SDRAM: old contents, and lines that never reached it."""
+        self.u.mem_write(REGION, bytes([0xA5]) * 0x4000)
+
+    def assert_fresh(self):
+        b = bytes(self.u.mem_read(REGION, REGION_SIZE + 4))
+        self.assertEqual(struct.unpack_from("<I", b, 0)[0], 0x36424D31, "magic")
+        tokens = [struct.unpack_from("<I", b, 80 + 8 * i + 4)[0] for i in range(4)]
+        self.assertEqual(tokens, [4] * 4, "port budgets full")
+        self.assertEqual(b[4:80], bytes(76), "stats, midi_q, bus")
+        self.assertEqual(b[112:REGION_SIZE], bytes(REGION_SIZE - 112), "voices, pressure, bursts, players, channels, mod, note mod")
+        self.assertEqual(b[REGION_SIZE:], bytes([0xA5]) * 4, "not a byte past sizeof(Region)")
+        self.assertEqual((r32(self.u, SCAN_HI), r32(self.u, SCAN_HI + 4)), (0, 0))
+
+    def test_first_use_reserves_once(self):
+        self.assertEqual(self.state(), (LEFT0, POOL_END - LEFT0), "nothing before the first use")
+        self.trash(); self.touch()
+        self.assertEqual(self.state(), self.reserved(), "left falls 16 KB, the cursor stays")
+        self.assert_fresh()
+        for n in (60, 61, 62): self.v.on(n)
+        self.touch()
+        self.assertEqual(self.state(), self.reserved(), "no second drop")
+        self.assertEqual(self.v.out(), [(0x5B, 60), (0x5B, 61), (0x5B, 62)])
+
+    def test_m4_reboot_zeroes_without_a_second_drop(self):
+        self.v.on(60)
+        self.trash(); self.new_gen(); self.touch()
+        self.assertEqual(self.state(), self.reserved())
+        self.assert_fresh()
+
+    def test_both_cores_reset_reserves_again(self):
+        self.touch()
+        self.trash(); pool(self.u); self.new_gen(); self.touch()
+        self.assertEqual(self.state(), self.reserved())
+        self.assert_fresh()
+
+    def test_m7_only_reset_with_the_same_generation_reserves_again(self):
+        """The generation compare alone would take the fast path: the pool would stay open, and
+        the region would hold whatever of it was still dirty in the lost cache."""
+        for n in range(60, 67): self.v.on(n)        # 60 stolen: its native Note Off is owed
+        self.trash(); w32(self.u, SCAN_HI, 77); w32(self.u, SCAN_HI + 4, 77)
+        pool(self.u)                                # stock's startup; D2 keeps the generation and our pointer
+        self.touch()
+        self.assertEqual(self.state(), self.reserved())
+        self.assert_fresh()
+
+    def test_m7_only_reset_forgets_what_the_old_stock_owed(self):
+        for n in range(60, 67): self.v.on(n)        # 60 stolen: its native Note Off is owed
+        pool(self.u)
+        self.u.mem_write(QUEUE + 0x600, bytes(4))
+        self.v.off(60)
+        self.assertEqual(self.v.out(), [(0x5C, 60)], "a Note Off of the new run is not swallowed")
+
+    def test_unknown_pool_shapes_stay_off_and_notes_pass(self):
+        for name, left, end in (("tail too small", 0x3000, POOL_END), ("one byte short", 0x3FFF, POOL_END),
+                                ("other end", LEFT0, 0xC5F00000), ("past the end", LEFT0, POOL_END + 0x4000),
+                                ("not set up", 0, 0)):
+            with self.subTest(name):
+                v = Voices(); u = v.u
+                pool(u, left, end)
+                before = bytes(u.mem_read(LEFT, 8))
+                u.mem_write(REGION, bytes([0xA5]) * 16)
+                for n in range(60, 70): v.on(n)
+                self.assertEqual(v.out(), [(0x5B, n) for n in range(60, 70)], "no cap: every note passes")
+                self.assertEqual(bytes(u.mem_read(LEFT, 8)), before, "counters untouched")
+                self.assertEqual(bytes(u.mem_read(REGION, 16)), bytes([0xA5]) * 16, "region untouched")
+                pool(u)                             # the known shape: it comes up
+                call(u, SYM7["curve_emit"], 1, 0, 0, 128)
+                self.assertEqual((r32(u, LEFT), r32(u, REGION)), (LEFT0 - 0x4000, 0x36424D31))
+
+    def test_an_interrupted_allocation_only_turns_the_state_off_for_that_call(self):
+        """Stock's allocator lowers left, then raises the cursor, with interrupts on."""
+        self.v.on(60)
+        w32(self.u, LEFT, r32(self.u, LEFT) - 0x20)
+        self.touch()
+        self.assertEqual(r32(self.u, REGION), 0x36424D31)
+        self.v.on(61)                               # passes, not tracked
+        w32(self.u, CURSOR, r32(self.u, CURSOR) + 0x20)
+        self.v.on(60)                               # state kept: same note, so a retrigger
+        out = self.v.out()
+        self.assertEqual(out, [(0x5B, 60), (0x5B, 61), (0x5C, 60), (0x5B, 60)])
+        self.assertEqual(self.state(), (LEFT0 - 0x4020, POOL_END - LEFT0 + 0x20), "stock's allocation kept, no second drop")
+
+    def test_stock_allocating_below_the_reservation_is_left_alone(self):
+        self.v.on(60)
+        w32(self.u, LEFT, r32(self.u, LEFT) - 0x1000); w32(self.u, CURSOR, r32(self.u, CURSOR) + 0x1000)
+        self.v.on(60)
+        self.assertEqual(self.v.out(), [(0x5B, 60), (0x5C, 60), (0x5B, 60)], "same state: a retrigger")
+
+    def test_a_pointer_from_older_firmware_is_not_followed(self):
+        """CFG survives a reset; only the M4's own boot code replaces it."""
+        OLD = 0xC6100000
+        w32(self.u, CFG + 4, OLD)
+        writes = []
+        h = self.u.hook_add(UC_HOOK_MEM_WRITE, lambda uc, k, a, n, v, _: writes.append(a), begin=OLD, end=OLD + 0x4000)
+        for n in range(60, 70): self.v.on(n)
+        self.u.hook_del(h)
+        self.assertEqual(self.v.out(), [(0x5B, n) for n in range(60, 70)])
+        self.assertEqual(writes, [])
+        self.assertEqual(self.state(), (LEFT0, POOL_END - LEFT0), "no reservation either")
+
+    def test_the_counter_is_lowered_with_interrupts_masked(self):
+        seen = []
+        def w(uc, k, a, n, v, _):
+            if a == LEFT: seen.append((v, uc.reg_read(UC_ARM_REG_PRIMASK)))
+        h = self.u.hook_add(UC_HOOK_MEM_WRITE, w)
+        args = 0x24070200                           # nm_off takes the region before it masks anything
+        self.u.mem_write(args, struct.pack("<4I", self.v.t1, 60, 0, 0))
+        self.assertEqual(self.u.reg_read(UC_ARM_REG_PRIMASK), 0)
+        call(self.u, SYM7["nm_off"], args)
+        self.u.hook_del(h)
+        self.assertEqual(seen, [(LEFT0 - 0x4000, 1)])
+        self.assertEqual(self.u.reg_read(UC_ARM_REG_PRIMASK), 0, "and back on")
+
+    def test_the_check_costs_two_reads_of_one_line_on_the_fast_path(self):
+        self.touch()
+        acc = []
+        def m(uc, k, a, n, v, _):
+            if 0x24000140 <= a < 0x24000180: acc.append((k == UC_MEM_WRITE, a))
+        h = self.u.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, m)
+        self.u.ctl_flush_tb()                       # code that already ran doesn't see a later hook
+        self.touch()
+        self.u.hook_del(h)
+        self.assertEqual(sorted(acc), [(False, LEFT), (False, CURSOR)], "one region() call: two loads, no write")
+
+    def test_a_call_landing_in_the_zero_loop_after_a_take_zeroes_too(self):
+        """M7-only reset, the same generation: the cached pointer and generation still match, and a
+        first caller like nm_off zeroes unmasked. A call in that window mustn't take the fast path
+        onto a half-zeroed region, which would swallow a Note Off of the new run on the old owed[]."""
+        u = self.u
+        for n in range(60, 67): self.v.on(n)        # 60 stolen: its native Note Off is owed
+        self.assertEqual(r32(u, REGION + 16), 1, "the old run stole one")
+        pool(u)
+        u.mem_write(QUEUE + 0x600, bytes(4))
+        u.mem_write(REGION + REGION_SIZE, bytes([0xA5]) * 4)   # assert_fresh: not a byte past sizeof(Region)
+        stop = REGION + 60                          # mid stats; owed[] is much further up
+        def w(uc, k, a, n, v, _):
+            if a == stop: uc.emu_stop()
+        h = u.hook_add(UC_HOOK_MEM_WRITE, w)
+        u.ctl_flush_tb()
+        args = 0x24070200
+        u.mem_write(args, struct.pack("<4I", self.v.t1, 99, 0, 0))
+        u.reg_write(UC_ARM_REG_R0, args); u.reg_write(UC_ARM_REG_SP, STACK); u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        u.emu_start(SYM7["nm_off"] | 1, SENT, count=400000)
+        u.hook_del(h)
+        pc = u.reg_read(UC_ARM_REG_PC)
+        self.assertNotEqual(pc, SENT, "stopped in the zero loop")
+        self.assertEqual(u.reg_read(UC_ARM_REG_PRIMASK), 0, "this window is unmasked")
+        regs = [UC_ARM_REG_R0 + i for i in range(13)] + [UC_ARM_REG_SP, UC_ARM_REG_LR, UC_ARM_REG_XPSR]
+        saved = [u.reg_read(r) for r in regs]
+        stack = bytes(u.mem_read(STACK - 0x400, 0x400))   # call() runs on the same stack
+        written = []
+        h = u.hook_add(UC_HOOK_MEM_WRITE, lambda uc, k, a, n, v, _: written.append(a), begin=REGION, end=REGION + REGION_SIZE - 1)
+        u.ctl_flush_tb()
+        self.v.off(60)
+        u.hook_del(h)
+        self.assertEqual(self.v.out(), [(0x5C, 60)], "not swallowed")
+        self.assertGreaterEqual(len(set(written)), REGION_SIZE, "it zeroed the whole region itself")
+        self.assertEqual(r32(u, REGION), 0x36424D31)
+        for r, v in zip(regs, saved): u.reg_write(r, v)
+        u.mem_write(STACK - 0x400, stack)
+        u.ctl_flush_tb()
+        u.emu_start(pc | 1, SENT, count=400000)     # the interrupted call finishes
+        self.assertEqual(self.state(), self.reserved(), "no second drop")
+        self.assert_fresh()
+
+    def test_a_reset_before_the_m4_republishes_zeroes_and_its_new_generation_zeroes_again(self):
+        """Both cores reset, and the M7 gets here while D2 still holds the old config. It can't tell
+        this from an M7-only reset, so it zeroes: the M4's "previous boot" print then reads 0 (README)."""
+        self.v.on(60)
+        self.trash(); pool(self.u); self.touch()    # the old generation, still in CFG
+        self.assertEqual(self.state(), self.reserved())
+        self.assert_fresh()
+        self.trash(); self.new_gen(); self.touch()  # the M4 republishes
+        self.assertEqual(self.state(), self.reserved(), "no second drop")
+        self.assert_fresh()
+
+    def test_only_a_build_without_the_publish_hook_cleans_stats_from_region(self):
+        """d0_publish runs from h_consume. With its site stock (trace off) the M4 would see frozen stats."""
+        self.touch()
+        lines = []
+        def w(uc, k, a, n, v, _):
+            if a == DCCMVAC and v & 0xF0000000 == 0xC0000000: lines.append(v & 0xFFFFFFFF)
+        h = self.u.hook_add(UC_HOOK_MEM_WRITE, w)
+        self.u.ctl_flush_tb()
+        ALL = [REGION, REGION + 0x20, REGION + 0x40]
+        def at(cyc):
+            lines.clear(); w32(self.u, CYC, cyc); self.touch(); return list(lines)
+        if "trace" not in OFF:
+            self.assertEqual(at(1_000_000_000), [], "d0_publish's job")
+        else:
+            self.assertEqual(IMG[0x080655A0 - BASE:0x080655A4 - BASE], bytes.fromhex("d0f80036"), "h_consume is unpatched")
+            self.assertEqual(at(1_000_000_000), ALL, "the three lines the M4 prints")
+            self.assertEqual(at(1_000_000_000 + 13 * 480000 - 1), [], "rate limited")
+            self.assertEqual(at(1_000_000_000 + 13 * 480000), ALL, "again after 13 ms")
+        self.u.hook_del(h)
 
 class PolyCap(unittest.TestCase):
     def test_sites_post_like_ch10_under_the_cap(self):

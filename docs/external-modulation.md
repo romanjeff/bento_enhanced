@@ -217,3 +217,18 @@ clamped to 0-127.
 - Same six encoders and settings as the External row (shared nm_desc / nm_edit / nm_slots);
   edits mark the project modified.
 - v3.61: Triggered = the shape starts over at the first note after a stop (Random repeats).
+
+### v3.71: internal melodic tracks
+Jeff (2026-11-04, multisample): notes were skipped instead of moved, even at very low depth;
+External was fine. Melodic notes carry pad 0 (a missing `chan` attribute reads as 0), so with
+`table[0]` filled `nm_drum` called them drum hits and moved the pad. `note_route` then found no
+key for that pad, fell back to `+0x10` = 0, and `bus_post` dropped the note. External was spared
+only because its `table[0]` is empty. A note counts as a drum hit only if it is note 0 now, and an
+internal hit whose target pad has no sound stays on its own pad. `test_notemod.py` missed this by
+stubbing the route and assuming pad 0xFFFF; `test_notemod_route.py` runs stock's route.
+
+Device: Jeff confirmed v3.71 moves notes on a multisample track (2026-11-05). Not yet reported: Range, stuck notes on stop, drum and slice tracks.
+
+Open: slice engines pick a slice from the pitch, so Note Mod changes the slice there, and a note
+moved below 36 may be silent (read from code, not run). A kit event with a non-zero note now
+moves in pitch rather than by pad.

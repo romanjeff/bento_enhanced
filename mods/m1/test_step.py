@@ -936,18 +936,57 @@ class NoteModSeq(unittest.TestCase):
         g.u.mem_write(0x30024B00 + 0x12C, bytes([0x27])); w32(g.u, self.ROOT, 0x081B3680)
         return g
 
+    PIANO_VT, DRUM_VT = 0x0819E7B0, 0x0819E854
+
     def press(self, g, handler):
+        w32(g.u, VIEW, self.DRUM_VT if handler == 0x0815D600 else self.PIANO_VT)
         g.u.mem_write(self.EV, struct.pack("<HH4I", 0x10F3, 0, 0, 0, 0, 0))
         return g.call(handler, VIEW, self.EV)
+
+    def piano_keys(self, g):
+        return [struct.unpack("<H", g.u.mem_read(VIEW + 0x11BCC0 + 2 * s, 2))[0] for s in range(6)]
+
+    def test_mode_belongs_to_one_track(self):
+        g = self.rig(track=2)
+        self.press(g, PIANO_EVENT); g.call(PIANO_HEADER, VIEW)
+        self.assertEqual(self.piano_keys(g), self.NM_KEYS)
+        g.selected = 3
+        g.call(PIANO_HEADER, VIEW)
+        self.assertNotEqual(self.piano_keys(g), self.NM_KEYS, "track 3 keeps stock's bar")
+        self.assertIn(("Note Mod", 0, 0x10F3), StrikeButton().generate(g)[1], "unlit on track 3")
+        g.selected = 2
+        g.call(PIANO_HEADER, VIEW)
+        self.assertEqual(self.piano_keys(g), self.NM_KEYS, "still on for track 2")
+
+    def test_a_document_load_turns_every_track_off(self):
+        g = self.rig()
+        StrikeButton().generate(g)
+        self.press(g, PIANO_EVENT); g.call(PIANO_HEADER, VIEW)
+        self.assertIn(("Note Mod", 1, 0x10F3), StrikeButton().generate(g)[1])
+        g.u.mem_write(0x3003DE80 + 24, b"Projects\\A\\kick.wav\0")
+        w32(g.u, 0x3003DE80 + 4, r32(g.u, 0x3003DE80 + 4) + 1)   # LoadState.doc_seq: not a project
+        self.assertIn(("Note Mod", 1, 0x10F3), StrikeButton().generate(g)[1], "a patch read leaves it on")
+        g.u.mem_write(0x3003DE80 + 24, b"Projects\\A\\PROJECT.XML\0")
+        w32(g.u, 0x3003DE80 + 4, r32(g.u, 0x3003DE80 + 4) + 1)
+        self.assertIn(("Note Mod", 0, 0x10F3), StrikeButton().generate(g)[1])
+
+    def test_an_unknown_view_is_left_alone(self):
+        g = self.rig()
+        w32(g.u, VIEW, 0x08000001)
+        g.u.mem_write(self.EV, struct.pack("<HH4I", 0x10F3, 0, 0, 0, 0, 0))
+        g.log.clear()
+        self.assertEqual(g.call(PIANO_EVENT, VIEW, self.EV), 0, "consumed")
+        self.assertNotIn(("Note Mod", 1, 0x10F3), StrikeButton().generate(g)[1])
 
     def nm(self, g, t):
         return struct.unpack("<4B2HB3x", g.u.mem_read(self.CFGB + 12 + 8 * 232 + 12 * t, 12))
 
     def test_button_for_every_track_type(self):
-        for kind in (0x10, 0x0E):
+        for kind, page in ((0x0E, 0x27), (0x0E, 0x17), (0x0F, 0x17), (0x10, 0x17), (0x12, 0x17), (0x14, 0x17), (0x16, 0x17)):
             g = self.rig(kind); g.drum_header()
+            g.u.mem_write(0x30024B00 + 0x12C, bytes([page]))
             recs = StrikeButton().generate(g)[1]
-            self.assertIn(("Note Mod", 0, 0x10F3), recs)
+            self.assertIn(("Note Mod", 0, 0x10F3), recs, (hex(kind), hex(page)))
 
     def test_piano_bar_shows_note_mod_and_edits_the_track(self):
         g = self.rig()

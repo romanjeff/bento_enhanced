@@ -1,0 +1,50 @@
+BENTO black box, firmware BE3.64, boot gen 11, rtc 730120-163606
+previous boot: last UI-loop pass at ms 1091653, rtc 730120-163542
+at boot (after the black box's own buffers): | ram bump cur=c7b631c0 end=c8000000 free=4836928 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249
+as found at boot (the previous run; RAMCHK also shows what a reset touched):
+LOAD render blocks=201687 avg=56.8% peak=195.3% <50=67196 50-80=119243 80-100=13702 100+=1546 missed=0
+AUDIO blocks=204232 events=205021 waited=4128 timeouts=1427 max_polls=19990 wrong_half=1427 head_min=-1023 gap_under=4 gap_over=159 gap_max=2047
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+stock crash record: count=390 cause=00000005 pc=0808dfb8 core=00000002 | frame r0-r3,r12,lr,pc,xpsr (bkp6-13): 081903b4 c74f58dc 2404cbc0 00000000 00000000 0816fae7 0816face 61000000
+rtc_bkp0..31: 00000003 00000dc0 00000340 00000000 00000000 00000082 081903b4 c74f58dc 2404cbc0 00000000 00000000 0816fae7 0816face 61000000 c74f502c c74edfb8 2404cbc0 c6e784c4 c6e78930 a5a5a5a5 a5a5a5a5 a5a5a5a5 30018b08 ffffffe9 00000186 00000005 00053bb6 00000002 0010a845 000003b2 000008fe 0808dfb8
+previous boot (from RAM): m7 dropped=23 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=10 overflows=0 | m7 stack min_msp=2404c828 (14984 B above bottom) min_sp=2404c828 heartbeat=12146176 | curves started=558 sent=34794 late=0 skipped=0 peak players=4 thinned=0 last dest=07000000 | internal dest=00060000 live=0004f705 posts=34794 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7b631c0 end=c8000000 free=4836928 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1
+  T 0 379dc916 RING 266f lr=00000000 obj=10040000 ev=0000001e,00500000,000004f7,000004f8,00000000,00000000 x=00000001
+  T 0 3fb62ff8 RING 2670 lr=00000000 obj=10040000 ev=0000001e,00500000,000004f7,000004f8,00000000,00000000 x=00000002
+  T 0 4febac40 RING 2671 lr=00000000 obj=10040000 ev=0000001e,00500000,000004f7,000004f8,00000000,00000000 x=00000002
+  T 0 5bff98d8 SEND 2672 lr=080dad2b obj=2403aab8 ev=0000005b,00000023,00000000,00000000,0000004d,00000006 x=00000000
+  T 0 5bffe93b SEND 2673 lr=080dada3 obj=2403aab8 ev=0000005c,0000005d,00000000,00000000,0000004f,00000000 x=00000000
+  T 0 5c05e9f8 RING 2674 lr=00000000 obj=10040000 ev=0000005b,00000023,00000000,00000000,0000004d,00000006 x=00000001
+  T 0 5c05ee49 RING 2675 lr=00000000 obj=10040000 ev=0000005c,0000005d,00000000,00000000,0000004f,00000000 x=00000002
+  T 0 60149b70 RING 2676 lr=00000000 obj=10040000 ev=00000059,0000002b,00000459,00000001,00000000,00000000 x=00000001
+  T 0 60149ea9 RING 2677 lr=00000000 obj=10040000 ev=00000059,0000002b,00000499,00000000,00000000,00000000 x=00000002
+  T 0 70372b16 RING 2678 lr=00000000 obj=10040000 ev=0000001e,00500000,000004f7,000004f8,00000000,00000000 x=00000001
+  T 0 cc144a13 SEND 2679 lr=0808ce35 obj=c5007020 ev=00000002,00000000,fffffff0,00000000,00000000,00000000 x=00000000
+  T 0 cc144da2 SEND 267a lr=0808ce35 obj=c5004000 ev=00000002,00000000,fffffff1,00000000,00000000,00000000 x=00000000
+  T 0 cc196037 RING 267b lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000000
+  T 0 cc196392 RING 267c lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000001
+  T 0 cc1966cc RING 267d lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000002
+  T 0 cc196a88 RING 267e lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000003
+  T 0 cc196d88 RING 267f lr=00000000 obj=10040000 ev=00000020,00000000,fffffff0,00000001,00000000,00000000 x=00000004
+fields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)
+VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note
+15504 8c485401 RING 2680 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000000
+15504 8e6b8945 RING 2681 lr=00000000 obj=10040000 ev=000000a4,00000000,000002c7,00003c00,00000000,00000000 x=00000000
+15504 8e6b8c7c RING 2682 lr=00000000 obj=10040000 ev=000000a4,00000000,000002ca,00001e00,00000000,00000000 x=00000001
+15504 8e6b8f76 RING 2683 lr=00000000 obj=10040000 ev=000000a4,00000000,000002cc,00001e00,00000000,00000000 x=00000002
+15504 8e920b3b RING 2684 lr=00000000 obj=10040000 ev=000000a4,00000000,000002d0,0001e000,00000000,00000000 x=00000000
+15504 8e920e94 RING 2685 lr=00000000 obj=10040000 ev=000000a4,00000000,000002d2,00007800,00000000,00000000 x=00000001
+15504 8e921190 RING 2686 lr=00000000 obj=10040000 ev=000000a4,00000000,000002d4,0000f000,00000000,00000000 x=00000002
+15504 94f7b48b RING 2687 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000000
+15504 94f7b7bc RING 2688 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000001
+SAVE Projects\SPACED\project.xml | sidecar status=4 curves=5 bytes=2578 | pool used=1124 handles=5 | ext heap free=13197792 (cur=c0e961e0 floor=c0200000)
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 vel insert=0 settled=0
+PARAM edits=0
+HDR pages: 13 02 01 | melodic - | drum -
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0 inserts=0 defaults-filled=0
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=21438 avg=21.8% peak=37.3% <50=21438 50-80=0 80-100=0 100+=0 missed=0
+AUDIO blocks=24314 events=24731 waited=0 timeouts=0 max_polls=0 wrong_half=0 head_min=4 gap_under=0 gap_over=0 gap_max=1027
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=2 overflows=0 | m7 stack min_msp=2404c980 (15328 B above bottom) min_sp=2404c980 heartbeat=1264689 | curves started=0 sent=0 late=0 skipped=0 peak players=0 thinned=0 last dest=00000000 | internal dest=00000000 live=00000000 posts=0 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7c9cd40 end=c8000000 free=3551936 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 128917

@@ -139,6 +139,28 @@ static void history(const char *why) {
     F_CLOSE(file);
 }
 
+/* Every save's summary, and each boot's header, go in their own small append (v3.67). Long
+ * BENTO_DIAG.log writes kept dying on a busy card, while short appends have always landed:
+ * BENTO_CRASHES.log, curves.bnt. Runs right after stock's own project write. */
+static const char SAVES[] = "\\BENTO_SAVES.log";
+#define SD_DIRECT_BELOW 511u
+static void saves_append(u32 from, u32 to) {
+    if (M4H->r[1] <= 1u) return;
+    u32 file[22];
+    zero(file, sizeof(file));
+    if (F_OPEN(file, SAVES, FA_APPEND_WRITE)) return;
+    /* v3.72: under one sector per call. At a sector boundary with 512 bytes or more left, f_write
+     * hands the caller's pointer to the SD DMA, which rounds it down to 4 bytes: an unaligned source
+     * duplicated k bytes at the start of the run and lost k at its end (BE3.67-3.71). Under 512
+     * always goes through FatFS's own window. */
+    for (u32 at = from; at < to; ) {
+        u32 n = to - at > SD_DIRECT_BELOW ? SD_DIRECT_BELOW : to - at, done = 0;
+        if (F_WRITE(file, (const char *)M4H->r[1] + at, n, &done) || done != n) break;
+        at += n;
+    }
+    F_CLOSE(file);
+}
+
 /* Write only what is new since the last flush. */
 static void flush(void) {
     u32 saved = M4H->r[4], len = M4H->r[2];
@@ -296,7 +318,7 @@ typedef struct {
 _Static_assert(0x3003D400u + sizeof(MProf) <= 0x3003D800u, "M4 profile past its 1 KB");
 
 #define CANARY ((volatile u32 *)0x3003CA00u)
-#define CANARY_WORDS ((0x3003D000u - 0x3003CA00u) / 4u)
+#define CANARY_WORDS ((0x3003CF20u - 0x3003CA00u) / 4u)   /* its last 224 B became D0, scan and probe lines (v3.64-v3.69) */
 #define CANARY_MAGIC 0x59524E43u /* "CNRY" */
 static u32 canary_word(u32 i) { return 0xA5C30000u ^ (i * 0x9E3779B1u); }
 static void canary_arm(void) {
@@ -316,6 +338,91 @@ static void ram(Out *o) {
     puts_(o, "/3333 pcm="); dec(o, MPROF->max_pcm); puts_(o, "/6249");
 }
 
+/* D0 (v3.64): would the RAM the synth and FX ports want be safe to use? No linker section
+ * or reference points at these three blocks, but the M4 was never emulated, so fill them
+ * once with a pattern and report any word that changes: lowest and highest address show
+ * how far a user reaches. The first word holds the magic; a fill survives resets, so a new
+ * one means power was lost. Limit: a line the M7 holds dirty in its cache shows only once
+ * it is evicted. */
+typedef struct { char name[4]; u32 lo, hi; } RamBlock;
+static const RamBlock RAM_BLOCKS[3] = {
+    {"axi", 0x2404CDC0u, 0x24050000u},          /* above the M7 stack, below the M4 pool */
+    {"d2a", 0x30039100u, 0x3003C000u},          /* above the M4 stack, below our slice */
+    {"d2b", 0x3003E000u, 0x30040000u},          /* above our slice */
+};
+#define RAMCHK_MAGIC 0x32524E43u /* "CNR2" */
+static u32 ramchk_word(u32 a) { return 0x5AC30000u ^ (a * 0x9E3779B1u); }
+static void ramchk_arm(void) {
+    for (u32 b = 0; b < 3u; b++) {
+        volatile u32 *p = (volatile u32 *)RAM_BLOCKS[b].lo;
+        if (*p == RAMCHK_MAGIC) continue;
+        for (u32 a = RAM_BLOCKS[b].lo + 4u; a < RAM_BLOCKS[b].hi; a += 4u) *(volatile u32 *)a = ramchk_word(a);
+        *p = RAMCHK_MAGIC;
+    }
+}
+static void ramchk_line(Out *o) {
+    puts_(o, "RAMCHK");
+    for (u32 b = 0; b < 3u; b++) {
+        const RamBlock *r = &RAM_BLOCKS[b];
+        puts_(o, " | "); puts_(o, r->name);
+        if (*(volatile u32 *)r->lo != RAMCHK_MAGIC) { puts_(o, " not armed"); continue; }
+        u32 bad = 0, low = 0, high = 0;
+        for (u32 a = r->lo + 4u; a < r->hi; a += 4u) {
+            if (*(volatile u32 *)a == ramchk_word(a)) continue;
+            if (!bad) low = a;
+            high = a; bad++;
+        }
+        puts_(o, " changed="); dec(o, bad);
+        if (bad) { puts_(o, " low="); hex(o, low, 8); puts_(o, " high="); hex(o, high, 8); }
+    }
+    puts_(o, "\r\n");
+}
+
+static void pct(Out *o, u32 pm) { dec(o, pm / 10u); puts_(o, "."); dec(o, pm % 10u); puts_(o, "%"); }
+static void d0_lines(Out *o) {
+    volatile D0Top *d = D0A;
+    volatile D0Count *c = D0C;
+    volatile D0Load *l = D0L;
+    if (d->magic == D0_MAGIC) {
+        puts_(o, "LOAD render blocks="); dec(o, l->seen);
+        puts_(o, " avg=");
+        u32 seen = l->seen, sum = l->sum;
+        if (seen && sum != 0xFFFFFFFFu) pct(o, sum / seen); else puts_(o, "-");
+        puts_(o, " peak="); pct(o, l->peak);
+        puts_(o, " <50="); dec(o, l->h[0]); puts_(o, " 50-80="); dec(o, l->h[1]);
+        puts_(o, " 80-100="); dec(o, l->h[2]); puts_(o, " 100+="); dec(o, l->h[3]);
+        puts_(o, " missed="); dec(o, c->missed);
+        puts_(o, "\r\nAUDIO blocks="); dec(o, c->blocks); puts_(o, " events="); dec(o, c->events);
+        puts_(o, " waited="); dec(o, c->waited); puts_(o, " timeouts="); dec(o, c->timeouts);
+        puts_(o, " max_polls="); dec(o, c->max_polls);
+        puts_(o, " wrong_half="); dec(o, d->wrong_half);
+        puts_(o, " head_min=");
+        if (d->head_min >> 31) { puts_(o, "-"); dec(o, 0u - d->head_min); } else dec(o, d->head_min);
+        puts_(o, " gap_under="); dec(o, c->gap_under); puts_(o, " gap_over="); dec(o, d->gap_over);
+        puts_(o, " gap_max="); dec(o, d->gap_max);
+        puts_(o, " seq"); for (u32 i = 0; i < 8u; i++) { puts_(o, " "); dec(o, ((volatile u32 *)PROBE)[i]); }
+        puts_(o, "\r\nM7MEM heap free="); dec(o, d->heap_free); puts_(o, " min="); dec(o, d->heap_min);
+        puts_(o, " chunks="); dec(o, d->chunks); puts_(o, " largest="); dec(o, d->largest);
+        puts_(o, " bad="); dec(o, d->bad);
+        puts_(o, " | dtcm used="); dec(o, d->dtcm_used); puts_(o, " axi used="); dec(o, d->axi_used);
+        puts_(o, " ext left="); dec(o, d->ext_left); puts_(o, " shared left="); dec(o, d->shared_left);
+        puts_(o, " | m4 pool cur="); hex(o, *(volatile u32 *)0x30000050u, 8);
+        puts_(o, " used="); dec(o, *(volatile u32 *)0x30001118u);
+        volatile D0Link *k = D0LINK;
+        puts_(o, "\r\nLINK rx="); dec(o, k->rx); puts_(o, " bad="); dec(o, k->bad);
+        puts_(o, " fw_boots="); dec(o, k->fw_boots); puts_(o, " crc_changes="); dec(o, k->crc_changes);
+        puts_(o, " tx="); dec(o, k->tx);
+        puts_(o, " restarts="); dec(o, k->restarts);
+        puts_(o, " version="); hex(o, k->version, 4); puts_(o, " reboots="); dec(o, k->reboots);
+        puts_(o, " spi="); dec(o, k->spi_state);
+        puts_(o, " frame_type="); dec(o, k->frame_type);
+        puts_(o, " btn_changes="); dec(o, k->btn_changes); puts_(o, " btn_or="); hex(o, k->btn_or, 4);
+        puts_(o, " btn_now="); hex(o, k->btn_prev, 4);
+        puts_(o, "\r\n");
+    }
+    ramchk_line(o);
+}
+
 static void counters(Out *o) {
     puts_(o, "m7 dropped="); dec(o, M7H->dropped);
     puts_(o, " | poly sent="); dec(o, M7H->r[0]);
@@ -331,13 +438,16 @@ static void counters(Out *o) {
     }
     puts_(o, " min_sp="); hex(o, RINGSTAT->min_sp, 8);
     puts_(o, " heartbeat="); dec(o, RINGSTAT->heartbeat);
-    /* M2-2 curve playback (M7 region, uncached). CFG survives resets and holds
-     * D2's power-up pattern after a cold start: follow its pointer only if the
-     * line is ours and the pointer is a bump allocation in SDRAM (v3.25-v3.31
-     * checked only for non-zero: the M4 faulted here at boot, before
-     * re-initialising CFG, so every warm reset looped). */
+    /* M2-2 curve playback (M7 region: read only here, the M7 cleans these lines,
+     * so they are at most one publish old, older if its main loop stalled first). In the
+     * "previous boot" print they may read 0: after a reset the M7 can take and zero the
+     * region before this runs. CFG survives resets and holds D2's
+     * power-up pattern after a cold start: follow its pointer only if the line
+     * is ours and the pointer is the one address it can be (v3.25-v3.31 checked
+     * only for non-zero: the M4 faulted here at boot, before re-initialising CFG,
+     * so every warm reset looped). */
     u32 rg = CFG->region;
-    if (CFG->magic == DIAG_MAGIC && rg >= 0xC6000000u && rg < 0xC8000000u && !(rg & 31u)) {
+    if (CFG->magic == DIAG_MAGIC && rg == M1_REGION_ADDR) {
         volatile u32 *cs = (volatile u32 *)(rg + REGION_CURVE_STATS);
         puts_(o, " | curves started="); dec(o, cs[0]); puts_(o, " sent="); dec(o, cs[1]);
         puts_(o, " late="); dec(o, cs[2]); puts_(o, " skipped="); dec(o, cs[3]);
@@ -483,18 +593,15 @@ static void mprof_print(Out *o) {
 
 static void init(u32 now) {
     u32 gen = (M4H->magic == DIAG_MAGIC) ? M4H->r[0] + 1u : 1u;
-    u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, region = 0, capb = 0;
+    u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, capb = 0;
     CAPCFG->magic = 0;                              /* M7 stops capturing until republished */
     for (u32 i = 0; i < CURVELOG_N; i++) CURVELOG[i].seq = 0;   /* curve log starts empty each boot */
     CLOG_DONE = 0;
     /* Preflight exactly like Lab: the native allocator crashes on overflow.
      * One check covers all allocations (each is rounded up to 32 bytes). */
-    if (end > cur && end - cur >= BUF_BYTES + M1_REGION_BYTES + sizeof(CapBlock) + 96u) {
+    if (end > cur && end - cur >= BUF_BYTES + sizeof(CapBlock) + 64u) {
         u32 got = FN(0x08104C08, u32 (*)(u32))(BUF_BYTES);
         if (got == cur) buf = got;
-        cur = BUMP_CUR;
-        got = FN(0x08104C08, u32 (*)(u32))(M1_REGION_BYTES);
-        if (got == cur) region = got;
         cur = BUMP_CUR;
         got = FN(0x08104C08, u32 (*)(u32))(sizeof(CapBlock));   /* M2 pressure capture */
         if (got == cur) capb = got;
@@ -517,6 +624,9 @@ static void init(u32 now) {
         puts_(&o, "\r\nat boot (after the black box's own buffers):"); ram(&o);   /* canary as found at boot */
         canary_arm();
         puts_(&o, "\r\n");
+        puts_(&o, "as found at boot (the previous run; RAMCHK also shows what a reset touched):\r\n");
+        d0_lines(&o);
+        ramchk_arm();
         crash_record(&o);
         if (AMON->snap_magic == SNAP_MAGIC) {     /* survives the reset the stall caused */
             snap_print(&o, "audio stall snapshot (from RAM)");
@@ -547,9 +657,9 @@ static void init(u32 now) {
     }
     M4H->magic = 0; /* M7 stops logging while we rebuild */
     CFG->magic = 0; /* ...and stops using the M1 region */
-    /* Hand the region to the M7; it initialises and owns it from here on. */
-    CFG->region = region;
-    CFG->region_bytes = region ? M1_REGION_BYTES : 0u;
+    /* Tell the M7 it may use the region; it reserves, initialises and owns it (v3.70: not ours to allocate). */
+    CFG->region = M1_REGION_ADDR;
+    CFG->region_bytes = M1_REGION_BYTES;
     CFG->r[0] = gen;
     CFG->r[1] = BKP[24];          /* crash count at boot: a change = a new crash */
     CFG->r[2] = RINGSTAT->heartbeat;
@@ -558,6 +668,7 @@ static void init(u32 now) {
     CFG->magic = DIAG_MAGIC;
     M4H->r[0] = gen;
     M4H->r[1] = buf ? buf : 1u;   /* 1 = allocation refused; stay disabled this boot */
+    LOADREQ->hdr_len = len; LOADREQ->hdr_gen = 0;
     M4H->r[2] = len;
     M4H->r[3] = now;
     M4H->r[4] = 0;
@@ -775,6 +886,7 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
     write_sidecar(path);                            /* first: it belongs to this save */
     if (M4H->magic != DIAG_MAGIC || M4H->r[1] <= 1u) return;
     Out o = {(char *)M4H->r[1], M4H->r[2]};
+    u32 summary_from = o.len;
     curve_lines(&o);
     if (CURVES->magic == CURVES_MAGIC) {
         puts_(&o, "SAVE "); for (u32 i = 0; path && path[i] && i < 120u; i++) { char t[2] = {path[i], 0}; puts_(&o, t); }
@@ -848,10 +960,22 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
         puts_(&o, " | builds="); dec(&o, mh->dbg_n & 0x3FFu); puts_(&o, " edits="); dec(&o, (mh->dbg_n >> 10) & 0x3FFu);
         puts_(&o, " events="); dec(&o, mh->dbg_n >> 20); puts_(&o, "\r\n");
     }
+    d0_lines(&o);
+    LOADREQ->req++; LOADREQ->magic = D0_MAGIC;      /* each save reports the stretch since the last one */
     puts_(&o, "# saved: "); counters(&o);
     puts_(&o, " at ms "); dec(&o, TICK_MS); puts_(&o, "\r\n");
     M4H->r[2] = o.len;
-    flush();
+    if (LOADREQ->hdr_gen != M4H->r[0] && LOADREQ->hdr_len <= summary_from) {
+        LOADREQ->hdr_gen = M4H->r[0];
+        history("boot");                            /* one short line per boot */
+        saves_append(0, LOADREQ->hdr_len);          /* this boot's header: the previous run's figures */
+    }
+    saves_append(summary_from, o.len);
+    /* v3.68: nothing longer. Copying the old log and writing up to 256 KB from the UI task
+     * left half-written files (BENTO_DIAG_prev.log dated 1969 on BE3.65 and on the features-off
+     * build) and a save-time restart, and chkdsk found the card's bitmap damaged. BENTO_DIAG.log
+     * is now only written with the opt-in LOG_LIVE word, which the tests use. */
+    if (LOG_LIVE == LOG_LIVE_MAGIC) flush();
 }
 
 /* Replaces `bl 0x08101c78` at 0x08114b10 in the defaultTask loop. */

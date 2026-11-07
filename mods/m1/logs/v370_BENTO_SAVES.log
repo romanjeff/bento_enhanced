@@ -1,0 +1,268 @@
+BENTO black box, firmware BE3.67, boot gen 16, rtc 730120-214351
+previous boot: last UI-loop pass at ms 4367031, rtc 730120-210320
+at boot (after the black box's own buffers): | ram bump cur=c7b631c0 end=c8000000 free=4836928 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249
+as found at boot (the previous run; RAMCHK also shows what a reset touched):
+LOAD render blocks=31866 avg=40.1% peak=162.0% <50=20826 50-80=8296 80-100=2577 100+=167 missed=0
+AUDIO blocks=817896 events=818403 waited=1347 timeouts=252 max_polls=19968 wrong_half=252 head_min=-1023 gap_under=4 gap_over=34 gap_max=2009
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=817895 bad=0 fw_boots=0 crc_changes=323703 tx=817896 restarts=0 version=000f reboots=0 spi=5 frame_type=0 btn_changes=54 btn_or=71b7 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+stock crash record: count=396 cause=00000005 pc=080816e6 core=00000002 | frame r0-r3,r12,lr,pc,xpsr (bkp6-13): 000001e0 3fffbda1 2404cb90 00000000 00000002 080a3cc1 08071caa 81000000
+rtc_bkp0..31: 00000003 00000dc0 00000340 00000000 00000000 00000400 000001e0 3fffbda1 2404cb90 00000000 00000002 080a3cc1 08071caa 81000000 2001fe80 2001ff48 2404cb90 20006664 00000260 00000080 240290e4 2001fea4 2404c9d8 ffffffe9 0000018c 00000005 00022bba 00000002 0042a277 000003b2 000008fe 080816e6
+previous boot (from RAM): m7 dropped=13 | poly sent=270 budget_drops=0 stolen=0 retrig=1 swallowed=1 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c828 (14984 B above bottom) min_sp=2404c828 heartbeat=48246886 | curves started=306 sent=6437 late=0 skipped=0 peak players=6 thinned=0 last dest=07000000 | internal dest=00060000 live=00033c06 posts=6437 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7b631c0 end=c8000000 free=4836928 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1
+  T 0 9b8d0775 SEND 37a0 lr=080dae43 obj=2403aab8 ev=0000005c,0000004b,00000000,00000000,00000043,00000000 x=00000000
+  T 0 9b8d1e06 SEND 37a1 lr=080dae43 obj=2403aab8 ev=0000005c,0000004b,00000000,00000000,0000003e,00000000 x=00000000
+  T 0 9b98e891 RING 37a2 lr=00000000 obj=10040000 ev=0000005a,0000004b,00000297,00000000,00000000,00000000 x=00000000
+  T 0 9b98ebbc RING 37a3 lr=00000000 obj=10040000 ev=0000005a,0000004b,000001ec,00000000,00000000,00000000 x=00000001
+  T 0 9b98eeb2 RING 37a4 lr=00000000 obj=10040000 ev=0000005a,0000004b,00000246,00000000,00000000,00000000 x=00000002
+  T 0 9b98f19e RING 37a5 lr=00000000 obj=10040000 ev=0000005a,0000004b,000002d7,00000000,00000000,00000000 x=00000003
+  T 0 9b98f490 RING 37a6 lr=00000000 obj=10040000 ev=0000005a,0000004b,00000334,00000000,00000000,00000000 x=00000004
+  T 0 9b98f788 RING 37a7 lr=00000000 obj=10040000 ev=0000005a,0000004b,0000033c,00000000,00000000,00000000 x=00000005
+  T 0 9b98ff13 RING 37a8 lr=00000000 obj=10040000 ev=0000005c,0000004b,00000000,00000000,00000043,00000000 x=00000006
+  T 0 9b990351 RING 37a9 lr=00000000 obj=10040000 ev=0000005c,0000004b,00000000,00000000,0000003e,00000000 x=00000007
+  T 0 4dc47971 SEND 37aa lr=0808ce35 obj=c5007020 ev=00000002,00000000,fffffff0,00000000,00000000,00000000 x=00000000
+  T 0 4dc47cfe SEND 37ab lr=0808ce35 obj=c5004000 ev=00000002,00000000,fffffff1,00000000,00000000,00000000 x=00000000
+  T 0 4dc98db1 RING 37ac lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000000
+  T 0 4dc9910c RING 37ad lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000001
+  T 0 4dc9941a RING 37ae lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000002
+  T 0 4dc997d0 RING 37af lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000003
+  T 0 4dc99aee RING 37b0 lr=00000000 obj=10040000 ev=00000020,00000000,fffffff0,00000001,00000000,00000000 x=00000004
+fields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)
+VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note
+SAVE Projects\SPACED\project.xml | sidecar status=4 curves=12 bytes=2602 | pool used=1088 handles=12 | ext heap free=13180288 (cur=c0e91d80 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 =0 vel insert=0 settled=0
+PARAM edits=0
+HDR pages: 13 1e 02 01 | melodic - | drum -
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0 inserts=0 defaults-filled=0
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=63919 avg=21.9% peak=43.7% <50=63919 50-80=0 80-100=0 100+=0 missed=0
+AUDIO blocks=66773 events=67190 waited=0 timeouts=0 max_polls=0 wrong_half=0 head_min=4 gap_under=0 gap_over=0 gap_max=1027
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=66772 bad=0 fw_boots=0 crc_changes=25337 tx=66773 restarts=0 version=000f reboots=0 spi=5 frame_type=3 btn_changes=4 btn_or=1100 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=2 overflows=0 | m7 stack min_msp=2404c980 (15328 B above bottom) min_sp=2404c980 heartbeat=3771093 | curves started=0 sent=0 late=0 skipped=0 peak players=0 thinned=0 last dest=00000000 | internal dest=00000000 live=00000000 posts=0 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7c9cd40 end=c8000000 free=3551936 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms5668
+SAVE Projects\SPACED\project.xml | sidecar status=4 curves=12 bytes=2602 | pool used=1088 handles=12 | ext heap free=13180288 (cur=c0e91d80 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 vel insert=0 settled=0
+PARAM edits=0
+HDR pages: 13 1e 02 1e 13 1e 02 01 | melodic - | drum -
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0 inserts=0 defaults-filled=0
+MX mx_ctx=1b88495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=174562 avg=65.0% peak=157.4% <50=20107 50-80=127443 80-100=26544 100+=468 missed=0
+AUDIO blocks=241336 events=241753 waited=271 timeouts=53 max_polls=19996 wrong_half=53 head_min=-1021 gap_under=1 gap_over=2 gap_max=1548
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=109432 bad=0 fw_boots=0 crc_changes=94933 tx=109432 restarts=1 version=000f reboots=0 spi=5 frame_type=3 btn_changes=24 btn_or=7183 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c828 (14984 B above bottom) min_sp=2404c828 heartbeat=14530836 | curves started=1206 sent=28124 late=0 skipped=0 peak players=6 thined=0 last dest=07000000 | internal dest=00060000 live=00000000 posts=28124 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7c9cd40 end=c8000000 free=3551936 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 1287855
+SAVE Projects\SPACED\project.xml | sidecar status=4 curves=12 bytes=2602 | pool used=1088 handles=12 | ext heap free=13181440 (cur=c0e92200200 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=98327 avg=22.9% peak=142.1% <50=97098 50-80=1195 80-100=27 100+=7 missed=0
+AUDIO blocks=100729 events=101146 waited=196 timeouts=41 max_polls=19830 wrong_half=41 head_min=-972 gap_under=0 gap_over=1 gap_max=1895
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=100729 bad=0 fw_boots=0 crc_changes=88987 tx=100729 restarts=0 version=000f reboots=0 spi=1 frame_type=3 btn_changes=10 btn_or=1103 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=12 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c898 (15096 B above bottom) min_sp=2404c898 hearat=5788650 | curves started=1206 sent=28124 late=0 skipped=0 peak players=6 thinned=0 last dest=07000000 | internal dest=00060000 live=00000000 posts=28124 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7b831c0 end=c8000000 free=4705856 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 537003
+BENTO black box, firmware BEoff, boot gen 19, rtc 730120-232739
+previous boot: last UI-loop pass at ms 354538, rtc 730120-220720
+at boot (after the black box's own buffers): | ram bump cur=c7b631c0 end=c8000000 free=4836928 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249
+as found at boot (the previous run; RAMCHK also shows what a reset touched):
+LOAD render blocks=1168 avg=21.2% peak=30.2% <50=1168 50-80=0 80-100=0 100+=0 missed=0
+AUDIO blocks=66599 events=67016 waited=237 timeouts=103 max_polls=19841 wrong_half=103 head_min=-1018 gap_under=0 gap_over=3 gap_max=1988
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=66598 bad=0 fw_boots=0 crc_changes=25141 tx=66599 restarts=0 version=000f reboots=0 spi=5 frame_type=0 btn_changes=24 btn_or=3183 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+stock crash record: count=399 cause=00000001 pc=080a3f24 core=00000002 | frame r0-r3,r12,lr,pc,xpsr (bkp6-13): 2401d8f8 2401d9b8 00000028 00000000 2401d8d8 0809dc4d 080a3f24 21004233
+rtc_bkp0..31: 00000003 00000dc0 00000340 00000000 00000000 00000400 2401d8f8 2401d9b8 00000028 00000000 2401d8d8 0809dc4d 080a3f24 21004233 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000400 2404cb10 fffffff1 0000018f 00000001 00055fb9 00000002 000568aa 000003b2 000008fe 080a3f24
+previous boot (from RAM): m7 dropped=10 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c898 (15096 B above bottom) min_sp=2404c898 heartbeat=3884639 | curves started=1206 sent=28124 late=0 skipped=0 peak players=6 thinned=0 last dest=07000000 | internal dest=00060000 live=00000000 posts=28124 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7b631c0 end=c8000000 free=4836928 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1
+  T 0 b561d44e PAD  4e80 lr=00000000 obj=24033160 ev=000000ac,00000000,fffffffe,00000000,00004646,00000000 x=00000000
+  T 0 b561dafe PAD  4e81 lr=00000000 obj=24033160 ev=000000ae,00000000,fffffffe,00000000,00004646,00000000 x=00000000
+  T 0 b561dd43 SEND 4e82 lr=080582df obj=c5004c08 ev=000000ae,00000000,fffffffe,00000000,00004646,00000000 x=00000000
+  T 0 b561dfd3 PAD  4e83 lr=00000000 obj=24033160 ev=000000ac,00000000,fffffffe,00000001,00004646,00000000 x=00000000
+  T 0 b561e617 PAD  4e84 lr=00000000 obj=24033160 ev=000000ae,00000000,fffffffe,00000001,00004646,00000000 x=00000000
+  T 0 b561e842 SEND 4e85 lr=080582df obj=c5004c08 ev=000000ae,00000000,fffffffe,00000001,00004646,00000000 x=00000000
+  T 0 b561eaf9 PAD  4e86 lr=00000000 obj=24033160 ev=000000ac,00000000,fffffffe,00000002,00004646,00000000 x=00000000
+  T 0 b561f0bc PAD  4e87 lr=00000000 obj=24033160 ev=000000ae,00000000,fffffffe,00000002,00004646,00000000 x=00000000
+  T 0 b561f2f4 SEND 4e88 lr=080582df obj=c5004c08 ev=000000ae,00000000,fffffffe,00000002,00004646,00000000 x=00000000
+  T 0 b561f581 PAD  4e89 lr=00000000 obj=24033160 ev=000000ac,00000000,fffffffe,00000003,00000046,00000000 x=00000000
+  T 0 b561fac6 PAD  4e8a lr=00000000 obj=24033160 ev=000000ae,00000000,fffffffe,00000003,00000046,00000000 x=00000000
+  T 0 b561fcee SEND 4e8b lr=080582df obj=c5004c08 ev=000000ae,00000000,fffffffe,00000003,00000046,00000000 x=00000000
+  T 0 b5620cba SEND 4e8c lr=08085b71 obj=c5011e94 ev=0000000e,00000000,000002c7,00000000,0000002a,00000000 x=00000000
+  T 0 b562129b SEND 4e8d lr=08085b71 obj=c5012a9c ev=0000000e,00000000,000002ca,00000000,0000002a,00000000 x=00000000
+  T 0 b562192b SEND 4e8e lr=08085b71 obj=c50142ac ev=0000000e,00000000,000002d0,00000000,0000002a,00000000 x=00000000
+  T 0 b5621f10 SEND 4e8f lr=08085b71 obj=c5014eb4 ev=0000000e,00000000,000002d4,00000000,00000000,00000000 x=00000000
+  T 0 b5675aec RING 4e90 lr=00000000 obj=10040000 ev=000000ac,00000000,fffffffe,00000000,00004646,00000000 x=00000000
+fields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)
+VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note
+SAVE Projects\SPACED\project.xml | sidecar status=4 curves=12 bytes=2602 | pool used=1088 handles=12 | ext heap free=13181440 (cur=c0e92200 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=52275275 avg=24.0% peak=191.6% <50=50154 50-80=2037 80-100=76 100+=8 missed=0
+AUDIO blocks=55125 events=55542 waited=239 timeouts=85 max_polls=19983 wrong_half=85 head_min=-1023 gap_under=0 gap_over=2 gap_max=1905
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=55124 bad=0 fw_boots=0 crc_changes=21288 tx=55125 restarts=0 version=000f reboots=0 spi=5 frame_type=3 btn_changes=8 btn_or=3101 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c898 (15096 B above bottom) min_sp=2404c898 heartbeat=3086464 | curves started=1206 sent=28124 late=0 skipped=0 peak players=6 thinned=0 last dest=07000000 | internal dest=00060000 live=00000000 posts=28124 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump =c7b831c0 end=c8000000 free=4705856 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 293477
+SAVE Projects\SPACED\project.xml | sidecar status=4 curves=12 bytes=2602 | pool used=1088 handles=12 | ext heap free=13181440 (cur=c0e92200 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|ke|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=69763 avg=59.0% peak=180.6% <50=20909 50-80=44381 80-100=4450 100+=23 missed=0
+AUDIO blocks=124892 events=125326 waited=253 timeouts=101 max_polls=19983 wrong_half=101 head_min=-1023 gap_under=9 gap_over=11 gap_max=1953
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=124891 bad=0 fw_boots=0 crc_changes=50180 tx=124892 restarts=0 version=000f reboots=0 spi=5 frame_type=3 btn_changes=26 btn_or=3183 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c898 (15096 B above bottom) min_sp=2404c898 heartbeat=7378432 | curves started=1206 sent=28124 late=0 skipped=0 peak players=6 thinned=0 last dest=07000000 | internal dest=00060000 live=00000000 posts=28124 | AT trs port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7b831c0 end=c8000000 free=4705856 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 666111
+BENTO black box, firmware BE3.69, boot gen 20, rtc 730120-051048
+previous boot: last UI-loop pass at ms 674180, rtc 730120-233300
+at boot (after the black box's own buffers): | ram bump cur=c7b631c0 end=c8000000 free=483692828 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249
+as found at boot (the previous run; RAMCHK also shows what a reset touched):
+LOAD render blocks=1544 avg=21.2% peak=26.9% <50=1544 50-80=0 80-100=0 100+=0 missed=0
+AUDIO blocks=126441 events=126875 waited=253 timeouts=101 max_polls=19983 wrong_half=101 head_min=-1023 gap_under=9 gap_over=11 gap_max=1953 seq 315681480 4035470457 1447157290 880367579 2318586252 1810516797 3382953198 2941992607
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=126440 bad=0 fw_boots=0 crc_changes=50817 tx=126441 restarts=0 version=000f reboots=0 spi=5 frame_type=0 btn_changes=26 btn_or=3183 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+stock crash record: count=400 cause=00000005 pc=080816c0 core=00000002 | frame r0-r3,r12,lr,pc,xpsr (bkp6-13): 2401d8f8 2401d9b8 2404cbc0 00000000 2401d8d8 0809dc4d 080a3f24 21004233
+rtc_bkp0..31: 00000003 00000dc0 00000340 00000000 00000000 00000400 2401d8f8 2401d9b8 2404cbc0 00000000 2401d8d8 0809dc4d 080a3f24 21004233 00000000 00000000 2404cbc0 00000000 00000000 00000000 00000000 00000400 2404cb10 ffffffe9 00000190 00000005 00043be6 00000002 000a4944 000003b2 000008fe 080816c0
+previous boot (from RAM): m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c898 (15096 B above bottom) min_sp=2404c898 heartbeat=7469944 | curves started=1206 sent=28124 late=0 skipped=0 peak players=6 thinned=0 last dest=07000000 | internal dest=00060000 live=00000000 posts=28124 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7b631c0 end=c8000000 free=4836928 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1
+  T 0 1d1bb389 SEND 557a lr=0806196b obj=2403aab8 ev=0000005c,00000059,00000000,00000000,00000046,00000000 x=00000000
+  T 0 1d1bb692 SEND 557b lr=0806196b obj=2403aab8 ev=0000005c,00000059,00000000,00000000,0000004f,00000000 x=00000000
+  T 0 1d22f96d RING 557c lr=00000000 obj=10040000 ev=0000005a,00000059,00000297,00000000,00000000,00000000 x=00000000
+  T 0 1d22fc98 RING 557d lr=00000000 obj=10040000 ev=0000005a,00000059,000001ec,00000000,00000000,00000000 x=00000001
+  T 0 1d22ffa0 RING 557e lr=00000000 obj=10040000 ev=0000005a,00000059,0000033c,00000000,00000000,00000000 x=00000002
+  T 0 1d23074b RING 557f lr=00000000 obj=10040000 ev=0000005c,00000059,00000000,00000000,0000003f,00000000 x=00000003
+  T 0 1d230bad RING 5580 lr=00000000 obj=10040000 ev=0000005c,00000059,00000000,00000000,00000043,00000000 x=00000004
+  T 0 1d230fa2 RING 5581 lr=00000000 obj=10040000 ev=0000005c,00000059,00000000,00000000,00000041,00000000 x=00000005
+  T 0 1d231388 RING 5582 lr=00000000 obj=10040000 ev=0000005c,00000059,00000000,00000000,00000046,00000000 x=00000006
+  T 0 1d231768 RING 5583 lr=00000000 obj=10040000 ev=0000005c,00000059,00000000,00000000,0000004f,00000000 x=00000007
+  T 0 34b0b868 SEND 5584 lr=0808ce35 obj=c5007020 ev=00000002,00000000,fffffff0,00000000,00000000,00000000 x=00000000
+  T 0 34b0bc01 SEND 5585 lr=0808ce35 obj=c5004000 ev=00000002,00000000,fffffff1,00000000,00000000,00000000 x=00000000
+  T 0 34b5ca74 RING 5586 lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000000
+  T 0 34b5cdd7 RING 5587 lr=00000000 obj=10040000 ev=00000020,000000,fffffff2,00000001,00000000,00000000 x=00000001
+  T 0 34b5d119 RING 5588 lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000002
+  T 0 34b5d42d RING 5589 lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000003
+  T 0 34b5d7c5 RING 558a lr=00000000 obj=10040000 ev=00000020,00000000,fffffff0,00000001,00000000,00000000 x=00000004
+fields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)
+VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note
+SAVE Projects\SPACED_A\project.xml | sidecar status=4 curves=12 bytes=2602 | pool used=1088 handles=12 | ext heap free=13180288 (cur=c0e91d80 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 vel insert=0 settled=0
+PARAM edits=0
+HDR pages: 13 02 13 02 01 | melodic - | drum -
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0  inserts=0 defaults-filled=0
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=52219 avg=21.8% peak=40.1% <50=52219 50-80=0 80-100=0 100+=0 missed=0
+AUDIO blocks=55068 events=55485 waited=0 timeouts=0 max_polls=0 wrong_half=0 head_min=4 gap_under=0 gap_over=0 gap_max=1027 seq 49976406 52219 366405 108577 140500 186 1920 2070
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=55067 bad=0 fw_boots=0 crc_changes=21597 tx=55068 restarts=0 version=000f reboots=0 spi=5 frame_type=3 btn_changes=4 btn_or=0100 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=2 overflows=0 | m7 stack min_msp=2404c978 (15320 B above bottom) min_sp=2404c978 heartbeat=3063462 | crves started=0 sent=0 late=0 skipped=0 peak players=0 thinned=0 last dest=00000000 | internal dest=00000000 live=00000000 posts=0 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7c9cd40 end=c8000000 free=3551936 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 293157
+SAVE Projects\SPACED_A\project.xml | sidecar status=4 curves=12 bytes=2602 | pool usedd=1088 handles=12 | ext heap free=13180288 (cur=c0e91d80 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 vel insert=0 settled=0
+PARAM edits=0
+HDR pages: 13 1f 13 02 13 02 01 | melodic - | drum -
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0 inserts=0 defaults-filled=0
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=72453 avg=20.8% peak=26.6% <50=72453 50-80=0 80-100=0 100+=0 missed=0
+AUDIO blocks=127524 events=127941 waited=0 timeouts=0 max_polls=0 wrong_half=0 head_min=4 gap_under=0 gap_over=0 gap_max=1027 seq 65849113 72453 297201 104853 154858 261 1184 1300
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=127523 bad=0 fw_boots=0 crc_changes=51342 tx=127524 restarts=0 version=000f reboots=0 spi=5 frame_type=3 btn_changes=8 btn_or=0500 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=2 overflows=0 | m7 stack min_msp=2404c978 (15320 B above bottom) min_sp=2404c978 heartbeat=7338312 | curves started=0 sent=0 late=0 skipped=0 peak players=0 thinned=0 last dest=00000000 | internal dest=00000000 live=00000000 posts=0  AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7c9cd40 end=c8000000 free=3551936 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 680075
+SAVE Projects\SPACED_A\project.xml | sidecar status=4 curves=12 bytes=2602 | pool used=1088 handles=12 | ext heap free=13180288 (cur=c0e91d80 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 vel insert=0 settled=0
+PARAM edits=0
+HDR pages: 13 02 13 1f 13 02 13 02 | melodic - | drum -
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0 inserts=0 defaults-filled=0
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=7098 avg=21.4% peak=38.7% <50=7098 50-80=0 80-100=0 100+=0 missed=0
+AUDIO blocks=134626 events=135043 waited=0 timeouts=0 max_polls=0 wrong_half=0 head_min=4 gap_under=0 gap_over=0 gap_max=1027 seq 6536736 7098 342155 13770 18358 25 1251 1388
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=134625 bad=0 fw_boots=0 crc_changes=54304 tx=134626 restarts=0 version=000f reboots=0 spi=5 frame_type=3 btn_changes=10 btn_or=0500 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=2 overflows=0 | m7 stack min_msp=2404c978 (15320 B above bottom) min_sp=2404c978 heartbeat=7740217 | curves started=0 sent=0 late=0 skipped=0 peak players=0 thinned=0 last dest=00000000 | internal dest=00000000 live=00000000 posts=0 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7c9cd40 end=c8000000 free=3551936 d2canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 718002
+SAVE Projects\SPACED_A\project.xml | sidecar status=4 curves=12 bytes=2602 | pool used=1088 handles=12 | ext heap free=13180288 (cur=c0e91d80 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 vel insert=0 settled=0
+PARAM edits=0
+HDR R pages: 13 02 1e 17 02 1e 21 02 | melodic page=17 cfg=1 nm_slot=0 out=N10f3,E0049,S004a,A004b,C004d,U1032 applied=N10f3,E0049,S004a,A004b,C004d,U1032 | drum -
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0 inserts=0 defaults-filled=0
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=126217 avg=58.8% peak=191.3% <50=36237 50-80=76369 80-100=13381 100+=230 missed=0
+AUDIO blocks=260847 events=261267 waited=211 timeouts=93 max_polls=19840 wrong_half=93 head_min=-1022 gap_under=1 gap_over=6 gap_max=1992 seq 353610488 126216 2406001 259970 333812 473 3269 3110
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=78262 bad=0 fw_boots=0 crc_changes=106348 tx=78262 restarts=1 version=000f reboots=0 spi=5 frame_type=3 btn_changes=62 btn_or=7d93 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c828 (14984 B above bottom) min_sp=2404c828 heartbeat=15486032 | curves started=822 sent=19155 late=0 skipped=0 peak players=6 thinned=0 last dest=07000000 | internal dest=00060000 live=000eac06 posts=19155 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7c9cd40 end=c800000free=3551936 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 1392052
+SAVE Projects\SPACED_N\project.xml | sidecar status=4 curves=0 bytes=2014 | pool used=0 handles=0 | ext heap free=13181440 (cur=c0e92200 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 vel insert=0 settled=0
+PARAM e edits=0
+HDR pages: 13 02 13 02 1e 17 02 1e | melodic page=17 cfg=1 nm_slot=0 out=N10f3,E0049,S004a,A004b,C004d,U1032 applied=N10f3,E0049,S004a,A004b,C004d,U1032 | drum -
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0 inserts=0 defaults-filled=0
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=7445 avg=21.5% peak=38.9% <50=7445 50-80=0 80-100=0 100+=0 missed=0
+AUDIO blocks=268294 events=268714 waited=211 timeouts=93 max_polls=19840 wrong_half=93 head_min=-1022 gap_under=1 gap_over=6 gap_max=1992 seq 6889061 7445 325365 12986 18742 25 1139 1320
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=85709 bad=0 fw_boots=0 crc_changes=109351 tx=85709 restarts=1 version=000f reboots=0 spi=5 frame_type=3 btn_changes=64 btn_or=7d93 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c828 (14984 B above bottom) min_sp=2404c828 heartbeat=15908320 | curves started=822 sent=19155 late=0 skipped=0 peak players=6 thinned=0 last dest=07000000 | internal dest=00060000 live=000eac06 posts=19155 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7c9cd40 end=c8000000 free=35536 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 1431831
+SAVE Projects\SPACED_N\project.xml | sidecar status=4 curves=0 bytes=2014 | pool used=0 handles=0 | ext heap free=13181440 (cur=c0e92200 floor=c0200000)
+INSERTS total=5 last rec0=00000001 by caller: 081377cex5
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 vel insert=0 settled=0
+PARAM edits=0
+HDHDR pages: 13 1e 21 1f 07 02 1e 13 | melodic page=17 cfg=1 nm_slot=0 out=N10f3,E0049,S004a,A004b,C004d,U1032 applied=N10f3,E0049,S004a,A004b,C004d,U1032 | drum -
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0 inserts=0 defaults-filled=0
+MX mx_ctx=1b8495cc build v=a5beccb1 ctx=560dd187 | last edit/event v=5e04430c ctx=619968c0 type|key<<16=aeeab728 | builds=552 edits=863 events=53
+LOAD render blocks=115648 avg=55.2% peak=199.7% <50=41066 50-80=68512 80-100=6016 100+=54 missed=0
+AUDIO blocks=383942 events=384365 waited=551 timeouts=156 max_polls=19925 wrong_half=156 head_min=-1022 gap_under=4 gap_over=10 gap_max=1992 seq 303166524 115648 2489465 229631 302192 434 3019 2926
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=201357 bad=0 fw_boots=0 crc_changes=156802 tx=201357 restarts=1 version=000f reboots=0 spi=5 frame_type=3 btn_changes=90 btn_or=7db3 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=4 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c828 (14984 B above bottom) min_sp=2404c828 heartbeat=23009271 | curves started=822 sent=19155 late=0 skipped=0 peak players=6 thinned=0 last dest=07000000 | internal dest=00060000 live=0015e804 posts=19155 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ram bump cur=c7cb3a20 end=c80000 free=3458528 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046420157 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 2049424
+BENTO black box, firmware BE3.70, boot gen 2, rtc 730120-140733
+previous boot: last UI-loop pass at ms 33352, rtc 730120-135624
+at boot (after the black box's own buffers): | ram bump cur=c7b601c0 end=c8000000 free=4849216 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249
+as found at boot (the previous run; RAMCHK allso shows what a reset touched):
+LOAD render blocks=5785 avg=21.3% peak=42.5% <50=5785 50-80=0 80-100=0 100+=0 missed=0
+AUDIO blocks=6457 events=6874 waited=0 timeouts=0 max_polls=0 wrong_half=0 head_min=4 gap_under=0 gap_over=0 gap_max=1028 seq 5390397 5785 403351 7880 11742 16 1123 1216
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3405824 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=6104 bad=1 fw_boots=0 crc_changes=2717 tx=6104 restarts=0 version=000f reboots=0 spi=5 frame_type=0 btn_changes=2 btn_or=0100 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+stock crash record: count=402 cause=00000005 pc=080a5920 core=00000002 | frame r0-r3,r12,lr,pc,xpsr (bkp6-13): 00000040 3fffbda1 2404cb90 00000000 00000002 080a3cc1 08071caa 81000000
+rtc_bkp0..31: 00000003 00000dc0 00000340 00000000 00000000 00000400 00000040 3fffbda1 2404cb90 00000000 00000002 080a3cc1 08071caa 81000000 2001fe80 2001ff48 2404cb90 20006684 00000260 00000080 24028a84 2001fea4 2404c9d8 ffffffe9 00000192 00000005 00013bd2 00000002 00008208 000003b2 000008fe 080a5920
+previous boot (from RAM): m7 dropped=45 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=4 overflows=0 | m7 stack min_msp=2404c978 (15320 B above bottom) min_sp=2404c978 heartbeat=267679 | ram bump cur=c7b601c0 end=c8000000 free=4849216 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046416122 drum=0 slot=1 ins=1 off=0 | audio dma seen running: S5=1 S7=1
+  T 0 86530a04 RING 01d2 lr=00000000 obj=10040000 ev=000000ad,00000000,fffffffe,0000000b,00000000,00000000 x=00000000
+  T 0 06c0fd0a RING 01d3 lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000000
+  T 0 08d0aabe RING 01d4 lr=00000000 obj=10040000 ev=000000a4,00000000,000002c7,00003c00,00000000,00000000 x=00000000
+  T 0 08d0ae0d RING 01d5 lr=00000000 obj=10040000 ev=000000a4,00000000,000002ca,00001e00,00000000,00000000 x=00000001
+  T 0 08d0b13b RING 01d6 lr=00000000 obj=10040000 ev=000000a4,00000000,000002cc,00001e00,00000000,00000000 x=00000002
+  T 0 08e3d8fe RING 01d7 lr=00000000 obj=10040000 ev=000000a4,00000000,000002d0,0001e000,00000000,00000000 x=00000000
+  T 0 08e3dc4b RING 01d8 lr=00000000 obj=10040000 ev=000000a4,00000000,000002d2,00007800,00000000,00000000 x=00000001
+  T 0 08e3df3d RING 01d9 lr=00000000 obj=10040000 ev=000000a4,00000000,000002d4,0000f000,00000000,00000000 x=00000002
+  T 0 0f0ea78c RING 01da lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000000
+  T 0 0f0eab0d RING 01db lr=00000000 obj=10040000 ev=000000b1,00000000,00000000,00000000,00000000,00000000 x=00000001
+  T 0 654e247c SEND 01dc lr=0808ce35 obj=c5007020 ev=00000002,00000000,fffffff0,00000000,00000000,00000000 x=00000000
+  T 0 654e280d SEND 01dd lr=0808ce35 obj=c5004000 ev=00000002,00000000,fffffff1,00000000,00000000,00000000 x=00000000
+  T 0 65533e94 RING 01de lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000000
+  T 0 655341eb RING 01df lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000001
+  T 0 6553459b RING 01e0 lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000002
+  T 0 655348b7 RING 01e1 lr=00000000 obj=10040000 ev=00000020,00000000,fffffff2,00000001,00000000,00000000 x=00000003
+  T 0 65534bb7 RING 01e2 lr=00000000 obj=10040000 ev=00000020,00000000,fffffff0,00000001,00000000,00000000 x=0000004
+fields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)
+VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note
+SAVE Projects\SPACED_N\project.xml | sidecar status=4 curves=0 bytes=2014 | pool used=0 handles=0 | ext heap free=13181440 (cur=c0e92200 floor=c0200000)
+STRIKE-LATE queued=0 applied=0 skip press=0 vel0=0 lookup=0 notfound=0 same=0 | last pad=0 vel insert=0 settled=0
+PARAM edits=0
+HDR pages: 13 17 02 17 02 1f 02 17 | melodic page=17 cfg=1 n nm_slot=0 out=N10f3,E0049,S004a,A004b,C004d,U1032 applied=N10f3,E0049,S004a,A004b,C004d,U1032 | drum page=27 cfg=1 nm_slot=3 out=.0000,S0049,S004a,N10f3,S10f0,U1032 applied=.0000,S0049,S004a,N10f3,S10f0,U1032
+TOGGLE presses=0 toggles=0 adds=0 made=0 not-made=0 removes=0 inserts=0 defaults-filled=0
+MX mx_ctx=938285cc build v=a7b6ccb1 ctx=560dd187 | last edit/event v=5e05531c ctx=659b68c0 type|key<<16=aeaab768 | builds=553 edits=927 events=33
+LOAD render blocks=263116 avg=57.2% peak=156.8% <50=87565 50-80=163245 80-100=12281 100+=25 missed=0
+AUDIO blocks=265970 events=266387 waited=0 timeouts=0 max_polls=0 wrong_half=0 head_min=4 gap_under=0 gap_over=2 gap_max=1638 seq 715246792 263115 1974099 502509 674208 989 3059 3070
+M7MEM heap free=37776 min=37776 chunks=1 largest=37776 bad=0 | dtcm used=131040 axi used=100288 ext left=3389440 shared left=64992 | m4 pool cur=24056fe0 used=167968
+LINK rx=265969 bad=0 fw_boots=0 crc_changes=183185 tx=265970 restarts=0 version=000f reboots=0 spi=5 frame_type=3 btn_changes=62 btn_or=7593 btn_now=0000
+RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0
+# saved: m7 dropped=0 | poly sent=1 budget_drops=0 stolen=0 retrig=0 swallowed=0 | midi ring max_fill=8 overflows=0 | m7 stack min_msp=2404c828 (14984 B above bottom) min_sp=2404c828 heartbeat=16217024 | curves started=0 sent=0 late=0 skipped=0 peak players=0 thinned=0 last dest=00000000 | internal dest=00000000 live=0002d804 posts=0 | AT tracks port/ch/mode: 0=0/0/0 1=0/0/0 2=0/0/0 3=0/0/0 4=0/0/0 5=0/0/0 6=0/1/0 | ramump cur=c7cb1420 end=c8000000 free=3468256 d2 canary changed=0 | wd worst gap main=0/3333 pcm=0/6249 | strike btn calls=3046416179 drum=1 slot=4 ins=1 off=0 | audio dma seen running: S5=1 S7=1 at ms 1419401

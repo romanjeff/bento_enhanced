@@ -16,7 +16,7 @@ from unicorn.arm_const import *
 BASE, SENT, STACK, CYC = 0x08040000, 0x08000100, 0x2407F000, 0xE0001004
 ENGINE = 0x24060000
 QUEUE = ENGINE + 0x7C8
-CFG, REGION, MAGIC = 0x3003C1E0, 0xC6100000, 0x31474144
+CFG, REGION, MAGIC = 0x3003C1E0, 0xC5FFC000, 0x31474144
 MODHEAD, MODCFG, MOD_MAGIC = 0x3003DFC0, 0xC6200000, 0x37444F4D
 CLOCK, TRACK = 0x24071000, 0x24064000
 MSG_SEND = 0x08065600
@@ -38,8 +38,9 @@ class Rig:
         u = self.u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M7)
         u.mem_map(0x08000000, 0x200000); u.mem_write(BASE, IMG); u.mem_write(SENT, b"\xfe\xe7")
-        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC6000000, 0x400000), (0xE0000000, 0x100000)):
+        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x400000), (0xE0000000, 0x100000)):
             u.mem_map(a, n)
+        w32(u, 0x24000160, 3405824); w32(u, 0x24000164, 0xC6000000 - 3405824)   # stock's ext pool: left, cursor
         u.mem_write(CFG, struct.pack("<8I", MAGIC, REGION, 0x3000, 1, 0, 0, 0, 0))
         u.mem_write(TRACK, bytes(0x8800))
         u.mem_write(TRACK + 0x31, bytes([1, 2])); u.mem_write(TRACK + 0x86D1, b"\x01")

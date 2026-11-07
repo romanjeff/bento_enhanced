@@ -14,14 +14,14 @@ from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
 from unicorn.arm_const import *
 
 BASE, SENT = 0x08040000, 0x08000100
-CFG, REGION, MAGIC = 0x3003C1E0, 0xC6100000, 0x31474144
+CFG, REGION, MAGIC = 0x3003C1E0, 0xC5FFC000, 0x31474144
 MODHEAD, MODCFG, MOD_MAGIC = 0x3003DFC0, 0xC6200000, 0x37444F4D
 NM_AT = MODCFG + 12 + 8 * 232                    # ModNote nm[8] after the tracks
 KEY_AT = NM_AT + 8 * 12
 CLOCK, ROUTER, S = 0x24071000, 0x24060000, 0x2407E000
 NOTE_ROUTE, NOTE_OFF, TO_OFFSET = 0x0805F8E0, 0x0805FE00, 0x080A2200
 ACCEPT, OFF_SITES, ALL_OFF = 0x08060B9A, (0x080605D2, 0x08060A4C), 0x080618E0
-MELODIC = 0xFFFF
+MELODIC = 0                                       # melodic records carry pad 0 (absent chan), not 0xFFFF
 SQUARE, SAW, RANDOM = 6, 1, 8
 MAJOR, C, D = 1, 3, 5                            # stock's Root list starts at A
 
@@ -37,8 +37,9 @@ class Rig:
         u = self.u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M7)
         u.mem_map(0x08000000, 0x200000); u.mem_write(BASE, IMG); u.mem_write(SENT, b"\xfe\xe7")
-        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC6000000, 0x400000), (0xE0000000, 0x100000)):
+        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x400000), (0xE0000000, 0x100000)):
             u.mem_map(a, n)
+        w32(u, 0x24000160, 3405824); w32(u, 0x24000164, 0xC6000000 - 3405824)   # stock's ext pool: left, cursor
         u.mem_write(CFG, struct.pack("<8I", MAGIC, REGION, 0x3000, 1, 0, 0, 0, 0))
         self.t = 0x24064000
         u.mem_write(self.t, bytes(0x8800)); u.mem_write(self.t + 0x86D1, b"\x01\x01")   # MIDI out + internal

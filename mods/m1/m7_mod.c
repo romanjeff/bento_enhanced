@@ -308,8 +308,8 @@ void mod_block(u32 track, const u32 *clock, int start, u32 router) {
  *              mapped note first (stock's own list holds the original pitches);
  *   nm_block   every audio block per track: advances the free-running phase.
  * Melodic notes move in steps of the project's scale (a note outside it snaps to the
- * nearest scale note first), drum notes (stock's rule: pad <= 15 with a sound) move
- * by pads, wrapping in the kit. Notes starting on the same tick share the offset
+ * nearest scale note first), drum notes (note 0 on pad <= 15) move by pads, wrapping in
+ * the kit and staying put if an internal track's target pad has no sound. Notes starting on the same tick share the offset
  * (chords keep their shape); retrigger hits and curves get the sent pitch from the
  * stub. Stock ends a pending note before starting one with the same note and pad
  * (0x08060A4C), so {original note, pad} is unique per track among sounding notes. */
@@ -343,7 +343,7 @@ static const u8 SCALE_OFS[23][12] = {
 static int fdiv(int a, int b) { int q = a / b; return (a % b && (a < 0) != (b < 0)) ? q - 1 : q; }
 
 /* note moved by steps of scale sc with root pitch class root (0 = C). */
-static u32 scale_shift(u32 note, int steps, u32 sc, u32 root) {
+__attribute__((unused)) static u32 scale_shift(u32 note, int steps, u32 sc, u32 root) {
     const u8 *s = SCALE_OFS[sc];
     int n = SCALE_N[sc], rel = (int)note - (int)root, oct = fdiv(rel, 12), pc = rel - oct * 12, d = 0, best = 99;
     for (int i = 0; i <= n; i++) {                 /* nearest degree; i == n: the next octave's root */
@@ -357,10 +357,10 @@ static u32 scale_shift(u32 note, int steps, u32 sc, u32 root) {
     return (u32)out;
 }
 
-static int nm_drum(u32 track, u32 note, u32 pad) {   /* note_route's rule for a pad's own sound */
+__attribute__((unused)) static int nm_drum(u32 track, u32 note, u32 pad) {
     if (pad > 15u) return 0;
-    if (!note) return 1;
-    return *(volatile u8 *)(track + 0x86D2u) && *(volatile u32 *)(track + 0x86DCu + 4u * pad) != 0xFFFFFF00u;
+    (void)track;
+    return !note;                              /* a pad's own sound. A melodic note also carries pad 0 (no chan) */
 }
 
 static NmRun *nm_track(NmState *st, u32 track, u32 *idx) {
@@ -374,7 +374,7 @@ static NmRun *nm_track(NmState *st, u32 track, u32 *idx) {
     return r;
 }
 
-static int nm_value(NmRun *r, volatile ModNote *nm, u32 p, int fresh) {
+__attribute__((unused)) static int nm_value(NmRun *r, volatile ModNote *nm, u32 p, int fresh) {
     if (nm->shape < 8u) {
         ModRun tmp;                               /* the periodic shapes need no state */
         return shape(&tmp, 0, nm->shape, p);
@@ -422,6 +422,8 @@ __attribute__((used, retain)) u32 nm_on(u32 track, u32 note, u32 *pad, const u32
     if (steps) {
         if (drum) {
             spad = (u32)(((int)opad + steps) % 16 + 16) % 16u;
+            if (!*(volatile u8 *)(track + 0x86D1u) && *(volatile u32 *)(track + 0x86DCu + 4u * spad) == 0xFFFFFF00u)
+                spad = opad;                       /* internal: no sound on that pad, keep the hit */
             if (note) { int x = (int)note + steps; sent = (u32)(x < 0 ? 0 : x > 127 ? 127 : x); }
         } else sent = scale_shift(note & 0x7Fu, steps, sc, root);
     }

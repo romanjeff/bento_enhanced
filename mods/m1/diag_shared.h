@@ -75,16 +75,30 @@ typedef struct {
 
 typedef struct {
     u32 magic;
-    u32 region;        /* M7-owned state region in the M4 SDRAM pool (0 = none yet) */
+    u32 region;        /* M7-owned state region: M1_REGION_ADDR once the M4 is up */
     u32 region_bytes;
     u32 r[5];          /* r[0] = M4 boot generation the region belongs to */
 } Cfg; /* 32 bytes */
 #define CFG ((volatile Cfg *)0x3003C1E0u)
 #define M1_REGION_BYTES 0x3000u   /* 12 KB since v3.41 (8 KB since v3.25: curve players) */
+/* v3.70: the region is the top 16 KB of stock's M7 "ext" pool, so the M7 reaches it through its
+ * write-back mapping (MPU R8, no write-allocate) rather than as Device memory in the M4 pool.
+ * Stock's allocator (0x0809FB40) only bumps: left falls and cursor rises, so cursor + left stays
+ * EXT_POOL_END. Taking the reservation is lowering left; m7_polyat.c region() does it, once per M7
+ * boot. The M4 only reads it, and only the stats below REGION_STATS_BYTES, which d0_publish cleans. */
+#define M1_REGION_ADDR 0xC5FFC000u
+#define M1_REGION_RESERVE 0x4000u
+#define EXT_POOL_LEFT (*(volatile u32 *)0x24000160u)
+#define EXT_POOL_CUR (*(volatile u32 *)0x24000164u)
+#define EXT_POOL_END 0xC6000000u
+#define REGION_STATS_BYTES 96u     /* 3 lines: everything of the region the M4 reads */
+_Static_assert(M1_REGION_ADDR + M1_REGION_RESERVE == EXT_POOL_END && !(M1_REGION_ADDR & 31u), "region at the pool's top");
+_Static_assert(M1_REGION_BYTES <= M1_REGION_RESERVE, "region larger than its reservation");
 #define MOD_RUN_BYTES 0x600u       /* F1: modulation runtime (m7_mod.c) inside the region */
 #define REGION_CURVE_STATS 32u     /* curve_starts, curve_sent, curve_late, curve_skipped (m7_polyat.c) */
 #define REGION_CURVE_PEAK 52u      /* curve_peak, curve_thinned, curve_dest (port | ch << 8 | mode << 16) */
 #define REGION_INTERNAL 64u        /* int_dest, live_int, int_sent (M2-2b internal instruments) */
+_Static_assert(REGION_INTERNAL + 12u <= REGION_STATS_BYTES, "M4-read stats outside the cleaned lines");
 #define RETRIG_BYTES 512u          /* 16 bursts x 32 B, inside the M1 region */
 
 /* Per-step word: the native note record's +20 word (notes, kind 1, only;
@@ -321,9 +335,10 @@ typedef struct { ModLfo lfo[2]; ModEnv env[2]; ModDest d[MOD_DESTS]; } ModTrack;
 typedef struct { u8 shape, sync, srate, restart; u16 rate, amount; u8 range, pad_[3]; } ModNote;   /* 12 B */
 /* key: the project's Scale (0-22, stock's list) | Root << 8 (0 = A .. 11 = G#) | 1 << 16 when
  * read; nm_poll: the M4's last read (UI ms). Appended after the tracks. */
-/* nm_ui (M4 only, v3.62): bit 0 = the SEQ page's bar shows Note Mod; dk/dk_ok: the drum
- * Step view's own slot keys 1-4 while Note Mod borrows slots 3-4. */
-typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; ModNote nm[MOD_TRACKS]; u32 key, nm_poll, nm_ui; u16 dk[4]; u32 dk_ok; } ModCfg;
+/* M4 only. nm_ui (v3.65): bit t = track t's SEQ bar shows Note Mod. dk/dk_ok: the drum Step
+ * view's own slot keys 1-4 while Note Mod borrows slots 3-4. nm_doc: the document nm_ui
+ * belongs to. nm_bar: the piano view whose bar holds Note Mod keys (0 = none). */
+typedef struct { u32 magic, gen, seq; ModTrack t[MOD_TRACKS]; ModNote nm[MOD_TRACKS]; u32 key, nm_poll, nm_ui; u16 dk[4]; u32 dk_ok, nm_doc, nm_bar; } ModCfg;
 #define NM_RUN_BYTES 0x480u        /* F5: Note Mod runtime (m7_mod.c) inside the region */
 /* tried: boot gen + 1 of the last allocation attempt. row/view/page: the External
  * INST page's row set (F2a, M4 only): 0 Main, 1-2 LFO, 3-4 Env; the External view
@@ -344,6 +359,64 @@ _Static_assert(0x3003DFC0u + sizeof(ModHead) <= 0x3003E000u, "mod header");
 /* status: 0 none yet, 1 not a project.xml, 2 no sidecar, 3 bad data, 4 ok,
  * 5 pool/handles full (partial), 9 no curve memory */
 _Static_assert(0x3003D880u + CURVELOG_N * sizeof(CurveLogEntry) <= 0x3003DC80u, "curve log");
+
+/* D0 readiness diagnostics (v3.64): real load and memory figures for the synth and FX
+ * ports. The M7 writes D0A, D0C and D0L and cleans them about 78 times a second (every 256
+ * h_consume calls, about 53 calls per audio block); the M4's MPU can't read the originals.
+ * Stock's load ring (0x08056F00) can't show overload: each value is busy / time since the
+ * last render began, so it stays under 1.0 and falls when renders run late. Here value x
+ * period / stock's 1,280,000-cycle block budget gives render time as a share of the block,
+ * which can pass 100 %. Render scope only: 0x0808C86C..0x0808CC52. That scope includes message
+ * draining, so a burst such as a project load can make a large peak that isn't DSP cost, and
+ * 100 % isn't the overrun line: size DSP from avg and the histogram, and read real overruns
+ * from wrong_half and head_min. sum saturates at ~0 (printed as avg=-). */
+typedef struct { u32 seen, sum, peak, h[4], ack; } D0Load;   /* permille; h: <50, 50-80, 80-100, 100+ % */
+typedef struct { u32 magic, req, hdr_len, hdr_gen, r_[4]; } LoadReq;   /* M4-written: req++ starts a new stretch;
+                                                                   hdr_*: this boot's header, for BENTO_SAVES.log */
+typedef struct {
+    u32 magic, gen, heap_free, heap_min, chunks, largest, bad, dtcm_used;
+    u32 axi_used, ext_left, shared_left, wrong_half, head_min, gap_over, gap_max, prev_start;
+} D0Top;
+typedef struct { u32 blocks, events, waited, timeouts, max_polls, gap_under, missed, last_idx; } D0Count;
+#define D0A ((volatile D0Top *)0x3003C9A0u)
+#define LOADREQ ((volatile LoadReq *)0x3003C9E0u)
+#define D0C ((volatile D0Count *)0x3003CFC0u)                /* taken from the end of the canary */
+#define D0L ((volatile D0Load *)0x3003CFE0u)
+#define D0_MAGIC 0x3137304Du /* "M071" */
+/* The panel Controller link (v3.65), M7 copies (stock 0x080550C0, 0x08080E60, 0x0808D080).
+ * rx: frames received, about 375/s when healthy; flat = no transfers complete. restarts:
+ * times rx went back to 0 (a link restart zeroes the counters). version: 0x000F firmware,
+ * 0x0001 bootloader, 0xFFFF none since a restart. reboots: M7's resets of the Controller;
+ * stock stops at 3 and never retries. spi_state: 1 ready, 5 in transfer. btn_changes: blocks
+ * where the panel's button word changed; btn_or: which bits changed (bit = 1 << (15 - id)).
+ * fw_boots: rising edges of the Controller's "just booted" word (frame +0x42, stock 0x080A2B60).
+ * crc_changes: blocks whose frame CRC differed; rx rising with this flat = stale frames. */
+typedef struct {
+    u32 rx, bad, fw_boots, tx, restarts, version, reboots, boot_prev;
+    u32 spi_state, crc_changes, crc_prev, frame_type, btn_changes, btn_or, btn_prev, rx_prev;
+} D0Link;
+#define D0LINK ((volatile D0Link *)0x3003CF80u)              /* also from the end of the canary */
+/* M7-only line (v3.66), cacheable: how many Player and PEnt slots can be in use. The region
+ * was then SDRAM the M7 saw as Device memory: uncached, one stalled bus read per access.
+ * Scanning all 64 + 72 slots per playing track per block cost about 400 reads with nothing
+ * playing, with interrupts masked, and took SPACED from clean to crackling. Since v3.70 the
+ * region is cached; a scan of cold lines is still SDRAM line fills, so the limit stays. */
+#define SCAN_HI ((volatile u32 *)0x3003CF60u)                /* [0] players, [1] pressure entries */
+/* v3.69: stock times its per-track pass (0x08057D22..0x08057D2A, around 0x080654A0) into 0x2401D678:
+ * +0 count, +4 last cycles, +8 most, +0xC average of 512. All of our per-track and note hooks run
+ * inside that pass. seq_*: this stretch, sampled once a block. dev / fill: cycles for 8 Device reads
+ * and 8 cached line fills of SDRAM, a few times a second, under whatever the audio is doing. */
+typedef struct { u32 seq_sum, seq_n, seq_peak, dev_sum, fill_sum, mem_n, dev_max, fill_max; } M7Probe;
+#define PROBE ((volatile M7Probe *)0x3003CF20u)
+_Static_assert(sizeof(M7Probe) == 32, "probe line");
+_Static_assert(sizeof(D0Link) == 64, "D0 link lines");
+_Static_assert(sizeof(D0Load) == 32 && sizeof(LoadReq) == 32 && sizeof(D0Top) == 64 && sizeof(D0Count) == 32, "D0 lines");
+static inline u32 float_permille(u32 bits) {                 /* no float use: these build soft-float */
+    u32 e = (bits >> 23) & 0xFFu;
+    if (bits >> 31 || e <= 111u) return 0;
+    if (e >= 134u) return 65535u;                            /* 128 or more, inf, NaN: never a real load */
+    return (((bits & 0x7FFFFFu) | 0x800000u) >> 8) * 1000u >> (142u - e);
+}
 
 #define PROF ((volatile Prof *)0x3003D000u)
 #define PROF_MAGIC 0x31464F50u /* "POF1" */

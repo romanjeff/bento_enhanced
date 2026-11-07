@@ -99,7 +99,9 @@ Tool gotchas it guards against:
 - `BE_DISABLE=<group,...>` leaves a group's stock sites unpatched and passes `-DBE_NO_<GROUP>`
   to the compiler. Groups: `step`, `hold`, `cond`, `retrig`, `poly`, `inta` (internal
   aftertouch), `rmidi` (MIDI retriggers), `trace`, `bbox`, `stall`, `irq30`; `diag`
-  covers the four diagnostic groups.
+  covers the four diagnostic groups. With `trace` off (`diag7` too) `d0_publish` doesn't run, so
+  `region()` cleans the stats the M4 prints instead, at most once per 13 ms; what the last call
+  before an idle stretch wrote shows up after the next call.
 - `stall`, `irq30` and `modtest` are off by default; use `BE_ENABLE=` to turn them on.
   `modtest` (v3.41+, External modulation test): LFO 1 → Mod Wheel (Pos Tri, 1/4), Env 1 →
   CC 74, LFO 2 → Pitch Bend (Sine, 1 bar, 15 %) on every External track.
@@ -121,7 +123,8 @@ Tool gotchas it guards against:
   capture, curve state, load state, AT settings and the destination table. Every
   structure has a magic word, and its pointers are validated before use (see
   [the boot loop](#the-v325v331-boot-loop)).
-- **SDRAM**, bump-allocated once per boot: the M7 state region (12 KB since v3.41), the External
+- **SDRAM**: the M7 state region (9.2 KB, fixed since v3.70 at `0xC5FFC000`, the top 16 KB of stock's
+  M7 ext pool, which the M7 reserves and caches write-back). Bump-allocated once per boot: the External
   modulation settings (v3.41, published at `0x3003DFC0`) and the curve pool
   (1 MB, 16384 handles, plus the save list and a 4 KB sidecar buffer).
 
@@ -184,8 +187,11 @@ site) and calls `h_note`:
   early boot), all notes pass through.
 - Pressure is only sent for sounding notes, so stolen notes go quiet.
 - State (voice lists for 16 tracks × 8 voices, 72 pressure entries, per-port
-  budgets) lives in a region (8 KB since v3.25) the M4 allocates once at boot and the M7 owns.
-  The pointer is tied to the M4 boot generation, so nothing stale survives a reset.
+  budgets) lives in a region the M7 reserves at the top of its ext pool and owns (v3.70). It is
+  zeroed on a new M4 boot generation and on a new M7 boot, so nothing stale survives a reset. If the
+  pool is not the shape we know, the state stays off and notes pass through. The M4 reads only the
+  stats, at most one publish old. Its "previous boot" line can show them as 0: both cores restart,
+  and the M7 can zero the region before the M4 prints. Which comes first is unmeasured.
 
 **Output control.** DIN MIDI carries ~1,000 messages/s, and the M7 → M4 MIDI ring
 has only 16 slots with no overflow check. So pressure is sent:

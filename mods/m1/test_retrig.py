@@ -16,7 +16,7 @@ from unicorn.arm_const import *
 
 BASE = 0x08040000
 SENT = 0x08000100
-CFG, REGION, MAGIC = 0x3003C1E0, 0xC6100000, 0x31474144
+CFG, REGION, MAGIC = 0x3003C1E0, 0xC5FFC000, 0x31474144
 CLOCK = 0x24071000
 ROUTER = 0x24060000
 S = 0x2407E000                       # caller stack pointer at the bl site
@@ -36,8 +36,9 @@ class Rig:
         u = self.u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M7)
         u.mem_map(0x08000000, 0x200000); u.mem_write(BASE, IMG); u.mem_write(SENT, b"\xfe\xe7")
-        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC6000000, 0x200000), (0xE0000000, 0x100000)):
+        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x200000), (0xE0000000, 0x100000)):
             u.mem_map(a, n)
+        w32(u, 0x24000160, 3405824); w32(u, 0x24000164, 0xC6000000 - 3405824)   # stock's ext pool: left, cursor
         if region:
             u.mem_write(CFG, struct.pack("<8I", MAGIC, REGION, 0x1000, 1, 0, 0, 0, 0))
         self.t1, self.t2 = 0x24064000, 0x2406D000

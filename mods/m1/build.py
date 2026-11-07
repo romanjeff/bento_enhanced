@@ -41,8 +41,8 @@ M7_LIMIT = 0x080DF000   # 19 KB since v3.59 (Note Mod; 15.5 KB since v3.37); sto
 APPEND_FROM = 0x081B4000
 # Appended M4 blocks, in order (see LAYOUT below for the full table).
 M4_CODE = 0x081B5000                        # black box (m4_diag.c)
-M4_LIMIT = M4_CODE + 0x5000   # 20 KB since v3.54 (16 KB since v3.26: curve sidecar writer)
-VERSION = "3.63"                       # bump for every build that goes on the device
+M4_LIMIT = M4_CODE + 0x6000   # 24 KB since v3.64 (20 KB since v3.54, 16 KB since v3.26: curve sidecar writer)
+VERSION = "3.72"                     # bump for every build that goes on the device
 DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
@@ -343,9 +343,62 @@ def elf_load(e, lo, hi):
     va, data, _ = segs[0]
     return va, data, syms
 
+# v3.70: the Region sits in the top 16 KB of the M7's ext pool, which stock could one day use.
+# STOCK_SHA already refuses any other image, so nothing here can fire until someone changes that
+# hash for a new firmware. Then it names what has to be checked again, instead of a build that
+# works and quietly shares memory with stock. Addresses will move too: re-derive them, don't
+# just update the values. The runtime check in region() stays as the second line: an unknown
+# pool shape leaves our state off and notes pass.
+POOL_INIT_FLASH = 0x080CF42C                # .data image of stock's left, cursor
+POOL_LEFT_RAM, POOL_CUR_RAM = 0x24000160, 0x24000164
+POOL_LEFT_INIT, POOL_CUR_INIT = 0x05000000, 0xC1000000
+POOL_LEFT_LITERALS = (0x0809F910, 0x0809F988, 0x0809FC34)
+POOL_CUR_LITERALS = (0x0809FC38,)
+ALLOC_BUMP = 0x0809FB40                     # lowers left, then raises the cursor by the same amount
+ALLOC_BUMP_BYTES = bytes.fromhex("3c4e306883424dd8c01a306028463a4ed6f8008043443360")
+MPU_SETUP = (0x0804FA00, 0x0804FBB0)        # M7 setup and its literals: R8 = 0xC4000000 + 32 MB, write-back
+MPU_SETUP_SHA = "33834f52750d555ce974d7fa12c7a6001247a8b7588dbf20a66d4975cabac184"
+
+def shared_define(name):
+    m = re.search(rf"^#define {name} (0x[0-9A-Fa-f]+)u", (HERE / "diag_shared.h").read_text(), re.M)
+    if not m:
+        raise SystemExit(f"diag_shared.h: no {name}")
+    return int(m.group(1), 16)
+
+def check_region_assumptions(img):
+    """Refuse a base whose ext pool no longer has room for the Region where we put it."""
+    def word(a): return struct.unpack_from("<I", img, a - BASE)[0]
+    def fail(what): raise SystemExit(f"Region move (v3.70): {what}; re-verify the reservation for this firmware")
+    lo = shared_define("M1_REGION_ADDR")
+    hi = shared_define("EXT_POOL_END")
+    if lo + shared_define("M1_REGION_RESERVE") != hi:
+        fail("the Region does not end at the pool's end")
+    if word(POOL_INIT_FLASH) != POOL_LEFT_INIT or word(POOL_INIT_FLASH + 4) != POOL_CUR_INIT:
+        fail("the pool's starting values changed")
+    if POOL_LEFT_INIT + POOL_CUR_INIT != hi:
+        fail("the pool no longer ends where the Region does")
+    if bytes(img[ALLOC_BUMP - BASE:ALLOC_BUMP - BASE + len(ALLOC_BUMP_BYTES)]) != ALLOC_BUMP_BYTES:
+        fail("the pool allocator changed")
+    words = struct.unpack_from(f"<{len(img) // 4}I", img)
+    def literals(v): return tuple(BASE + 4 * i for i, w in enumerate(words) if w == v)
+    if literals(POOL_LEFT_RAM) != POOL_LEFT_LITERALS or literals(POOL_CUR_RAM) != POOL_CUR_LITERALS:
+        fail("something else now addresses the pool's counters")
+    if hashlib.sha256(img[MPU_SETUP[0] - BASE:MPU_SETUP[1] - BASE]).hexdigest() != MPU_SETUP_SHA:
+        fail("the M7's MPU setup changed, so the Region may not be write-back any more")
+    near = [BASE + 4 * i for i, w in enumerate(words) if lo <= w < hi]
+    if near:
+        fail(f"literal into the reserved range at {near[0]:#x}")
+    for k in range(0, len(img) - 3, 2):             # movt rX, #hi16 of the reserved range
+        h1, h2 = struct.unpack_from("<HH", img, k)
+        if (h1 & 0xFBF0) == 0xF2C0 and not h2 & 0x8000:
+            v = (h1 & 15) << 12 | (h1 >> 10 & 1) << 11 | (h2 >> 12 & 7) << 8 | h2 & 255
+            if lo >> 16 <= v < hi >> 16:
+                fail(f"movt into the reserved range at {BASE + k:#x}")
+
 def build(base_img, out):
     if hashlib.sha256(base_img).hexdigest() != STOCK_SHA:
         raise SystemExit("base is not stock Bento 1.6.1; refusing")
+    check_region_assumptions(base_img)
     out.mkdir(parents=True, exist_ok=False)
     img = bytearray(base_img)
     writes = []

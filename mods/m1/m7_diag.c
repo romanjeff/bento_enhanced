@@ -239,6 +239,157 @@ __attribute__((used, retain)) void h_ring(u32 obj, const u32 *ev) {
     put(K_RING, 0, obj, ev, fill);
 }
 
+/* D0 (v3.64): copies of stock's figures for the M4 black box (see diag_shared.h).
+ * 0x2401D9D8: +0 blocks, +4 wrong-half arrivals (mostly wait timeouts), +0x18 worst overrun
+ * (0 or negative) with +0xC least remaining headroom on the normal path.
+ * 0x2401D9F8: +0xC gaps under 0x200, +0x10 gaps over 0x600, +8 largest gap (these wrap at
+ * 0x800 and include pre-wait jitter), +0x14 wait timeouts, +0x18 most polls, +0x1C waits.
+ * 0x2401D33C >> 1: DMA half events; events - blocks = renders dropped.
+ * The heap list is only followed through aligned addresses inside the heap, so a walk
+ * racing the allocator can give a wrong figure but not a fault. */
+#define G(a) (*(volatile u32 *)(a))
+#define HEAP_LO 0x2401EDC0u
+#define HEAP_HI 0x24048DA0u
+#define HEAP_WALK_MAX 64u
+/* Stock's ring object through the alias stock's M7 writes it by (shareable, not cached). */
+#define LOADOBJ 0x100451BCu
+#define BLOCK_BUDGET_DIV256 5000u                /* 1,280,000 cycles, stock's constant */
+
+static void load_clear(volatile D0Load *l) {
+    l->seen = l->sum = l->peak = 0;
+    for (u32 i = 0; i < sizeof(M7Probe) / 4u; i++) ((volatile u32 *)PROBE)[i] = 0;
+    for (u32 i = 0; i < 4u; i++) l->h[i] = 0;
+}
+
+#define G8(a) (*(volatile u8 *)(a))
+#define G16(a) (*(volatile u16 *)(a))
+#define LINK 0x2401D830u                         /* stock's Controller link object */
+#define PANEL_BOOTED 0x2401D0AAu                 /* Controller word: nonzero right after it boots */
+#define PANEL_CRC 0x2401D0B4u
+#define PANEL_TYPE 0x2401D070u                   /* frame type: 3 = panel data */
+#define PANEL_BUTTONS 0x2401D078u
+#define SPI1_HANDLE 0x2401E1B8u
+
+static void load_block(void) {
+    volatile D0Count *c = D0C;
+    u32 idx = G(LOADOBJ + 0x408u);
+    if (idx == c->last_idx) return;
+    volatile D0Link *k = D0LINK;                 /* once a block: a slower sample misses presses */
+    u32 b = G16(PANEL_BUTTONS);
+    if (b != k->btn_prev) { k->btn_changes++; k->btn_or |= b ^ k->btn_prev; k->btn_prev = b; }
+    u32 booted = G16(PANEL_BOOTED) != 0, crc = G(PANEL_CRC);
+    if (booted && !k->boot_prev) k->fw_boots++;
+    k->boot_prev = booted;
+    if (crc != k->crc_prev) { k->crc_changes++; k->crc_prev = crc; }
+    u32 start = G(LOADOBJ + 0x414u);
+    if (idx == c->last_idx + 1u) {               /* value and period of the block just finished */
+        u32 period = (start - D0A->prev_start) >> 8;
+        u32 pm = float_permille(G(LOADOBJ + 8u + ((idx - 1u) & 0xFFu) * 4u));
+        if (pm > 1000u) pm = 1000u;              /* a ratio by construction; guards the product */
+        if (period > 4000000u) period = 4000000u;
+        pm = pm * period / BLOCK_BUDGET_DIV256;
+        volatile D0Load *l = D0L;
+        l->seen++; l->sum = l->sum > 0xFFFFFFFFu - pm ? 0xFFFFFFFFu : l->sum + pm;
+        if (pm > l->peak) l->peak = pm;
+        l->h[pm < 500u ? 0 : pm < 800u ? 1 : pm < 1000u ? 2 : 3]++;
+        volatile M7Probe *q = PROBE;
+        u32 seq = G(0x2401D678u + 4u);
+        if (q->seq_n >= 0x100000u) { q->seq_sum >>= 1; q->seq_n >>= 1; }   /* cycles >> 8: no overflow */
+        q->seq_sum += seq >> 8; q->seq_n++;
+        if (seq > q->seq_peak) q->seq_peak = seq;
+    } else {
+        c->missed++;                             /* several blocks passed, or stock restarted */
+    }
+    c->last_idx = idx;
+    D0A->prev_start = start;
+}
+
+/* Stock's block count only rises within a boot. Lower than our copy means a reset the M4
+ * hasn't reported yet: leave the previous run's figures for its boot print. GEN moves soon
+ * after that print, and the new-boot path in d0_publish then clears them. */
+static int d0_unreported_reset(void) {
+    return D0A->magic == D0_MAGIC && D0A->gen == GEN && G(0x2401D9D8u) < D0C->blocks;
+}
+
+/* One read-only price check: cycles for 8 Device reads (M4 pool) and 8 cached fills (free ext pool
+ * space; clean + invalidate keeps any data there). Interrupts off for about 3 us, a few times a second.
+ * The lines are below the region, so maintenance never touches it. A fill can evict a region line
+ * that shares its set (the region spans every set), which only writes it back: no data is lost. */
+#define PROBE_FREE 0xC5FF0000u
+_Static_assert(PROBE_FREE + 8u * 32u <= M1_REGION_ADDR, "the price check stays out of the region");
+static void mem_probe(void) {
+    u32 b = CAPCFG->block;                        /* only an address: read here, not followed unless in range */
+    if (b < 0xC6000000u || b >= 0xC8000000u || (b & 31u)) return;
+    volatile M7Probe *q = PROBE;
+    u32 c = PROBE_FREE, s = 0, pm;
+    __asm volatile("mrs %0, primask\n cpsid i" : "=r"(pm)::"memory");
+    for (u32 i = 0; i < 8u; i++) *(volatile u32 *)0xE000EF70u = c + i * 32u;   /* DCCIMVAC */
+    dsb();
+    u32 t0 = *(volatile u32 *)0xE0001004u;
+    for (u32 i = 0; i < 8u; i++) s += *(volatile u32 *)(b + i * 32u);
+    dsb();
+    u32 t1 = *(volatile u32 *)0xE0001004u;
+    for (u32 i = 0; i < 8u; i++) s += *(volatile u32 *)(c + i * 32u);
+    dsb();
+    u32 t2 = *(volatile u32 *)0xE0001004u;
+    __asm volatile("msr primask, %0" ::"r"(pm) : "memory");
+    (void)s;
+    q->dev_sum += t1 - t0; q->fill_sum += t2 - t1; q->mem_n++;
+    if (t1 - t0 > q->dev_max) q->dev_max = t1 - t0;
+    if (t2 - t1 > q->fill_max) q->fill_max = t2 - t1;
+}
+
+static void d0_publish(void) {
+    volatile D0Top *d = D0A;
+    volatile D0Count *c = D0C;
+    volatile D0Load *l = D0L;
+    u32 free = 0, largest = 0, chunks = 0, bad = 0;
+    for (u32 p = G(0x24000178u); p; p = G(p)) {
+        if (p < HEAP_LO || p >= HEAP_HI - 8u || (p & 3u) || chunks >= HEAP_WALK_MAX) { bad = 1; break; }
+        u32 size = G(p + 4u);
+        free += size;
+        if (size > largest) largest = size;
+        chunks++;
+    }
+    DCIMVAC = (u32)LOADREQ;                      /* M4-written line: never dirty here */
+    dsb();
+    u32 req = LOADREQ->magic == D0_MAGIC ? LOADREQ->req : 0u;
+    if (d->magic != D0_MAGIC || d->gen != GEN) { /* new boot; D2 holds garbage after a cold start */
+        d->magic = D0_MAGIC; d->gen = GEN; d->heap_min = 0xFFFFFFFFu;
+        c->missed = 0;
+        load_clear(l); l->ack = req;
+        volatile D0Link *n = D0LINK;
+        n->restarts = 0; n->btn_changes = 0; n->btn_or = 0; n->rx_prev = 0;
+        n->fw_boots = 0; n->crc_changes = 0;
+    } else if (l->ack != req) {
+        load_clear(l); l->ack = req;
+        c->missed = 0;
+    }
+    if (!(RINGSTAT->heartbeat & 0x3FFFu)) mem_probe();
+    clean(PROBE, sizeof(M7Probe));
+    d->heap_free = free; d->chunks = chunks; d->largest = largest; d->bad = bad;
+    if (!bad && free < d->heap_min) d->heap_min = free;
+    d->dtcm_used = G(0x2401B0B8u); d->axi_used = G(0x24000448u);
+    d->ext_left = G(0x24000160u); d->shared_left = G(0x2400016Cu);
+    d->wrong_half = G(0x2401D9D8u + 4u);
+    d->head_min = d->wrong_half ? G(0x2401D9D8u + 0x18u) : G(0x2401D9D8u + 0xCu);
+    d->gap_over = G(0x2401D9F8u + 0x10u); d->gap_max = G(0x2401D9F8u + 8u);
+    c->blocks = G(0x2401D9D8u); c->events = G(0x2401D33Cu) >> 1;
+    c->waited = G(0x2401D9F8u + 0x1Cu); c->timeouts = G(0x2401D9F8u + 0x14u);
+    c->max_polls = G(0x2401D9F8u + 0x18u); c->gap_under = G(0x2401D9F8u + 0xCu);
+    volatile D0Link *k = D0LINK;
+    k->rx = G(LINK + 0x194u); k->bad = G(LINK + 0x19Cu); k->tx = G(LINK + 0x190u);
+    if (k->rx < k->rx_prev) k->restarts++;
+    k->rx_prev = k->rx;
+    k->version = G16(LINK + 0x1A2u); k->reboots = G(0x24000450u);
+    k->spi_state = G8(SPI1_HANDLE + 0x81u);
+    k->frame_type = G8(PANEL_TYPE);
+    clean(k, sizeof(D0Link));
+    clean(d, sizeof(D0Top));
+    clean(c, sizeof(D0Count) + sizeof(D0Load));
+    clean((volatile const void *)M1_REGION_ADDR, REGION_STATS_BYTES);   /* cached since v3.70; the M4 prints them */
+}
+
 /* Queue reads happen every audio block on the M7: a cheap heartbeat for the M4's
  * "M7 stopped" watch, and a frequent stack-depth sample. (Consumer discovery,
  * used to map the pad path, is no longer logged.) */
@@ -246,8 +397,11 @@ __attribute__((used, retain)) void h_consume(u32 queue, u32 idx, u32 lr) {
     (void)queue; (void)lr;
     if (idx != 0 || M7H->magic != DIAG_MAGIC) return;
     diag_sp();
+    int stale = d0_unreported_reset();
+    if (!stale) load_block();
     RINGSTAT->heartbeat++;
     if ((RINGSTAT->heartbeat & 63u) == 0) clean(RINGSTAT, sizeof(RingStat));
+    if (!stale && (RINGSTAT->heartbeat & 255u) == 0) d0_publish();
 }
 
 /* For m7_polyat.c: voice-action records and counters for the M4 trailer line. */

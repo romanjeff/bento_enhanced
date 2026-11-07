@@ -152,6 +152,8 @@ static volatile ModCfg *mod_cfg_block(void);
 static void mod_write_begin(volatile ModCfg *m);
 static void mod_write_end(volatile ModCfg *m);
 static int nm_mode(void);
+static void nm_set(u32 on);
+static void nm_bar_clear(void *v);
 static void nm_desc(u16 *key, u32 *val);
 static int nm_key(u32 key);
 static void nm_edit(u32 key, u32 value);
@@ -611,7 +613,17 @@ static int piano_selected(void *v, u32 *rec) {
 
 static void at_header(void *v);
 __attribute__((used, retain)) void piano_header_after(void *v) {
-    if (v && claim() && nm_mode()) { nm_slots(v, (u8 *)v + 0x55F0, 0, 1); return; }   /* Note Mod (v3.62) */
+    volatile ModCfg *nm = v ? mod_cfg_block() : 0;
+    if (nm && SU->ok && nm->nm_bar == (u32)v && !nm_mode()) {   /* another track, or turned off: stock's bar again */
+        nm_bar_clear(v);
+        FN(PIANO_HEADER, void (*)(void *))(v);
+        return;
+    }
+    if (v && claim() && nm_mode()) {                /* Note Mod (v3.62) */
+        nm_slots(v, (u8 *)v + 0x55F0, 0, 1);
+        if (nm) nm->nm_bar = (u32)v;
+        return;
+    }
     if (v && B(v, 0x125DAC) && claim()) { at_header(v); return; }   /* Sequence view: AT settings */
     if (!piano_note_view(v) || !claim()) return;
     if (H(v, 0x11BCC0 + PIANO_SLOT * 2)) return;           /* slot taken (stock changed?): leave it */
@@ -628,11 +640,16 @@ __attribute__((used, retain)) void piano_header_after(void *v) {
     if (!has) FN(BAR_TEXT, void (*)(void *, u32, const char *))(bar, PIANO_SLOT, "--");
 }
 
+#define TAB_EVENT 0x49u              /* header tabs: Event (drum: Step), Sequence, Automation */
+#define TAB_SEQUENCE 0x4Au
+#define TAB_AUTOMATION 0x4Bu
 /* Piano-roll event handler entry 0x0815A598 (view, event). 1 = handled. */
 int strike_event(void *v, const u16 *ev);
 static int at_event(void *v, const u32 *ev);
 __attribute__((used, retain)) int piano_event(void *v, const u32 *ev) {
     if ((ev[0] & 0xFFFFu) == STRIKE_ACTION || (ev[0] & 0xFFFFu) == NM_ACTION) return strike_event(v, (const u16 *)ev);
+    if (SU->ok && nm_mode() && (ev[0] & 0xFFFFu) >= TAB_EVENT && (ev[0] & 0xFFFFu) <= TAB_AUTOMATION)
+        nm_set(0);                                  /* a tab is a way back: stock then rebuilds the bar */
     if (SU->ok && v && nm_mode() && (ev[0] & 0xFFFFu) == 0xCFu && nm_key(ev[2])) {   /* Note Mod (v3.62) */
         nm_edit(ev[2], (int)ev[3] < 0 ? 0u : ev[3]);
         FN(PIANO_HEADER, void (*)(void *))(v);
@@ -717,17 +734,29 @@ static void header_sync(void *out) {
 }
 
 /* After stock generated the header description (0x08134800 returns "changed"). */
-/* Is the selected track a one-shot (drum) instrument? Page 0x27 is shared by
- * the drum step sequencer and the piano roll; the track type tells them apart
- * regardless of which view object stock refreshed last (v3.9 used a flag set
- * by the header hooks, and the button never appeared on the device). Same
- * native lookups as the INST-hold shortcut (m4_controls.c). */
+/* Is the selected track a one-shot (drum) instrument? Same native lookups as the
+ * INST-hold shortcut (m4_controls.c). Pages: 0x27 = the drum view object only, both its
+ * Step and Sequence tabs; 0x17 = the piano view object, for every other kind and for a
+ * one-shot track when SEQ toggles it there. */
 static int drum_track_selected(void) {
     u32 track = FN(0x0812DC74u, u32 (*)(void *, u32))((u8 *)MODEL + 4, 0x131), h = 0;
     if (!FN(0x08133960u, u32 (*)(void *, u32, u32 *))(MODEL, track, &h)) return 0;
     void *obj = 0;
     if (!FN(0x0812D80Eu, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) || !obj) return 0;
     return ((u32 (*)(void *))W((void *)W(obj, 0), 0))(obj) == 0x0Eu;
+}
+
+static int doc_is_project(void) {
+    static const char want[] = "project.xml";
+    volatile const char *p = LOADSTATE->path;
+    u32 n = 0, cut = 0;
+    while (n < sizeof(LOADSTATE->path) && p[n]) { if (p[n] == '\\' || p[n] == '/') cut = n + 1u; n++; }
+    for (u32 i = 0; i < sizeof(want); i++) {
+        char ch = cut + i < n ? p[cut + i] : 0;
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+        if (ch != want[i]) return 0;
+    }
+    return 1;
 }
 
 /* Diagnostics in StrikeSet r[] (printed in the black box status line):
@@ -749,11 +778,19 @@ __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int cha
     for (u32 p = 0; ps && p < 16; p++)
         if (STRIKES->seq[p] != ps->seen[p]) { ps->seen[p] = STRIKES->seq[p]; ps->seen_ms[p] = UI_TICK_MS; }
     ext_toolbar(out, &changed);
+    volatile ModCfg *nmc = mod_cfg_block();
+    if (nmc && nmc->nm_doc != LOADSTATE->doc_seq) {  /* a project was read: every track back to stock's bar */
+        nmc->nm_doc = LOADSTATE->doc_seq;
+        if (doc_is_project()) nmc->nm_ui = 0;       /* not a patch or a PROJ browse */
+    }
+    /* Every SEQ page: melodic, Multisample, Shredder, External (and one-shots shown as a
+     * piano roll) are on 0x17, one-shot Step and Sequence on 0x27 (stock 0x08142D24). */
+    if (nmc && MODEL_PAGE == 0x17) changed |= header_action_lit(out, NM_ACTION, "Note Mod", nm_mode());
     if (MODEL_PAGE == 0x27) {
         int drum = drum_track_selected(), ins = 0;
         if (drum) ins = header_action_lit(out, STRIKE_ACTION, STRIKE_LABEL, !STRIKE_SET->off);
         changed |= ins;
-        if (mod_cfg_block()) changed |= header_action_lit(out, NM_ACTION, "Note Mod", nm_mode());
+        if (nmc) changed |= header_action_lit(out, NM_ACTION, "Note Mod", nm_mode());
         u32 slot = 0xF;
         for (u32 i = 0; i < 6; i++)
             if (rid(REC(out, i)) == STRIKE_ACTION) slot = i;
@@ -765,7 +802,7 @@ __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int cha
         volatile HdrLog *hl = &ps->hl;
         u8 pg = MODEL_PAGE;
         if (hl->pages[(hl->np - 1u) & 7u] != pg || !hl->np) hl->pages[hl->np++ & 7u] = pg;
-        if (pg == 0x27 || pg == 0x28) {
+        if (pg == 0x27 || pg == 0x17) {
             volatile HdrSnap *sn = &hl->s[drum_track_selected() ? 1 : 0];
             sn->valid = 1; sn->page = pg; sn->cfg_ok = mod_cfg_block() != 0; sn->nm_slot = 0xF;
             int root = *(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE;
@@ -782,22 +819,36 @@ __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int cha
 
 /* Drum view event handler entry (0x0815D600). 1 = handled. */
 static int drum_track_selected(void);
-/* The button's action reaches whichever SEQ view object is showing: the drum
- * step view (0x0815D600) in Step, the piano-roll view object (0x0815A598) in
- * the Sequence tab, which stock draws with the piano view even for drum tracks. */
+/* The button's action reaches the object of the page showing: the drum view (0x0815D600)
+ * on 0x27, the piano view (0x0815A598) on 0x17. Choose by the object itself: v3.62 took
+ * "not the drum Step view" to mean a piano object, ran the piano builder on the drum view
+ * when it was on its Sequence tab or had no sequence bound, and wrote the piano bar's slots
+ * over the drum view's step widgets (crash at 0x0816FACE, BE3.64). */
+#define DRUM_VIEW_VT 0x0819E854u
+#define PIANO_VIEW_VT 0x0819E7B0u
+#define DRUM_SET_TAB 0x0815D1D4u     /* stock's Step / Sequence setter (view, tab) */
 __attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
-    if (ev[0] == NM_ACTION) {                       /* Note Mod on the SEQ bar, on / off */
-        volatile ModCfg *m = mod_cfg_block();
-        if (!m || !claim()) return 1;
-        if (!drum_step_view(v) && (m->nm_ui & 1u))  /* off: take our keys out of the piano bar's */
-            for (u32 s = 0; s < 6; s++)              /* slots before stock rebuilds it */
-                if (nm_key(H(v, 0x11BCC0 + s * 2))) H(v, 0x11BCC0 + s * 2) = 0;
-        m->nm_ui ^= 1u;
-        if (drum_step_view(v)) FN(0x0815C27Cu, void (*)(void *))(v);
-        else FN(PIANO_HEADER, void (*)(void *))(v);
+    if (ev[0] == NM_ACTION) {                       /* Note Mod for this track, on / off */
+        if (!mod_cfg_block() || !claim()) return 1;
+        u32 vt = W(v, 0);
+        if (vt == DRUM_VIEW_VT) {
+            /* Its six encoders live on the Step tab. From Sequence, go there and stay on. */
+            int from_seq = B(v, 0x113E0) != 0;
+            if (from_seq) FN(DRUM_SET_TAB, void (*)(void *, u32))(v, 0);
+            if (!drum_step_view(v)) nm_set(0);      /* no sequence bound: nothing to show */
+            else if (!from_seq || !nm_mode()) nm_set(!nm_mode());
+            FN(0x0815C27Cu, void (*)(void *))(v);
+        } else if (vt == PIANO_VIEW_VT) {
+            if (nm_mode()) nm_bar_clear(v);
+            nm_set(!nm_mode());
+            FN(PIANO_HEADER, void (*)(void *))(v);
+        } else {
+            return 1;                               /* no other view has this button */
+        }
         if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) HEADER_ROOT[0x117C] = 1;
         return 1;
     }
+    if (ev[0] == TAB_SEQUENCE && SU->ok && nm_mode()) nm_set(0);   /* drum: leaving Step leaves Note Mod */
     if (ev[0] != STRIKE_ACTION || !drum_track_selected()) return 0;
     strike_init();
     STRIKE_SET->off = !STRIKE_SET->off;
@@ -1362,7 +1413,29 @@ static volatile ModNote *nm_sel(void) {
     u32 i = sel_track();
     return m && i < MOD_TRACKS ? &m->nm[i] : 0;
 }
-static int nm_mode(void) { volatile ModCfg *m = mod_cfg_block(); return m && (m->nm_ui & 1u); }
+/* One on/off per track (v3.65): a shared bit let a drum track's Note Mod take over every
+ * melodic bar. Not saved, and cleared by a document load (strike_toolbar). */
+static int nm_mode(void) {
+    volatile ModCfg *m = mod_cfg_block();
+    u32 i = sel_track();
+    return m && i < MOD_TRACKS && ((m->nm_ui >> i) & 1u);
+}
+static void nm_set(u32 on) {
+    volatile ModCfg *m = mod_cfg_block();
+    u32 i = sel_track();
+    if (!m || i >= MOD_TRACKS) return;
+    if (on) m->nm_ui |= 1u << i; else m->nm_ui &= ~(1u << i);
+}
+/* Take our keys out of the piano bar's slots: stock's builder leaves occupied slots. */
+static void nm_bar_clear(void *v) {
+    volatile ModCfg *m = mod_cfg_block();
+    for (u32 s = 0; s < 6; s++) {
+        u32 k = H(v, 0x11BCC0 + s * 2);
+        if (k == K_LFO_SHAPE || k == K_LFO_RATE || k == K_LFO_SRATE || k == K_LFO_DEPTH
+            || k == SU->key[7] || k == SU->key[8] || k == SU->key[10]) H(v, 0x11BCC0 + s * 2) = 0;
+    }
+    if (m) m->nm_bar = 0;
+}
 static void nm_desc(u16 *key, u32 *val) {
     volatile ModNote *n = nm_sel();
     for (u32 i = 0; i < 6; i++) { key[i] = 0; val[i] = 0; }
