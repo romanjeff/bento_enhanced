@@ -17,7 +17,7 @@
 #include "diag_shared.h"
 
 #define W(p, o) (*(volatile u32 *)((u8 *)(p) + (o)))
-#define UI_TICK_MS (*(volatile u32 *)0x30035f40u)
+#define UI_TICK_MS (*(volatile u32 *)S_UI_TICK_MS)
 #define LONG_HOLD_MS 1000u
 
 /* Keep nonzero held entries so native multi-step editing still works, but make

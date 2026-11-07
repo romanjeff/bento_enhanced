@@ -77,7 +77,7 @@ cmp r2, #224
 bhs dropped
 movs r1, #0
 str r1, [sp]
-movs r1, #254
+movs r1, #@S_UI_REQUEST@
 strb r1, [sp]
 ldr r1, =@EVENT_MAGIC@
 str r1, [sp, #4]

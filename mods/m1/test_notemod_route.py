@@ -18,16 +18,21 @@ import unittest
 import struct, sys
 from unicorn import *
 from unicorn.arm_const import *
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bases import from_build
+S = from_build(sys.argv[2], Path(sys.argv[1]).read_bytes())   # the base table this build was made from
+D2 = S.D2_SLICE                                                # our shared slice (per base)
 
 IMG = open(sys.argv[2] + '/bento1.bin', 'rb').read()
 del sys.argv[1:3]
 BASE, SENT = 0x08040000, 0x08000100
-CFG, REGION, MAGIC = 0x3003C1E0, 0xC5FFC000, 0x31474144
-MODHEAD, MODCFG, MOD_MAGIC = 0x3003DFC0, 0xC6200000, 0x37444F4D
+CFG, REGION, MAGIC = D2 + 0x1E0, S.REGION, 0x31474144
+MODHEAD, MODCFG, MOD_MAGIC = D2 + 0x1FC0, 0xC6200000, 0x37444F4D  # addr-ok: harness
 NM_AT = MODCFG + 12 + 8 * 232
 KEY_AT = NM_AT + 8 * 12
-T, SEQ, CLOCK, ROUTER, MB, ENG, POOL, IDX, STK, INBOX = (0x24010000, 0x24020000, 0x24021000, 0x24030000,
-    0x24040000, 0x24070000, 0x24022000, 0x24023000, 0x2407E000, 0x24024000)
+T, SEQ, CLOCK, ROUTER, MB, ENG, POOL, IDX, STK, INBOX = (0x24010000, 0x24020000, 0x24021000, 0x24030000,  # addr-ok: harness
+    0x24040000, 0x24070000, 0x24022000, 0x24023000, 0x2407E000, 0x24024000)  # addr-ok: harness
 NOKEY, SAMPLER_KEY, UI = 0xFFFFFF00, 0xF4, 0xFFFFFFFC
 PARAM = 0x3E
 SQUARE, P2 = 6, 286         # square at phase 0, range 1, C major: +2 scale steps
@@ -42,19 +47,19 @@ class Rig:
         u = self.u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M7)
         u.mem_map(0x08000000, 0x200000); u.mem_write(BASE, IMG[:0x1C0000]); u.mem_write(SENT, b'\xfe\xe7')
-        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x400000), (0xE0000000, 0x100000)):
+        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (S.PROBE_SCRATCH, 0x10000), (S.EXT_POOL_END, 0x400000), (0xE0000000, 0x100000)):
             u.mem_map(a, n)
         u.reg_write(UC_ARM_REG_C1_C0_2, u.reg_read(UC_ARM_REG_C1_C0_2) | (0xF << 20))
         u.reg_write(UC_ARM_REG_FPEXC, 0x40000000)
         w32(u, 0xE000ED88, 0xF << 20)
-        w32(u, 0x24000160, 3405824); w32(u, 0x24000164, 0xC6000000 - 3405824)
+        w32(u, S.POOL_LEFT_RAM, 3405824); w32(u, S.POOL_CUR_RAM, S.EXT_POOL_END - 3405824)
         u.mem_write(CFG, struct.pack('<8I', MAGIC, REGION, 0x3000, 1, 0, 0, 0, 0))
         u.mem_write(MODCFG, struct.pack('<3I', MOD_MAGIC, 1, 2))
         u.mem_write(MODHEAD, struct.pack('<4I', MOD_MAGIC, 1, MODCFG, ~MODCFG & 0xFFFFFFFF))
         w32(u, KEY_AT, 1 | 3 << 8 | 1 << 16)         # scale 1 (major), root list 3 = C, enabled
         self.voice, self.now, self.lastpc = [], 0, 0
         u.hook_add(UC_HOOK_CODE, self.hook)
-        self.call(0x08062A80, T)                     # real constructor
+        self.call(S.TRACK_CTOR, T)                     # real constructor
         self.k10 = r32(u, T + 0x10)
         self.keys = sorted(set(keys) | {UI})         # bus, as 0x0809F040 and 0x0809ED20 read it
         w32(u, ROUTER + 4, MB); w32(u, ROUTER + 0x508, len(self.keys))
@@ -69,18 +74,18 @@ class Rig:
     def hook(self, u, a, size, _):
         self.lastpc = a
         r = lambda i: u.reg_read(UC_ARM_REG_R0 + i)
-        if a == 0x080A1D60: self.ret(64)
-        elif a == 0x080A2240:
+        if a == S.TICKS_PER_BLOCK: self.ret(64)
+        elif a == S.TICK64_MAKE:
             u.mem_write(r(0), struct.pack('<II', r(2), r(3))); self.ret(r(0))
-        elif a == 0x080A2220:
+        elif a == S.TICK64_COPY:
             u.mem_write(r(0), bytes(u.mem_read(r(2), 8))); self.ret(r(0))
-        elif a == 0x080A21C0:
+        elif a == S.TICK64_ADD:
             c = struct.unpack('<q', u.mem_read(r(1), 8))[0]; o = r(2)
             if o & 0x80000000: o -= 1 << 32
             u.mem_write(r(0), struct.pack('<q', c + o)); self.ret(r(0))
-        elif a == 0x080A2200:
+        elif a == S.TICK_TO_OFFSET:
             t = struct.unpack('<q', u.mem_read(r(1), 8))[0]; c = struct.unpack('<q', u.mem_read(r(0), 8))[0]; self.ret(t - c)
-        elif a == 0x08094760:
+        elif a == S.VOICE_START:
             self.voice.append(('voice_start', 'note=%d' % r(3))); self.ret(0)
 
     def ret(self, v=None):
@@ -99,11 +104,11 @@ class Rig:
         u = self.u
         ev = struct.pack('<BBHIIIIHH', PARAM, 0, 0, 0, 0x77, pid, val, idx, 0)
         u.mem_write(STK + 0x400, ev); w32(u, INBOX + 0x600, 0)
-        self.call(0x08065600, INBOX, STK + 0x400)
+        self.call(S.MSG_SEND, INBOX, STK + 0x400)
         u.mem_write(STK, bytes(0xA0)); w32(u, STK + 4, INBOX); w32(u, STK + 8, r32(u, ROUTER))
         u.reg_write(UC_ARM_REG_R6, T); u.reg_write(UC_ARM_REG_R8, ROUTER)
         u.reg_write(UC_ARM_REG_R10, 0); u.reg_write(UC_ARM_REG_SP, STK)
-        u.emu_start(0x08062080 | 1, 0x080621E0, count=400000)
+        u.emu_start(S.TRACK_MSG_LOOP | 1, S.TRACK_MSG_LOOP_END, count=400000)
 
     def nm(self, amount):
         self.u.mem_write(NM_AT, struct.pack('<4B2HB3x', SQUARE, 0, 6, 0, 400, amount, 0))
@@ -119,10 +124,10 @@ class Rig:
         u = self.u
         u.mem_write(CLOCK, struct.pack('<q', self.now))
         u.mem_write(STK, struct.pack('<I', ROUTER))
-        self.call(0x08060820, T, CLOCK, 0, 64)
+        self.call(S.RETRIG_EMIT_SITE, T, CLOCK, 0, 64)
         u.reg_write(UC_ARM_REG_SP, STK); w32(u, STK + 0x10, CLOCK); w32(u, STK + 0x14, ROUTER)
         u.reg_write(UC_ARM_REG_R5, T); u.reg_write(UC_ARM_REG_R8, 64)
-        u.emu_start(0x08060494 | 1, 0x0806050A, count=2000000)
+        u.emu_start(S.SEQ_PLAY_PASS | 1, S.SEQ_PLAY_PASS_END, count=2000000)
         self.now += 64
 
     def mailbox(self, base):
@@ -153,7 +158,7 @@ class Rig:
         u.mem_write(ENG, bytes(0x800)); w32(u, ENG + 0xC, key)
         u.mem_write(STK, bytes(0x100))
         self.voice = []
-        self.call(0x0808E9A0, ENG, ROUTER, stop=0x0808ECA0)
+        self.call(S.SAMPLER_PROCESS, ENG, ROUTER, stop=S.SAMPLER_NOTE_START)
         return self.voice
 
 

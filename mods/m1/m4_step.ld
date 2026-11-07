@@ -1,5 +1,5 @@
 /* Per-step UI m4 code: text + read-only data only. */
-MEMORY { CODE (rx) : ORIGIN = 0x081B7200, LENGTH = 0xDC0 }
+MEMORY { CODE (rx) : ORIGIN = 0x0, LENGTH = 0x0 }   /* set per build by build.py (compile_elf) */
 SECTIONS {
   .text : { KEEP(*(.text.h_* .text.m4_tick)) *(.text*) *(.rodata*) } > CODE
   .data : { *(.data*) } > CODE

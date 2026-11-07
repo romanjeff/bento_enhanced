@@ -13,15 +13,19 @@ import json, struct, sys, unittest
 from pathlib import Path
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
 from unicorn.arm_const import *
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bases import from_build
+S = from_build(sys.argv[2], Path(sys.argv[1]).read_bytes())   # the base table this build was made from
+D2 = S.D2_SLICE                                                # our shared slice (per base)
 
 BASE = 0x08040000
 SENT = 0x08000100
-CFG, REGION, MAGIC = 0x3003C1E0, 0xC5FFC000, 0x31474144
-CLOCK = 0x24071000
-ROUTER = 0x24060000
-S = 0x2407E000                       # caller stack pointer at the bl site
-NOTE_ROUTE, TO_OFFSET = 0x0805F8E0, 0x080A2200
-ACCEPT, AFTER_ACCEPT, EMIT, AFTER_EMIT = 0x08060B9A, 0x08060B9E, 0x08060820, 0x08060824
+CFG, REGION, MAGIC = D2 + 0x1E0, S.REGION, 0x31474144
+CLOCK = 0x24071000  # addr-ok: harness
+ROUTER = 0x24060000  # addr-ok: harness
+CALLER_SP = 0x2407E000                       # caller stack pointer at the bl site (addr-ok: harness)
+NOTE_ROUTE, TO_OFFSET = S.NOTE_ROUTE, S.TICK_TO_OFFSET
+ACCEPT, AFTER_ACCEPT, EMIT, AFTER_EMIT = S.RETRIG_ACCEPT_SITE, S.RETRIG_ACCEPT_SITE + 4, S.RETRIG_EMIT_SITE, S.RETRIG_EMIT_SITE + 4
 
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
@@ -36,12 +40,12 @@ class Rig:
         u = self.u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M7)
         u.mem_map(0x08000000, 0x200000); u.mem_write(BASE, IMG); u.mem_write(SENT, b"\xfe\xe7")
-        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x200000), (0xE0000000, 0x100000)):
+        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (S.PROBE_SCRATCH, 0x10000), (S.EXT_POOL_END, 0x200000), (0xE0000000, 0x100000)):
             u.mem_map(a, n)
-        w32(u, 0x24000160, 3405824); w32(u, 0x24000164, 0xC6000000 - 3405824)   # stock's ext pool: left, cursor
+        w32(u, S.POOL_LEFT_RAM, 3405824); w32(u, S.POOL_CUR_RAM, S.EXT_POOL_END - 3405824)   # stock's ext pool: left, cursor
         if region:
             u.mem_write(CFG, struct.pack("<8I", MAGIC, REGION, 0x1000, 1, 0, 0, 0, 0))
-        self.t1, self.t2 = 0x24064000, 0x2406D000
+        self.t1, self.t2 = 0x24064000, 0x2406D000  # addr-ok: harness
         for t in (self.t1, self.t2):
             u.mem_write(t, bytes(0x8800)); u.mem_write(t + 0x86D1, b"\x01\x01")   # MIDI out + internal on
         self.calls = []
@@ -63,24 +67,24 @@ class Rig:
     def accept(self, track, pad, tick, note=36, vel=100, clock0=1000, word=None, length=0):
         u = self.u
         w32(u, CLOCK, clock0)
-        u.mem_write(S, bytes(0x90))
-        w32(u, S, pad); w32(u, S + 4, ROUTER); w32(u, S + 0x20, tick); w32(u, S + 0x24, 0)
-        w32(u, S + 0x3C, (WORD if pad == 15 else 0) if word is None else word)
-        w32(u, S + 0x30, length)                                    # the note record's length (+8)
+        u.mem_write(CALLER_SP, bytes(0x90))
+        w32(u, CALLER_SP, pad); w32(u, CALLER_SP + 4, ROUTER); w32(u, CALLER_SP + 0x20, tick); w32(u, CALLER_SP + 0x24, 0)
+        w32(u, CALLER_SP + 0x3C, (WORD if pad == 15 else 0) if word is None else word)
+        w32(u, CALLER_SP + 0x30, length)                                    # the note record's length (+8)
         for i, v in enumerate((track, note, vel, tick - clock0)):
             u.reg_write(UC_ARM_REG_R0 + i, v)
-        u.reg_write(UC_ARM_REG_R6, CLOCK); u.reg_write(UC_ARM_REG_SP, S)
+        u.reg_write(UC_ARM_REG_R6, CLOCK); u.reg_write(UC_ARM_REG_SP, CALLER_SP)
         u.emu_start(ACCEPT | 1, AFTER_ACCEPT, count=200000)
-        assert u.reg_read(UC_ARM_REG_SP) == S and u.reg_read(UC_ARM_REG_R6) == CLOCK
+        assert u.reg_read(UC_ARM_REG_SP) == CALLER_SP and u.reg_read(UC_ARM_REG_R6) == CLOCK
 
     def emit(self, track, start, length, clock0=1000):
         u = self.u
-        w32(u, CLOCK, clock0); w32(u, S, ROUTER)
+        w32(u, CLOCK, clock0); w32(u, CALLER_SP, ROUTER)
         for i, v in enumerate((track, CLOCK, start, length)):
             u.reg_write(UC_ARM_REG_R0 + i, v)
-        u.reg_write(UC_ARM_REG_SP, S)
+        u.reg_write(UC_ARM_REG_SP, CALLER_SP)
         u.emu_start(EMIT | 1, AFTER_EMIT, count=200000)
-        assert u.reg_read(UC_ARM_REG_SP) == S - 36, "replayed push.w {r4-r11, lr}"
+        assert u.reg_read(UC_ARM_REG_SP) == CALLER_SP - 36, "replayed push.w {r4-r11, lr}"
         assert [u.reg_read(UC_ARM_REG_R0 + i) for i in range(4)] == [track, CLOCK, start, length]
 
     def hits(self): return [(c["timing"], c["vel"]) for c in self.calls[1:]]
@@ -166,10 +170,10 @@ class RetrigMidi(unittest.TestCase):
 
     def hold(self, g, note=36):
         """The original Note On through the poly cap (its voice list)."""
-        ev = 0x24070000
+        ev = 0x24070000  # addr-ok: harness
         g.u.mem_write(ev, struct.pack("<6I", 0x5B, 0, 0, 0, note, 100))
         g.u.reg_write(UC_ARM_REG_R0, self.QUEUE); g.u.reg_write(UC_ARM_REG_R1, ev); g.u.reg_write(UC_ARM_REG_R2, g.t1)
-        g.u.reg_write(UC_ARM_REG_SP, 0x2407F000); g.u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        g.u.reg_write(UC_ARM_REG_SP, 0x2407F000); g.u.reg_write(UC_ARM_REG_LR, SENT | 1)  # addr-ok: harness
         g.u.emu_start(self.SYM["h_note"] | 1, SENT, count=200000)
         w32(g.u, self.QUEUE + 0x600, 0)                            # forget the original in the log
 
@@ -217,7 +221,7 @@ class CurvePlayback(unittest.TestCase):
     """M2-2: a note whose word carries a curve handle (tag 0xB7) plays its recorded
     pressure as poly aftertouch (0x5F) on its External track. v3.27: per block only
     the latest due value, sent when the note's share of its port allows."""
-    CURVES, POOL, TABLE, MSG_SEND, CYC = 0x3003D840, 0xC6180000, 0xC61C0000, 0x08065600, 0xE0001004
+    CURVES, POOL, TABLE, MSG_SEND, CYC = D2 + 0x1840, 0xC6180000, 0xC61C0000, S.MSG_SEND, 0xE0001004  # addr-ok: harness
     MS = 480000
 
     def rig(self, samples=(10, 10, 20, 30)):
@@ -239,7 +243,7 @@ class CurvePlayback(unittest.TestCase):
 
     def start(self, g, track=None, note=60, word=(0xB7 << 24) | (1 << 3), tick=1000, length=0):
         g.accept(g.t1 if track is None else track, pad=0, tick=tick, note=note, word=word, length=length)
-        w32(g.u, REGION + 48, 0x2403A118)                           # MIDI-out queue seen at a note-on
+        w32(g.u, REGION + 48, 0x2403A118)                           # MIDI-out queue seen at a note-on (addr-ok: harness)
 
     def emit(self, g, track, start, length, ms):
         w32(g.u, self.CYC, ms * self.MS)
@@ -294,7 +298,7 @@ class CurveStepSize(unittest.TestCase):
     """v3.43: curve samples follow the sequence's step size (stock: duration = ticks
     per step x length / 960), so changing 1/8 -> 1/2 stretches the curve with its
     notes. Sequence object at track+0x86C0: word 0 = step-size index, +0x38 = steps."""
-    SEQ = 0x24072000
+    SEQ = 0x24072000  # addr-ok: harness
 
     def due(self, idx, steps=1, length=0):
         pb = CurvePlayback(); g = pb.rig(samples=(10, 20, 30, 40, 50, 60, 70, 80))
@@ -344,7 +348,7 @@ class CurveDestMode(unittest.TestCase):
     AT Out Off (or Channel, until v3.31) starts nothing; no match = poly."""
     def table(self, g, port, ch, mode, *more):
         e = bytes([port, ch, mode, 1]) + b"".join(bytes([p, c, m, 1]) for p, c, m in more)
-        g.u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + e + bytes(32 - len(e)))
+        g.u.mem_write(D2 + 0x1F80, struct.pack("<II", 0x31544441, 1) + e + bytes(32 - len(e)))
 
     def test_off_for_this_destination(self):
         pb = CurvePlayback(); g = pb.rig()
@@ -436,7 +440,7 @@ class CurveInternal(unittest.TestCase):
     pressure event {0x0E, 0, key, note, value} through the engine bus (the router
     note_route got, 0x0809ECA0), as the pad router does. AT Out by track index
     (track+0x86D4) from the M4 table, applied only to non-External entries."""
-    BUS_POST, KEY, IDX = 0x0809ECA0, 0x0123, 2
+    BUS_POST, KEY, IDX = S.BUS_POST, 0x0123, 2
 
     def rig(self, mode=None, samples=(10, 10, 20, 30), ext_entry=False):
         pb = CurvePlayback()
@@ -448,7 +452,7 @@ class CurveInternal(unittest.TestCase):
         w32(u, g.t1 + 0x86D4, self.IDX)
         if mode is not None:
             e = bytes(4 * self.IDX) + bytes([0, 5 if ext_entry else 0, mode, 1])
-            u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + e + bytes(32 - len(e)))
+            u.mem_write(D2 + 0x1F80, struct.pack("<II", 0x31544441, 1) + e + bytes(32 - len(e)))
         g.posts = []
         def post(uc, addr, size, _):
             ev = struct.unpack("<6I", uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 24))
@@ -517,7 +521,7 @@ class CurveWorstCase(unittest.TestCase):
     def test_48_notes_on_one_port(self):
         pb = CurvePlayback()
         g = pb.rig(samples=tuple((i * 7) % 120 for i in range(self.N)))
-        tracks = [0x24010000 + t * 0x9000 for t in range(self.TRACKS)]
+        tracks = [0x24010000 + t * 0x9000 for t in range(self.TRACKS)]  # addr-ok: harness
         for t in tracks:
             g.u.mem_write(t, bytes(0x8800)); g.u.mem_write(t + 0x86D1, b"\x01\x00")   # External only
         for ti, t in enumerate(tracks):

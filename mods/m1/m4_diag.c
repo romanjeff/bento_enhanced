@@ -30,16 +30,16 @@
 #include "diag_shared.h"
 
 #define FN(a, t) ((t)((a) | 1u))
-#define TICK_MS (*(volatile u32 *)0x3001FE2Cu)     /* native HAL tick (Lab-verified) */
-#define BUMP_CUR (*(volatile u32 *)0x3000004Cu)    /* native UI bump allocator */
-#define BUMP_END (*(volatile u32 *)0x30000048u)
+#define TICK_MS (*(volatile u32 *)S_M4_TICK_MS)     /* native HAL tick (Lab-verified) */
+#define BUMP_CUR (*(volatile u32 *)S_UI_BUMP_CUR)    /* native UI bump allocator */
+#define BUMP_END (*(volatile u32 *)S_UI_BUMP_END)
 #define BUF_BYTES 0x40000u                          /* 256 KB session log */
 #define IDLE_MS 1500u
-#define CLOG_DONE (*(volatile u32 *)0x3003D804u)   /* last CURVELOG seq formatted (M4) */
+#define CLOG_DONE (*(volatile u32 *)SLICE(0x1804u))   /* last CURVELOG seq formatted (M4) */
 #define BOOT_WRITE_MS 20000u   /* the one card write per boot (v3.19): after autoload */
 /* Live card writing (pre-v3.19 behaviour) only if this word holds the magic:
  * never set on the device; the tests set it to keep covering that code. */
-#define LOG_LIVE (*(volatile u32 *)0x3003D800u)
+#define LOG_LIVE (*(volatile u32 *)SLICE(0x1800u))
 #define LOG_LIVE_MAGIC 0x54495257u /* "WRIT" */
 #define STALL_MS 3000u
 #define BKP ((volatile u32 *)0x58004050u)           /* RTC_BKP0R..BKP31R: stock crash record */
@@ -71,10 +71,10 @@ static void dec(Out *o, u32 v) {
 }
 
 /* Stock FatFS (same entry points Lab's K6/K7 diagnostics used). */
-#define F_OPEN(f, p, m) FN(0x08120148, u32 (*)(void *, const char *, u32))((f), (p), (m))
-#define F_READ(f, b, n, d) FN(0x08120464, u32 (*)(void *, void *, u32, u32 *))((f), (b), (n), (d))
-#define F_WRITE(f, b, n, d) FN(0x08120604, u32 (*)(void *, const void *, u32, u32 *))((f), (b), (n), (d))
-#define F_CLOSE(f) FN(0x08120974, u32 (*)(void *))((f))
+#define F_OPEN(f, p, m) FN(S_FS_OPEN, u32 (*)(void *, const char *, u32))((f), (p), (m))
+#define F_READ(f, b, n, d) FN(S_FS_READ, u32 (*)(void *, void *, u32, u32 *))((f), (b), (n), (d))
+#define F_WRITE(f, b, n, d) FN(S_FS_WRITE, u32 (*)(void *, const void *, u32, u32 *))((f), (b), (n), (d))
+#define F_CLOSE(f) FN(S_FS_CLOSE, u32 (*)(void *))((f))
 #define FA_READ 0x01u
 #define FA_CREATE_WRITE 0x0Au /* FA_CREATE_ALWAYS | FA_WRITE */
 #define FA_APPEND_WRITE 0x32u /* FA_OPEN_APPEND | FA_WRITE: stock f_open honours the seek-end bit */
@@ -111,7 +111,7 @@ static void rtc_print(Out *o, u32 tr, u32 dr) {
 static void rtc_now(Out *o) { u32 tr = RTC_TR, dr = RTC_DR; rtc_print(o, tr, dr); }
 /* The visible label (stock's version string, patched by build.py). */
 static void version(Out *o) {
-    char v[9]; const volatile char *p = (const volatile char *)0x0818BAD4u;
+    char v[9]; const volatile char *p = (const volatile char *)S_VERSION_STR;
     for (u32 i = 0; i < 8; i++) v[i] = p[i];
     v[8] = 0; puts_(o, v);
 }
@@ -233,10 +233,10 @@ typedef struct {
     u32 periph[2][2];    /* if PAR is a SAI DR: SR (DR-8), CR1 (DR-0x1C) */
     u32 rtc_tr, rtc_dr;  /* RTC at the last UI-loop pass (survives the reset) */
 } AudioMon;
-#define AMON ((volatile AudioMon *)0x3003C000u)   /* M4-only; start of our D2 slice (v3.16) */
+#define AMON ((volatile AudioMon *)SLICE(0x0u))   /* M4-only; start of our D2 slice (v3.16) */
 #define AMON_MAGIC 0x314E4F4Du /* "MON1" */
 #define SNAP_MAGIC 0x50414E53u /* "SNAP" */
-_Static_assert(0x3003C000u + sizeof(AudioMon) <= 0x3003C080u, "audio monitor overlaps the M7 stall record");
+_Static_assert(SLICE(0x0u) + sizeof(AudioMon) <= SLICE(0x80u), "audio monitor overlaps the M7 stall record");
 static const u32 STREAMS[2] = {5u, 7u};
 static volatile u32 *dma_stream(u32 n) { return (volatile u32 *)(DMA2_BASE + 0x10u + 0x18u * n); }
 
@@ -302,7 +302,7 @@ static int audio_watch(Out *o, u32 now) {
  * section uses. Fill the 1.5 KB above it once with a known pattern (it
  * survives resets) and report any word that changes: nonzero = something in
  * stock uses this area after all. */
-#define WD ((volatile u32 *)0x3000F624u)
+#define WD ((volatile u32 *)S_M4_WD_COUNTERS)
 #define MP_START 1000u
 #define MP_EVERY 100u
 #define MP_STACK 2500u
@@ -313,12 +313,12 @@ typedef struct {
     u16 at[40];
     u32 stack[64];
 } MProf;
-#define MPROF ((volatile MProf *)0x3003D400u)
+#define MPROF ((volatile MProf *)SLICE(0x1400u))
 #define MPROF_MAGIC 0x3150524Du /* "MRP1" */
-_Static_assert(0x3003D400u + sizeof(MProf) <= 0x3003D800u, "M4 profile past its 1 KB");
+_Static_assert(SLICE(0x1400u) + sizeof(MProf) <= SLICE(0x1800u), "M4 profile past its 1 KB");
 
-#define CANARY ((volatile u32 *)0x3003CA00u)
-#define CANARY_WORDS ((0x3003CF20u - 0x3003CA00u) / 4u)   /* its last 224 B became D0, scan and probe lines (v3.64-v3.69) */
+#define CANARY ((volatile u32 *)SLICE(0xA00u))
+#define CANARY_WORDS ((SLICE(0xF20u) - SLICE(0xA00u)) / 4u)   /* its last 224 B became D0, scan and probe lines (v3.64-v3.69) */
 #define CANARY_MAGIC 0x59524E43u /* "CNRY" */
 static u32 canary_word(u32 i) { return 0xA5C30000u ^ (i * 0x9E3779B1u); }
 static void canary_arm(void) {
@@ -346,9 +346,9 @@ static void ram(Out *o) {
  * it is evicted. */
 typedef struct { char name[4]; u32 lo, hi; } RamBlock;
 static const RamBlock RAM_BLOCKS[3] = {
-    {"axi", 0x2404CDC0u, 0x24050000u},          /* above the M7 stack, below the M4 pool */
-    {"d2a", 0x30039100u, 0x3003C000u},          /* above the M4 stack, below our slice */
-    {"d2b", 0x3003E000u, 0x30040000u},          /* above our slice */
+    {"axi", S_RAMCHK_AXI, S_RAMCHK_AXI_END},          /* above the M7 stack, below the M4 pool */
+    {"d2a", S_RAMCHK_D2A, S_D2_SLICE},           /* above the M4 stack, below our slice */
+    {"d2b", S_RAMCHK_D2B, S_D2_SLICE_END},          /* above our slice */
 };
 #define RAMCHK_MAGIC 0x32524E43u /* "CNR2" */
 static u32 ramchk_word(u32 a) { return 0x5AC30000u ^ (a * 0x9E3779B1u); }
@@ -406,8 +406,8 @@ static void d0_lines(Out *o) {
         puts_(o, " bad="); dec(o, d->bad);
         puts_(o, " | dtcm used="); dec(o, d->dtcm_used); puts_(o, " axi used="); dec(o, d->axi_used);
         puts_(o, " ext left="); dec(o, d->ext_left); puts_(o, " shared left="); dec(o, d->shared_left);
-        puts_(o, " | m4 pool cur="); hex(o, *(volatile u32 *)0x30000050u, 8);
-        puts_(o, " used="); dec(o, *(volatile u32 *)0x30001118u);
+        puts_(o, " | m4 pool cur="); hex(o, *(volatile u32 *)S_M4_POOL_CUR, 8);
+        puts_(o, " used="); dec(o, *(volatile u32 *)S_M4_POOL_USED);
         volatile D0Link *k = D0LINK;
         puts_(o, "\r\nLINK rx="); dec(o, k->rx); puts_(o, " bad="); dec(o, k->bad);
         puts_(o, " fw_boots="); dec(o, k->fw_boots); puts_(o, " crc_changes="); dec(o, k->crc_changes);
@@ -500,7 +500,7 @@ typedef struct {
     u32 lisr, hisr, s5cr, s5ndtr, s7cr, s7ndtr;
     u32 mux[2], sai_sr[2];
 } Stall7;
-#define ST7 ((volatile Stall7 *)0x3003C080u)
+#define ST7 ((volatile Stall7 *)SLICE(0x80u))
 #define STALL7_MAGIC 0x38544C53u /* "SLT8": layout grew (SAI status) */
 static void stall7_print(Out *o) {
     puts_(o, "M7 audio stall record (from RAM): gen "); dec(o, ST7->sgen);
@@ -600,10 +600,10 @@ static void init(u32 now) {
     /* Preflight exactly like Lab: the native allocator crashes on overflow.
      * One check covers all allocations (each is rounded up to 32 bytes). */
     if (end > cur && end - cur >= BUF_BYTES + sizeof(CapBlock) + 64u) {
-        u32 got = FN(0x08104C08, u32 (*)(u32))(BUF_BYTES);
+        u32 got = FN(S_UI_BUMP_ALLOC, u32 (*)(u32))(BUF_BYTES);
         if (got == cur) buf = got;
         cur = BUMP_CUR;
-        got = FN(0x08104C08, u32 (*)(u32))(sizeof(CapBlock));   /* M2 pressure capture */
+        got = FN(S_UI_BUMP_ALLOC, u32 (*)(u32))(sizeof(CapBlock));   /* M2 pressure capture */
         if (got == cur) capb = got;
     }
     if (capb) {
@@ -880,8 +880,8 @@ static void write_sidecar(const char *path) {
     c->nsave = 0;
 }
 
-#define XHEAP_CUR (*(volatile u32 *)0x30000044u)   /* stock "extended memory" heap: grows down */
-#define XHEAP_FLOOR (*(volatile u32 *)0x30000040u)
+#define XHEAP_CUR (*(volatile u32 *)S_XHEAP_CUR)   /* stock "extended memory" heap: grows down */
+#define XHEAP_FLOOR (*(volatile u32 *)S_XHEAP_FLOOR)
 __attribute__((used, retain)) void dump_after_save(const char *path) {
     write_sidecar(path);                            /* first: it belongs to this save */
     if (M4H->magic != DIAG_MAGIC || M4H->r[1] <= 1u) return;
@@ -980,6 +980,6 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
 
 /* Replaces `bl 0x08101c78` at 0x08114b10 in the defaultTask loop. */
 __attribute__((used, retain)) void m4_tick(u32 a, u32 b) {
-    FN(0x08101C78, orig_fn)(a, b);
+    FN(S_M4_BL_TARGET, orig_fn)(a, b);
     poll();
 }

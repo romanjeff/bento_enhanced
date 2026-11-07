@@ -43,7 +43,22 @@ Should:
 6. Next rebase (1.6.9 ...) is cheap: addresses come from a generated per-base table, not hand edits.
 7. Drum synths, then VA synths, after parity (earlier decisions stand: vendored C++ in separate
    hard-float DSP ELFs, `bento_*` attributes in project.xml, a visible CPU limit).
-Later / open: per-track EQ/comp/clip strip, PLAY+pad mute (Jeff to confirm scope).
+Scope decisions (Jeff, 2026-11-07):
+- **Deferred:** Mod Matrix and the External tracks' mod sources (INST rows, EXT_BUILD/MX hooks). Note Mod on
+  the SEQ page stays in, so the ModCfg plumbing it shares is ported, just not those screens.
+- **Must keep:** strike velocity (drum sequencer), even though its HEADER_GEN hook changed.
+- **Dropped:** PLAY+pad mute; pad mutes are in the official firmware.
+- **After the synths:** per-track EQ/comp/clip strip.
+
+Release notes (1.6.8, read 2026-11-07) that touch our work:
+- "Sequenced note-offs land at the right time within the audio block": fits the changed function around
+  our Note Mod note-off site 0x080605D2 (now 0x56 similarity). Re-check nm_off's two sites in S3.
+- "The audio output no longer crunches every so often": likely the DMA buffers moved into the new
+  non-cacheable D2 region. Some crackle we chased on 1.6.1 may have been stock's; compare by ear in S0.
+- "Choke groups are per track", "Launch State shown on Pads", "Notes added on a muted pad are gray":
+  pad and LED paths changed; watch strike velocity and the pad LEDs in S5.
+- "Pads Can Trigger all Slices" and Shredder fixes: slice mapping changed, relevant to Note Mod on slicers.
+- Known issue: External dashboard MIDI In/Out indicators don't work (stock, not ours).
 
 ## Approach
 - **Generated address tables.** The matcher maps each 1.6.1 address; a reviewed table per base
@@ -75,8 +90,8 @@ Later / open: per-track EQ/comp/clip strip, PLAY+pad mute (Jeff to confirm scope
 - **S4, M4 features (moved only, plus key renumbering):** inspect a step, hold edit, defaults, per-step
   cond/retrig UI, AT Rec/Out keys.
 - **S5, changed hooks:** HEADER_GEN (strike velocity), CTRL consumer (hold shortcuts), MIDI 0x5F/0x60
-  handlers (register remap, note > 127 check), LIVE_SITE (router +0x40, live AT), EXT_BUILD and MX (Note
-  Mod / Mod Matrix UI). Device regression on SPACED. **Milestone M2: parity.**
+  handlers (register remap, note > 127 check), LIVE_SITE (router +0x40, live AT). EXT_BUILD and MX
+  (Mod Matrix, External mod rows) are deferred. Device regression on SPACED. **Milestone M2: parity.**
 - **S6, synths:** SDRAM and CPU budget, then the first drum engine. **Milestone M3.**
 
 ## Risks

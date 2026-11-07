@@ -24,7 +24,7 @@
 #define DCIMVAC (*(volatile u32 *)0xE000EF5Cu)
 #define MS_CYC 480000u
 #define DEST_GAP (8u * MS_CYC)
-#define RING_PTR (*(volatile u32 *)0x2401BD3Cu)   /* M7->M4 ring object (Lab's PRODUCER_GLOBAL) */
+#define RING_PTR (*(volatile u32 *)S_PRODUCER_GLOBAL)   /* M7->M4 ring object (Lab's PRODUCER_GLOBAL) */
 #define RING_MAX_FILL 6u                       /* leave >= 10 of 16 slots for notes and UI events */
 #define MOD_STAGE_OFF 0u
 #define MOD_STAGE_A 1u
@@ -35,7 +35,7 @@
 /* m7_polyat.c */
 void *m1_mod_run(void);
 int m1_token(u32 port, u32 now);
-#define MSG_SEND 0x08065600u                  /* msg_send(engine + 0x7C8, ev): the MIDI-out queue */
+#define MSG_SEND S_MSG_SEND                  /* msg_send(engine + 0x7C8, ev): the MIDI-out queue */
 u32 m1_track_pressure(u32 track);
 int m1_notes_held(u32 track);
 
@@ -267,9 +267,9 @@ static void mod_block_body(u32 track, const u32 *clock, int start, u32 router) {
         /* Stock's CC case writes the value with its 14-bit writer (0x08105D10: status
          * & 0xEF == 0xA0 -> data byte = value >> 7), so a 7-bit value goes in as v << 7
          * (v3.41 sent 0..127 and every CC went out as 0). */
-        u32 ev[6] = {0x5E, 0, port, ch, d->num & 0x7Fu, (u32)v << 7};
-        if (d->type == MOD_DEST_PB) { ev[0] = 0x5D; ev[4] = (u32)v; ev[5] = 0; }
-        else if (d->type == MOD_DEST_AT) { ev[0] = 0x60; ev[4] = (u32)v; ev[5] = 0; }
+        u32 ev[6] = {S_EV_MIDI_CC, 0, port, ch, d->num & 0x7Fu, (u32)v << 7};
+        if (d->type == MOD_DEST_PB) { ev[0] = S_EV_MIDI_BEND; ev[4] = (u32)v; ev[5] = 0; }
+        else if (d->type == MOD_DEST_AT) { ev[0] = S_EV_MIDI_CHAN_AT; ev[4] = (u32)v; ev[5] = 0; }
         ((void (*)(u32, const u32 *))(MSG_SEND | 1u))(router + 0x7C8u, ev);
         r->last[i] = (u16)v; r->dcyc[i] = now;
     }
@@ -318,7 +318,7 @@ void *m1_nm_run(void);
 #define FN(a, t) ((t)((a) | 1u))
 #endif
 #define NM_MAP 16u
-#define NOTE_OFF 0x0805FE00u               /* (track, note, timing, pad, router) */
+#define NOTE_OFF S_NM_NOTE_OFF               /* (track, note, timing, pad, router) */
 typedef struct { u8 note, sent; u16 pad, spad; } NmMap;
 typedef struct {
     u32 track, cyc, phase, last_p, rnd, tick_lo, tick_hi;

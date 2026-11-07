@@ -13,14 +13,18 @@ import json, struct, sys, unittest
 from pathlib import Path
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS
 from unicorn.arm_const import *
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bases import from_build
+S = from_build(sys.argv[2], Path(sys.argv[1]).read_bytes())   # the base table this build was made from
+D2 = S.D2_SLICE                                                # our shared slice (per base)
 
 BASE = 0x08040000
 SENT = 0x08000100
-STACK = 0x2407F000
-CFG = 0x3003C1E0
+STACK = 0x2407F000  # addr-ok: harness
+CFG = D2 + 0x1E0
 MAGIC = 0x31474144
-COUNTERS = 0x3003C660
-SEQ = 0x24030000
+COUNTERS = D2 + 0x660
+SEQ = 0x24030000  # addr-ok: harness
 REGS = [UC_ARM_REG_R0 + i for i in range(13)] + [UC_ARM_REG_SP, UC_ARM_REG_LR]
 
 STOCK = Path(sys.argv[1]).read_bytes()
@@ -129,8 +133,8 @@ class Hooks(unittest.TestCase):
         u.mem_write(sp, bytes(frame))
         for i, r in enumerate(REGS[:13]):
             u.reg_write(r, 0x01010101 * (i + 1))
-        u.reg_write(UC_ARM_REG_R8, SEQ); u.reg_write(UC_ARM_REG_SP, sp); u.reg_write(UC_ARM_REG_LR, 0x08060001)
-        u.emu_start(0x08060B64 | 1, 0x08060B68, count=200000)
+        u.reg_write(UC_ARM_REG_R8, SEQ); u.reg_write(UC_ARM_REG_SP, sp); u.reg_write(UC_ARM_REG_LR, 0x08060001)  # addr-ok: harness
+        u.emu_start(S.COND_GATE_SITE | 1, S.COND_GATE_SITE + 4, count=200000)
         return u
 
     def test_native_probability_path_is_stock(self):
@@ -141,7 +145,7 @@ class Hooks(unittest.TestCase):
     def test_condition_play_and_skip(self):
         val = 100 + LABELS.index("1:2")
         u = self.gate(IMG, val, 1)                           # loop 0 -> play
-        self.assertEqual(u.reg_read(UC_ARM_REG_PC), 0x08060B68)
+        self.assertEqual(u.reg_read(UC_ARM_REG_PC), S.COND_GATE_SITE + 4)
         self.assertEqual(u.reg_read(UC_ARM_REG_R3), 0, "play = native 'always' (0)")
         self.assertEqual(u.reg_read(UC_ARM_REG_R8), SEQ)
         # loop 1 -> skip: execution goes to stock's skip path instead of resuming.
@@ -151,8 +155,8 @@ class Hooks(unittest.TestCase):
         frame = bytearray(0x40); frame[0x29] = val
         u.mem_write(sp, bytes(frame))
         u.reg_write(UC_ARM_REG_R8, SEQ); u.reg_write(UC_ARM_REG_SP, sp)
-        u.emu_start(0x08060B64 | 1, 0x080609E2, count=200000)
-        self.assertEqual(u.reg_read(UC_ARM_REG_PC), 0x080609E2)
+        u.emu_start(S.COND_GATE_SITE | 1, S.COND_SKIP, count=200000)
+        self.assertEqual(u.reg_read(UC_ARM_REG_PC), S.COND_SKIP)
         self.assertEqual(u.reg_read(UC_ARM_REG_SP), sp, "stack balanced on the skip path")
 
     def test_loop_hook_is_stock_plus_count(self):
@@ -161,8 +165,8 @@ class Hooks(unittest.TestCase):
             u = emu(img)
             for i, r in enumerate(REGS[:13]):
                 u.reg_write(r, 0x02020202 * (i + 1))
-            u.reg_write(UC_ARM_REG_R0, SEQ); u.reg_write(UC_ARM_REG_SP, STACK); u.reg_write(UC_ARM_REG_LR, 0x08061001)
-            u.emu_start(0x08061740 | 1, 0x08061744, count=200000)
+            u.reg_write(UC_ARM_REG_R0, SEQ); u.reg_write(UC_ARM_REG_SP, STACK); u.reg_write(UC_ARM_REG_LR, 0x08061001)  # addr-ok: harness
+            u.emu_start(S.COND_LOOP_SITE | 1, S.COND_LOOP_SITE + 4, count=200000)
             sp = u.reg_read(UC_ARM_REG_SP)
             res.append(([u.reg_read(r) for r in REGS], bytes(u.mem_read(sp, STACK - sp)), u))
         self.assertEqual(res[0][0], res[1][0])
@@ -172,9 +176,8 @@ class Hooks(unittest.TestCase):
 class M4UI(unittest.TestCase):
     """Since v3.3 conditions have their own encoder: the probability list is stock's."""
     def test_probability_list_is_stock(self):
-        self.assertEqual(IMG[0x08165F8C - BASE:0x08165F90 - BASE], STOCK[0x08165F8C - BASE:0x08165F90 - BASE])
-        self.assertEqual(IMG[0x08165D40 - BASE:0x08165D44 - BASE], STOCK[0x08165D40 - BASE:0x08165D44 - BASE])
-        self.assertEqual(IMG[0x0815C8B4 - BASE:0x0815C8B8 - BASE], STOCK[0x0815C8B4 - BASE:0x0815C8B8 - BASE], "set_drum stock")
+        for a, what in ((S.T2_LIST_SITE_1, "list"), (S.T2_LIST_SITE_2, "list"), (S.T2_SET_DRUM_SITE, "set_drum")):
+            self.assertEqual(IMG[a - BASE:a + 4 - BASE], STOCK[a - BASE:a + 4 - BASE], f"{what} stock at {a:#x}")
 
     def helper(self, site, regs, stop):
         u = emu(IMG)
@@ -185,9 +188,9 @@ class M4UI(unittest.TestCase):
         return u
 
     def test_drum_view_shows_percentages_and_clamps_legacy_values(self):
-        store = 0x24070000
+        store = 0x24070000  # addr-ok: harness
         def show(v):
-            u = self.helper(0x0815C3D2, {UC_ARM_REG_R3: v, UC_ARM_REG_R1: store}, 0x0815C3D6)
+            u = self.helper(S.PROB_SHOW_DRUM_SITE, {UC_ARM_REG_R3: v, UC_ARM_REG_R1: store}, S.PROB_SHOW_DRUM_SITE + 4)
             return r32(u, store)
         for v in range(1, 100):
             self.assertEqual(show(v), v - 1)
@@ -242,14 +245,14 @@ class Extended(unittest.TestCase):
     def piano_reference(self, stored):
         u = emu(IMG); sp = STACK - 0x300
         u.mem_write(sp, bytes(0x100)); u.mem_write(sp + 0x25, bytes([stored]))
-        u.reg_write(UC_ARM_REG_SP, sp); u.emu_start(0x08158F1C | 1, 0x08158F26, count=1000)
+        u.reg_write(UC_ARM_REG_SP, sp); u.emu_start(S.PROB_PIANO_REF_SITE | 1, S.PROB_PIANO_REF_BACK, count=1000)
         return u.reg_read(UC_ARM_REG_R3)
 
     def piano_edit(self, stored, delta):
         u = emu(IMG); sp = STACK - 0x300
         u.mem_write(sp, bytes(0x100)); u.mem_write(sp + 0x19, bytes([stored]))
         u.mem_write(sp + 0x84, struct.pack("<i", delta))
-        u.reg_write(UC_ARM_REG_SP, sp); u.emu_start(0x08158A7C | 1, 0x08158AAC, count=1000)
+        u.reg_write(UC_ARM_REG_SP, sp); u.emu_start(S.PROB_PIANO_EDIT_SITE | 1, S.PROB_PIANO_EDIT_BACK, count=1000)
         return bytes(u.mem_read(sp + 0x31, 1))[0]
 
     def test_piano_probability_only(self):

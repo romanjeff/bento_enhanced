@@ -29,8 +29,8 @@
 #include "diag_shared.h"
 
 #define FN(a, t) ((t)((a) | 1u))
-#define NOTE_ROUTE 0x0805F8E0u
-#define TICK_TO_OFFSET 0x080A2200u   /* (clock, &tick64) -> sample offset from clock[0] */
+#define NOTE_ROUTE S_NOTE_ROUTE
+#define TICK_TO_OFFSET S_TICK_TO_OFFSET   /* (clock, &tick64) -> sample offset from clock[0] */
 #define MIDI_OUT_FLAG 0x86D1u        /* track byte checked by note_route */
 #define LATE_SAMPLES 2400            /* 50 ms at 48 kHz */
 #define BURSTS 16u
@@ -52,7 +52,7 @@ void curve_emit(u32 track, u32 clock, int start, int len);
 typedef void (*route_fn)(u32 track, u32 note, u32 vel, u32 timing, u32 pad, u32 router);
 int m1_note_sounding(u32 track, u32 note);   /* m7_polyat.c: the poly cap's voice list */
 
-#define MSG_SEND 0x08065600u
+#define MSG_SEND S_MSG_SEND
 /* A MIDI note event as note_route builds it: {type, timing, port, ch, note, vel}. */
 static void midi_note(u32 router, u32 type, u32 track, u32 note, u32 vel, u32 timing) {
     u32 ev[6] = {type, timing, *(volatile u8 *)(track + 0x31u), *(volatile u8 *)(track + 0x32u), note & 0x7Fu, vel};

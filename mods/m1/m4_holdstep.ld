@@ -1,5 +1,5 @@
 /* Inspect-a-step m4 code (Lab T2 port): text + read-only data only. */
-MEMORY { CODE (rx) : ORIGIN = 0x081B6D00, LENGTH = 0x2C0 }
+MEMORY { CODE (rx) : ORIGIN = 0x0, LENGTH = 0x0 }   /* set per build by build.py (compile_elf) */
 SECTIONS {
   .text : { KEEP(*(.text.h_* .text.m4_tick)) *(.text*) *(.rodata*) } > CODE
   .data : { *(.data*) } > CODE

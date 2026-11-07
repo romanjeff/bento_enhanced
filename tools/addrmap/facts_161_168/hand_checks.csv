@@ -1,0 +1,30 @@
+old,new,mapper_status,my_verdict,evidence
+0x08085B6C,0x080865EA,changed,CORRECT site; hook semantics changed,bl bus_post+b identical; router fields +0x2C8->+0x308 +0x2CC->+0x30C +0x48C..->+0x4CC..; event on stack gains a word ([sp+0x40]=r2 new)
+0x080605D2,0x08060976,changed,CORRECT,same bl NM_NOTE_OFF and regs; new bic r2 clamp (len>=0) before the call
+0x0813F98C,0x08141408,changed,CORRECT,sub.w r3 r5 #0x11 -> ldrb r3 [r6]; subs r3 #0x11 (4 B both); table bound 0xB3 same
+0x0815A598,0x0815C304,changed,CORRECT,prologue identical; dispatch gains event 0x111/0x112
+0x08146B80,0x081487EC,changed,CORRECT,first 5 insns identical (cmp #0xcf filter); 0xcf body rewritten (static-guard path -> posts event 0xd3)
+0x08134800,0x08135D74,changed,CORRECT,push set lost sl; sub sp 8->0xC; model +0xB19C -> +0xC2F0
+0x08147138,0x08148D44,changed,CORRECT,push set lost fp; sub sp 0x54->0x50; rest same
+0x0810509A,0x08105244,changed,CORRECT,Note On case; regs port r9->r7 ch r8->r9 note r7->r6 val r11->r4 sink r6->r4(literal); loop r? -> 0x08105416
+0x081050DE/DF,0x08105416/17,changed,CORRECT,JT 0x081053EC idx 4/5 (0x5F/0x60) = 0x08105417; note>127 guard for 0x5B/0x5C before table
+0x0808DF54,0x0808EA34,changed,CORRECT,bl wd refresh same; sb->sl rename
+0x0808DFB4,0x0808EA94,changed,CORRECT,"bl msg pump same; [sp,#0xc]->[sp,#0x10]"
+0x0814BFF0,0x0814DBF8,changed,CORRECT,mod-matrix key range 0x171->0x16F
+0x0815CAA0,0x0815E820,changed,CORRECT,key base 0x183->0x181
+0x0813B4BA,0x0813CC74,changed,CORRECT,r6/r7 swap only
+0x0813F2FC,0x08140DEE,changed,CORRECT,stack frame -8; same loop head
+0x0808CC5A,0x0808D632,changed,CORRECT,epilogue; code after it changed
+0x0817FAF8,0x08181C7C,changed,CORRECT,UI obj +0x6B->+0x83 (display emulator render.py)
+0x081419DE,0x081436A8,changed(low),CORRECT,keys 0x8E/0x8D same; r7/r8 swap
+0x0809FB40,(none),unmatched,WRONG -> 0x080A0740,same bump (left-=n; cur+=n) with reg renames; literals 0x080A0838/3C
+0x0815D284,0x0815F030,same-code-moved,CORRECT,only diff is literal-pool decode
+0x08114B10,0x08114E7C,same-code-moved,CORRECT,only diff is data decode
+0x0814B630,0x0814D238,same-code-moved,CORRECT,literal value differs (RAM global)
+0x0819DD20,0x081A0BE8,same-code-moved,CORRECT,12/12 pointers -> matching methods
+0x0819E854,0x081A171C,same-code-moved,CORRECT,12/12
+0x0819E7B0,0x081A1678,same-code-moved,CORRECT,12/12
+0x081B3680,0x081B6560,same-code-moved,CORRECT,9/12 identical methods; 3 changed methods
+0x0819DB08,0x081A09D0,same-code-moved,CORRECT,8/8
+0x0819DE20,0x081A0CE8,same-code-moved,CORRECT,8/8
+0x0819F30C,0x081A21D4,same-code-moved,CORRECT,same label pointer pattern

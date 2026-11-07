@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copied unchanged from bento-community-lab k16_work/bento_mods/tests/receiver_fixture.py
-# (GPL-3.0-or-later). Set BENTO_STOCK_IMAGE to the stock 1.6.1 bento1.bin.
+# (GPL-3.0-or-later). Set BENTO_STOCK_IMAGE to the stock bento1.bin.
+# BE: stock addresses come from the base table for that image (bases/stock_*.py).
 """Bounded original-Thumb receiver tests with a Python interception callback.
 
 No firmware instructions are replaced and no hardware connection is made.
@@ -17,12 +18,15 @@ from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
 from unicorn.arm_const import *
 
 import os
+import sys
 IMAGE = Path(os.environ.get('BENTO_STOCK_IMAGE', 'handoff/Bento_Work_Handoff_2026-10-16/01_BENTO_FIRMWARE/1.6.1/bento1.bin'))
 B = IMAGE.read_bytes()
-assert hashlib.sha256(B).hexdigest() == '14475e9d5068f5659d0fe0b00fc1278c1479c43ed9fda3d40654d5f3a7a6bbb3'
-BASE, OBJ, PKT, ENGINE, UIQUEUE = 0x08040000, 0x24010000, 0x24020000, 0x24040000, 0x24030000
-STOP, HOOK, NEXT = 0x2407f000, 0x0808d1fe, 0x0808d1f0
-assert B[HOOK-BASE:HOOK-BASE+4] == bytes.fromhex('9c42f6d0')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # BE: per-base addresses
+from bases import select
+S = select(B)                                                     # BE: refuses an unknown image
+BASE, OBJ, PKT, ENGINE, UIQUEUE = 0x08040000, 0x24010000, 0x24020000, 0x24040000, 0x24030000  # addr-ok: harness
+STOP, HOOK, NEXT = 0x2407f000, S.CTRL_INPUT_SITE, S.PAD_NEXT  # addr-ok: harness
+assert B[HOOK-BASE:HOOK-BASE+4] == S.orig('CTRL_INPUT_SITE')
 
 
 class Receiver:
@@ -31,7 +35,7 @@ class Receiver:
         self.u.mem_map(BASE, 0x180000)
         self.u.mem_write(BASE, B)
         self.u.mem_map(0x24000000, 0x80000)
-        self.word(0x2401bd3c, UIQUEUE)
+        self.word(S.PRODUCER_GLOBAL, UIQUEUE)
         self.word(OBJ + 0x8c8, ENGINE)
         self.u.mem_write(OBJ + 0x1321, b'\x01')
         self.half(PKT + 8, 3)
@@ -78,23 +82,23 @@ class Receiver:
             return
 
         r0, r1, r2 = (u.reg_read(r) for r in [UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2])
-        if address in (0x080595e0, 0x08082220):
+        if address in (S.ENGINE_ENQUEUE, S.ENQUEUE):
             record = bytes(u.mem_read(r1, 24))
-            destination = 'engine' if address == 0x080595e0 else 'ui'
+            destination = 'engine' if address == S.ENGINE_ENQUEUE else 'ui'
             self.records.append((destination, record))
             self.timeline.append((destination, record[0], struct.unpack_from('<I', record, 12)[0]))
             return  # Execute ORIGINAL queue writer and its memory barrier.
-        if address == 0x080a3f0e:
+        if address == S.M7_MEMCPY:
             u.mem_write(r0, bytes(u.mem_read(r1, r2)))
             result = r0
-        elif address == 0x080a2e00:
+        elif address == S.PACKET_VALID:
             result = 1  # Packet validation deliberately bypassed.
-        elif address == 0x080a3ea0:
+        elif address == S.M7_MEMCMP:
             result = int(bytes(u.mem_read(r0, r2)) != bytes(u.mem_read(r1, r2)))
-        elif address == 0x080a04a0:
+        elif address == S.M7_RECORD_INIT:
             u.mem_write(r0, bytes(24))
             result = r0
-        elif address == 0x08058600:
+        elif address == S.TRANSPORT_BUTTONS:
             result = 0  # Additional transport-button side path, out of scope.
         else:
             return
@@ -110,9 +114,9 @@ class Receiver:
         self.records, self.intents, self.timeline, self.observations = [], [], [], []
         self.u.reg_write(UC_ARM_REG_R0, OBJ)
         self.u.reg_write(UC_ARM_REG_R1, PKT)
-        self.u.reg_write(UC_ARM_REG_SP, 0x2407e000)
+        self.u.reg_write(UC_ARM_REG_SP, 0x2407e000)  # addr-ok: harness
         self.u.reg_write(UC_ARM_REG_LR, STOP | 1)
-        self.u.emu_start(0x0808d081, STOP, count=50000)
+        self.u.emu_start(S.PAD_RECEIVER | 1, STOP, count=50000)
         assert self.u.reg_read(UC_ARM_REG_PC) == STOP
         return self.records
 

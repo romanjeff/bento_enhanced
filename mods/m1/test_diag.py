@@ -15,15 +15,19 @@ import json, struct, sys, unittest
 from pathlib import Path
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_MEM_WRITE
 from unicorn.arm_const import *
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bases import from_build
+S = from_build(sys.argv[2], Path(sys.argv[1]).read_bytes())   # the base table this build was made from
+D2 = S.D2_SLICE                                                # our shared slice (per base)
 
 BASE = 0x08040000
-UWTICK = 0x2401EDB8       # stock M7 HAL tick (ms since boot)
+UWTICK = S.UWTICK       # stock M7 HAL tick (ms since boot)
 SENT = 0x08000100           # return sentinel (never executed: emu stops on reaching it)
-STACK = 0x2407F000
-LOG_LO, LOG_HI = 0x3003C000, 0x3003CA00  # our reserved block (unlinked top of D2 SRAM2, v3.16): logger, monitors, strike line
-M7H, M4H, RECS = 0x3003C100, 0x3003C120, 0x3003C2C0
+STACK = 0x2407F000  # addr-ok: harness
+LOG_LO, LOG_HI = D2, D2 + 0xA00  # our reserved block (unlinked top of D2 SRAM2, v3.16): logger, monitors, strike line
+M7H, M4H, RECS = D2 + 0x100, D2 + 0x120, D2 + 0x2C0
 MAGIC = 0x31474144
-RINGSTAT = 0x3003C200
+RINGSTAT = D2 + 0x200
 RTC_BKP = 0x58004050
 REGS = [UC_ARM_REG_R0 + i for i in range(13)] + [UC_ARM_REG_SP, UC_ARM_REG_LR]
 
@@ -41,12 +45,12 @@ def emu(img):
     u.mem_map(0x08000000, 0x200000)
     u.mem_write(BASE, img)
     u.mem_write(SENT, b"\xfe\xe7")           # b .
-    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x200000), (0xE0000000, 0x100000),
-                 (0x10040000, 0x8000),    # SRAM3 through the alias stock's M7 uses (load ring)
+    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (S.PROBE_SCRATCH, 0x10000), (S.EXT_POOL_END, 0x200000), (0xE0000000, 0x100000),
+                 (S.LOAD_RING & ~0x7FFF, 0x8000),    # SRAM3 through the alias stock's M7 uses (load ring)
                  (0x58000000, 0x10000),   # RTC (backup registers hold stock's crash record)
                  (0x40015000, 0x2000), (0x40020000, 0x1000)):  # SAI1-3, DMA2 (audio DMA monitor)
         u.mem_map(a, n)
-    u.mem_write(0x24000160, struct.pack("<2I", 3405824, 0xC6000000 - 3405824))   # stock's ext pool: left, cursor
+    u.mem_write(S.POOL_LEFT_RAM, struct.pack("<2I", 3405824, S.EXT_POOL_END - 3405824))   # stock's ext pool: left, cursor
     return u
 
 def w32(u, a, v): u.mem_write(a, struct.pack("<I", v & 0xFFFFFFFF))
@@ -84,37 +88,36 @@ class Image(unittest.TestCase):
         man = json.loads((OUT / "manifest.json").read_text())
         label = man["display"].encode()
         self.assertTrue(label.startswith(b"BE") and len(label) <= 6, label)
-        self.assertEqual(DIAG[0x0818BAD4 - BASE:0x0818BAD4 - BASE + 8], label.ljust(8, bytes(1)),
+        self.assertEqual(DIAG[S.VERSION_STR - BASE:S.VERSION_STR - BASE + 8], label.ljust(8, bytes(1)),
                          "boot screen copies the first 6 bytes of this 8-byte slot")
-        self.assertEqual(CH10[0x0818BAD4 - BASE:0x0818BAD4 - BASE + 8], b"1.6.1" + bytes(3), "stock string")
+        self.assertEqual(CH10[S.VERSION_STR - BASE:S.VERSION_STR - BASE + 8], b"1.6.1" + bytes(3), "stock string")
 
     def test_m7_heap_is_stock(self):
         """v3.16: the M7 heap end is back to stock (v2.3-v3.15 lowered it by 2.4 KB;
         large projects like SPACED then failed to load)."""
-        for a in (0x08040588, 0x080A3BDC, 0x080A3E94,    # heap literals
-                  0x08040514, 0x0808E19C, 0x080A547C):   # stack bottom / sentinels
-            self.assertEqual(struct.unpack_from("<I", DIAG, a - BASE)[0], 0x24048DA0)
+        for a in S.M7_HEAP_END_LITS + S.M7_STACK_BOTTOM_LITS:   # heap literals, stack bottom / sentinels
+            self.assertEqual(struct.unpack_from("<I", DIAG, a - BASE)[0], S.M7_HEAP_END)
 
 class Trampolines(unittest.TestCase):
     HOOKS = [  # site, resume, r1 points at an event of this type
-        (0x08059980, 0x08059984, 0xAC),
-        (0x08065608, 0x0806560C, 0x5B),
-        (0x08082640, 0x08082644, 0x5B),
-        (0x080655A0, 0x080655A4, None),
+        (S.H_INPUT_SITE, S.H_INPUT_SITE + 4, 0xAC),
+        (S.H_SEND_SITE, S.H_SEND_SITE + 4, 0x5B),
+        (S.H_RING_SITE, S.H_RING_SITE + 4, 0x5B),
+        (S.H_CONSUME_SITE, S.H_CONSUME_SITE + 4, None),
     ]
 
     def run_site(self, img, site, resume, ev_type, ready):
         u = emu(img)
         if ready:
             m4_ready(u)
-        ev = 0x24070000
+        ev = 0x24070000  # addr-ok: harness
         u.mem_write(ev, bytes([ev_type or 0, 0, 0, 0]) + bytes(range(1, 21)))
         vals = [0x11111111 * (i + 1) & 0xFFFFFFFF for i in range(13)]
-        vals[0], vals[1], vals[2] = 0x24071000, ev if ev_type is not None else 0, 0x24072000
+        vals[0], vals[1], vals[2] = 0x24071000, ev if ev_type is not None else 0, 0x24072000  # addr-ok: harness
         for r, v in zip(REGS[:13], vals):
             u.reg_write(r, v)
         u.reg_write(UC_ARM_REG_SP, STACK)
-        u.reg_write(UC_ARM_REG_LR, 0x0805ABC1)
+        u.reg_write(UC_ARM_REG_LR, 0x0805ABC1)  # addr-ok: harness
         u.emu_start(site | 1, resume, count=5000)
         regs = [u.reg_read(r) for r in REGS]
         flags = u.reg_read(UC_ARM_REG_XPSR) & 0xF8000000
@@ -141,12 +144,12 @@ class Trampolines(unittest.TestCase):
 class StrikePeak(unittest.TestCase):
     """h_input keeps a per-pad strike: press counter + peak of the first pressure samples."""
     def ev(self, u, t, pad, raw):
-        at = 0x24070200
+        at = 0x24070200  # addr-ok: harness
         u.mem_write(at, struct.pack("<6I", t, 0, 0xFFFFFFFE, pad, raw, 0))
-        call(u, SYM7["h_input"], 0x24071000, at)
+        call(u, SYM7["h_input"], 0x24071000, at)  # addr-ok: harness
 
     def strikes(self, u):
-        raw = bytes(u.mem_read(0x3003C960, 32))
+        raw = bytes(u.mem_read(D2 + 0x960, 32))
         return list(raw[:16]), list(raw[16:])
 
     def test_peak_over_the_first_samples_per_pad(self):
@@ -170,7 +173,7 @@ class StrikePeak(unittest.TestCase):
 @unittest.skipIf("stall" in OFF, "stall group off in this build (SysTick not hooked)")
 class StallProfile(unittest.TestCase):
     """v3.17: the M7 SysTick vector samples where the M7 is while audio is stalled."""
-    ST, PROF, TICK = 0x3003C080, 0x3003D000, 0x0804BD40
+    ST, PROF, TICK = D2 + 0x80, D2 + 0x1000, S.SYSTICK_HANDLER
 
     def tick(self, u, pc):
         frame = struct.pack("<8I", 0, 1, 2, 3, 12, 0x08012345, pc, 0x01000000) + bytes(range(160))
@@ -182,7 +185,7 @@ class StallProfile(unittest.TestCase):
         w32(u, UWTICK, 10000)                                  # 10 s after the M7 booted
         w32(u, self.ST, 1000); w32(u, self.ST + 4, 1); w32(u, self.ST + 8, 7)   # last, armed, gen 7
         for ms in range(1, 401):
-            self.tick(u, 0x0809F000 + ms * 2)
+            self.tick(u, 0x0809F000 + ms * 2)  # addr-ok: harness
         self.assertEqual(r32(u, self.PROF), 0x31464F50, "magic")
         self.assertEqual(r32(u, self.PROF + 4), 7, "boot gen")
         self.assertEqual(r32(u, self.PROF + 8), 1, "one stall")
@@ -190,14 +193,14 @@ class StallProfile(unittest.TestCase):
         self.assertEqual(n, 18, "samples at 50, 70, ... 390 ms")
         self.assertEqual(r32(u, self.PROF + 16), 399, "idle ms (first tick only arms)")
         pcs = [r32(u, self.PROF + 32 + 4 * i) for i in range(n)]
-        self.assertEqual(pcs[0], 0x0809F000 + 51 * 2, "first sample = interrupted pc")
+        self.assertEqual(pcs[0], 0x0809F000 + 51 * 2, "first sample = interrupted pc")  # addr-ok: harness
         self.assertEqual(r32(u, self.PROF + 32 + 160), 0x08012345, "lr")
         self.assertEqual(r32(u, self.PROF + 24), 300, "stack copied at 300 ms")
         self.assertEqual(r32(u, self.PROF + 28), STACK, "frame address")
         stack = self.PROF + 32 + 160 + 160 + 80
-        self.assertEqual(r32(u, stack + 24), 0x0809F000 + 301 * 2, "stack copy starts with the frame")
+        self.assertEqual(r32(u, stack + 24), 0x0809F000 + 301 * 2, "stack copy starts with the frame")  # addr-ok: harness
         w32(u, self.ST, 2000)                                  # audio progressed
-        self.tick(u, 0x0809F000)
+        self.tick(u, 0x0809F000)  # addr-ok: harness
         self.assertEqual(r32(u, self.PROF + 16), 0, "idle reset by progress")
         self.assertEqual(r32(u, self.PROF + 12), 18, "previous capture kept until a new stall")
 
@@ -207,7 +210,7 @@ class StallProfile(unittest.TestCase):
         u = emu(DIAG)
         w32(u, self.ST, 1000); w32(u, self.ST + 4, 1); w32(u, self.ST + 8, 7)   # stale: previous boot
         for ms in range(1, 1500):                              # uwTick counts up from 0 (HAL_IncTick)
-            self.tick(u, 0x080439C0)
+            self.tick(u, 0x080439C0)  # addr-ok: harness
         self.assertEqual(r32(u, self.PROF + 12), 0, "no samples during boot")
 
     def test_hal_inctick_still_runs(self):
@@ -219,16 +222,16 @@ class StallProfile(unittest.TestCase):
 
 class MainTaskProfile(unittest.TestCase):
     """v3.18: main_prof (M4 IRQ30, before stock's heartbeat supervisor)."""
-    WD, MP = 0x3000F624, 0x3003D400
+    WD, MP = S.M4_WD_COUNTERS, D2 + 0x1400
 
     def setUp(self):
         self.u = emu(DIAG)
         w32(self.u, self.WD + 12, 1)                           # supervisor enabled
-        w32(self.u, 0x3003C1E0 + 12, 5)                        # CFG->r[0]: boot gen 5
+        w32(self.u, D2 + 0x1E0 + 12, 5)                        # CFG->r[0]: boot gen 5
         # handler stack: pushed {r3, EXC_RETURN=thread/PSP}; task frame on PSP
-        self.msp, self.psp = 0x2407E000, 0x2407D000
+        self.msp, self.psp = 0x2407E000, 0x2407D000  # addr-ok: harness
         w32(self.u, self.msp + 4, 0xFFFFFFFD)
-        self.u.mem_write(self.psp, struct.pack("<8I", 0, 1, 2, 3, 12, 0x08120001, 0x0811CDA0, 0x01000000)
+        self.u.mem_write(self.psp, struct.pack("<8I", 0, 1, 2, 3, 12, 0x08120001, 0x0811CDA0, 0x01000000)  # addr-ok: harness
                          + bytes(range(224)))
 
     def run_ticks(self, main_kick, upto, start=0):
@@ -244,16 +247,16 @@ class MainTaskProfile(unittest.TestCase):
         self.assertEqual(r32(u, mp), 0x3150524D, "magic")
         self.assertEqual(r32(u, mp + 4), 5, "boot gen")
         self.assertEqual(r32(u, mp + 12), 17, "samples at 1000, 1100, ... 2600")
-        self.assertEqual(r32(u, mp + 64), 0x0811CDA0, "interrupted task pc")
-        self.assertEqual(r32(u, mp + 64 + 160), 0x08120001, "lr")
+        self.assertEqual(r32(u, mp + 64), 0x0811CDA0, "interrupted task pc")  # addr-ok: harness
+        self.assertEqual(r32(u, mp + 64 + 160), 0x08120001, "lr")  # addr-ok: harness
         self.assertEqual(r32(u, mp + 20), 2500, "stack copied at 2500")
         self.assertEqual(r32(u, mp + 28), 1, "from the task (PSP)")
 
     def test_irq_frame_when_an_interrupt_was_interrupted(self):
         w32(self.u, self.msp + 4, 0xFFFFFFF1)                  # EXC_RETURN: handler mode, MSP
-        self.u.mem_write(self.msp + 8, struct.pack("<8I", 0, 0, 0, 0, 0, 0x08100003, 0x08107000, 0))
+        self.u.mem_write(self.msp + 8, struct.pack("<8I", 0, 0, 0, 0, 0, 0x08100003, 0x08107000, 0))  # addr-ok: harness
         self.run_ticks(main_kick=0, upto=1000)
-        self.assertEqual(r32(self.u, self.MP + 64), 0x08107000, "frame above the handler's push")
+        self.assertEqual(r32(self.u, self.MP + 64), 0x08107000, "frame above the handler's push")  # addr-ok: harness
 
     def test_fresh_main_records_nothing(self):
         for t in range(0, 3000):
@@ -264,23 +267,23 @@ class MainTaskProfile(unittest.TestCase):
 
     @unittest.skipIf("irq30" in OFF, "irq30 group off in this build")
     def test_irq30_bl_goes_through_the_stub(self):
-        ins = struct.unpack_from("<HH", DIAG, 0x08107ADC - BASE)
-        self.assertNotEqual(DIAG[0x08107ADC - BASE:0x08107AE0 - BASE], CH10[0x08107ADC - BASE:0x08107AE0 - BASE])
+        ins = struct.unpack_from("<HH", DIAG, S.M4_WD_SITE - BASE)
+        self.assertNotEqual(DIAG[S.M4_WD_SITE - BASE:S.M4_WD_SITE + 4 - BASE], CH10[S.M4_WD_SITE - BASE:S.M4_WD_SITE + 4 - BASE])
 
 class PressureCapture(unittest.TestCase):
     """M2-1: h_input records each press's pressure on an 8 ms clock (m7_diag.c cap)."""
-    BLOCK, SLOT = 0xC6100000, 1056
+    BLOCK, SLOT = 0xC6100000, 1056  # addr-ok: harness
 
     def setUp(self):
         u = self.u = emu(DIAG)
-        w32(u, 0x3003D820 + 4, self.BLOCK); w32(u, 0x3003D820 + 8, ~self.BLOCK & 0xFFFFFFFF)
-        w32(u, 0x3003D820, 0x31504143)                         # CAPCFG published by the M4
+        w32(u, D2 + 0x1820 + 4, self.BLOCK); w32(u, D2 + 0x1820 + 8, ~self.BLOCK & 0xFFFFFFFF)
+        w32(u, D2 + 0x1820, 0x31504143)                         # CAPCFG published by the M4
 
     def ev(self, t, pad, raw, ms):
         w32(self.u, UWTICK, ms)
-        at = 0x24070200
+        at = 0x24070200  # addr-ok: harness
         self.u.mem_write(at, struct.pack("<6I", t, 0, 0xFFFFFFFE, pad, raw, 0))
-        call(self.u, SYM7["h_input"], 0x24071000, at)
+        call(self.u, SYM7["h_input"], 0x24071000, at)  # addr-ok: harness
 
     def slot(self, pad, k):
         a = self.BLOCK + (pad * 2 + k) * self.SLOT
@@ -314,7 +317,7 @@ class PressureCapture(unittest.TestCase):
         self.assertEqual(s["s"][-1], 127)
 
     def test_unpublished_block_records_nothing(self):
-        w32(self.u, 0x3003D820, 0)
+        w32(self.u, D2 + 0x1820, 0)
         self.ev(0xAC, 3, 0x6800, 1000)
         self.assertEqual(self.slot(3, 1)["n"], 0)
 
@@ -326,10 +329,10 @@ class NativeFunctions(unittest.TestCase):
 
     def test_msg_send_with_lab_hook(self):
         a, b = self.pair()
-        q, ev = 0x24060000, 0x24070000
+        q, ev = 0x24060000, 0x24070000  # addr-ok: harness
         for u in (a, b):
             u.mem_write(ev, bytes([0x5B, 0, 0, 0]) + struct.pack("<5I", 0, 1, 2, 60, 100))
-            call(u, 0x08065600, q, ev)
+            call(u, S.MSG_SEND, q, ev)
         self.assertEqual(bytes(a.mem_read(q, 0x610)), bytes(b.mem_read(q, 0x610)))
         self.assertEqual(r32(b, q + 0x600), 1, "native msg_send still enqueues")
         recs = records(b)
@@ -341,23 +344,23 @@ class NativeFunctions(unittest.TestCase):
 
     def test_msg_send_ignores_uninteresting(self):
         a, b = self.pair()
-        q, ev = 0x24060000, 0x24070000
+        q, ev = 0x24060000, 0x24070000  # addr-ok: harness
         b.mem_write(ev, bytes([0x3E]) + bytes(23))
-        call(b, 0x08065600, q, ev)
+        call(b, S.MSG_SEND, q, ev)
         self.assertEqual(len(records(b)), 0)
 
     def test_ring_post(self):
         a, b = self.pair()
-        obj, ev = 0x24050000, 0x24070000
+        obj, ev = 0x24050000, 0x24070000  # addr-ok: harness
         for u in (a, b):
             u.mem_write(ev, bytes([0x5B, 0, 0, 0]) + bytes(range(20)))
-            call(u, 0x08082640, obj, ev)
+            call(u, S.H_RING_SITE, obj, ev)
         self.assertEqual(bytes(a.mem_read(obj + 0x21C0, 0x1C0)), bytes(b.mem_read(obj + 0x21C0, 0x1C0)))
         recs = records(b)
         self.assertEqual([r[1] & 0xFFFF for r in recs], [3])
         # clock ticks are filtered
         b.mem_write(ev, bytes([0x61]) + bytes(23))
-        call(b, 0x08082640, obj, ev)
+        call(b, S.H_RING_SITE, obj, ev)
         self.assertEqual(len(records(b)), 1)
 
     def test_modulation_streams_are_not_traced(self):
@@ -365,26 +368,26 @@ class NativeFunctions(unittest.TestCase):
         (External modulation, up to 400/s per port). Tracing them filled the
         256 KB session log within seconds (BE-MT3: first save wrote 0 bytes)."""
         a, b = self.pair()
-        obj, ev = 0x24050000, 0x24070000
+        obj, ev = 0x24050000, 0x24070000  # addr-ok: harness
         for t in (0x5D, 0x5E, 0x60) * 5:
             b.mem_write(ev, bytes([t]) + bytes(23))
-            call(b, 0x08082640, obj, ev)
+            call(b, S.H_RING_SITE, obj, ev)
             w32(b, obj + 0x2340, r32(b, obj + 0x2360))           # the M4 keeps up: no overwrite
         self.assertEqual(records(b), [], "no trace records for the streams")
         b.mem_write(ev, bytes([0x5B]) + bytes(23))
-        call(b, 0x08082640, obj, ev)
+        call(b, S.H_RING_SITE, obj, ev)
         self.assertEqual(len(records(b)), 1, "notes are still traced")
 
     def test_ring_fill_and_overflow(self):
         a, b = self.pair()
-        obj, ev = 0x24050000, 0x24070000
+        obj, ev = 0x24050000, 0x24070000  # addr-ok: harness
         b.mem_write(ev, bytes([0x61]) + bytes(23))       # a clock tick: normally not logged
         w32(b, obj + 0x2360, 20); w32(b, obj + 0x2340, 9)  # 11 unread
-        call(b, 0x08082640, obj, ev)
+        call(b, S.H_RING_SITE, obj, ev)
         self.assertEqual(len(records(b)), 0)
         self.assertEqual(r32(b, RINGSTAT), 11)            # max_fill
         w32(b, obj + 0x2340, 5)                           # 16 unread: this post overwrites
-        call(b, 0x08082640, obj, ev)
+        call(b, S.H_RING_SITE, obj, ev)
         recs = records(b)
         self.assertEqual(len(recs), 1, "an overwrite is always logged")
         self.assertEqual(recs[0][10], 0x110)              # extra = 0x100 | fill
@@ -392,31 +395,31 @@ class NativeFunctions(unittest.TestCase):
 
     def test_queue_reads_are_a_heartbeat(self):
         a, b = self.pair()
-        q, out, ev = 0x24060000, 0x24070100, 0x24070000
+        q, out, ev = 0x24060000, 0x24070100, 0x24070000  # addr-ok: harness
         b.mem_write(ev, bytes([0x5B]) + bytes(23))
-        call(b, 0x08065600, q, ev)        # any logged event initialises the M7 side
+        call(b, S.MSG_SEND, q, ev)        # any logged event initialises the M7 side
         w32(b, q + 0x600, 0)
         for _ in range(3):
-            call(b, 0x080655A0, q, 0, out)
-        call(b, 0x080655A0, q, 1, out)    # idx != 0: not a new pass
+            call(b, S.H_CONSUME_SITE, q, 0, out)
+        call(b, S.H_CONSUME_SITE, q, 1, out)    # idx != 0: not a new pass
         self.assertEqual(r32(b, RINGSTAT + 20), 3)
         self.assertEqual(len(records(b)), 1, "queue reads are not logged")
 
     def test_stack_minimums(self):
         a, b = self.pair()
-        ev = 0x24070000
+        ev = 0x24070000  # addr-ok: harness
         b.mem_write(ev, bytes([0x5B]) + bytes(23))
-        call(b, 0x08065600, 0x24060000, ev)                 # first call initialises the counters...
-        call(b, 0x08065600, 0x24060000, ev)                 # ...later calls sample SP (outside the MSP range)
+        call(b, S.MSG_SEND, 0x24060000, ev)                 # first call initialises the counters... (addr-ok: harness)
+        call(b, S.MSG_SEND, 0x24060000, ev)                 # ...later calls sample SP (outside the MSP range) (addr-ok: harness)
         self.assertEqual(r32(b, RINGSTAT + 12), 0xFFFFFFFF)  # min_msp untouched
         self.assertLess(r32(b, RINGSTAT + 16), STACK)        # min_sp recorded
-        for i, v in enumerate((0x24060000, ev)):
+        for i, v in enumerate((0x24060000, ev)):  # addr-ok: harness
             b.reg_write(UC_ARM_REG_R0 + i, v)
-        b.reg_write(UC_ARM_REG_SP, 0x2404A000)               # on the M7 main stack
+        b.reg_write(UC_ARM_REG_SP, S.M7_HEAP_END + 0x1260)   # on the M7 main stack (1.6.1: 0x2404A000)
         b.reg_write(UC_ARM_REG_LR, SENT | 1)
-        b.emu_start(0x08065600 | 1, SENT, count=200000)
+        b.emu_start(S.MSG_SEND | 1, SENT, count=200000)
         msp = r32(b, RINGSTAT + 12)
-        self.assertTrue(0x24048DA0 <= msp < 0x2404A000, hex(msp))
+        self.assertTrue(S.M7_HEAP_END <= msp < S.M7_HEAP_END + 0x1260, hex(msp))
 
 LOG, PREV = "\\BENTO_DIAG.log", "\\BENTO_DIAG_prev.log"
 
@@ -426,7 +429,7 @@ class FatFsRig(unittest.TestCase):
 
     def setUp(self, previous=None):
         u = self.u = emu(DIAG)
-        w32(u, 0x3000004C, 0xC6000000); w32(u, 0x30000048, 0xC6200000)
+        w32(u, S.UI_BUMP_CUR, 0xC6000000); w32(u, S.UI_BUMP_END, 0xC6200000)   # addr-ok: harness heap
         self.fs = {} if previous is None else {LOG: previous}
         self.open = {}      # FIL address -> [path, position]
         self.writes = []    # (path, mode, bytes written in that open)
@@ -441,8 +444,8 @@ class FatFsRig(unittest.TestCase):
         def hook(uc, addr, size, _):
             r = lambda i: uc.reg_read(UC_ARM_REG_R0 + i)
             ret = None
-            if addr == 0x08101C78: ret = 0                       # original loop function: no-op
-            elif addr == 0x08120148:                              # f_open(fil, path, mode)
+            if addr == S.M4_BL_TARGET: ret = 0                       # original loop function: no-op
+            elif addr == S.FS_OPEN:                              # f_open(fil, path, mode)
                 path, mode = cstr(uc, r(1)), r(2)
                 if mode == 0x01:
                     ret = 0 if path in self.fs else 4             # FR_NO_FILE
@@ -452,10 +455,10 @@ class FatFsRig(unittest.TestCase):
                 if ret == 0:
                     self.open[r(0)] = [path, 0]
                     self.writes.append([path, mode, b""])
-            elif addr == 0x08120464:                              # f_read(fil, buf, n, &got)
+            elif addr == S.FS_READ:                              # f_read(fil, buf, n, &got)
                 f = self.open[r(0)]; data = self.fs[f[0]][f[1]:f[1] + r(2)]
                 uc.mem_write(r(1), data); w32(uc, r(3), len(data)); f[1] += len(data); ret = 0
-            elif addr == 0x08120604:                              # f_write(fil, buf, n, &done)
+            elif addr == S.FS_WRITE:                              # f_write(fil, buf, n, &done)
                 self.write_bufs.append(r(1))
                 f = self.open[r(0)]; data = bytes(uc.mem_read(r(1), r(2)))
                 # The real f_write: at a sector boundary with a sector or more left, the caller's
@@ -467,14 +470,14 @@ class FatFsRig(unittest.TestCase):
                         self.dma_unaligned.append((f[0], pos + head, src & 3))
                     data = data[:head] + bytes(uc.mem_read(src & ~3, run)) + data[head + run:]
                 self.fs[f[0]] += data; self.writes[-1][2] += data; w32(uc, r(3), len(data)); ret = 0
-            elif addr == 0x08120974: self.open.pop(r(0), None); ret = 0   # f_close
+            elif addr == S.FS_CLOSE: self.open.pop(r(0), None); ret = 0   # f_close
             if ret is not None:
                 uc.reg_write(UC_ARM_REG_R0, ret)
                 uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
-        for a in (0x08101C78, 0x08120148, 0x08120464, 0x08120604, 0x08120974):
+        for a in (S.M4_BL_TARGET, S.FS_OPEN, S.FS_READ, S.FS_WRITE, S.FS_CLOSE):
             u.hook_add(UC_HOOK_CODE, hook, begin=a, end=a)
         if self.live:
-            w32(u, 0x3003D800, 0x54495257)               # opt into pre-v3.19 live card writes
+            w32(u, D2 + 0x1800, 0x54495257)               # opt into pre-v3.19 live card writes
 
     @property
     def files(self):
@@ -482,14 +485,14 @@ class FatFsRig(unittest.TestCase):
         return [w[2] for w in self.writes if w[0] == LOG and w[1] != 0x01]
 
     def tick(self, ms):
-        w32(self.u, 0x3001FE2C, ms)
+        w32(self.u, S.M4_TICK_MS, ms)
         call(self.u, SYM4["m4_tick"], 0, 0, limit=2000000)
 
-    def send(self, t, lr=0x0805D5A1):
-        ev = 0x24070000
+    def send(self, t, lr=0x0805D5A1):  # addr-ok: harness
+        ev = 0x24070000  # addr-ok: harness
         self.u.mem_write(ev, bytes([t, 0, 0, 0]) + struct.pack("<5I", 0, 1, 2, 60, 100))
         self.u.reg_write(UC_ARM_REG_R2, lr)
-        call(self.u, SYM7["h_send"], 0x24060000, ev, lr)
+        call(self.u, SYM7["h_send"], 0x24060000, ev, lr)  # addr-ok: harness
 
 class M4EndToEnd(FatFsRig):
     """Live card writing opted in (the pre-v3.19 path). BootOnlyWrites covers what ships."""
@@ -498,7 +501,7 @@ class M4EndToEnd(FatFsRig):
     def test_flow(self):
         self.tick(1000)                                  # first call: init + allocate
         self.assertEqual(r32(self.u, M4H), MAGIC)
-        self.assertEqual(r32(self.u, M4H + 12), 0xC6000000, "buffer from the native allocator")
+        self.assertEqual(r32(self.u, M4H + 12), S.EXT_POOL_END, "buffer from the native allocator")
         self.send(0x5B); self.send(0x5C)
         self.tick(1100)                                  # drains, but pads not idle yet
         self.assertEqual(self.files, [])
@@ -509,7 +512,7 @@ class M4EndToEnd(FatFsRig):
         self.assertRegex(text, r"at boot \(after the black box's own buffers\): \| ram bump cur=[0-9a-f]{8} end=[0-9a-f]{8} free=\d+")
         self.assertRegex(text, r"\n# .* \| ram bump cur=[0-9a-f]{8} end=[0-9a-f]{8} free=\d+")
         self.assertRegex(text, r"\n# .* d2 canary changed=0\b", "canary armed at boot, untouched since")
-        self.assertEqual(r32(self.u, 0x3003CA00), 0x59524E43, "canary magic")
+        self.assertEqual(r32(self.u, D2 + 0xA00), 0x59524E43, "canary magic")
         self.assertIn("# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0"
                       " | midi ring max_fill=0 overflows=0 | m7 stack min_msp=", text)
         self.assertEqual(text.count(" SEND "), 2)
@@ -549,7 +552,7 @@ class M4EndToEnd(FatFsRig):
         self.assertEqual(self.fs[LOG], first + self.files[1], "file = first write + appended text")
 
     def test_crash_record_in_header(self):
-        for i, v in {24: 3, 25: 5, 31: 0x080DA2B1, 27: 2, 8: 0x2404CC00}.items():
+        for i, v in {24: 3, 25: 5, 31: 0x080DA2B1, 27: 2, 8: 0x2404CC00}.items():  # addr-ok: harness
             w32(self.u, RTC_BKP + 4 * i, v)
         self.tick(1000); self.send(0x5B); self.tick(1100); self.tick(2700)   # drain, then idle-gated write
         text = self.files[0].decode()
@@ -568,7 +571,7 @@ class M4EndToEnd(FatFsRig):
 
     def test_new_crash_record_is_written_immediately(self):
         self.tick(1000)                                  # baseline: count 0
-        w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)
+        w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)  # addr-ok: harness
         self.tick(1050)                                  # no idle wait
         text = self.files[-1].decode()
         self.assertIn("!!! NEW CRASH RECORD at ms 1050", text)
@@ -581,7 +584,7 @@ class M4EndToEnd(FatFsRig):
         hist = "\\BENTO_CRASHES.log"
         self.fs[hist] = b"older history\r\n"
         w32(self.u, RTC_BKP + 4 * 24, 86); w32(self.u, RTC_BKP + 4 * 25, 5)
-        w32(self.u, RTC_BKP + 4 * 31, 0x08122BC4); w32(self.u, RTC_BKP + 4 * 27, 1)
+        w32(self.u, RTC_BKP + 4 * 31, 0x08122BC4); w32(self.u, RTC_BKP + 4 * 27, 1)  # addr-ok: harness
         self.tick(1000)
         self.assertEqual(self.fs[hist], b"older history\r\n", "not before the card is in use")
         self.tick(2600)                                  # first log write of this boot
@@ -600,7 +603,7 @@ class M4EndToEnd(FatFsRig):
     def test_crash_history_live_crash_line(self):
         hist = "\\BENTO_CRASHES.log"
         self.tick(1000)
-        w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)
+        w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)  # addr-ok: harness
         self.tick(1050)
         lines = self.fs[hist].decode().splitlines()
         self.assertRegex(lines[-1], r"^live fw=BE[0-9.]+ rtc=\S+ gen=1 ms=1050 count=1")
@@ -610,7 +613,7 @@ class M4EndToEnd(FatFsRig):
     S5, S7 = 0x40020488, 0x400204B8
 
     def stream(self, base, cr=1, ndtr=100, par=0x40015820):
-        for i, v in enumerate((cr, ndtr, par, 0x30000000, 0x30001000, 0x21)):
+        for i, v in enumerate((cr, ndtr, par, 0x30000000, 0x30001000, 0x21)):  # addr-ok: harness
             w32(self.u, base + 4 * i, v)
 
     def test_running_audio_dma_raises_nothing(self):
@@ -683,12 +686,12 @@ class M4EndToEnd(FatFsRig):
         w32(self.u, 0x40020404, 0x00200000)              # HISR: S7 half-transfer flag set
         self.m7("stall_progress", 1000)
         self.m7("stall_check", 1000 + 99 * 480000)       # 99 ms: not yet
-        self.assertNotEqual(r32(self.u, 0x3003C0A0), 0x38544C53)
+        self.assertNotEqual(r32(self.u, D2 + 0xA0), 0x38544C53)
         self.m7("stall_check", 1000 + 101 * 480000)      # 101 ms: snapshot
-        self.assertEqual(r32(self.u, 0x3003C0A0), 0x38544C53)
+        self.assertEqual(r32(self.u, D2 + 0xA0), 0x38544C53)
         w32(self.u, 0x40020404, 0)
         self.m7("stall_check", 1000 + 200 * 480000)      # once per boot
-        self.assertEqual(r32(self.u, 0x3003C0A0 + 4 * 15), 0x00200000, "first snapshot kept (hisr)")
+        self.assertEqual(r32(self.u, D2 + 0xA0 + 4 * 15), 0x00200000, "first snapshot kept (hisr)")
         self.tick(50); self.tick(1700)                   # watchdog reset, next boot
         boot = self.files[-1].decode()
         self.assertIn("M7 audio stall record (from RAM): gen 1, no audio progress for 101 ms", boot)
@@ -701,10 +704,10 @@ class M4EndToEnd(FatFsRig):
     def test_stall_profile_printed_next_boot_once(self):
         self.tick(1000)                                  # M4 publishes boot gen 1
         self.m7("stall_progress", 1000)                  # armed
-        frame = struct.pack("<8I", 0, 1, 2, 3, 12, 0x08055551, 0x0809ABCC, 0x01000000) + bytes(160)
+        frame = struct.pack("<8I", 0, 1, 2, 3, 12, 0x08055551, 0x0809ABCC, 0x01000000) + bytes(160)  # addr-ok: harness
         for _ in range(320):                             # 320 ms without audio progress
             self.u.mem_write(STACK, frame)
-            call(self.u, 0x0804BD40)
+            call(self.u, S.SYSTICK_HANDLER)
         self.tick(50); self.tick(1700)                   # watchdog reset, next boot
         boot = self.files[-1].decode()
         self.assertIn("M7 stall profile (from RAM): gen 1, stall #1 of that boot, idle 319 ms (SysTick)", boot)
@@ -718,13 +721,13 @@ class M4EndToEnd(FatFsRig):
         self.m7("stall_progress", 0); self.m7("stall_check", 101 * 480000)
         self.tick(50); self.tick(1700)                   # gen 2
         self.m7("stall_progress", 0)
-        self.assertEqual(r32(self.u, 0x3003C08C), 0, "snapped flag reset for the new boot")
+        self.assertEqual(r32(self.u, D2 + 0x8C), 0, "snapped flag reset for the new boot")
 
     def test_heartbeat_stall_is_reported(self):
         self.tick(1000)
         self.send(0x5B)                                  # M7 side live
         for _ in range(5):
-            call(self.u, 0x080655A0, 0x24060000, 0, 0x24070100)
+            call(self.u, S.H_CONSUME_SITE, 0x24060000, 0, 0x24070100)  # addr-ok: harness
         self.tick(1100)                                  # heartbeat seen moving
         self.tick(3000)                                  # 1.9 s quiet: not yet
         self.assertFalse(any(b"HEARTBEAT" in f for f in self.files))
@@ -762,9 +765,9 @@ class M4EndToEnd(FatFsRig):
 class ReadinessDiagnostics(FatFsRig):
     """D0 (v3.64): render load on the M7, stock's counters, canaries over the ports' RAM."""
     live = False
-    D0A, D0C, D0L = 0x3003C9A0, 0x3003CFC0, 0x3003CFE0
-    OBJ = 0x100451BC
-    BLOCKS = ((0x2404CDC0, 0x24050000), (0x30039100, 0x3003C000), (0x3003E000, 0x30040000))
+    D0A, D0C, D0L = D2 + 0x9A0, D2 + 0xFC0, D2 + 0xFE0
+    OBJ = S.LOAD_RING
+    BLOCKS = ((S.RAMCHK_AXI, S.RAMCHK_AXI_END), (S.RAMCHK_D2A, S.D2_SLICE), (S.RAMCHK_D2B, S.D2_SLICE_END))
 
     def hb(self, n=256):
         """h_consume reaching the n-th heartbeat, as the audio loop would."""
@@ -776,7 +779,7 @@ class ReadinessDiagnostics(FatFsRig):
         call(self.u, SYM7["diag_put"], 1, 0, 0, 0, 0)     # first call this boot: resets the M7 side
 
     def heap(self, *chunks, next_last=0):
-        w32(self.u, 0x24000178, chunks[0][0] if chunks else 0)
+        w32(self.u, S.M7_HEAP_FREELIST, chunks[0][0] if chunks else 0)
         for i, (a, size) in enumerate(chunks):
             w32(self.u, a, chunks[i + 1][0] if i + 1 < len(chunks) else next_last)
             w32(self.u, a + 4, size)
@@ -802,11 +805,11 @@ class ReadinessDiagnostics(FatFsRig):
 
     def test_m7_publishes_on_the_256th_heartbeat_only(self):
         self.m7_ready()
-        for a, v in ((0x2401D9D8, 900), (0x2401D9D8 + 0xC, 55), (0x2401D9F8 + 0xC, 1), (0x2401D9F8 + 0x10, 3), (0x2401D9F8 + 8, 0x700),
-                     (0x2401D9F8 + 0x14, 4), (0x2401D9F8 + 0x18, 20000), (0x2401D9F8 + 0x1C, 8), (0x2401D33C, 1802),
-                     (0x2401B0B8, 131040), (0x24000448, 100288), (0x24000160, 5), (0x2400016C, 6)):
+        for a, v in ((S.AUDIO_BLOCK_STATS, 900), (S.AUDIO_BLOCK_STATS + 0xC, 55), (S.AUDIO_GAP_STATS + 0xC, 1), (S.AUDIO_GAP_STATS + 0x10, 3), (S.AUDIO_GAP_STATS + 8, 0x700),
+                     (S.AUDIO_GAP_STATS + 0x14, 4), (S.AUDIO_GAP_STATS + 0x18, 20000), (S.AUDIO_GAP_STATS + 0x1C, 8), (S.AUDIO_DMA_EVENTS, 1802),
+                     (S.DTCM_USED, 131040), (S.AXI_USED, 100288), (S.POOL_LEFT_RAM, 5), (S.SHARED_POOL_LEFT, 6)):
             w32(self.u, a, v)
-        self.heap((0x24030000, 37000), (0x24040000, 776))
+        self.heap((0x24030000, 37000), (0x24040000, 776))  # addr-ok: harness
         self.hb(255)
         self.assertEqual(r32(self.u, self.D0A), 0, "not on other heartbeats")
         self.hb(256)
@@ -825,30 +828,30 @@ class ReadinessDiagnostics(FatFsRig):
     def test_seq_timer_is_summed_peaked_and_cleared_per_stretch(self):
         """v3.69 Stage 0: stock's per-track pass timer, once per block, read only."""
         self.ready()
-        before = bytes(self.u.mem_read(0x2401D678, 0x14))
-        w32(self.u, 0x2401D678 + 4, 25600); self.block(0.5)
-        w32(self.u, 0x2401D678 + 4, 76800); self.block(0.5)
-        w32(self.u, 0x2401D678 + 4, 25600); self.block(0.5)
-        after = bytes(self.u.mem_read(0x2401D678, 0x14))
+        before = bytes(self.u.mem_read(S.PASS_TIMER, 0x14))
+        w32(self.u, S.PASS_TIMER + 4, 25600); self.block(0.5)
+        w32(self.u, S.PASS_TIMER + 4, 76800); self.block(0.5)
+        w32(self.u, S.PASS_TIMER + 4, 25600); self.block(0.5)
+        after = bytes(self.u.mem_read(S.PASS_TIMER, 0x14))
         self.assertEqual(after[:4] + after[8:], before[:4] + before[8:], "stock's timer block is never written")
-        self.assertEqual(struct.unpack("<3I", self.u.mem_read(0x3003CF20, 12))[:3], (100 + 300 + 100, 3, 76800))
+        self.assertEqual(struct.unpack("<3I", self.u.mem_read(D2 + 0xF20, 12))[:3], (100 + 300 + 100, 3, 76800))
         self.hb()
         f = self.seq_fields(self.save_text())
         self.assertEqual(f[:3], (500, 3, 76800), "sum >> 8, blocks, peak reach the save line")
-        w32(self.u, 0x2401D678 + 4, 2560); self.hb(); self.save_text(); self.hb(); self.block(0.5)
-        q = struct.unpack("<3I", self.u.mem_read(0x3003CF20, 12))
+        w32(self.u, S.PASS_TIMER + 4, 2560); self.hb(); self.save_text(); self.hb(); self.block(0.5)
+        q = struct.unpack("<3I", self.u.mem_read(D2 + 0xF20, 12))
         self.assertEqual(q, (10, 1, 2560), "a save starts a new stretch")
 
     def test_probe_runs_rarely_touches_only_its_own_lines_and_restores_interrupts(self):
         self.ready()
-        BLOCK, FREE = 0xC6100000, 0xC5FF0000
+        BLOCK, FREE = 0xC6100000, S.PROBE_SCRATCH  # addr-ok: harness
         for a in (BLOCK, FREE):
             try: self.u.mem_map(a, 0x10000)
             except Exception: pass
-        w32(self.u, 0x3003D820 + 4, BLOCK)                 # CAPCFG->block
+        w32(self.u, D2 + 0x1820 + 4, BLOCK)                 # CAPCFG->block
         self.u.mem_write(FREE, bytes([0xA5]) * 256); self.u.mem_write(BLOCK, b"Z" * 256)
         self.hb(256)
-        self.assertEqual(r32(self.u, 0x3003CF20 + 20), 0, "no price check on an ordinary publish")
+        self.assertEqual(r32(self.u, D2 + 0xF20 + 20), 0, "no price check on an ordinary publish")
         reads, writes, cci = [], [], []
         def acc(uc, kind, a, n, v, _):
             if 0xC0000000 <= a < 0xD0000000: (writes if kind == UC_MEM_WRITE else reads).append(a)
@@ -856,18 +859,18 @@ class ReadinessDiagnostics(FatFsRig):
         h = self.u.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, acc)
         self.hb(0x4000)
         self.u.hook_del(h)
-        self.assertEqual(r32(self.u, 0x3003CF20 + 20), 1, "one price check at the 0x4000th heartbeat")
+        self.assertEqual(r32(self.u, D2 + 0xF20 + 20), 1, "one price check at the 0x4000th heartbeat")
         self.assertEqual(self.u.reg_read(UC_ARM_REG_PRIMASK), 0, "interrupts back on")
         self.assertEqual(writes, [], "read only in SDRAM")
         self.assertEqual(sorted(cci), [FREE + i * 32 for i in range(8)], "maintenance only on the free lines")
         self.assertEqual(sorted(reads), sorted([BLOCK + i * 32 for i in range(8)] + [FREE + i * 32 for i in range(8)]))
         self.assertEqual(bytes(self.u.mem_read(FREE, 256)), bytes([0xA5]) * 256)
         self.assertLessEqual(FREE + 8 * 32, self.REGION, "its lines end below the region, which is reserved from here up")
-        w32(self.u, 0x3003D820 + 4, 0x08000000)            # a nonsense address is not followed
+        w32(self.u, D2 + 0x1820 + 4, 0x08000000)            # a nonsense address is not followed
         self.hb(0x8000)
-        self.assertEqual(r32(self.u, 0x3003CF20 + 20), 1)
+        self.assertEqual(r32(self.u, D2 + 0xF20 + 20), 1)
 
-    REGION = 0xC5FFC000
+    REGION = S.REGION
 
     def test_publish_cleans_exactly_the_region_lines_the_m4_reads(self):
         """v3.70: the region is write-back on the M7, and the M4 has no way to see a dirty line."""
@@ -888,25 +891,25 @@ class ReadinessDiagnostics(FatFsRig):
         """The bisect twin has only the trace hooks in stock's path. If one of them reached a region
         consumer the baseline would reserve and zero, and no longer be stock's behaviour."""
         writes = []
-        h = self.u.hook_add(UC_HOOK_MEM_WRITE, lambda uc, k, a, n, v, _: writes.append(a), begin=0xC5FF0000, end=0xC5FFFFFF)
+        h = self.u.hook_add(UC_HOOK_MEM_WRITE, lambda uc, k, a, n, v, _: writes.append(a), begin=S.PROBE_SCRATCH, end=S.EXT_POOL_END - 1)
         self.u.ctl_flush_tb()
         self.ready()                                       # its publish runs h_consume too
-        self.assertEqual((r32(self.u, 0x3003C1E0), r32(self.u, 0x3003C1E0 + 4)), (MAGIC, self.REGION), "the state could come up")
-        ev, obj = 0x24070000, 0x24071000
+        self.assertEqual((r32(self.u, D2 + 0x1E0), r32(self.u, D2 + 0x1E0 + 4)), (MAGIC, self.REGION), "the state could come up")
+        ev, obj = 0x24070000, 0x24071000  # addr-ok: harness
         for t in (0x5B, 0x5C, 0x0E, 0x5F, 0xAC, 0xAD, 0xAE):
             self.u.mem_write(ev, struct.pack("<6I", t, 0, 1, 2, 60, 100))
             call(self.u, SYM7["h_input"], obj, ev)
-            call(self.u, SYM7["h_send"], 0x24060000, ev, SENT | 1)
+            call(self.u, SYM7["h_send"], 0x24060000, ev, SENT | 1)  # addr-ok: harness
             call(self.u, SYM7["h_ring"], obj, ev)
         self.hb(256); self.hb(0x4000)
         self.u.hook_del(h)
-        self.assertEqual(r32(self.u, 0x3003CF20 + 20), 1, "the probe ran")
-        self.assertEqual(struct.unpack("<2I", self.u.mem_read(0x24000160, 8)), (3405824, 0xC6000000 - 3405824), "pool counters as stock's startup left them")
+        self.assertEqual(r32(self.u, D2 + 0xF20 + 20), 1, "the probe ran")
+        self.assertEqual(struct.unpack("<2I", self.u.mem_read(S.POOL_LEFT_RAM, 8)), (3405824, S.EXT_POOL_END - 3405824), "pool counters as stock's startup left them")
         self.assertEqual(writes, [], "nothing written at or above the probe's lines")
 
     def test_m4_prints_the_stats_at_the_fixed_address(self):
         self.ready()
-        self.assertEqual(r32(self.u, 0x3003C1E0 + 4), self.REGION, "published by the M4")
+        self.assertEqual(r32(self.u, D2 + 0x1E0 + 4), self.REGION, "published by the M4")
         stats = (11, 22, 33, 44, 0xDDDD, 55, 66, 0x77, 0x88, 0x99, 170)    # +32..+75; +48 is midi_q, not printed
         self.u.mem_write(self.REGION + 32, struct.pack("<11I", *stats))
         text = self.save_text()
@@ -915,11 +918,11 @@ class ReadinessDiagnostics(FatFsRig):
 
     def test_m4_follows_no_other_region_pointer(self):
         self.ready()
-        for other in (0xC6100000, self.REGION + 32, self.REGION - 32, 0):
+        for other in (0xC6100000, self.REGION + 32, self.REGION - 32, 0):  # addr-ok: harness
             self.fs.clear()
-            w32(self.u, 0x3003C1E0 + 4, other)
+            w32(self.u, D2 + 0x1E0 + 4, other)
             self.assertNotIn("curves started=", self.save_text(), hex(other))
-        w32(self.u, 0x3003C1E0 + 4, self.REGION)
+        w32(self.u, D2 + 0x1E0 + 4, self.REGION)
         self.fs.clear()
         self.assertIn("curves started=", self.save_text())
 
@@ -938,39 +941,39 @@ class ReadinessDiagnostics(FatFsRig):
     def test_m4_pool_holds_only_its_own_allocations(self):
         self.tick(1000)
         buf = r32(self.u, M4H + 12)
-        self.assertEqual(buf, 0xC6000000)
-        self.assertEqual(r32(self.u, 0x3003D820 + 4), buf + 0x40000, "the capture block follows the log buffer: no 12 KB between")
+        self.assertEqual(buf, S.EXT_POOL_END)
+        self.assertEqual(r32(self.u, D2 + 0x1820 + 4), buf + 0x40000, "the capture block follows the log buffer: no 12 KB between")
 
     def test_m4_preflight_no_longer_counts_the_region(self):
         for room, ok in ((0x40000 + 33792 + 64, True), (0x40000 + 33792 + 63, False)):
             self.setUp()
-            w32(self.u, 0x30000048, 0xC6000000 + room)
+            w32(self.u, S.UI_BUMP_END, S.EXT_POOL_END + room)
             self.tick(1000)
-            self.assertEqual(r32(self.u, M4H + 12) == 0xC6000000, ok, room)
-            self.assertEqual(r32(self.u, 0x3003C1E0 + 4), self.REGION, "the region doesn't depend on the M4's pool")
+            self.assertEqual(r32(self.u, M4H + 12) == S.EXT_POOL_END, ok, room)
+            self.assertEqual(r32(self.u, D2 + 0x1E0 + 4), self.REGION, "the region doesn't depend on the M4's pool")
 
     def test_head_min_goes_negative_once_late(self):
         self.ready()
-        w32(self.u, 0x2401D9D8 + 4, 2); w32(self.u, 0x2401D9D8 + 0x18, 0xFFFFFF00); w32(self.u, 0x2401D9D8 + 0xC, 55)
+        w32(self.u, S.AUDIO_BLOCK_STATS + 4, 2); w32(self.u, S.AUDIO_BLOCK_STATS + 0x18, 0xFFFFFF00); w32(self.u, S.AUDIO_BLOCK_STATS + 0xC, 55)
         self.hb()
         self.assertEqual(r32(self.u, self.D0A + 48), 0xFFFFFF00)
         self.assertIn("wrong_half=2 head_min=-256 ", self.save_text())
 
     def test_heap_minimum_is_kept(self):
         self.m7_ready()
-        self.heap((0x24030000, 1000)); self.hb()
-        self.heap((0x24030000, 400)); self.hb()
-        self.heap((0x24030000, 900)); self.hb()
+        self.heap((0x24030000, 1000)); self.hb()  # addr-ok: harness
+        self.heap((0x24030000, 400)); self.hb()  # addr-ok: harness
+        self.heap((0x24030000, 900)); self.hb()  # addr-ok: harness
         self.assertEqual(r32(self.u, self.D0A + 8), 900)
         self.assertEqual(r32(self.u, self.D0A + 12), 400)
 
     def test_corrupt_free_list_cannot_fault(self):
         self.m7_ready()
-        for bad_next in (0xDEADBEEF, 0x24048DA0, 0x24030001, 0x08000000):
-            self.heap((0x24030000, 1000), next_last=bad_next); self.hb()
+        for bad_next in (0xDEADBEEF, S.M7_HEAP_END, 0x24030001, 0x08000000):  # addr-ok: harness
+            self.heap((0x24030000, 1000), next_last=bad_next); self.hb()  # addr-ok: harness
             self.assertEqual(r32(self.u, self.D0A + 24), 1, hex(bad_next))
             self.assertEqual(r32(self.u, self.D0A + 12), 0xFFFFFFFF, "a bad walk never moves the minimum")
-        w32(self.u, 0x24030000, 0x24030000)               # a loop ends at the chunk limit
+        w32(self.u, 0x24030000, 0x24030000)               # a loop ends at the chunk limit (addr-ok: harness)
         self.hb()
         self.assertEqual(r32(self.u, self.D0A + 24), 1)
 
@@ -1032,11 +1035,11 @@ class ReadinessDiagnostics(FatFsRig):
 
     def test_a_warm_reset_leaves_the_previous_run_for_the_boot_print(self):
         self.ready()
-        w32(self.u, 0x2401D9D8, 900); w32(self.u, 0x2401D9D8 + 4, 7); w32(self.u, 0x2401D9D8 + 0x18, 0xFFFFFF00)
+        w32(self.u, S.AUDIO_BLOCK_STATS, 900); w32(self.u, S.AUDIO_BLOCK_STATS + 4, 7); w32(self.u, S.AUDIO_BLOCK_STATS + 0x18, 0xFFFFFF00)
         self.block(0.5); self.hb()
-        for a in (0x2401D9D8, 0x2401D9D8 + 4, 0x2401D9D8 + 0x18):   # stock's BSS is zero after the reset
+        for a in (S.AUDIO_BLOCK_STATS, S.AUDIO_BLOCK_STATS + 4, S.AUDIO_BLOCK_STATS + 0x18):   # stock's BSS is zero after the reset
             w32(self.u, a, 0)
-        w32(self.u, 0x2401D9D8, 4)
+        w32(self.u, S.AUDIO_BLOCK_STATS, 4)
         self.block(0.25); self.hb()                      # the engine runs before the M4's first pass
         w32(self.u, M4H, 0)
         self.tick(2000)
@@ -1046,8 +1049,8 @@ class ReadinessDiagnostics(FatFsRig):
 
     def test_new_boot_clears_it_once_the_generation_moves(self):
         self.ready()
-        w32(self.u, 0x2401D9D8, 900); self.block(0.5); self.hb()
-        w32(self.u, 0x2401D9D8, 4)
+        w32(self.u, S.AUDIO_BLOCK_STATS, 900); self.block(0.5); self.hb()
+        w32(self.u, S.AUDIO_BLOCK_STATS, 4)
         self.tick(500)                                   # a reset (the tick went back): the M4 prints it, then a new generation
         call(self.u, SYM7["diag_put"], 1, 0, 0, 0, 0)    # first post moves GEN
         self.hb()
@@ -1073,11 +1076,11 @@ class ReadinessDiagnostics(FatFsRig):
 
     def test_link_figures_reach_the_log(self):
         self.ready()
-        L, S = 0x2401D830, 0x2401E1B8
-        for a, v in ((L + 0x194, 5000), (L + 0x19C, 3), (L + 0x190, 5100), (0x24000450, 3)):
+        L, SPI = S.CTRL_LINK, S.SPI1_HANDLE
+        for a, v in ((L + 0x194, 5000), (L + 0x19C, 3), (L + 0x190, 5100), (S.LINK_REBOOTS, 3)):
             w32(self.u, a, v)
         self.u.mem_write(L + 0x1A2, struct.pack("<H", 1))
-        self.u.mem_write(S + 0x81, bytes([5])); self.u.mem_write(0x2401D070, bytes([3]))
+        self.u.mem_write(SPI + 0x81, bytes([5])); self.u.mem_write(S.PANEL_TYPE, bytes([3]))
         self.hb()
         w32(self.u, L + 0x194, 10); self.hb()             # a link restart zeroes the counters
         text = self.save_text()
@@ -1086,14 +1089,14 @@ class ReadinessDiagnostics(FatFsRig):
     def test_controller_boots_and_frame_changes_are_counted(self):
         self.ready()
         for booted, crc in ((1, 7), (1, 7), (0, 8), (0, 8), (1, 9)):
-            self.u.mem_write(0x2401D0AA, struct.pack("<H", booted)); w32(self.u, 0x2401D0B4, crc); self.block(0.1)
+            self.u.mem_write(S.PANEL_BOOTED, struct.pack("<H", booted)); w32(self.u, S.PANEL_CRC, crc); self.block(0.1)
         self.assertIn(" fw_boots=2 crc_changes=3 ", self.save_text_published())
 
     def test_button_changes_are_counted_every_block(self):
         self.ready()
-        self.u.mem_write(0x2401D078, struct.pack("<H", 0x0002)); self.block(0.1)
-        self.u.mem_write(0x2401D078, struct.pack("<H", 0x0000)); self.block(0.1)
-        self.u.mem_write(0x2401D078, struct.pack("<H", 0x0001)); self.block(0.1)
+        self.u.mem_write(S.PANEL_BUTTONS, struct.pack("<H", 0x0002)); self.block(0.1)
+        self.u.mem_write(S.PANEL_BUTTONS, struct.pack("<H", 0x0000)); self.block(0.1)
+        self.u.mem_write(S.PANEL_BUTTONS, struct.pack("<H", 0x0001)); self.block(0.1)
         self.block(0.1)
         self.assertIn("btn_changes=3 btn_or=0003 btn_now=0001", self.save_text_published())
 
@@ -1144,17 +1147,17 @@ class ReadinessDiagnostics(FatFsRig):
             self.assertEqual(r32(self.u, lo), 0x32524E43, hex(lo))
             self.assertNotEqual(r32(self.u, hi - 4), 0, "filled to the top")
         self.assertIn("RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0", self.save_text())
-        w32(self.u, 0x30039200, 1); w32(self.u, 0x3003BFFC, 1)
-        self.assertIn("d2a changed=2 low=30039200 high=3003bffc", self.save_text())
+        w32(self.u, S.RAMCHK_D2A + 0x100, 1); w32(self.u, S.D2_SLICE - 4, 1)
+        self.assertIn(f"d2a changed=2 low={S.RAMCHK_D2A + 0x100:08x} high={S.D2_SLICE - 4:08x}", self.save_text())
         w32(self.u, M4H, 0)                               # a reset: the fill isn't redone
         self.tick(2000)
-        self.assertEqual(r32(self.u, 0x30039200), 1, "no re-fill hides what happened")
+        self.assertEqual(r32(self.u, S.RAMCHK_D2A + 0x100), 1, "no re-fill hides what happened")
 
     def test_ranges_stay_clear_of_their_neighbours(self):
-        for a in (0x2404CDBC, 0x24050000, 0x300390FC, 0x3003C000, 0x3003DFFC, 0x30040000, 0x3003CFC0, 0x3003CFFC):
+        for a in (S.RAMCHK_AXI - 4, S.RAMCHK_AXI_END, S.RAMCHK_D2A - 4, D2, D2 + 0x1FFC, S.D2_SLICE_END, D2 + 0xFC0, D2 + 0xFFC):
             w32(self.u, a, 0x11223344)
         self.tick(1000)
-        for a in (0x2404CDBC, 0x24050000, 0x300390FC, 0x3003DFFC, 0x30040000, 0x3003CFC0, 0x3003CFFC):
+        for a in (S.RAMCHK_AXI - 4, S.RAMCHK_AXI_END, S.RAMCHK_D2A - 4, D2 + 0x1FFC, S.D2_SLICE_END, D2 + 0xFC0, D2 + 0xFFC):
             self.assertEqual(r32(self.u, a), 0x11223344, hex(a))
 
 
@@ -1166,52 +1169,62 @@ class BaseFirmwareChecks(unittest.TestCase):
         import build
         cls.b = build
 
+    PLANT = BASE + S.size - 0xBC   # a word near the end of stock's image that no check looks at (1.6.1: 0x081B3E80)
+
     def refused(self, addr, data, want):
         img = bytearray(CH10)
-        img[addr - self.b.BASE:addr - self.b.BASE + len(data)] = data
+        img[addr - BASE:addr - BASE + len(data)] = data
         with self.assertRaises(SystemExit) as ctx:
-            self.b.check_region_assumptions(img)
+            self.b.check_region_assumptions(img, S)
         self.assertIn(want, str(ctx.exception))
 
     def test_stock_passes(self):
-        self.b.check_region_assumptions(CH10)
+        self.b.check_region_assumptions(CH10, S)
 
     def test_changed_pool_start_is_refused(self):
-        self.refused(self.b.POOL_INIT_FLASH, struct.pack("<I", 0x04000000), "starting values")
-        self.refused(self.b.POOL_INIT_FLASH + 4, struct.pack("<I", 0xC2000000), "starting values")
+        self.refused(S.POOL_INIT_FLASH, struct.pack("<I", 0x04000000), "starting values")
+        self.refused(S.POOL_INIT_FLASH + 4, struct.pack("<I", 0xC2000000), "starting values")   # addr-ok: a changed value
 
     def test_changed_allocator_is_refused(self):
-        self.refused(self.b.ALLOC_BUMP + 8, bytes(2), "allocator")
+        self.refused(S.ALLOC_BUMP + 8, bytes(2), "allocator")
 
     def test_new_user_of_the_counters_is_refused(self):
-        self.refused(0x081B3E80, struct.pack("<I", self.b.POOL_LEFT_RAM), "counters")
-        self.refused(0x081B3E80, struct.pack("<I", self.b.POOL_CUR_RAM), "counters")
+        self.refused(self.PLANT, struct.pack("<I", S.POOL_LEFT_RAM), "counters")
+        self.refused(self.PLANT, struct.pack("<I", S.POOL_CUR_RAM), "counters")
 
     def test_changed_mpu_setup_is_refused(self):
-        self.refused(self.b.MPU_SETUP[1] - 4, bytes(4), "MPU")
+        self.refused(S.MPU_SETUP_END - 4, bytes(4), "MPU")
 
     def test_a_pointer_into_the_reserved_range_is_refused(self):
-        self.refused(0x081B3E80, struct.pack("<I", 0xC5FFC000), "literal")
-        self.refused(0x081B3E80, struct.pack("<I", 0xC5FFFFFC), "literal")
+        self.refused(self.PLANT, struct.pack("<I", S.REGION), "literal")
+        self.refused(self.PLANT, struct.pack("<I", S.EXT_POOL_END - 4), "literal")
 
     def test_movt_into_the_reserved_range_is_refused(self):
-        self.refused(0x081B3E82, bytes.fromhex("ccf2ff50"), "movt")     # movt r0, #0xC5FF
+        self.refused(self.PLANT + 2, movt(0, S.REGION >> 16), "movt")       # movt r0, #(top half of the Region)
 
     def test_the_pool_end_word_itself_is_fine(self):
-        self.assertGreaterEqual(CH10.count(struct.pack("<I", 0xC6000000)), 1)   # stock's own, not in the range
-        self.b.check_region_assumptions(CH10)
+        self.assertGreaterEqual(CH10.count(struct.pack("<I", S.EXT_POOL_END)), 1)   # stock's own, not in the range
+        self.b.check_region_assumptions(CH10, S)
+
+def movt(rd, imm16):
+    """Thumb-2 MOVT rd, #imm16 (encoding T1), as bytes."""
+    hw1 = 0xF2C0 | ((imm16 >> 11) & 1) << 10 | (imm16 >> 12) & 0xF
+    hw2 = ((imm16 >> 8) & 7) << 12 | rd << 8 | imm16 & 0xFF
+    return struct.pack("<HH", hw1, hw2)
+
+assert movt(0, 0xC5FF) == bytes.fromhex("ccf2ff50")   # the encoding check_region_assumptions decodes
 
 class ScanCost(unittest.TestCase):
     """v3.66: the region is SDRAM, which the M7 then read uncached. Scanning every slot on every
     playing track's block turned a clean SPACED into a crackling one (BE3.64). Cached since v3.70,
     but a read of a cold line is still an SDRAM access, so the count keeps its meaning."""
-    REGION = 0xC5FFC000
+    REGION = S.REGION
 
     def test_nothing_playing_costs_few_sdram_reads(self):
         u = emu(DIAG)
-        w32(u, 0x3003C1E0, MAGIC); w32(u, 0x3003C1E4, self.REGION); w32(u, 0x3003C1E8, 0x3000); w32(u, 0x3003C1EC, 7)
+        w32(u, D2 + 0x1E0, MAGIC); w32(u, D2 + 0x1E4, self.REGION); w32(u, D2 + 0x1E8, 0x3000); w32(u, D2 + 0x1EC, 7)
         call(u, SYM7["curve_emit"], 1, 0, 0, 128)        # first call zeroes the region
-        w32(u, self.REGION + 48, 0x24060000)             # midi_q: an External note has been seen
+        w32(u, self.REGION + 48, 0x24060000)             # midi_q: an External note has been seen (addr-ok: harness)
         reads = []
         u.hook_add(UC_HOOK_MEM_READ, lambda uc, acc, a, sz, v, _: reads.append(a), begin=self.REGION, end=self.REGION + 0x3000)
         u.ctl_flush_tb()                                 # code that already ran doesn't see a later hook
@@ -1220,10 +1233,10 @@ class ScanCost(unittest.TestCase):
 
     def test_slots_are_found_only_up_to_the_high_water_mark(self):
         u = emu(DIAG)
-        w32(u, 0x3003C1E0, MAGIC); w32(u, 0x3003C1E4, self.REGION); w32(u, 0x3003C1E8, 0x3000); w32(u, 0x3003C1EC, 7)
+        w32(u, D2 + 0x1E0, MAGIC); w32(u, D2 + 0x1E4, self.REGION); w32(u, D2 + 0x1E8, 0x3000); w32(u, D2 + 0x1EC, 7)
         call(u, SYM7["curve_emit"], 1, 0, 0, 128)
-        self.assertEqual(r32(u, 0x3003CF60), 0)
-        self.assertEqual(r32(u, 0x3003CF64), 0)
+        self.assertEqual(r32(u, D2 + 0xF60), 0)
+        self.assertEqual(r32(u, D2 + 0xF64), 0)
 
 
 class NoCardWrites(FatFsRig):
@@ -1254,12 +1267,12 @@ class NoCardWrites(FatFsRig):
 
     def sidecar_rig(self, samples):
         u = self.u
-        pool, table, lst = 0xC6180000, 0xC61C0000, 0xC61D0000
+        pool, table, lst = 0xC6180000, 0xC61C0000, 0xC61D0000  # addr-ok: harness
         u.mem_write(pool, struct.pack("<H", len(samples)) + bytes(samples))
         w32(u, table + 4, 0)
         u.mem_write(lst, struct.pack("<H", 1))
-        u.mem_write(0x3003D840, struct.pack("<14I", 0x31565243, 1, pool, 8, table, 2, 0, 0, lst, 1,
-                                            0, 0, 0, 0xC61E0000))       # wbuf: SDRAM write buffer
+        u.mem_write(D2 + 0x1840, struct.pack("<14I", 0x31565243, 1, pool, 8, table, 2, 0, 0, lst, 1,
+                                            0, 0, 0, 0xC61E0000))       # wbuf: SDRAM write buffer (addr-ok: harness)
 
     @staticmethod
     def decode(blob):
@@ -1278,8 +1291,8 @@ class NoCardWrites(FatFsRig):
         return ver, out
 
     def path(self, text):
-        self.u.mem_write(0x24070400, text.encode() + b"\0")
-        return 0x24070400
+        self.u.mem_write(0x24070400, text.encode() + b"\0")  # addr-ok: harness
+        return 0x24070400  # addr-ok: harness
 
     def test_sidecar_round_trip_next_to_project_xml(self):
         samples = [10, 10, 10, 12, 14, 15, 15, 50, 49, 48, 48, 48, 48, 0] * 80   # > one 4 KB buffer
@@ -1287,7 +1300,7 @@ class NoCardWrites(FatFsRig):
         # Run on a D2 stack like the real UI task (0x30037CF0..0x300390F0), so a buffer
         # on the stack would show up as a D2 address below.
         self.u.reg_write(UC_ARM_REG_R0, self.path(r"\Projects\X\project.xml"))
-        self.u.reg_write(UC_ARM_REG_SP, 0x30039000); self.u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        self.u.reg_write(UC_ARM_REG_SP, 0x30039000); self.u.reg_write(UC_ARM_REG_LR, SENT | 1)  # addr-ok: harness
         self.u.emu_start(SYM4["dump_after_save"] | 1, SENT, count=2000000)
         blob = self.fs[r"\Projects\X\curves.bnt"]
         ver, curves = self.decode(blob)
@@ -1299,7 +1312,7 @@ class NoCardWrites(FatFsRig):
         self.assertEqual(blob[-mods - 38:-mods - 32], b"TRKS" + struct.pack("<H", 16), "per-track AT settings trailer")
         self.assertEqual(blob[-mods:-mods + 8], b"MODS" + struct.pack("<HH", 8, 232), "External modulation chunk")
         self.assertLess(len(blob) - mods - 38, 8 + 4 + len(samples), "curves smaller than raw")
-        self.assertEqual(r32(self.u, 0x3003D840 + 36), 0, "save list cleared")
+        self.assertEqual(r32(self.u, D2 + 0x1840 + 36), 0, "save list cleared")
         self.assertIn("sidecar status=4 curves=1", self.fs["\BENTO_SAVES.log"].decode())
         d2 = [hex(b) for b in self.write_bufs if 0x30000000 <= b < 0x30080000 or b < 0x24000000]
         self.assertEqual(d2, [], "every f_write buffer must be DMA-reachable (not D2 SRAM / the M4 stack)")
@@ -1308,7 +1321,7 @@ class NoCardWrites(FatFsRig):
         self.tick(1000); self.sidecar_rig([1, 2, 3])
         call(self.u, SYM4["dump_after_save"], self.path(r"\Patches\P\patch.xml"))
         self.assertFalse(any(k.endswith("curves.bnt") for k in self.fs))
-        self.assertEqual(r32(self.u, 0x3003D840 + 36), 0, "save list cleared anyway")
+        self.assertEqual(r32(self.u, D2 + 0x1840 + 36), 0, "save list cleared anyway")
 
     def test_cold_boot_with_garbage_in_reserved_ram(self):
         """v3.25-v3.31 boot loop: init() printed the previous boot's counters, which
@@ -1317,7 +1330,7 @@ class NoCardWrites(FatFsRig):
         CFG, and every warm reset kept the same garbage."""
         for junk in (0xDEADBEE0, 0x00000004, 0xFFFFFFF0):
             self.setUp()
-            self.u.mem_write(0x3003C1E0, struct.pack("<8I", 0x5A5A5A5A, junk, 0x1234, 7, 9, junk, junk, junk))
+            self.u.mem_write(D2 + 0x1E0, struct.pack("<8I", 0x5A5A5A5A, junk, 0x1234, 7, 9, junk, junk, junk))
             self.tick(1000)                                   # first poll: init must not fault
             self.assertEqual(r32(self.u, M4H), MAGIC, "black box up")
 

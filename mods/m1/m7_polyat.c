@@ -34,7 +34,7 @@
 
 #define CYCCNT (*(volatile u32 *)0xE0001004u)
 #define DCIMVAC (*(volatile u32 *)0xE000EF5Cu)
-#define MSG_SEND(q, ev) ((void (*)(u32, const u32 *))(0x08065600u | 1u))((q), (ev))
+#define MSG_SEND(q, ev) ((void (*)(u32, const u32 *))(S_MSG_SEND | 1u))((q), (ev))
 #define DIAG_PUT(kind, lr, obj, ev, extra) diag_put((kind), (lr), (obj), (ev), (extra))
 
 #define CAP 6u                         /* M1.1 makes this a per-track setting (1..8) */
@@ -322,10 +322,10 @@ static void chan_pass(volatile Region *r, u32 now, u32 *on_port);
 static void note_body(u32 q, const u32 *ev, u32 track) {
     volatile Region *r = region();
     u32 type = ev[0] & 0xFF, note = ev[4] & 0x7F;
-    if (!r || (type != 0x5B && type != 0x5C)) { MSG_SEND(q, ev); return; }
-    volatile Voices *v = voices(r, track, type == 0x5B);
+    if (!r || (type != S_EV_MIDI_NOTE_ON && type != S_EV_MIDI_NOTE_OFF)) { MSG_SEND(q, ev); return; }
+    volatile Voices *v = voices(r, track, type == S_EV_MIDI_NOTE_ON);
     if (!v) { MSG_SEND(q, ev); return; }
-    if (type == 0x5B) {
+    if (type == S_EV_MIDI_NOTE_ON) {
         r->midi_q = q;                              /* M2-2: where curves go out */
         int i = find(v, note);
         if (i >= 0) {                              /* same note: retrigger the same voice */
@@ -380,7 +380,7 @@ static int take_token(volatile Region *r, u32 port, u32 now) {
 }
 
 static void post(volatile Region *r, u32 engine, volatile PEnt *e, u32 value, u32 now) {
-    u32 ev[6] = {0x5F, 0, e->port, e->ch, e->note, value};
+    u32 ev[6] = {S_EV_MIDI_POLY_AT, 0, e->port, e->ch, e->note, value};
     MSG_SEND(engine + 0x7C8u, ev);
     e->last = (u8)value;
     e->cyc = now;
@@ -426,7 +426,7 @@ static u32 at_mode(u32 port, u32 ch, u32 *how);
  * records it); Channel feeds the destination's aggregate, shared with recorded
  * curves on it; Poly as always. */
 static void poly_body(u32 track, const u32 *ev, u32 engine) {
-    if ((ev[0] & 0xFF) != 0x0E) return;
+    if ((ev[0] & 0xFF) != S_EV_VOICE_PRESSURE) return;
     volatile Region *r = region();
     if (!r) return;
     if (!*(volatile u8 *)(track + 0x86D1u)) return; /* MIDI out off: stock's own check */
@@ -468,7 +468,7 @@ static void poly_body(u32 track, const u32 *ev, u32 engine) {
  * values go out, within the per-port token budget shared with live pressure.
  * The pool (M4, SDRAM) is reached through CURVES, an M4-written D2 line. */
 #define FN7(a, t) ((t)((a) | 1u))
-#define TICK_TO_OFFSET 0x080A2200u
+#define TICK_TO_OFFSET S_TICK_TO_OFFSET
 typedef int (*offset_fn)(u32 clock, const u32 *tick64);
 
 static u32 curve_data(u32 handle, u32 *n) {
@@ -665,7 +665,7 @@ static void chan_pass(volatile Region *r, u32 now, u32 *on_port) {
         }
         on_port[c->port % PORTS]++;
         if (now - c->cyc < CURVE_MIN_GAP || !take_token(r, c->port, now)) continue;
-        u32 ev[6] = {0x60, 0, c->port, c->ch, want, 0};
+        u32 ev[6] = {S_EV_MIDI_CHAN_AT, 0, c->port, c->ch, want, 0};
         MSG_SEND(r->midi_q, ev);
         c->last = (u8)want; c->cyc = now;
         r->chan_sent++;
@@ -698,7 +698,7 @@ static void curve_send_pass(volatile Region *r, u32 now) {
             if (!best || age > best_age) { best = p; best_age = age; }
         }
         if (!best || !take_token(r, best->port, now)) return;
-        u32 ev[6] = {0x5F, 0, best->port, best->ch, best->note, best->want};
+        u32 ev[6] = {S_EV_MIDI_POLY_AT, 0, best->port, best->ch, best->note, best->want};
         MSG_SEND(r->midi_q, ev);
         best->last = best->want; best->cyc = now;
         r->curve_sent++;
@@ -750,13 +750,13 @@ static void curve_emit_body(u32 track, u32 clock, int start, int len) {
  * (curves and live pads), posted to every one of them. No MIDI budget: the
  * queue (64 entries per track per block) is drained every block; at most one
  * post per note per INT_GAP. */
-#define BUS_POST 0x0809ECA0u
+#define BUS_POST S_BUS_POST
 #define INT_GAP (4u * MS_CYC)
 #define KEY_TAG 0x10000u                 /* PEnt.track for a live internal note: key | tag */
 #define LIVE_STALE (300u * MS_CYC)       /* no update for this long: the pad was let go */
 
 static void int_post(volatile Region *r, u32 key, u32 note, u32 value) {
-    u32 ev[6] = {0x0E, 0, key, note & 0x7Fu, value & 0x7Fu, 0};
+    u32 ev[6] = {S_EV_VOICE_PRESSURE, 0, key, note & 0x7Fu, value & 0x7Fu, 0};
     FN7(BUS_POST, void (*)(u32, const u32 *))(r->bus, ev);
     r->int_sent++;
 }
@@ -823,8 +823,8 @@ static void int_pass(volatile Region *r, u32 now) {
  * External tracks pass on to their own handler (h_poly applies AT Out there). */
 static void live_body(u32 bus, const u32 *ev, u32 router) {
     volatile Region *r = region();
-    u32 idx = *(volatile u32 *)(router + 0x2C8u);
-    if (!r || idx >= 8u || *(volatile u32 *)(router + 0x2CCu + idx * 4u) == 0xFFFFFF00u) {
+    u32 idx = *(volatile u32 *)(router + S_ROUTER_SEL_TRACK);
+    if (!r || idx >= 8u || *(volatile u32 *)(router + S_ROUTER_PAD_KEYS + idx * 4u) == 0xFFFFFF00u) {
         FN7(BUS_POST, void (*)(u32, const u32 *))(bus, ev); return;
     }
     DCIMVAC = (u32)AT_DEST & ~31u; DCIMVAC = ((u32)AT_DEST + 32u) & ~31u;
@@ -839,7 +839,7 @@ static void live_body(u32 bus, const u32 *ev, u32 router) {
     e->chan = 1; e->pend = 0; e->pval = (u8)(ev[4] & 0x7Fu); e->cyc = now;
     if (!e->pval) {                                 /* released: drop it, then re-aggregate */
         int_chan(r, key, now, 1);
-        u32 ev0[6] = {0x0E, 0, key, note, 0, 0};    /* this voice may still ring: let it go */
+        u32 ev0[6] = {S_EV_VOICE_PRESSURE, 0, key, note, 0, 0};    /* this voice may still ring: let it go */
         FN7(BUS_POST, void (*)(u32, const u32 *))(bus, ev0);
         e->used = 0;
         return;

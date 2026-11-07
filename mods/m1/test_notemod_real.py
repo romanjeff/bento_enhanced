@@ -16,16 +16,19 @@ sys.path.insert(0, str(HERE.parent.parent / "tools" / "display_emulator"))
 import emu
 from unicorn import UcError, UC_HOOK_CODE
 from unicorn.arm_const import UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_LR
+from bases import from_build
+S = from_build(sys.argv[2], Path(sys.argv[1]).read_bytes())   # the base table this build was made from
+D2 = S.D2_SLICE                                                # our shared slice (per base)
 
 OUT = Path(sys.argv[2]); del sys.argv[1:3]
 IMAGE = str(OUT / "bento1.bin")
-B = 0xC6E784C0                       # the device's own allocation (crash record, BE3.64)
+B = 0xC6E784C0                       # the device's own allocation (crash record, BE3.64) (addr-ok: harness)
 V_DRUM, V_PIANO = B + 0x675AF8, B + 0x2ED980
-EVT = 0x24070000
-DRUM_EVENT, PIANO_EVENT, PIANO_HEADER, DRUM_HEADER = 0x0815D600, 0x0815A598, 0x081599BC, 0x0815C27C
-WALK = 0x0816FABC
-DRUM_VT, PIANO_VT = 0x0819E854, 0x0819E7B0
-CFG, HEAD, MAGIC, CFGB = 0x3003C1E0, 0x3003DFC0, 0x37444F4D, 0xC6200000
+EVT = 0x24070000  # addr-ok: harness
+DRUM_EVENT, PIANO_EVENT, PIANO_HEADER, DRUM_HEADER = S.DRUM_EVENT, S.PIANO_EVENT, S.PIANO_HEADER, S.DRUM_HEADER
+WALK = S.UI_TICK_WALK
+DRUM_VT, PIANO_VT = S.DRUM_VIEW_VT, S.PIANO_VIEW_VT
+CFG, HEAD, MAGIC, CFGB = D2 + 0x1E0, D2 + 0x1FC0, 0x37444F4D, 0xC6200000  # addr-ok: harness
 NM = 0x10F3
 TAB_STEP, TAB_SEQ = 0x49, 0x4A
 TYPE_FN = 0x081FF101
@@ -36,12 +39,12 @@ class Real:
     def __init__(self):
         e = self.e = emu.Emu(IMAGE)
         self.u = e.u
-        self.u.mem_map(0xC4000000, 0x4000000)
-        e.w(0x3000004C, B); e.w(0x30000048, 0xC8000000)
-        assert e.call(0x08104C08, 0x689A98) == B
-        e.call(0x081630F4, B, count=400_000_000)
-        e.w(0x3001FD24, B)
-        e.call(0x08162ADC, B, count=400_000_000)
+        self.u.mem_map(0xC4000000, 0x4000000)  # addr-ok: harness
+        e.w(S.UI_BUMP_CUR, B); e.w(S.UI_BUMP_END, 0xC8000000)
+        assert e.call(S.UI_BUMP_ALLOC, 0x689A98) == B
+        e.call(S.UI_PAGES_CTOR, B, count=400_000_000)
+        e.w(S.UI_PAGES_PTR, B)
+        e.call(S.UI_PAGES_INIT, B, count=400_000_000)
         self.u.mem_write(CFGB, struct.pack("<3I", MAGIC, 1, 2) + bytes(8 * 232 + 8 * 12 + 40))
         self.u.mem_write(HEAD, struct.pack("<8I", MAGIC, 1, CFGB, ~CFGB & 0xFFFFFFFF, 2, 0, 0, 0))
         e.w(CFG, 0x31474144); e.w(CFG + 20, 1)
@@ -55,17 +58,17 @@ class Real:
 
     def model_stub(self, u, a, size, _):
         """No project is loaded: answer the model getters the bars ask."""
-        if a == 0x0812DC74:                       # key 0x131 = the selected track
-            self.ret(self.selected if u.reg_read(UC_ARM_REG_R1) == 0x131 else 0)
-        elif a == 0x08133960:                     # track number -> handle
+        if a == S.GET_PROPERTY:                       # the selected track (KEY_SEL_TRACK)
+            self.ret(self.selected if u.reg_read(UC_ARM_REG_R1) == S.KEY_SEL_TRACK else 0)
+        elif a == S.FIND_TRACK:                     # track number -> handle
             self.e.w(u.reg_read(UC_ARM_REG_R2), 0x77); self.ret(1)
-        elif a == 0x0812D80E:                     # handle -> object, whose type is one-shot
-            obj = 0x24079800
+        elif a == S.RESOLVE_OBJECT:                     # handle -> object, whose type is one-shot
+            obj = 0x24079800  # addr-ok: harness
             self.e.w(obj, obj + 0x40); self.e.w(obj + 0x40, TYPE_FN)
             self.e.w(u.reg_read(UC_ARM_REG_R2), obj); self.ret(1)
         elif a == TYPE_FN & ~1:
             self.ret(0x0E)
-        elif a in (0x08133614, 0x0815884C, 0x0815BA04, 0x0813130C, 0x0816FC34, 0x0815C4B8):
+        elif a in (S.CONTEXT_GET, S.PIANO_SELECTED, S.SNAPSHOT, S.PROJECT_TOUCH, S.UI_POST, S.GRID):
             self.ret(0)
 
     def bind(self, tab, ctx=CTX):
@@ -92,7 +95,7 @@ class Real:
 
     def walk(self, view):
         """Stock's own tick: BE3.64 faulted here with a zero vtable."""
-        self.e.call(WALK, view, 0x30018DBC, count=40_000_000)
+        self.e.call(WALK, view, S.UI_WALK_CTX, count=40_000_000)
 
     def nm_mask(self):
         return self.e.r(CFGB + 12 + 8 * 232 + 8 * 12 + 8)

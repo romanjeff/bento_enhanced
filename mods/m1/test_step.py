@@ -12,25 +12,32 @@ import json, struct, sys, unittest
 from pathlib import Path
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
 from unicorn.arm_const import *
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bases import from_build
+S = from_build(sys.argv[2], Path(sys.argv[1]).read_bytes())   # the base table this build was made from
+D2 = S.D2_SLICE                                                # our shared slice (per base)
 
 BASE, SENT = 0x08040000, 0x08000100
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
 MAN = json.loads((OUT / "manifest.json").read_text())
-CFG, MAGIC = 0x3003C1E0, 0x31474144
-REG = 0x30040000                       # fake registry (499 x 32 B)
+CFG, MAGIC = D2 + 0x1E0, 0x31474144
+REG = 0x30040000                       # fake registry (S.REG_KEYS x 32 B)  # addr-ok: harness
+TOP = S.REG_KEYS - 1                   # the registry's last key (1.6.1: 0x1F2)
+TAKEN = (TOP, TOP - 2)                 # keys the fake registry gives stock at the top
+CLAIMED = [k for k in range(TOP, 0xFF, -1) if k not in TAKEN][:11]   # what claim() takes, top down
 VIEW = 0x20000000                      # drum step view / piano view (big)
 CONT = 0x20200000                      # fake note container (drum) / selection list (piano)
 NODE = 0x20300000
-STACK = 0x2407E000
+STACK = 0x2407E000  # addr-ok: harness
 
-XML_FIND, XML_GET, XML_ADD, XML_SET = 0x08109C64, 0x08109566, 0x08109CDC, 0x0810958E
-NOTE_GET, NOTE_PUT, PUBLISH, GRID = 0x0810D2C0, 0x0810D1AA, 0x08136544, 0x0815C4B8
-STEP_MATCH, ANY_SELECTED, SNAPSHOT = 0x0815B9C0, 0x0815BAB0, 0x0815BA04
-SLOT_SET, SLOT_TITLE, BAR_TEXT = 0x08171C1C, 0x0817E85E, 0x08170656
-PIANO_SELECTED, PIANO_COMMIT = 0x0815884C, 0x08157860
-DRUM_HEADER, DRUM_ENCODER, PIANO_HEADER, PIANO_EVENT = 0x0815C27C, 0x0815CAA0, 0x081599BC, 0x0815A598
-STOCK_DRUM_HEADER, STOCK_PIANO_HEADER = 0x0815C280, 0x081599C0   # our replays continue here
+XML_FIND, XML_GET, XML_ADD, XML_SET = S.XML_FIND, S.XML_GET_U32, S.XML_ADD, S.XML_SET_U32
+NOTE_GET, NOTE_PUT, PUBLISH, GRID = S.NOTE_GET, S.NOTE_PUT, S.PUBLISH, S.GRID
+STEP_MATCH, ANY_SELECTED, SNAPSHOT = S.STEP_MATCH, S.ANY_SELECTED, S.SNAPSHOT
+SLOT_SET, SLOT_TITLE, BAR_TEXT = S.SLOT_SET, S.SLOT_TITLE, S.BAR_TEXT
+PIANO_SELECTED, PIANO_COMMIT = S.PIANO_SELECTED, S.PIANO_COMMIT
+DRUM_HEADER, DRUM_ENCODER, PIANO_HEADER, PIANO_EVENT = S.DRUM_HEADER, S.DRUM_ENCODER, S.PIANO_HEADER, S.PIANO_EVENT
+STOCK_DRUM_HEADER, STOCK_PIANO_HEADER = S.DRUM_HEADER + 4, S.PIANO_HEADER + 4   # our replays continue here
 
 STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]
 DIVS = ["1/8", "1/8T", "1/8.", "1/16", "1/16T", "1/16.", "1/32", "1/32T", "1/32.", "1/64", "1/64T"]
@@ -78,9 +85,9 @@ class Rig:
         for a, n in ((0x20000000, 0x400000), (0x24000000, 0x80000), (0x30000000, 0x48000), (0xE0000000, 0x100000)):
             u.mem_map(a, n)
         w32(u, CFG, MAGIC); w32(u, CFG + 12, 1)            # M4 boot generation 1
-        w32(u, 0x3000004C, 0x20380000); w32(u, 0x30000048, 0x203C0000)   # native bump allocator range
-        w32(u, 0x30031484, REG)
-        for k in (0x1F2, 0x1F0):                           # some keys at the top are taken natively
+        w32(u, S.UI_BUMP_CUR, 0x20380000); w32(u, S.UI_BUMP_END, 0x203C0000)   # native bump allocator range
+        w32(u, S.REGISTRY, REG)
+        for k in TAKEN:                                    # some keys at the top are taken natively
             u.mem_write(REG + k * 32, struct.pack("<H", k))
         w32(u, VIEW + 0x113E4, 0x1234); w32(u, VIEW + 0x113DC, CONT); w32(u, VIEW + 0x11400, 2)
         w32(u, VIEW + 0x11CD00, 0x5678)                   # piano view: sequence context
@@ -94,18 +101,18 @@ class Rig:
 
     def hook(self, u, a, size, _):
         r = lambda i: u.reg_read(UC_ARM_REG_R0 + i)
-        if a == 0x08120148:                                      # f_open(fil, path, mode): read-only files
+        if a == S.FS_OPEN:                                      # f_open(fil, path, mode): read-only files
             path = cstr(u, r(1)); self.opened.append(path)
             if path in self.files and r(2) == 0x01:
                 self.fils[r(0)] = [path, 0]; self.ret(0)
             else:
                 self.ret(4)                                      # FR_NO_FILE
             return
-        if a == 0x08120464:                                      # f_read(fil, buf, n, &got)
+        if a == S.FS_READ:                                      # f_read(fil, buf, n, &got)
             f = self.fils[r(0)]; data = self.files[f[0]][f[1]:f[1] + r(2)]
             u.mem_write(r(1), data); w32(u, r(3), len(data)); f[1] += len(data); self.ret(0)
             return
-        if a == 0x08120974:                                      # f_close
+        if a == S.FS_CLOSE:                                      # f_close
             self.fils.pop(r(0), None); self.ret(0)
             return
         if a == XML_FIND:
@@ -127,9 +134,9 @@ class Rig:
             for n in self.notes:
                 if n[3] == rec[3]: n[:] = rec
             self.log.append(("put", rec[3])); self.ret()
-        elif a == 0x0812DFE8:                                     # lab_seq_root_lookup (model, seq, &root)
+        elif a == S.SEQ_ROOT_LOOKUP:                                     # lab_seq_root_lookup (model, seq, &root)
             w32(u, r(2), 0x20170000); self.ret(1)
-        elif a == 0x0812E6D8:                                     # copy a sequence's notes (model, seq, dest)
+        elif a == S.SEQ_COPY:                                     # copy a sequence's notes (model, seq, dest)
             self.log.append(("copy", r(1), r(2))); self.ret(1)
         elif a in (PUBLISH, GRID, PIANO_COMMIT):
             self.log.append({PUBLISH: "publish", GRID: "grid", PIANO_COMMIT: "commit"}[a]); self.ret()
@@ -146,34 +153,34 @@ class Rig:
             self.ret()
         elif a == SLOT_SET:
             self.log.append(("slot", r(1), r(2))); self.ret()
-        elif a == 0x08170394:                                     # bar set (bar, {ctx[8]; key[8]; val[8]})
+        elif a == S.BAR_SET:                                     # bar set (bar, {ctx[8]; key[8]; val[8]})
             d = r(1)
             keys = list(struct.unpack("<8H", u.mem_read(d + 0x20, 16)))
             vals = list(struct.unpack("<8I", u.mem_read(d + 0x30, 32)))
             self.log.append(("bar", r(0), keys, vals)); self.ret()
-        elif a == 0x0814713C:                                     # stock External builder body
+        elif a == S.EXT_BUILD + 4:                                     # stock External builder body
             self.log.append("stock-build")
             sp = u.reg_read(UC_ARM_REG_SP)
             u.reg_write(UC_ARM_REG_SP, sp + 36); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 32))
-        elif a == 0x08146B84:                                     # rest of stock's External event handler
+        elif a == S.EXT_EVENT + 4:                                     # rest of stock's External event handler
             self.log.append("stock-event"); self.ret(1)
-        elif a == 0x0816FC34:                                     # UI post (view, event): bubbles up
+        elif a == S.UI_POST:                                     # UI post (view, event): bubbles up
             self.log.append(("post", r32(u, r(1)) & 0xFFFF, r32(u, r(1) + 4))); self.ret()
-        elif a in (0x0816B9FA, 0x0816BB5C, 0x0814C4FC):
+        elif a in (S.LIST_SCROLL, S.LIST_SELECT, S.MX_REFRESH):
             self.log.append(("list", a)); self.ret()
-        elif a == 0x08142AFC:                                     # native button event (model, {code, ctx, id})
+        elif a == S.BUTTON_EVENT:                                     # native button event (model, {code, ctx, id})
             self.log.append(("button", r32(u, r(1)), r32(u, r(1) + 8))); self.ret()
-        elif a == 0x0817048E:                                     # bar slot range (bar, slot, value, min, max)
+        elif a == S.SLOT_RANGE:                                     # bar slot range (bar, slot, value, min, max)
             self.log.append(("range", r(1), r(2), r(3), r32(u, u.reg_read(UC_ARM_REG_SP)))); self.ret()
-        elif a == 0x0814C7C4:                                     # matrix: redraw rows
+        elif a == S.MX_ROWS_BUILD:                                     # matrix: redraw rows
             self.log.append("redraw"); self.ret()
-        elif a in (0x0814C56C, 0x0814CC18, 0x08131248, 0x0814BFF4):   # stock bodies after a replayed push.w
-            n = 7 if a == 0x0814C56C else 9
+        elif a in (S.MX_BAR + 4, S.MX_BUILD + 4, S.MX_ROUTE + 4, S.MX_EDIT + 4):   # stock bodies after a replayed push.w
+            n = 7 if a == S.MX_BAR + 4 else 9
             self.log.append(("stock", a))
             sp = u.reg_read(UC_ARM_REG_SP)
             u.reg_write(UC_ARM_REG_R0, 0)
             u.reg_write(UC_ARM_REG_SP, sp + 4 * n); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 4 * (n - 1)))
-        elif a == 0x0814C694:                                     # stock matrix events after push {r4, lr}; sub sp, #0x18
+        elif a == S.MX_EVENT + 4:                                     # stock matrix events after push {r4, lr}; sub sp, #0x18
             self.log.append(("stock", a))
             sp = u.reg_read(UC_ARM_REG_SP) + 0x18
             u.reg_write(UC_ARM_REG_R0, 1)
@@ -182,10 +189,10 @@ class Rig:
             self.log.append(("title", cstr(u, r(1)))); self.ret()
         elif a == BAR_TEXT:
             self.log.append(("text", r(1), cstr(u, r(2)) if r(2) else None)); self.ret()
-        elif a == 0x0815BCB4:                                     # step has a note? (view, visible idx)
+        elif a == S.STEP_HAS_NOTE:                                     # step has a note? (view, visible idx)
             step = r32(u, VIEW + 0x113F4) + r(1)
             self.ret(1 if any(n[1] // 960 == step and (n[0] >> 16) == r32(u, VIEW + 0x11400) for n in self.notes) else 0)
-        elif a == 0x0815CE98 and r(2) and getattr(self, "real_add", False):
+        elif a == S.STEP_SET and r(2) and getattr(self, "real_add", False):
             # Stock's add path, faithfully from where it matters: the model made the note
             # (prob 0, vel 0), a refresh reset the new-step fields, then stock's own code
             # from 0x0815D078 copies the fields into the note (frame as at that point).
@@ -200,8 +207,8 @@ class Rig:
             u.mem_write(sp, struct.pack("<I", 0)); u.mem_write(sp + 0x14, struct.pack("<6I", *new))
             u.reg_write(UC_ARM_REG_SP, sp); u.reg_write(UC_ARM_REG_R4, VIEW)
             u.reg_write(UC_ARM_REG_R8, VIEW + 0x113E4); u.reg_write(UC_ARM_REG_R3, step)
-            u.reg_write(UC_ARM_REG_PC, 0x0815D078 | 1)
-        elif a == 0x0815CE98:                                     # stock set step (view, idx, on)
+            u.reg_write(UC_ARM_REG_PC, S.STEP_DEFAULTS_READ | 1)
+        elif a == S.STEP_SET:                                     # stock set step (view, idx, on)
             step = r32(u, VIEW + 0x113F4) + r(1)
             pad = r32(u, VIEW + 0x11400)
             if r(2):
@@ -209,29 +216,29 @@ class Rig:
             else:
                 self.notes = [n for n in self.notes if not (n[1] // 960 == step and (n[0] >> 16) == pad)]
             self.log.append(("set", step, r(2))); self.ret()
-        elif a == 0x0815D1F0:                                     # rest of stock's press handler
+        elif a == S.STEP_PRESS + 4:                                     # rest of stock's press handler
             self.log.append(("press", r(1))); self.ret()
-        elif a == 0x0813130C:                                     # stock: refresh after an edit
+        elif a == S.PROJECT_TOUCH:                                     # stock: refresh after an edit
             self.log.append("touch"); self.ret()
-        elif a == 0x0812DC74 and r(1) == 0x131:                 # selected track index
+        elif a == S.GET_PROPERTY and r(1) == S.KEY_SEL_TRACK:       # selected track index
             self.ret(getattr(self, "selected", 2))
-        elif a == 0x0812DC74 and r(1) in (0x0F, 0x10):          # a track's MIDI out port / channel
+        elif a == S.GET_PROPERTY and r(1) in (0x0F, 0x10):          # a track's MIDI out port / channel
             port, ch = getattr(self, "dest", (1, 3))
             self.ret(port if r(1) == 0x0F else ch)
-        elif a == 0x08133960:                                     # find track -> handle
+        elif a == S.FIND_TRACK:                                     # find track -> handle
             self.model_calls = getattr(self, "model_calls", 0) + 1
             w32(u, r(2), 0x77); self.ret(1)
-        elif a == 0x0812D80E:                                     # resolve handle -> instrument object
+        elif a == S.RESOLVE_OBJECT:                                     # resolve handle -> instrument object
             obj, vt = 0x20140000, 0x20140100
             w32(u, obj, vt); w32(u, vt, 0x081FF101); w32(u, r(2), obj); self.ret(1)
         elif a == 0x081FF100:                                     # instrument vtable[0]: type
             self.ret(getattr(self, "track_kind", 0x0E))
-        elif a == 0x08134804:                                     # stock header generator body
+        elif a == S.HEADER_GEN + 4:                                     # stock header generator body
             out = r(1)
-            u.mem_write(out + 0x74, bytes(6 * 48))
+            u.mem_write(out + S.HEADER_DESC_ACTIONS, bytes(S.HEADER_ACTIONS * S.HEADER_ACTION_SIZE))
             for slot, label, tab, aid in ((1, b"Step", 1, 0x1046), (2, b"Sequence", 1, 0x1047), (5, b"Undo", 0, 0x1032)):
-                rec = out + 0x74 + slot * 48
-                u.mem_write(rec, label); u.mem_write(rec + 0x22, bytes([tab])); u.mem_write(rec + 44, struct.pack("<H", aid))
+                rec = out + S.HEADER_DESC_ACTIONS + slot * S.HEADER_ACTION_SIZE
+                u.mem_write(rec, label); u.mem_write(rec + S.HEADER_ACTION_GROUP, bytes([tab])); u.mem_write(rec + S.HEADER_ACTION_ID, struct.pack("<H", aid))
             sp = u.reg_read(UC_ARM_REG_SP)
             for i, reg in enumerate((UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7,
                                      UC_ARM_REG_R8, UC_ARM_REG_R9, UC_ARM_REG_R10)):
@@ -257,8 +264,8 @@ class Rig:
         return self.u.reg_read(UC_ARM_REG_R0)
 
     def keys(self):
-        return [k for k in range(499) if struct.unpack("<H", self.u.mem_read(REG + k * 32, 2))[0] == k
-                and r32(self.u, REG + k * 32 + 4) and k not in (0x1F2, 0x1F0)]
+        return [k for k in range(S.REG_KEYS) if struct.unpack("<H", self.u.mem_read(REG + k * 32, 2))[0] == k
+                and r32(self.u, REG + k * 32 + 4) and k not in TAKEN]
 
     def drum_header(self):
         self.call(DRUM_HEADER, VIEW)
@@ -267,16 +274,16 @@ class ExtRows(unittest.TestCase):
     """F2a: the External INST page's bar cycles Main / LFO 1 / LFO 2 / Env 1 / Env 2
     (header button ROWS_ACTION); our rows use stock's LFO/env keys and our Loop
     list; turning one edits the selected track's ModTrack (odd seq while writing)."""
-    EV, CFGB, HEAD = 0x20150000, 0xC6200000, 0x3003DFC0
+    EV, CFGB, HEAD = 0x20150000, 0xC6200000, D2 + 0x1FC0  # addr-ok: harness
     MAGIC = 0x37444F4D
 
     def rig(self, track=2, page=0x21):
         g = Rig()
-        g.u.mem_map(0xC6000000, 0x400000)
+        g.u.mem_map(S.EXT_POOL_END, 0x400000)
         g.selected = track
         g.u.mem_write(self.CFGB, struct.pack("<3I", self.MAGIC, 1, 2) + bytes(8 * 232 + 8 * 12 + 8))
         g.u.mem_write(self.HEAD, struct.pack("<8I", self.MAGIC, 1, self.CFGB, ~self.CFGB & 0xFFFFFFFF, 2, 0, 0, 0))
-        g.u.mem_write(0x30024B00 + 0x12C, bytes([page]))
+        g.u.mem_write(S.MODEL + S.MODEL_PAGE, bytes([page]))
         w32(g.u, VIEW + 0x34, 0x4321)                               # the view's track context
         return g
 
@@ -289,13 +296,13 @@ class ExtRows(unittest.TestCase):
         return struct.unpack("<4HB3x", g.u.mem_read(o, 12))         # a, d, s, r, loop
 
     def build(self, g):
-        g.log.clear(); g.call(0x08147138, VIEW)
+        g.log.clear(); g.call(S.EXT_BUILD, VIEW)
         return [x for x in g.log if x == "stock-build" or (isinstance(x, tuple) and x[0] == "bar")]
 
     def event(self, g, *words):
         g.u.mem_write(self.EV, struct.pack("<%dI" % len(words), *words))
         g.log.clear()
-        return g.call(0x08146B80, VIEW, self.EV)
+        return g.call(S.EXT_EVENT, VIEW, self.EV)
 
     def test_main_row_is_stocks_and_the_page_is_remembered(self):
         g = self.rig()
@@ -373,14 +380,16 @@ class ExtRows(unittest.TestCase):
         g = self.rig()
         self.build(g)                                               # External view seen on page 0x21
         out = 0x20160000
-        g.call(0x08134800, 0x30024B00, out)
-        recs = [struct.unpack("<H", g.u.mem_read(out + 0x74 + i * 48 + 44, 2))[0] for i in range(6)]
+        g.call(S.HEADER_GEN, S.MODEL, out)
+        recs = [struct.unpack("<H", g.u.mem_read(out + S.HEADER_DESC_ACTIONS + i * S.HEADER_ACTION_SIZE + S.HEADER_ACTION_ID, 2))[0]
+                for i in range(S.HEADER_ACTIONS)]
         self.assertIn(0x10F1, recs)
         i = recs.index(0x10F1)
-        self.assertEqual(cstr(g.u, out + 0x74 + i * 48), "Main")
-        g.u.mem_write(0x30024B00 + 0x12C, bytes([0x27]))           # another page
-        g.call(0x08134800, 0x30024B00, out)
-        recs = [struct.unpack("<H", g.u.mem_read(out + 0x74 + i * 48 + 44, 2))[0] for i in range(6)]
+        self.assertEqual(cstr(g.u, out + S.HEADER_DESC_ACTIONS + i * S.HEADER_ACTION_SIZE), "Main")
+        g.u.mem_write(S.MODEL + S.MODEL_PAGE, bytes([0x27]))           # another page
+        g.call(S.HEADER_GEN, S.MODEL, out)
+        recs = [struct.unpack("<H", g.u.mem_read(out + S.HEADER_DESC_ACTIONS + i * S.HEADER_ACTION_SIZE + S.HEADER_ACTION_ID, 2))[0]
+                for i in range(S.HEADER_ACTIONS)]
         self.assertNotIn(0x10F1, recs)
 
 
@@ -399,9 +408,9 @@ class ModMatrix(unittest.TestCase):
 
     def open(self, g):
         g.u.mem_write(ExtRows.EV, struct.pack("<I", 0x10F2)); g.log.clear()
-        g.call(0x08146B80, VIEW, ExtRows.EV)
+        g.call(S.EXT_EVENT, VIEW, ExtRows.EV)
         ctx = 0x20210000; w32(g.u, ctx, self.CTX)
-        g.log.clear(); g.call(0x0814CC14, self.MXV, ctx)
+        g.log.clear(); g.call(S.MX_BUILD, self.MXV, ctx)
         return g
 
     def dest(self, g, i):
@@ -411,13 +420,13 @@ class ModMatrix(unittest.TestCase):
     def test_mod_button_posts_like_the_modulation_menu(self):
         g = self.rig()
         g.u.mem_write(ExtRows.EV, struct.pack("<I", 0x10F2))
-        self.assertEqual(g.call(0x08146B80, VIEW, ExtRows.EV), 0)
+        self.assertEqual(g.call(S.EXT_EVENT, VIEW, ExtRows.EV), 0)
         self.assertEqual([x for x in g.log if x[0] == "post"], [("post", 0xA8, self.CTX), ("post", 0x0A, self.CTX)])
         self.assertEqual(r32(g.u, ExtRows.HEAD + 32), self.CTX, "mx_ctx")
 
     def test_rows_for_the_external_context(self):
         g = self.open(self.rig())
-        self.assertNotIn(("stock", 0x0814CC18), g.log)
+        self.assertNotIn(("stock", S.MX_BUILD + 4), g.log)
         self.assertEqual(g.u.mem_read(self.MXV + 0x8AC4D, 2), bytes([16, 8]), "16 rows, 8 sources")
         self.assertEqual(list(struct.unpack("<16H", g.u.mem_read(self.MXV + 0x8AC50, 32))), [0xF000 + i for i in range(16)])
         src = r32(g.u, self.MXV + 0x8ACC8)
@@ -428,27 +437,27 @@ class ModMatrix(unittest.TestCase):
     def test_other_contexts_stay_stocks(self):
         g = self.rig()
         ctx = 0x20210000; w32(g.u, ctx, 0x9999)
-        g.call(0x0814CC14, self.MXV, ctx)
-        self.assertIn(("stock", 0x0814CC18), g.log)
+        g.call(S.MX_BUILD, self.MXV, ctx)
+        self.assertIn(("stock", S.MX_BUILD + 4), g.log)
 
     def test_routing_read_and_edit(self):
         g = self.open(self.rig())
         w32(g.u, self.MXV + 0x86B5C, 3)                             # row 4 selected
-        for key, val in ((0x173, 2), (0x174, (-250) & 0xFFFFFFFF), (0x171, 6)):   # Source 2 = LFO 2, Amount 2, Source 1 = Pressure
+        for key, val in ((S.KEY_MX_FIRST + 2, 2), (S.KEY_MX_FIRST + 3, (-250) & 0xFFFFFFFF), (S.KEY_MX_FIRST, 6)):   # Source 2 = LFO 2, Amount 2, Source 1 = Pressure
             g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, key, val))
-            g.call(0x0814BFF0, self.MXV, ExtRows.EV)
+            g.call(S.MX_EDIT, self.MXV, ExtRows.EV)
         t, n, s1, s2, s3, a1, a2, a3 = self.dest(g, 3)
         self.assertEqual((s1, s2, a2), (6, 2, -250), "Pressure, LFO 2 at -25 %")
-        self.assertNotIn(("stock", 0x0814BFF4), g.log)
+        self.assertNotIn(("stock", S.MX_EDIT + 4), g.log)
         # the matrix reads it back through the model's routing call
         out, ctx = 0x20220000, 0x20210000
         u = g.u
         sp = STACK - 0x20
         u.mem_write(sp, struct.pack("<I", out))
-        for i, v in enumerate((0x30024B00, ctx, 0xF003, 1)):
+        for i, v in enumerate((S.MODEL, ctx, 0xF003, 1)):
             u.reg_write(UC_ARM_REG_R0 + i, v)
         u.reg_write(UC_ARM_REG_SP, sp); u.reg_write(UC_ARM_REG_LR, SENT | 1)
-        u.emu_start(0x08131244 | 1, SENT, count=200000)
+        u.emu_start(S.MX_ROUTE | 1, SENT, count=200000)
         self.assertEqual(u.reg_read(UC_ARM_REG_R0), 1, "found")
         amt, src = struct.unpack("<iH", u.mem_read(out, 6))
         self.assertEqual((amt, src), (-250, 5), "stock source id 5 = LFO 2")
@@ -456,7 +465,7 @@ class ModMatrix(unittest.TestCase):
     def test_dest_on_encoder_8(self):
         g = self.open(self.rig())
         w32(g.u, self.MXV + 0x86B5C, 0)
-        g.log.clear(); g.call(0x0814C568, self.MXV)
+        g.log.clear(); g.call(S.MX_BAR, self.MXV)
         bars = [x for x in g.log if isinstance(x, tuple) and x[0] == "bar"]
         dest_key = bars[-1][2][7]
         self.assertEqual(cstr(g.u, r32(g.u, REG + dest_key * 32 + 4)), "Dest")
@@ -467,12 +476,12 @@ class ModMatrix(unittest.TestCase):
         self.assertEqual(cstr(g.u, r32(g.u, labels + 4 * 13)), "CC 3", "numbered part: CC 0 (Bank), 1, 2 are not repeated")
         self.assertEqual(cstr(g.u, r32(g.u, labels + 4 * 120)), "CC 119", "last: CC 119 (no channel-mode messages)")
         g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, dest_key, 9))   # Cutoff
-        self.assertEqual(g.call(0x0814C690, self.MXV, ExtRows.EV), 0, "handled")
+        self.assertEqual(g.call(S.MX_EVENT, self.MXV, ExtRows.EV), 0, "handled")
         self.assertEqual(self.dest(g, 0)[:2], (1, 74))
         self.assertEqual(cstr(g.u, self.MXV + 0x8AE04), "Cutoff")
         self.assertEqual(g.u.mem_read(self.MXV + 0x8ADBC, 1)[0], 74, "CC column")
         g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, dest_key, 1))   # Pitch Bend
-        g.call(0x0814C690, self.MXV, ExtRows.EV)
+        g.call(S.MX_EVENT, self.MXV, ExtRows.EV)
         self.assertEqual(self.dest(g, 0)[0], 2)
         self.assertEqual(g.u.mem_read(self.MXV + 0x8ADBC, 1)[0], 0, "no CC number")
 
@@ -482,9 +491,9 @@ class ModMatrix(unittest.TestCase):
         g = self.open(self.rig())
         w32(g.u, self.MXV + 0x8AC44, 0x7777)                       # stock re-set the context
         w32(g.u, self.MXV + 0x86B5C, 2)
-        g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, 0x7777, 0x171, 1))   # Source 1 = LFO 1
-        g.log.clear(); g.call(0x0814BFF0, self.MXV, ExtRows.EV)
-        self.assertNotIn(("stock", 0x0814BFF4), g.log)
+        g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, 0x7777, S.KEY_MX_FIRST, 1))   # Source 1 = LFO 1
+        g.log.clear(); g.call(S.MX_EDIT, self.MXV, ExtRows.EV)
+        self.assertNotIn(("stock", S.MX_EDIT + 4), g.log)
         self.assertEqual(self.dest(g, 2)[2], 1, "stored")
         n = r32(g.u, ExtRows.HEAD + 56)
         self.assertEqual(((n >> 10) & 0x3FF, r32(g.u, ExtRows.HEAD + 48)), (1, 0x7777), "diagnostics: one edit, its context")
@@ -492,9 +501,9 @@ class ModMatrix(unittest.TestCase):
     def test_a_synths_rows_are_not_ours(self):
         g = self.open(self.rig())
         g.u.mem_write(self.MXV + 0x8AC50, struct.pack("<H", 0x2))  # stock rebuilt rows for a synth
-        g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, 0x171, 1))
-        g.log.clear(); g.call(0x0814BFF0, self.MXV, ExtRows.EV)
-        self.assertIn(("stock", 0x0814BFF4), g.log)
+        g.u.mem_write(ExtRows.EV, struct.pack("<4I", 0xCF, self.CTX, S.KEY_MX_FIRST, 1))
+        g.log.clear(); g.call(S.MX_EDIT, self.MXV, ExtRows.EV)
+        self.assertIn(("stock", S.MX_EDIT + 4), g.log)
 
     def test_dashboard_presses_inst(self):
         """BE3.50: the header's Dashboard (action 3) went to a dummy dashboard; v3.51's
@@ -502,17 +511,17 @@ class ModMatrix(unittest.TestCase):
         g = self.open(self.rig())
         for action in (3, 0x16):
             g.u.mem_write(ExtRows.EV, struct.pack("<I", action)); g.log.clear()
-            self.assertEqual(g.call(0x0814C690, self.MXV, ExtRows.EV), 0)
-            self.assertNotIn(("stock", 0x0814C694), g.log)
+            self.assertEqual(g.call(S.MX_EVENT, self.MXV, ExtRows.EV), 0)
+            self.assertNotIn(("stock", S.MX_EVENT + 4), g.log)
             self.assertEqual(r32(g.u, ExtRows.HEAD + 60), 1, "pending")
-            g.log.clear(); g.call(0x08134800, 0x30024B00, 0x20160000)      # next UI tick (header)
+            g.log.clear(); g.call(S.HEADER_GEN, S.MODEL, 0x20160000)      # next UI tick (header)
             self.assertIn(("button", 0x73, 10), g.log)
             self.assertEqual(r32(g.u, ExtRows.HEAD + 60), 0)
 
     def test_dest_slot_gets_its_full_range(self):
         g = self.open(self.rig())
         w32(g.u, self.MXV + 0x86B5C, 0)
-        g.log.clear(); g.call(0x0814C568, self.MXV)
+        g.log.clear(); g.call(S.MX_BAR, self.MXV)
         rng = [x for x in g.log if x[0] == "range"]
         self.assertEqual((rng[-1][1], rng[-1][3], rng[-1][4]), (7, 0, 120), "slot 8: all 121 destinations (<= 128)")
 
@@ -522,7 +531,7 @@ class SaveLoad(unittest.TestCase):
         g = Rig(); sp = STACK - 0x100
         g.u.mem_write(sp + 8, struct.pack("<6I", *rec))
         g.u.reg_write(UC_ARM_REG_R4, NODE); g.u.reg_write(UC_ARM_REG_SP, sp)
-        g.u.emu_start(0x0812F4F0 | 1, 0x0812F4F4, count=200000)
+        g.u.emu_start(S.STEP_SAVE_SITE | 1, S.STEP_SAVE_SITE + 4, count=200000)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), sp)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_R3), rec[0] & 0xFF, "displaced ldrb replayed")
         return g.attrs
@@ -531,7 +540,7 @@ class SaveLoad(unittest.TestCase):
         g = Rig(); g.attrs = dict(attrs); sp = STACK - 0x100
         g.u.mem_write(sp + 0x24, struct.pack("<6I", *rec)); w32(g.u, sp + 0x3C, 0xABCD)
         g.u.reg_write(UC_ARM_REG_R4, NODE); g.u.reg_write(UC_ARM_REG_SP, sp)
-        g.u.emu_start(0x0812FBB4 | 1, 0x0812FBB8, count=200000)
+        g.u.emu_start(S.STEP_LOAD_SITE | 1, S.STEP_LOAD_SITE + 4, count=200000)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_R1), sp + 0x24, "displaced add replayed")
         self.assertEqual(g.u.reg_read(UC_ARM_REG_R0), 0xABCD, "displaced ldr replayed")
         return list(struct.unpack("<6I", g.u.mem_read(sp + 0x24, 24)))
@@ -548,15 +557,15 @@ class SaveLoad(unittest.TestCase):
         """v3.26: the per-boot handle never reaches the project; the word carries the note's
         1-based index in this save, and the handle goes into the save list."""
         g = Rig(); sp = STACK - 0x100
-        g.u.mem_write(0x3003D840, struct.pack("<10I", 0x31565243, 1, 0x20300000, 8, 0x20310000, 5, 0, 0,
+        g.u.mem_write(D2 + 0x1840, struct.pack("<10I", 0x31565243, 1, 0x20300000, 8, 0x20310000, 5, 0, 0,
                                               0x20320000, 0))
         w = (0xB7 << 24) | (4 << 17) | (3 << 3) | 1               # condition 4, handle 3, velocity lock
         g.u.mem_write(sp + 8, struct.pack("<6I", *note(0, word=w)))
         g.u.reg_write(UC_ARM_REG_R4, NODE); g.u.reg_write(UC_ARM_REG_SP, sp)
-        g.u.emu_start(0x0812F4F0 | 1, 0x0812F4F4, count=200000)
+        g.u.emu_start(S.STEP_SAVE_SITE | 1, S.STEP_SAVE_SITE + 4, count=200000)
         self.assertEqual(g.attrs, {"be_step_v1": (0xB7 << 24) | (4 << 17) | (1 << 3) | 1}, "index 1, not handle 3")
         self.assertEqual(struct.unpack("<H", g.u.mem_read(0x20320000, 2))[0], 3, "save list holds the handle")
-        self.assertEqual(r32(g.u, 0x3003D840 + 36), 1, "nsave")
+        self.assertEqual(r32(g.u, D2 + 0x1840 + 36), 1, "nsave")
         self.assertEqual(bytes(g.u.mem_read(sp + 8 + 20, 4)), struct.pack("<I", w), "the note in RAM keeps its handle")
 
     def test_load_round_trip(self):
@@ -587,9 +596,9 @@ class DrumEncoders(unittest.TestCase):
         g = self.setup()
         keys = g.keys()
         self.assertEqual(len(keys), 11, "4 step keys + AT Rec + AT Out (v3.30) + Loop, Beat Sync, Behavior, Dest, Range (v3.59)")
-        self.assertEqual(sorted(keys, reverse=True), [0x1F1, 0x1EF, 0x1EE, 0x1ED, 0x1EC, 0x1EB, 0x1EA, 0x1E9, 0x1E8, 0x1E7, 0x1E6], "empty keys from the top")
-        table = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))
-        self.assertEqual(table[4:], (0x1F1, 0x1EF, 0x1EE, 0x1ED))
+        self.assertEqual(sorted(keys, reverse=True), CLAIMED, "empty keys from the top")
+        table = struct.unpack("<8H", g.u.mem_read(S.DRUM_KEYS, 16))
+        self.assertEqual(table[4:], tuple(CLAIMED[:4]))
         titles = [cstr(g.u, r32(g.u, REG + k * 32 + 4)) for k in table[4:]]
         self.assertEqual(titles, ["Condition", "Retrig", "Division", "Ramp"])
         counts = [r32(g.u, REG + k * 32 + 12) for k in table[4:]]
@@ -604,7 +613,7 @@ class DrumEncoders(unittest.TestCase):
         g = Rig(); g.notes = [note(4, word=step_make(cond=STORED[5] - 99, hits=3, div=4, ramp=-60))]
         g.selected_steps = {4}; g.drum_header()
         slots = [(k, v) for t, k, v in [x for x in g.log if x[0] == "slot"]]
-        self.assertEqual(slots, [(0x1F1, 6), (0x1EF, 3), (0x1EE, 4), (0x1ED, 8)])
+        self.assertEqual(slots, list(zip(CLAIMED[:4], (6, 3, 4, 8))))
         self.assertEqual([x[1] for x in g.log if x[0] == "title"], ["Condition", "Retrig", "Division", "Ramp"])
         self.assertFalse(any(x[0] == "text" and x[2] == "--" for x in g.log))
 
@@ -614,7 +623,7 @@ class DrumEncoders(unittest.TestCase):
                          [("text", 4, "--"), ("text", 5, "--"), ("text", 6, "--"), ("text", 7, "--")])
 
     def edit(self, g, which, value):
-        key = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))[4 + which]
+        key = struct.unpack("<8H", g.u.mem_read(S.DRUM_KEYS, 16))[4 + which]
         g.log.clear()
         return g.call(DRUM_ENCODER, VIEW, key, value)
 
@@ -647,7 +656,7 @@ class DrumEncoders(unittest.TestCase):
     def test_stock_keys_go_to_stock(self):
         g = self.setup()
         g.u.reg_write(UC_ARM_REG_SP, STACK)
-        for i, v in enumerate((VIEW, 0x184, 50)):
+        for i, v in enumerate((VIEW, S.KEY_DRUM_STEP_PARAM, 50)):
             g.u.reg_write(UC_ARM_REG_R0 + i, v)
         g.u.emu_start(DRUM_ENCODER | 1, DRUM_ENCODER + 4, count=200000)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_R3), VIEW + 0x11000, "displaced add replayed")
@@ -659,8 +668,8 @@ class Piano(unittest.TestCase):
         g.call(PIANO_HEADER, VIEW)
         self.assertIn("stock-header", g.log)
         key = struct.unpack("<H", g.u.mem_read(VIEW + 0x11BCC0 + 12, 2))[0]
-        self.assertEqual(key, 0x1F1)
-        self.assertIn(("slot", 0x1F1, 0), g.log)
+        self.assertEqual(key, CLAIMED[0])
+        self.assertIn(("slot", CLAIMED[0], 0), g.log)
         ev = 0x20100000
         g.u.mem_write(ev, struct.pack("<5I", 0xCF, 0, key, 3, 0))
         g.log.clear()
@@ -672,7 +681,7 @@ class Piano(unittest.TestCase):
     def test_other_piano_events_go_to_stock(self):
         g = Rig(); g.call(PIANO_HEADER, VIEW)
         ev = 0x20100000
-        g.u.mem_write(ev, struct.pack("<5I", 0xCF, 0, 0x184, 3, 0))
+        g.u.mem_write(ev, struct.pack("<5I", 0xCF, 0, S.KEY_DRUM_STEP_PARAM, 3, 0))
         g.u.reg_write(UC_ARM_REG_SP, STACK)
         g.u.reg_write(UC_ARM_REG_R0, VIEW); g.u.reg_write(UC_ARM_REG_R1, ev)
         g.u.emu_start(PIANO_EVENT | 1, PIANO_EVENT + 4, count=200000)
@@ -682,7 +691,7 @@ class AtSettings(unittest.TestCase):
     """M2-5: piano roll Sequence view, encoders 5/6 = AT Rec (Off/On) and AT Out
     (Off/Poly/Channel) for the selected track; published for the M7 by the track's
     MIDI out port/channel; AT Rec Off stops curves attaching."""
-    AT_SET, AT_DEST = 0x3003DF40, 0x3003DF80
+    AT_SET, AT_DEST = D2 + 0x1F40, D2 + 0x1F80
 
     def rig(self, selected=2):
         g = Rig(); g.selected = selected; g.dest = (1, 3)
@@ -702,7 +711,7 @@ class AtSettings(unittest.TestCase):
     def test_defaults_shown_on_encoders_5_and_6(self):
         g = self.rig()
         rec, out = self.slot_key(g, 4), self.slot_key(g, 5)
-        self.assertEqual((rec, out), (0x1EC, 0x1EB))
+        self.assertEqual((rec, out), (CLAIMED[4], CLAIMED[5]))
         self.assertIn(("slot", rec, 1), g.log, "AT Rec: On")
         self.assertIn(("slot", out, 1), g.log, "AT Out: Poly")
         self.assertIn(("title", "AT Rec"), g.log)
@@ -720,9 +729,9 @@ class AtSettings(unittest.TestCase):
 
     def test_a_change_marks_the_project_modified(self):
         g = self.rig()
-        g.u.mem_write(0x30024B00 + 0x36C4, b"\x00")
+        g.u.mem_write(S.MODEL + S.MODEL_DIRTY, b"\x00")
         self.turn(g, self.slot_key(g, 5), 0)
-        self.assertEqual(bytes(g.u.mem_read(0x30024B00 + 0x36C4, 1))[0], 1, "modified: Save enabled")
+        self.assertEqual(bytes(g.u.mem_read(S.MODEL + S.MODEL_DIRTY, 1))[0], 1, "modified: Save enabled")
         self.assertIn("touch", g.log)
 
     def test_rec_off_stops_curves_attaching(self):
@@ -755,7 +764,7 @@ class LegacyLocks(unittest.TestCase):
         self.assertEqual(self.load(note(0), {"be_step_v1": w})[5], w)
 
 class Defaults(unittest.TestCase):
-    VEL, PROB, OFFSET = 0x0815C7C4, 0x0815C8AC, 0x0815C990
+    VEL, PROB, OFFSET = S.STEP_EDIT_VEL, S.STEP_EDIT_PROB, S.STEP_EDIT_OFFSET
 
     def rig(self, notes, selected=()):
         g = Rig(); g.notes = notes; g.selected_steps = set(selected)
@@ -837,11 +846,11 @@ class Defaults(unittest.TestCase):
 
 
 class StrikeVelocity(unittest.TestCase):
-    STRIKE = 0x3003C960
+    STRIKE = D2 + 0x960
 
     def rig(self, base=0):
         g = Rig(); w32(g.u, VIEW + 0x114C0, 100); w32(g.u, VIEW + 0x113F4, base)
-        g.u.mem_write(0x30024B00 + 0x12C, bytes([0x27])); w32(g.u, 0x30034D48, 0x081B3680)
+        g.u.mem_write(S.MODEL + S.MODEL_PAGE, bytes([0x27])); w32(g.u, S.HEADER_ROOT, S.HEADER_ROOT_VTABLE)
         StrikeButton().generate(g)                    # first UI tick: per-pad state exists before any press
         return g
 
@@ -850,9 +859,9 @@ class StrikeVelocity(unittest.TestCase):
         g.u.mem_write(self.STRIKE + 16 + pad, bytes([vel]))          # per-pad peak velocity
 
     def tap(self, g, pad, ms=5000):
-        w32(g.u, 0x30035F40, ms)
-        g.call(0x0815D1EC, VIEW, pad)                 # press (our hook, then stock's handler)
-        g.call(0x0815D114, VIEW, pad)                 # stock's release -> toggle
+        w32(g.u, S.UI_TICK_MS, ms)
+        g.call(S.STEP_PRESS, VIEW, pad)                 # press (our hook, then stock's handler)
+        g.call(S.STEP_TOGGLE, VIEW, pad)                 # stock's release -> toggle
 
     def test_tapped_step_takes_the_strike_and_locks(self):
         g = self.rig(); self.strike(g, 1, 37)
@@ -867,7 +876,7 @@ class StrikeVelocity(unittest.TestCase):
 
     def test_stale_or_touch_keeps_the_default(self):
         g = self.rig(); self.strike(g, 1, 37); self.tap(g, 4)
-        g.call(0x0815D114, VIEW, 6)                   # touchscreen toggle: no press
+        g.call(S.STEP_TOGGLE, VIEW, 6)                   # touchscreen toggle: no press
         self.assertEqual([n[4] >> 16 for n in g.notes], [37, 100], "touch = default")
         g = self.rig(); self.strike(g, 1, 37); self.tap(g, 4)
         self.tap(g, 4); self.tap(g, 4)                # off, on again: no new press of pad 4
@@ -880,7 +889,7 @@ class StrikeVelocity(unittest.TestCase):
         g = self.rig(); g.real_add = True
         g.notes = [note(1, pad=2, prob=90, vel=64, nid=1), note(3, pad=2, prob=90, vel=64, nid=2),
                    note(5, pad=2, prob=40, vel=30, word=0xB6000003, nid=3)]   # a locked step
-        g.call(0x0815D114, VIEW, 6)                   # touch: a new step, no strike
+        g.call(S.STEP_TOGGLE, VIEW, 6)                   # touch: a new step, no strike
         n = g.notes[-1]
         self.assertEqual((n[1] // 960, n[4] >> 16, (n[0] >> 8) & 0xFF), (6, 64, 90),
                          "the new step takes the pad's defaults (unlocked steps), not 100 / Always")
@@ -898,11 +907,11 @@ class StrikeVelocity(unittest.TestCase):
         g = self.rig()
         for pad, vel in ((2, 30), (5, 90), (9, 61)):
             self.strike(g, 1, vel, pad=pad)
-        w32(g.u, 0x30035F40, 5000)
+        w32(g.u, S.UI_TICK_MS, 5000)
         for pad in (2, 5, 9):
-            g.call(0x0815D1EC, VIEW, pad)             # all three pressed
+            g.call(S.STEP_PRESS, VIEW, pad)             # all three pressed
         for pad in (9, 2, 5):
-            g.call(0x0815D114, VIEW, pad)             # released in another order
+            g.call(S.STEP_TOGGLE, VIEW, pad)             # released in another order
         self.assertEqual(sorted((n[1] // 960, n[4] >> 16) for n in g.notes), [(2, 30), (5, 90), (9, 61)])
 
     def test_removing_a_step_changes_nothing(self):
@@ -919,27 +928,27 @@ class StrikeVelocity(unittest.TestCase):
 
     def test_drum_menu_is_stock(self):
         stock = Path(sys.argv[1]).read_bytes()
-        for a, n in ((0x081415F8, 2), (0x08198E00, 20)):
+        for a, n in ((S.DRUM_MENU_SITE, 2), (S.DRUM_MENU_TABLE, 20)):
             self.assertEqual(IMG[a - BASE:a - BASE + n], stock[a - BASE:a - BASE + n], hex(a))
 
 class NoteModSeq(unittest.TestCase):
     """F5 N2 (v3.62): a "Note Mod" button on the SEQ page (any track) swaps the bar to
     Note Mod's six encoders: piano roll slots 1-6, drum Step view slots 3-8."""
-    CFGB, HEAD, MAGIC, OUT, ROOT = 0xC6200000, 0x3003DFC0, 0x37444F4D, 0x20180000, 0x30034D48
-    NM_KEYS = [0x4A, 0x4B, 0x1E9, 0x4C, 0x1E8, 0x1E6]               # Shape, Rate, Beat Sync, Depth, Behavior, Range
+    CFGB, HEAD, MAGIC, OUT, ROOT = 0xC6200000, D2 + 0x1FC0, 0x37444F4D, 0x20180000, S.HEADER_ROOT  # addr-ok: harness
+    NM_KEYS = [0x4A, 0x4B, CLAIMED[7], 0x4C, CLAIMED[8], CLAIMED[10]]   # Shape, Rate, Beat Sync, Depth, Behavior, Range
     EV = 0x20100000
 
     def rig(self, kind=0x10, track=2):
-        g = Rig(); g.u.mem_map(0xC6000000, 0x400000); g.selected = track; g.track_kind = kind
+        g = Rig(); g.u.mem_map(S.EXT_POOL_END, 0x400000); g.selected = track; g.track_kind = kind
         g.u.mem_write(self.CFGB, struct.pack("<3I", self.MAGIC, 1, 2) + bytes(8 * 232 + 8 * 12 + 32))
         g.u.mem_write(self.HEAD, struct.pack("<8I", self.MAGIC, 1, self.CFGB, ~self.CFGB & 0xFFFFFFFF, 2, 0, 0, 0))
-        g.u.mem_write(0x30024B00 + 0x12C, bytes([0x27])); w32(g.u, self.ROOT, 0x081B3680)
+        g.u.mem_write(S.MODEL + S.MODEL_PAGE, bytes([0x27])); w32(g.u, self.ROOT, S.HEADER_ROOT_VTABLE)
         return g
 
-    PIANO_VT, DRUM_VT = 0x0819E7B0, 0x0819E854
+    PIANO_VT, DRUM_VT = S.PIANO_VIEW_VT, S.DRUM_VIEW_VT
 
     def press(self, g, handler):
-        w32(g.u, VIEW, self.DRUM_VT if handler == 0x0815D600 else self.PIANO_VT)
+        w32(g.u, VIEW, self.DRUM_VT if handler == S.DRUM_EVENT else self.PIANO_VT)
         g.u.mem_write(self.EV, struct.pack("<HH4I", 0x10F3, 0, 0, 0, 0, 0))
         return g.call(handler, VIEW, self.EV)
 
@@ -963,11 +972,11 @@ class NoteModSeq(unittest.TestCase):
         StrikeButton().generate(g)
         self.press(g, PIANO_EVENT); g.call(PIANO_HEADER, VIEW)
         self.assertIn(("Note Mod", 1, 0x10F3), StrikeButton().generate(g)[1])
-        g.u.mem_write(0x3003DE80 + 24, b"Projects\\A\\kick.wav\0")
-        w32(g.u, 0x3003DE80 + 4, r32(g.u, 0x3003DE80 + 4) + 1)   # LoadState.doc_seq: not a project
+        g.u.mem_write(D2 + 0x1E80 + 24, b"Projects\\A\\kick.wav\0")
+        w32(g.u, D2 + 0x1E80 + 4, r32(g.u, D2 + 0x1E80 + 4) + 1)   # LoadState.doc_seq: not a project
         self.assertIn(("Note Mod", 1, 0x10F3), StrikeButton().generate(g)[1], "a patch read leaves it on")
-        g.u.mem_write(0x3003DE80 + 24, b"Projects\\A\\PROJECT.XML\0")
-        w32(g.u, 0x3003DE80 + 4, r32(g.u, 0x3003DE80 + 4) + 1)
+        g.u.mem_write(D2 + 0x1E80 + 24, b"Projects\\A\\PROJECT.XML\0")
+        w32(g.u, D2 + 0x1E80 + 4, r32(g.u, D2 + 0x1E80 + 4) + 1)
         self.assertIn(("Note Mod", 0, 0x10F3), StrikeButton().generate(g)[1])
 
     def test_an_unknown_view_is_left_alone(self):
@@ -984,7 +993,7 @@ class NoteModSeq(unittest.TestCase):
     def test_button_for_every_track_type(self):
         for kind, page in ((0x0E, 0x27), (0x0E, 0x17), (0x0F, 0x17), (0x10, 0x17), (0x12, 0x17), (0x14, 0x17), (0x16, 0x17)):
             g = self.rig(kind); g.drum_header()
-            g.u.mem_write(0x30024B00 + 0x12C, bytes([page]))
+            g.u.mem_write(S.MODEL + S.MODEL_PAGE, bytes([page]))
             recs = StrikeButton().generate(g)[1]
             self.assertIn(("Note Mod", 0, 0x10F3), recs, (hex(kind), hex(page)))
 
@@ -1006,34 +1015,34 @@ class NoteModSeq(unittest.TestCase):
 
     def test_drum_step_bar_uses_slots_3_to_8_and_restores_stocks_keys(self):
         g = self.rig(kind=0x0E); g.drum_header()
-        before = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))
-        self.assertEqual(self.press(g, 0x0815D600), 0, "handled")
+        before = struct.unpack("<8H", g.u.mem_read(S.DRUM_KEYS, 16))
+        self.assertEqual(self.press(g, S.DRUM_EVENT), 0, "handled")
         g.drum_header()
-        keys = struct.unpack("<8H", g.u.mem_read(0x300000BC, 16))
+        keys = struct.unpack("<8H", g.u.mem_read(S.DRUM_KEYS, 16))
         self.assertEqual(list(keys[2:]), self.NM_KEYS)
         self.assertEqual(keys[:2], before[:2], "Velocity / Probability stay")
-        g.call(DRUM_ENCODER, VIEW, 0x1E6, 3)                          # Range: 4 Oct
+        g.call(DRUM_ENCODER, VIEW, CLAIMED[10], 3)                    # Range: 4 Oct
         self.assertEqual(self.nm(g, 2)[6], 3)
-        self.press(g, 0x0815D600); g.drum_header()
-        self.assertEqual(struct.unpack("<8H", g.u.mem_read(0x300000BC, 16)), before, "stock's keys back")
+        self.press(g, S.DRUM_EVENT); g.drum_header()
+        self.assertEqual(struct.unpack("<8H", g.u.mem_read(S.DRUM_KEYS, 16)), before, "stock's keys back")
 
 
 class StrikeButton(unittest.TestCase):
-    OUT, ROOT = 0x20180000, 0x30034D48
+    OUT, ROOT = 0x20180000, S.HEADER_ROOT
 
     def rig(self, kind=0x0E):
         g = Rig()
-        g.u.mem_write(0x30024B00 + 0x12C, bytes([0x27]))           # SEQ page
-        w32(g.u, self.ROOT, 0x081B3680)                             # header root vtable
+        g.u.mem_write(S.MODEL + S.MODEL_PAGE, bytes([0x27]))           # SEQ page
+        w32(g.u, self.ROOT, S.HEADER_ROOT_VTABLE)                             # header root vtable
         g.track_kind = kind                                         # selected track's instrument type
         return g
 
     def generate(self, g):
-        changed = g.call(0x08134800, 0x30024B00, self.OUT, 0x20190000, 1)
+        changed = g.call(S.HEADER_GEN, S.MODEL, self.OUT, 0x20190000, 1)
         recs = []
-        for i in range(6):
-            raw = bytes(g.u.mem_read(self.OUT + 0x74 + i * 48, 48))
-            recs.append((raw[:raw.index(b"\0")].decode(), raw[0x21], struct.unpack_from("<H", raw, 44)[0]))
+        for i in range(S.HEADER_ACTIONS):
+            raw = bytes(g.u.mem_read(self.OUT + S.HEADER_DESC_ACTIONS + i * S.HEADER_ACTION_SIZE, S.HEADER_ACTION_SIZE))
+            recs.append((raw[:raw.index(b"\0")].decode(), raw[S.HEADER_ACTION_LIT], struct.unpack_from("<H", raw, S.HEADER_ACTION_ID)[0]))
         return changed, recs
 
     def test_button_left_of_undo_lit_while_on(self):
@@ -1042,61 +1051,61 @@ class StrikeButton(unittest.TestCase):
         self.assertEqual(changed, 1)
         self.assertEqual(recs[4], ("Strike Vel", 1, 0x10F0))
         self.assertEqual([r[0] for r in recs], ["", "Step", "Sequence", "", "Strike Vel", "Undo"])
-        self.assertEqual(bytes(g.u.mem_read(self.ROOT + 0x117C, 1))[0], 1, "layout re-armed so the slot shows")
+        self.assertEqual(bytes(g.u.mem_read(self.ROOT + S.HEADER_ARMED, 1))[0], 1, "layout re-armed so the slot shows")
 
     def test_survives_v3_11_leftovers_in_reserved_ram(self):
         """Reserved RAM survives a reset: v3.11 left StrikeSet {'SVE2', off, view=UI ms}.
         v3.12 read that field as a pointer and faulted on every boot (boot loop)."""
         for stale in (2204624, 1, 0xDEADBEE0):
             g = self.rig(); g.drum_header()
-            g.u.mem_write(0x3003C948, struct.pack("<6I", 0x32455653, 0, stale, 0, 0, 0))
+            g.u.mem_write(D2 + 0x948, struct.pack("<6I", 0x32455653, 0, stale, 0, 0, 0))
             changed, recs = self.generate(g)                        # must not fault
             self.assertEqual(recs[4], ("Strike Vel", 1, 0x10F0))
         g = self.rig(); g.drum_header()                             # same layout, unchecked pointer
-        g.u.mem_write(0x3003C948, struct.pack("<6I", 0x33455653, 0, 0xDEADBEE0, 0, 0, 0))
+        g.u.mem_write(D2 + 0x948, struct.pack("<6I", 0x33455653, 0, 0xDEADBEE0, 0, 0, 0))
         self.assertEqual(self.generate(g)[1][4], ("Strike Vel", 1, 0x10F0))
 
     def test_no_button_for_a_pitched_track(self):
         g = self.rig(kind=0x10); g.drum_header()                    # piano roll (pitched instrument)
         changed, recs = self.generate(g)
         self.assertNotIn(0x10F0, [r[2] for r in recs])
-        self.assertEqual(r32(g.u, 0x3003C948 + 16) & 0xFF, 0xF0, "diag: drum=0, slot=none")
+        self.assertEqual(r32(g.u, D2 + 0x948 + 16) & 0xFF, 0xF0, "diag: drum=0, slot=none")
 
     def test_button_shows_even_if_the_piano_header_ran_last(self):
-        g = self.rig(); g.drum_header(); g.call(0x081599BC, VIEW)
+        g = self.rig(); g.drum_header(); g.call(S.PIANO_HEADER, VIEW)
         changed, recs = self.generate(g)
         self.assertEqual(recs[4][2], 0x10F0)
-        self.assertEqual(r32(g.u, 0x3003C948 + 16) & 0x1FF, 0x141, "diag: drum=1, slot=4, inserted")
+        self.assertEqual(r32(g.u, D2 + 0x948 + 16) & 0x1FF, 0x141, "diag: drum=1, slot=4, inserted")
 
     def test_button_toggles_lit_and_the_behaviour(self):
         g = self.rig(); g.drum_header()
         ev = 0x20100000; g.u.mem_write(ev, struct.pack("<HH4I", 0x10F0, 0, 0, 0, 0, 0))
-        self.assertEqual(g.call(0x0815D600, VIEW, ev), 0, "handled")
+        self.assertEqual(g.call(S.DRUM_EVENT, VIEW, ev), 0, "handled")
         self.assertEqual(self.generate(g)[1][4], ("Strike Vel", 0, 0x10F0), "outline off")
-        sv = StrikeVelocity(); sv.STRIKE = 0x3003C960
+        sv = StrikeVelocity(); sv.STRIKE = D2 + 0x960
         w32(g.u, VIEW + 0x114C0, 100); sv.strike(g, 1, 37); sv.tap(g, 4)
         self.assertEqual(g.notes[-1][4] >> 16, 100, "off: tapped step gets the default")
-        g.call(0x0815D600, VIEW, ev)
+        g.call(S.DRUM_EVENT, VIEW, ev)
         self.assertEqual(self.generate(g)[1][4][1], 1, "on again")
 
     def test_sequence_tab_press_arrives_at_the_piano_view_object(self):
         g = self.rig(); g.drum_header()
         ev = 0x20100000; g.u.mem_write(ev, struct.pack("<HH4I", 0x10F0, 0, 0, 0, 0, 0))
-        self.assertEqual(g.call(0x0815A598, VIEW, ev), 0, "handled by the piano-roll event hook")
+        self.assertEqual(g.call(S.PIANO_EVENT, VIEW, ev), 0, "handled by the piano-roll event hook")
         self.assertEqual(self.generate(g)[1][4], ("Strike Vel", 0, 0x10F0))
 
     def test_press_on_a_pitched_track_is_ignored(self):
         g = self.rig(kind=0x10)
         ev = 0x20100000; g.u.mem_write(ev, struct.pack("<HH4I", 0x10F0, 0, 0, 0, 0, 0))
         g.u.reg_write(UC_ARM_REG_SP, STACK); g.u.reg_write(UC_ARM_REG_R0, VIEW); g.u.reg_write(UC_ARM_REG_R1, ev)
-        g.u.emu_start(0x0815A598 | 1, 0x0815A59C, count=200000)
-        self.assertEqual(g.u.reg_read(UC_ARM_REG_PC), 0x0815A59C, "went on to stock")
+        g.u.emu_start(S.PIANO_EVENT | 1, S.PIANO_EVENT + 4, count=200000)
+        self.assertEqual(g.u.reg_read(UC_ARM_REG_PC), S.PIANO_EVENT + 4, "went on to stock")
 
     def test_other_drum_events_go_to_stock(self):
         g = self.rig()
         ev = 0x20100000; g.u.mem_write(ev, struct.pack("<HH4I", 0xCE, 0, 0, 0, 0, 0))
         g.u.reg_write(UC_ARM_REG_SP, STACK); g.u.reg_write(UC_ARM_REG_R0, VIEW); g.u.reg_write(UC_ARM_REG_R1, ev)
-        g.u.emu_start(0x0815D600 | 1, 0x0815D604, count=200000)
+        g.u.emu_start(S.DRUM_EVENT | 1, S.DRUM_EVENT + 4, count=200000)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 4 - 0x6C, "replayed push {lr}; sub sp, #0x6c")
 
 class StrikeInsert(unittest.TestCase):
@@ -1107,20 +1116,20 @@ class StrikeInsert(unittest.TestCase):
 
     def press(self, g, seq, vel, ms, pad=2, tick=True):
         StrikeButton().generate(g)                    # per-pad state exists (old presses don't count)
-        g.u.mem_write(0x3003C960 + pad, bytes([seq])); g.u.mem_write(0x3003C970 + pad, bytes([vel]))
-        w32(g.u, 0x30035F40, ms)
+        g.u.mem_write(D2 + 0x960 + pad, bytes([seq])); g.u.mem_write(D2 + 0x970 + pad, bytes([vel]))
+        w32(g.u, S.UI_TICK_MS, ms)
         if tick:
             StrikeButton().generate(g)                # a UI tick sees the strike (stamp)
 
     def insert(self, g, rec, ms, caller=None):
-        w32(g.u, 0x30035F40, ms)
+        w32(g.u, S.UI_TICK_MS, ms)
         at = 0x20110000; g.u.mem_write(at, struct.pack("<6I", *rec))
         g.u.reg_write(UC_ARM_REG_SP, STACK)
         if caller is not None:
             g.u.reg_write(UC_ARM_REG_LR, caller | 1)                # else: the caller set LR (e.g. CurveAttach)
-        for i, v in enumerate((0x30024B00, 0x1234, at)):
+        for i, v in enumerate((S.MODEL, 0x1234, at)):
             g.u.reg_write(UC_ARM_REG_R0 + i, v)
-        g.u.emu_start(0x0812E070 | 1, 0x0812E074, count=200000)
+        g.u.emu_start(S.NOTE_INSERT | 1, S.NOTE_INSERT + 4, count=200000)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 16 - 0x20, "replayed push + sub")
         return list(struct.unpack("<6I", g.u.mem_read(at, 24)))
 
@@ -1135,24 +1144,24 @@ class StrikeInsert(unittest.TestCase):
         """BE3.52 on the device: Sequence-page steps got 100 (first-contact pressure 0).
         The page inserts at press time; 60 ms later the settled peak goes into the note."""
         g = self.rig(); self.press(g, 5, 3, 10000, pad=2)          # first contact: barely pressed
-        rec = self.insert(g, note(2, pad=7, nid=0), 10005, caller=0x0813B4BA)
+        rec = self.insert(g, note(2, pad=7, nid=0), 10005, caller=S.SEQ_PAGE_INSERT)
         g.notes = [rec]
-        g.u.mem_write(0x3003C970 + 2, bytes([88]))                 # the peak over the next samples
-        w32(g.u, 0x30035F40, 10040); StrikeButton().generate(g)
+        g.u.mem_write(D2 + 0x970 + 2, bytes([88]))                 # the peak over the next samples
+        w32(g.u, S.UI_TICK_MS, 10040); StrikeButton().generate(g)
         self.assertEqual(g.notes[0][4] >> 16, 3, "not yet: still measuring")
-        g.log.clear(); w32(g.u, 0x30035F40, 10070); StrikeButton().generate(g)
+        g.log.clear(); w32(g.u, S.UI_TICK_MS, 10070); StrikeButton().generate(g)
         self.assertEqual((g.notes[0][4] >> 16, locks(g.notes[0][5])), (88, 1), "settled velocity, locked")
         self.assertIn("publish", g.log)
-        self.assertIn(("copy", 0x1234, 0x30024B00 + 0x3C80), g.log, "a copy in stock's working container, not the root")
-        g.log.clear(); w32(g.u, 0x30035F40, 10200); StrikeButton().generate(g)
+        self.assertIn(("copy", 0x1234, S.MODEL + S.MODEL_WORK), g.log, "a copy in stock's working container, not the root")
+        g.log.clear(); w32(g.u, S.UI_TICK_MS, 10200); StrikeButton().generate(g)
         self.assertNotIn("publish", g.log, "done once")
 
     def test_sequence_page_new_press_cancels_the_late_fix(self):
         g = self.rig(); self.press(g, 5, 30, 10000, pad=2)
-        rec = self.insert(g, note(2, pad=7, nid=0), 10005, caller=0x0813B4BA)
+        rec = self.insert(g, note(2, pad=7, nid=0), 10005, caller=S.SEQ_PAGE_INSERT)
         g.notes = [rec]
-        g.u.mem_write(0x3003C960 + 2, bytes([6])); g.u.mem_write(0x3003C970 + 2, bytes([120]))   # pad hit again
-        w32(g.u, 0x30035F40, 10100); StrikeButton().generate(g)
+        g.u.mem_write(D2 + 0x960 + 2, bytes([6])); g.u.mem_write(D2 + 0x970 + 2, bytes([120]))   # pad hit again
+        w32(g.u, S.UI_TICK_MS, 10100); StrikeButton().generate(g)
         self.assertEqual(g.notes[0][4] >> 16, 30, "the other press's velocity is not this note's")
 
     def test_stale_strike_is_ignored(self):
@@ -1168,7 +1177,7 @@ class StrikeInsert(unittest.TestCase):
 
     def test_step_view_path_is_not_applied_twice(self):
         g = self.rig(); self.press(g, 5, 44, 10000)
-        w32(g.u, 0x30035F40, 10050); g.call(0x0815D1EC, VIEW, 2)   # the Step view's press used pad 2's strike
+        w32(g.u, S.UI_TICK_MS, 10050); g.call(S.STEP_PRESS, VIEW, 2)   # the Step view's press used pad 2's strike
         self.assertEqual(self.insert(g, note(2, nid=0), 10100)[4] >> 16, 100)
 
     def test_insert_before_any_ui_tick_still_counts_as_fresh(self):
@@ -1191,7 +1200,7 @@ class StrikeInsert(unittest.TestCase):
 
     def test_off_means_off(self):
         g = self.rig(); self.press(g, 5, 44, 10000)
-        w32(g.u, 0x3003C948 + 4, 1)                   # StrikeSet.off
+        w32(g.u, D2 + 0x948 + 4, 1)                   # StrikeSet.off
         self.assertEqual(self.insert(g, note(2, nid=0), 10100)[4] >> 16, 100)
 
 class CurveAttach(unittest.TestCase):
@@ -1199,14 +1208,14 @@ class CurveAttach(unittest.TestCase):
     (insert returns to 0x081377CE) and binds its pitch to the oldest held, unbound pad;
     note-off sets the length through the model update 0x0812E0CE (returns to
     0x081378F8), which attaches that pad's pressure curve (16 samples/step, tag 0xB7)."""
-    BLOCK, SLOT, ON_LR, OFF_LR = 0x20200000, 1056, 0x081377CF, 0x081378F9
+    BLOCK, SLOT, ON_LR, OFF_LR = 0x20200000, 1056, S.MEL_NOTE_ON | 1, S.MEL_NOTE_OFF | 1
 
     def rig(self, kind=0x10):                               # melodic (piano roll)
         g = StrikeButton().rig(kind)
-        w32(g.u, 0x3000004C, 0x20280000); w32(g.u, 0x30000048, 0x203C0000)   # room for the pool
-        w32(g.u, 0x3003D820 + 4, self.BLOCK); w32(g.u, 0x3003D820 + 8, ~self.BLOCK & 0xFFFFFFFF)
-        w32(g.u, 0x3003D820, 0x31504143)
-        g.u.mem_write(0x3003DD60, bytes(0x104))               # binding table: empty
+        w32(g.u, S.UI_BUMP_CUR, 0x20280000); w32(g.u, S.UI_BUMP_END, 0x203C0000)   # room for the pool
+        w32(g.u, D2 + 0x1820 + 4, self.BLOCK); w32(g.u, D2 + 0x1820 + 8, ~self.BLOCK & 0xFFFFFFFF)
+        w32(g.u, D2 + 0x1820, 0x31504143)
+        g.u.mem_write(D2 + 0x1D60, bytes(0x104))               # binding table: empty
         return g
 
     def slot(self, g, pad, k, seq, samples, t0=1000, t_end=1056, done=1):
@@ -1226,15 +1235,15 @@ class CurveAttach(unittest.TestCase):
         at = 0x20110000
         g.u.mem_write(at, struct.pack("<6I", 1, 2 * 960, length, 7, pitch | (90 << 16), word))
         g.u.reg_write(UC_ARM_REG_SP, STACK)
-        for i, v in enumerate((0x30024B00, 0x1234, at)):
+        for i, v in enumerate((S.MODEL, 0x1234, at)):
             g.u.reg_write(UC_ARM_REG_R0 + i, v)
         g.u.reg_write(UC_ARM_REG_LR, self.OFF_LR if lr is None else lr)
-        g.u.emu_start(0x0812E0CE | 1, 0x0812E0D2, count=200000)
+        g.u.emu_start(S.NOTE_UPDATE | 1, S.NOTE_UPDATE + 4, count=200000)
         self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 8 - 8, "replayed push + sub")
         return list(struct.unpack("<6I", g.u.mem_read(at, 24)))
 
     def curve(self, g, h):
-        pool, table = r32(g.u, 0x3003D840 + 8), r32(g.u, 0x3003D840 + 16)
+        pool, table = r32(g.u, D2 + 0x1840 + 8), r32(g.u, D2 + 0x1840 + 16)
         off = r32(g.u, table + 4 * h)
         n = struct.unpack("<H", g.u.mem_read(pool + off, 2))[0]
         return list(g.u.mem_read(pool + off + 2, n))
@@ -1250,7 +1259,7 @@ class CurveAttach(unittest.TestCase):
         self.assertEqual(len(data), 16, "960 ticks = one step = 16 samples")
         self.assertEqual((data[0], data[-1]), (10, 80))
         self.assertEqual(data, sorted(data))
-        log = g.u.mem_read(0x3003D880 + 64, 64)
+        log = g.u.mem_read(D2 + 0x1880 + 64, 64)
         self.assertEqual(struct.unpack_from("<IHHH", log, 0), (1, 1, 16, 5), "seq, handle, n_out, pad")
 
     def test_chord_maps_pad_by_pad(self):
@@ -1273,7 +1282,7 @@ class CurveAttach(unittest.TestCase):
     def test_other_callers_and_drum_tracks_get_no_curve(self):
         g = self.rig()
         self.slot(g, 5, 1, 1, [10, 20])
-        self.assertEqual(self.note_off(g, 60, lr=0x08159001)[5], 0, "not the recording note-off")
+        self.assertEqual(self.note_off(g, 60, lr=0x08159001)[5], 0, "not the recording note-off")  # addr-ok: harness
         g = self.rig(kind=0x0E)
         self.slot(g, 5, 1, 1, [10, 20])
         self.assertEqual(self.note_off(g, 60)[5], 0, "drum track")
@@ -1318,12 +1327,12 @@ class SidecarLoad(unittest.TestCase):
 
     def rig(self, project=r"\Projects\H\project.xml", files=None):
         g = Rig()
-        w32(g.u, 0x3000004C, 0x20280000); w32(g.u, 0x30000048, 0x203C0000)   # room for the pool
-        g.u.mem_write(0x3003DE80, bytes(0xB8))                    # load state: empty
+        w32(g.u, S.UI_BUMP_CUR, 0x20280000); w32(g.u, S.UI_BUMP_END, 0x203C0000)   # room for the pool
+        g.u.mem_write(D2 + 0x1E80, bytes(0xB8))                    # load state: empty
         g.files = files if files is not None else {r"\Projects\H\curves.bnt": sidecar(self.CURVES)}
         g.u.mem_write(self.PATH, project.encode() + bytes(1))
         g.u.reg_write(UC_ARM_REG_R0, self.PATH); g.u.reg_write(UC_ARM_REG_SP, STACK)
-        g.u.emu_start(0x08130A18 | 1, 0x08130A1C, count=200000)  # the reader's entry: path remembered
+        g.u.emu_start(S.DOC_READ | 1, S.DOC_READ + 4, count=200000)  # the reader's entry: path remembered
         self.assertEqual(g.u.reg_read(UC_ARM_REG_SP), STACK - 36, "replayed push.w {r4-r11, lr}")
         return g
 
@@ -1332,11 +1341,11 @@ class SidecarLoad(unittest.TestCase):
         g.attrs = {"be_step_v1": word}
         g.u.mem_write(sp + 0x24, struct.pack("<6I", *note(0))); w32(g.u, sp + 0x3C, 0xABCD)
         g.u.reg_write(UC_ARM_REG_R4, NODE); g.u.reg_write(UC_ARM_REG_SP, sp)
-        g.u.emu_start(0x0812FBB4 | 1, 0x0812FBB8, count=2000000)
+        g.u.emu_start(S.STEP_LOAD_SITE | 1, S.STEP_LOAD_SITE + 4, count=2000000)
         return r32(g.u, sp + 0x24 + 20)
 
     def curve(self, g, h):
-        pool, table = r32(g.u, 0x3003D840 + 8), r32(g.u, 0x3003D840 + 16)
+        pool, table = r32(g.u, D2 + 0x1840 + 8), r32(g.u, D2 + 0x1840 + 16)
         off = r32(g.u, table + 4 * h)
         n = struct.unpack("<H", g.u.mem_read(pool + off, 2))[0]
         return list(g.u.mem_read(pool + off + 2, n))
@@ -1344,7 +1353,7 @@ class SidecarLoad(unittest.TestCase):
     def test_round_trip(self):
         g = self.rig()
         w2 = self.load(g, (0xB7 << 24) | (6 << 17) | (2 << 3) | 1)   # index 2, condition 6, velocity lock
-        base = r32(g.u, 0x3003DE80 + 12)
+        base = r32(g.u, D2 + 0x1E80 + 12)
         self.assertEqual((w2 >> 24, (w2 >> 17) & 0x7F, w2 & 7), (0xB7, 6, 1))
         self.assertEqual((w2 >> 3) & 0x3FFF, base + 1, "index 2 -> base + 1")
         for i, c in enumerate(self.CURVES):
@@ -1352,20 +1361,20 @@ class SidecarLoad(unittest.TestCase):
         w1 = self.load(g, (0xB7 << 24) | (1 << 3))
         self.assertEqual((w1 >> 3) & 0x3FFF, base, "index 1 -> base; the file was read once")
         self.assertEqual(g.opened.count(r"\Projects\H\curves.bnt"), 1)
-        self.assertEqual(r32(g.u, 0x3003DE80 + 20), 4, "status ok")
+        self.assertEqual(r32(g.u, D2 + 0x1E80 + 20), 4, "status ok")
 
     def test_each_project_load_starts_the_pool_over(self):
         """M2-4: v3.37 and earlier appended every load's curves after the previous
         project's (base 1, then 4, 7, ...); now each project load starts at handle 1."""
         g = self.rig()
         self.load(g, (0xB7 << 24) | (1 << 3))
-        first = (r32(g.u, 0x3003DE80 + 12), r32(g.u, 0x3003D840 + 12), r32(g.u, 0x3003D840 + 20))
+        first = (r32(g.u, D2 + 0x1E80 + 12), r32(g.u, D2 + 0x1840 + 12), r32(g.u, D2 + 0x1840 + 20))
         for _ in range(3):                                          # load the project again
-            g.u.mem_write(0x3003DE80 + 4, bytes(16))
+            g.u.mem_write(D2 + 0x1E80 + 4, bytes(16))
             g.u.reg_write(UC_ARM_REG_R0, self.PATH); g.u.reg_write(UC_ARM_REG_SP, STACK)
-            g.u.emu_start(0x08130A18 | 1, 0x08130A1C, count=200000)
+            g.u.emu_start(S.DOC_READ | 1, S.DOC_READ + 4, count=200000)
             w = self.load(g, (0xB7 << 24) | (2 << 3))
-            again = (r32(g.u, 0x3003DE80 + 12), r32(g.u, 0x3003D840 + 12), r32(g.u, 0x3003D840 + 20))
+            again = (r32(g.u, D2 + 0x1E80 + 12), r32(g.u, D2 + 0x1840 + 12), r32(g.u, D2 + 0x1840 + 20))
             self.assertEqual(again, first, "base handle, pool used, next handle: as after the first load")
             self.assertEqual(self.curve(g, (w >> 3) & 0x3FFF), self.CURVES[1])
 
@@ -1373,28 +1382,28 @@ class SidecarLoad(unittest.TestCase):
         g = self.rig(files={})
         w = self.load(g, (0xB7 << 24) | (6 << 17) | (1 << 3) | 1)
         self.assertEqual((w >> 24, (w >> 17) & 0x7F, w & 7), (0xB6, 6, 1), "no curve; condition + lock kept")
-        self.assertEqual(r32(g.u, 0x3003DE80 + 20), 2)
+        self.assertEqual(r32(g.u, D2 + 0x1E80 + 20), 2)
 
     def test_track_settings_load_with_the_project(self):
         trailer = b"TRKS" + struct.pack("<H", 16) + bytes([0, 1] + [0] * 14) + bytes([2, 1] + [0] * 14)
         g = self.rig(files={r"\Projects\H\curves.bnt": sidecar(self.CURVES) + trailer})
-        g.u.mem_write(0x3003DF40, struct.pack("<II", 0x32544541, 1) + bytes([1] * 32))   # previous project's
+        g.u.mem_write(D2 + 0x1F40, struct.pack("<II", 0x32544541, 1) + bytes([1] * 32))   # previous project's
         self.load(g, 0)                                       # any note: the sidecar loads
-        at = bytes(g.u.mem_read(0x3003DF40 + 8, 32))
+        at = bytes(g.u.mem_read(D2 + 0x1F40 + 8, 32))
         self.assertEqual((at[0], at[1], at[16], at[17]), (0, 1, 2, 1), "rec/out from the sidecar")
         self.assertEqual(at[2:16], bytes(14), "others back to defaults")
 
     def test_modulation_settings_load_with_the_project(self):
         """F2a: the MODS chunk after TRKS restores each track's ModTrack; a project
         without one leaves nothing from the previous project."""
-        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x37444F4D
+        CFGB, HEAD, MAG = 0xC6200000, D2 + 0x1FC0, 0x37444F4D  # addr-ok: harness
         rec = bytearray(232); rec[0] = 4; rec[6:8] = struct.pack("<H", 700)      # LFO 1: Sine, depth 700
         trailer = (b"TRKS" + struct.pack("<H", 16) + bytes(32) + b"MODS" + struct.pack("<HH", 8, 232)
                    + bytes(232) + bytes(rec) + bytes(232 * 6))
         for files, want in (({r"\Projects\H\curves.bnt": sidecar(self.CURVES) + trailer}, (4, 700)),
                             ({r"\Projects\H\curves.bnt": sidecar(self.CURVES)}, (4, 1000))):
             g = self.rig(files=files)
-            g.u.mem_map(0xC6000000, 0x400000)
+            g.u.mem_map(S.EXT_POOL_END, 0x400000)
             g.u.mem_write(CFGB, struct.pack("<3I", MAG, 1, 2) + bytes([9]) * (8 * 232))   # previous project's
             g.u.mem_write(HEAD, struct.pack("<8I", MAG, 1, CFGB, ~CFGB & 0xFFFFFFFF, 2, 0, 0, 0))
             self.load(g, 0)
@@ -1411,14 +1420,14 @@ class SidecarLoad(unittest.TestCase):
     def test_note_mod_settings_load_with_the_project(self):
         """F5: the NMOD chunk after MODS restores each track's Note Mod; an older
         sidecar (MODS only) loads with Note Mod off (the defaults)."""
-        CFGB, HEAD, MAG = 0xC6200000, 0x3003DFC0, 0x37444F4D
+        CFGB, HEAD, MAG = 0xC6200000, D2 + 0x1FC0, 0x37444F4D  # addr-ok: harness
         NM = CFGB + 12 + 8 * 232
         base = b"TRKS" + struct.pack("<H", 16) + bytes(32) + b"MODS" + struct.pack("<HH", 8, 232) + bytes(8 * 232)
         rec = struct.pack("<4B2HB3x", 8, 1, 3, 1, 0, 600, 2)                       # Random, synced, 1/2, Triggered, 60 %, 3 Oct
         nmod = b"NMOD" + struct.pack("<HH", 8, 12) + bytes(12) * 3 + rec + bytes(12) * 4
         for trailer, want in ((base + nmod, (8, 1, 3, 1, 0, 600, 2)), (base, (4, 0, 0, 0, 400, 0, 0))):
             g = self.rig(files={r"\Projects\H\curves.bnt": sidecar(self.CURVES) + trailer})
-            g.u.mem_map(0xC6000000, 0x400000)
+            g.u.mem_map(S.EXT_POOL_END, 0x400000)
             g.u.mem_write(CFGB, struct.pack("<3I", MAG, 1, 2) + bytes([9]) * (8 * 232 + 8 * 12))   # previous project's
             g.u.mem_write(HEAD, struct.pack("<8I", MAG, 1, CFGB, ~CFGB & 0xFFFFFFFF, 2, 0, 0, 0))
             self.load(g, 0)
@@ -1432,26 +1441,26 @@ class SidecarLoad(unittest.TestCase):
         g.model_calls = 0
         self.load(g, (0xB7 << 24) | (1 << 3)); self.load(g, 0)
         self.assertEqual(g.model_calls, 0, "no track-model calls during a load")
-        self.assertEqual(r32(g.u, 0x3003DF80), 0, "M7 table cleared: defaults until published")
-        self.assertEqual(r32(g.u, 0x3003DF40 + 40), 1, "publish pending")
+        self.assertEqual(r32(g.u, D2 + 0x1F80), 0, "M7 table cleared: defaults until published")
+        self.assertEqual(r32(g.u, D2 + 0x1F40 + 40), 1, "publish pending")
 
     def test_project_without_sidecar_resets_settings(self):
         g = self.rig(files={})
-        g.u.mem_write(0x3003DF40, struct.pack("<II", 0x32544541, 1) + bytes([1] * 32))
+        g.u.mem_write(D2 + 0x1F40, struct.pack("<II", 0x32544541, 1) + bytes([1] * 32))
         self.load(g, 0)
-        self.assertEqual(bytes(g.u.mem_read(0x3003DF40 + 8, 32)), bytes(32))
+        self.assertEqual(bytes(g.u.mem_read(D2 + 0x1F40 + 8, 32)), bytes(32))
 
     def test_patch_documents_never_open_a_sidecar(self):
         g = self.rig(project=r"\Patches\P\patch.xml")
         self.load(g, (0xB7 << 24) | (1 << 3))
         self.assertEqual(g.opened, [])
-        self.assertEqual(r32(g.u, 0x3003DE80 + 20), 1)
+        self.assertEqual(r32(g.u, D2 + 0x1E80 + 20), 1)
 
     def test_damaged_curve_plays_nothing_others_load(self):
         bad = (8, bytes([0x10, 0xFF, 0xFF, 0xFF]))               # deltas run below 0
         g = self.rig(files={r"\Projects\H\curves.bnt": sidecar([self.CURVES[0], bad, self.CURVES[2]])})
         self.load(g, (0xB7 << 24) | (1 << 3))
-        base = r32(g.u, 0x3003DE80 + 12)
+        base = r32(g.u, D2 + 0x1E80 + 12)
         self.assertEqual(self.curve(g, base), self.CURVES[0])
         self.assertEqual(self.curve(g, base + 1), [], "damaged: empty, plays nothing")
         self.assertEqual(self.curve(g, base + 2), self.CURVES[2])

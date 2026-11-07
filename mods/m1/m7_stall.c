@@ -12,8 +12,8 @@
  * interrupts (IRQ 68/70), the active/pending vector, and the DMA flags. The
  * record lives in reset-surviving RAM; the M4 prints it at the next boot.
  *
- * RAM 0x3003C080..0x3003C100: line 0x3003C080 = M7 tracking (M7 only); lines
- * 0x3003C0A0.. = the record, written and cleaned by the M7 only when it snaps.
+ * RAM SLICE(0x080)..SLICE(0x100): line SLICE(0x080) = M7 tracking (M7 only); lines
+ * SLICE(0x0A0).. = the record, written and cleaned by the M7 only when it snaps.
  * The M4 reads the record after the reset and clears its magic; the M7 never
  * dirties those lines otherwise, so a stale cached copy is never written back.
  */
@@ -31,7 +31,7 @@
 /* Stock HAL tick (ms since this M7 boot; .bss, zeroed at reset). Our tracking
  * line survives resets, so without this guard the normal ~1.4 s display
  * bring-up of the NEXT boot looked like a stall (v3.1-v3.17 records). */
-#define UWTICK (*(volatile u32 *)0x2401EDB8u)
+#define UWTICK (*(volatile u32 *)S_UWTICK)
 #define BOOT_GUARD_MS 5000u
 #define MS_CYC 480000u
 
@@ -43,13 +43,13 @@ typedef struct {
     u32 lisr, hisr, s5cr, s5ndtr, s7cr, s7ndtr;
     u32 mux[2], sai_sr[2];                  /* streams 5, 7: DMAMUX1 request (which SAI block), its SR */
 } Stall7;
-#define ST ((volatile Stall7 *)0x3003C080u)
+#define ST ((volatile Stall7 *)SLICE(0x80u))
 #define STALL7_MAGIC 0x38544C53u /* "SLT8": layout grew (SAI status); m4_diag.c matches */
-_Static_assert(sizeof(Stall7) <= 0x80u, "stall record past 0x3003C100");
+_Static_assert(sizeof(Stall7) <= 0x80u, "stall record past its line");
 
 static void clean_all(void) {
     __asm volatile("dsb" ::: "memory");
-    for (u32 a = 0x3003C080u; a < 0x3003C100u; a += 32) DCCMVAC = a;
+    for (u32 a = SLICE(0x80u); a < SLICE(0x100u); a += 32) DCCMVAC = a;
     __asm volatile("dsb" ::: "memory");
 }
 

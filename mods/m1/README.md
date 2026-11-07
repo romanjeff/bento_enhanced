@@ -83,8 +83,39 @@ The suites are `test_diag`, `test_polyat`, `test_conditions`, `test_holdstep`,
 default build). They run the patched image's real code under Unicorn, including stock functions,
 with hardware, FatFS and a few stock functions stubbed.
 
+**Base tables (S1 of the 1.6.8 port).** Every stock address, RAM address, struct offset,
+registry key, event / page / button id and stock-dependent constant the mod uses has a name in a
+per-base table, [`bases/stock_161.py`](bases/stock_161.py) (hand-maintained) and
+[`bases/stock_168.py`](bases/stock_168.py) (drafted by
+[`tools/addrmap/gen_table.py`](../../tools/addrmap/gen_table.py); entries marked `REVIEW`).
+`build.py --base` picks the table by the image's SHA-256 and refuses an unknown image or a table
+with any `REVIEW` entry; tests and the display emulator get an error on a `REVIEW` entry unless
+they load the draft (`allow_draft=True`). The names reach build.py as `S.NAME`, the C and asm
+through the generated `stock_syms.h` (`S_NAME`, written into the build dir and force-included
+with `-include`; our shared lines are `SLICE(offset)` into `S_D2_SLICE`), and the tests and display
+emulator through `bases.from_build(out_dir)` (manifest `base`). Track and view field offsets stay
+literal (measured / inferred unchanged in 1.6.8); model, router and header-bar fields, the keys
+and the stock event ids are named. Tests keep their own literal event ids and stock action ids as
+inputs (they are the tests' independent expectations); struct offsets they write into come from
+the table.
+
+Three checks keep a table honest, all run by every build:
+- **image checks**: `CHECKS` at the end of each table holds a fingerprint of the 16 image bytes at
+  every code / data address and the literal count of every RAM address
+  ([`tools/addrmap/fingerprints.py`](../../tools/addrmap/fingerprints.py) writes it; rerun it
+  after deliberately changing an address). An address edited without looking at the image again
+  is refused.
+- **independent record**: [`expected_values.py`](expected_values.py) repeats every offset, key and
+  event id (and the registry size) per base, typed separately; the table must agree with it.
+- **literal check**: [`bases/literal_check.py`](bases/literal_check.py) refuses a bare stock-flash or
+  RAM address literal in the sources, tests or emulator (comments may cite 1.6.1 addresses;
+  test-harness scratch memory carries an `addr-ok` comment). It finds addresses only: offsets,
+  keys and event ids are kept out of the sources by review, and checked by the record above.
+
 The builder checks:
-- the base image's hash and the original bytes at every patch site;
+- the base image's hash and the original bytes at every patch site (the table's `orig`, plus
+  each wrapper's replayed prologue against those bytes, and for the two probability helpers
+  that re-implement a stretch of stock code, a SHA-256 of that stretch);
 - that undoing every write reproduces stock exactly;
 - the image size limit (≤ `0x18D334`, the largest the bootloader has accepted);
 - that nothing reaches `0x081E0000`.

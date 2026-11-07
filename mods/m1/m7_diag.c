@@ -13,13 +13,17 @@
  */
 #include "diag_shared.h"
 
+#define EV_PRESS S_EV_PAD_PRESS        /* engine input: pad press / release / pressure */
+#define EV_RELEASE S_EV_PAD_RELEASE
+#define EV_PRESSURE S_EV_PAD_PRESSURE
+_Static_assert(S_EV_PAD_RELEASE == S_EV_PAD_PRESS + 1u && S_EV_PAD_PRESSURE == S_EV_PAD_PRESS + 2u, "pad events are a range");
 #define CYCCNT (*(volatile u32 *)0xE0001004u)
 #define DCCMVAC (*(volatile u32 *)0xE000EF68u) /* clean D-cache line to PoC */
 #define DCIMVAC (*(volatile u32 *)0xE000EF5Cu) /* invalidate D-cache line */
 
 #define DEDUPE ((volatile u32 *)PRIV_BASE)          /* 32 x {queue, lr} */
 #define DEDUPE_N 16u
-/* M7-private line 0x3003C1C0: flags[8] | region ptr (C8) | region gen (CC) | GEN (D0) */
+/* M7-private line SLICE(0x1C0): flags[8] | region ptr (C8) | region gen (CC) | GEN (D0) */
 #define FLAGS ((volatile u8 *)(PRIV_BASE + 0x80u)) /* armed "log the first X after a press":
                                                         [0] input AE, [1] send AE, [2] send 0x0E,
                                                         [3] send 0x5F, [4] ring 0x5F */
@@ -104,9 +108,9 @@ static void put(u32 kind, u32 lr, u32 obj, const u32 *ev, u32 extra) {
 
 static int interesting_send(u32 t) {
     switch (t) {
-    case 0x5B: case 0x5C:                       /* MIDI-out note on/off (bend 0x5D / CC 0x5E: streams, v3.44) */
-    case 0xB9: case 0xBA:                       /* note on/off to an object (seen in FUN_0805d200) */
-    case 0x02: case 0x03:                       /* internal note on/off to a track (FUN_08062020) */
+    case S_EV_MIDI_NOTE_ON: case S_EV_MIDI_NOTE_OFF:                       /* MIDI-out note on/off (bend 0x5D / CC 0x5E: streams, v3.44) */
+    case S_EV_OBJ_NOTE_ON: case S_EV_OBJ_NOTE_OFF:                       /* note on/off to an object (seen in FUN_0805d200) */
+    case S_EV_TRACK_NOTE_ON: case S_EV_TRACK_NOTE_OFF:                       /* internal note on/off to a track (FUN_08062020) */
     /* (pad 0xAC/0xAD are covered by the PAD records; their 3-4 queue copies are not logged) */
         return 1;
     }
@@ -122,24 +126,24 @@ static u32 strike_vel(const u32 *ev) {
 static void strike(const u32 *ev, u32 t) {
     u32 p = ev[3];
     if (p >= 16u) return;
-    if (t == 0xACu) {
+    if (t == EV_PRESS) {
         STRIKES->seq[p] = (u8)(STRIKES->seq[p] + 1u);
         STRIKES->vel[p] = (u8)strike_vel(ev);
         STRIKE_PEAK[p] = STRIKE_PEAK_SAMPLES;
-    } else if (t == 0xAEu && STRIKE_PEAK[p]) {
+    } else if (t == EV_PRESSURE && STRIKE_PEAK[p]) {
         STRIKE_PEAK[p] = (u8)(STRIKE_PEAK[p] - 1u);
         u32 v = strike_vel(ev);
         if (v <= STRIKES->vel[p]) return;
         STRIKES->vel[p] = (u8)v;
     } else {
-        if (t == 0xADu) STRIKE_PEAK[p] = 0;
+        if (t == EV_RELEASE) STRIKE_PEAK[p] = 0;
         return;
     }
     clean(STRIKES, sizeof(Strikes));
 }
 
 /* M2 pressure capture (see CapSlot in diag_shared.h). */
-#define UWTICK (*(volatile u32 *)0x2401EDB8u)    /* stock M7 HAL tick, ms */
+#define UWTICK (*(volatile u32 *)S_UWTICK)    /* stock M7 HAL tick, ms */
 static volatile CapBlock *cap_block(void) {
     DCIMVAC = (u32)CAPCFG & ~31u;                 /* M4-written line: never dirty here */
     dsb();
@@ -159,7 +163,7 @@ static void cap(const u32 *ev, u32 t) {
     if (!b) return;
     u32 now = UWTICK, seq = STRIKES->seq[p];
     volatile CapSlot *s = &b->slot[p][seq & 1u];
-    if (t == 0xACu) {                             /* strike() has counted this press */
+    if (t == EV_PRESS) {                             /* strike() has counted this press */
         s->done = 0; s->seq = seq; s->t0 = now; s->t_end = now;
         s->shift = 0; s->s[0] = (u8)strike_vel(ev); s->n = 1;
         return;
@@ -171,10 +175,10 @@ static void cap(const u32 *ev, u32 t) {
         s->n = (s->n + 1u) / 2u; s->shift++;
         idx = ((now - s->t0) / CAP_MS) >> s->shift;
     }
-    if (t == 0xAEu) {
+    if (t == EV_PRESSURE) {
         cap_fill(s, idx);
         s->s[idx] = (u8)strike_vel(ev);
-    } else if (t == 0xADu) {
+    } else if (t == EV_RELEASE) {
         cap_fill(s, idx);
         s->t_end = now; s->done = 1;
     }
@@ -183,10 +187,10 @@ static void cap(const u32 *ev, u32 t) {
 __attribute__((used, retain)) void h_input(u32 engine, const u32 *ev) {
     u32 t = ev[0] & 0xFF;
     diag_sp();
-    if (t == 0xAC) FLAGS[0] = 1;
-    if (t >= 0xAC && t <= 0xAE) { strike(ev, t); cap(ev, t); }
-    if (t == 0xAC || t == 0xAD || (t == 0xAE && FLAGS[0])) {
-        if (t == 0xAE) FLAGS[0] = 0; /* only the first pressure event after a press */
+    if (t == EV_PRESS) FLAGS[0] = 1;
+    if (t >= EV_PRESS && t <= EV_PRESSURE) { strike(ev, t); cap(ev, t); }
+    if (t == EV_PRESS || t == EV_RELEASE || (t == EV_PRESSURE && FLAGS[0])) {
+        if (t == EV_PRESSURE) FLAGS[0] = 0; /* only the first pressure event after a press */
         put(K_PAD, 0, engine, ev, 0);
     }
 }
@@ -194,13 +198,13 @@ __attribute__((used, retain)) void h_input(u32 engine, const u32 *ev) {
 __attribute__((used, retain)) void h_send(u32 queue, const u32 *ev, u32 lr) {
     u32 t = ev[0] & 0xFF;
     diag_sp();
-    if (t == 0xAC) FLAGS[1] = FLAGS[2] = FLAGS[3] = FLAGS[4] = 1;
+    if (t == EV_PRESS) FLAGS[1] = FLAGS[2] = FLAGS[3] = FLAGS[4] = 1;
     /* Raw pressure 0xAE, native poly pressure 0x0E and our 0x5F flood at up to
      * audio-tick / 100 Hz rates: log only the first of each after a press. */
-    if (interesting_send(t) || (t == 0xAE && FLAGS[1]) || (t == 0x0E && FLAGS[2]) || (t == 0x5F && FLAGS[3])) {
-        if (t == 0xAE) FLAGS[1] = 0;
-        if (t == 0x0E) FLAGS[2] = 0;
-        if (t == 0x5F) FLAGS[3] = 0;
+    if (interesting_send(t) || (t == EV_PRESSURE && FLAGS[1]) || (t == S_EV_VOICE_PRESSURE && FLAGS[2]) || (t == S_EV_MIDI_POLY_AT && FLAGS[3])) {
+        if (t == EV_PRESSURE) FLAGS[1] = 0;
+        if (t == S_EV_VOICE_PRESSURE) FLAGS[2] = 0;
+        if (t == S_EV_MIDI_POLY_AT) FLAGS[3] = 0;
         put(K_SEND, lr, queue, ev, 0);
     }
 }
@@ -225,14 +229,14 @@ __attribute__((used, retain)) void h_ring(u32 obj, const u32 *ev) {
         put(K_RING, 0, obj, ev, 0x100u | fill);
         return;
     }
-    if (t >= 0x61 && t <= 0x63) return; /* clock/start/stop: too frequent, not needed */
+    if (t >= S_EV_MIDI_RT_FIRST && t <= S_EV_MIDI_RT_LAST) return; /* clock/start/stop: too frequent, not needed */
     /* Bend, CC and channel pressure come as modulation streams (v3.41+: up to
      * 400/s per port). Tracing each one filled the 256 KB session log within
      * seconds and kept the UI task formatting records (BE-MT1 froze its UI loop
      * after 142 s; BE-MT3's first save then wrote 0 bytes and later saves had
      * nothing left to add). Overwrites are still logged above. */
-    if (t == 0x5D || t == 0x5E || t == 0x60) return;
-    if (t == 0x5F) {                     /* our pressure: first after each press only */
+    if (t == S_EV_MIDI_BEND || t == S_EV_MIDI_CC || t == S_EV_MIDI_CHAN_AT) return;
+    if (t == S_EV_MIDI_POLY_AT) {                     /* our pressure: first after each press only */
         if (!FLAGS[4]) return;
         FLAGS[4] = 0;
     }
@@ -248,11 +252,11 @@ __attribute__((used, retain)) void h_ring(u32 obj, const u32 *ev) {
  * The heap list is only followed through aligned addresses inside the heap, so a walk
  * racing the allocator can give a wrong figure but not a fault. */
 #define G(a) (*(volatile u32 *)(a))
-#define HEAP_LO 0x2401EDC0u
-#define HEAP_HI 0x24048DA0u
+#define HEAP_LO S_M7_HEAP_START
+#define HEAP_HI S_M7_HEAP_END
 #define HEAP_WALK_MAX 64u
 /* Stock's ring object through the alias stock's M7 writes it by (shareable, not cached). */
-#define LOADOBJ 0x100451BCu
+#define LOADOBJ S_LOAD_RING
 #define BLOCK_BUDGET_DIV256 5000u                /* 1,280,000 cycles, stock's constant */
 
 static void load_clear(volatile D0Load *l) {
@@ -263,12 +267,12 @@ static void load_clear(volatile D0Load *l) {
 
 #define G8(a) (*(volatile u8 *)(a))
 #define G16(a) (*(volatile u16 *)(a))
-#define LINK 0x2401D830u                         /* stock's Controller link object */
-#define PANEL_BOOTED 0x2401D0AAu                 /* Controller word: nonzero right after it boots */
-#define PANEL_CRC 0x2401D0B4u
-#define PANEL_TYPE 0x2401D070u                   /* frame type: 3 = panel data */
-#define PANEL_BUTTONS 0x2401D078u
-#define SPI1_HANDLE 0x2401E1B8u
+#define LINK S_CTRL_LINK                         /* stock's Controller link object */
+#define PANEL_BOOTED S_PANEL_BOOTED                 /* Controller word: nonzero right after it boots */
+#define PANEL_CRC S_PANEL_CRC
+#define PANEL_TYPE S_PANEL_TYPE                   /* frame type: 3 = panel data */
+#define PANEL_BUTTONS S_PANEL_BUTTONS
+#define SPI1_HANDLE S_SPI1_HANDLE
 
 static void load_block(void) {
     volatile D0Count *c = D0C;
@@ -293,7 +297,7 @@ static void load_block(void) {
         if (pm > l->peak) l->peak = pm;
         l->h[pm < 500u ? 0 : pm < 800u ? 1 : pm < 1000u ? 2 : 3]++;
         volatile M7Probe *q = PROBE;
-        u32 seq = G(0x2401D678u + 4u);
+        u32 seq = G(S_PASS_TIMER + 4u);
         if (q->seq_n >= 0x100000u) { q->seq_sum >>= 1; q->seq_n >>= 1; }   /* cycles >> 8: no overflow */
         q->seq_sum += seq >> 8; q->seq_n++;
         if (seq > q->seq_peak) q->seq_peak = seq;
@@ -308,18 +312,18 @@ static void load_block(void) {
  * hasn't reported yet: leave the previous run's figures for its boot print. GEN moves soon
  * after that print, and the new-boot path in d0_publish then clears them. */
 static int d0_unreported_reset(void) {
-    return D0A->magic == D0_MAGIC && D0A->gen == GEN && G(0x2401D9D8u) < D0C->blocks;
+    return D0A->magic == D0_MAGIC && D0A->gen == GEN && G(S_AUDIO_BLOCK_STATS) < D0C->blocks;
 }
 
 /* One read-only price check: cycles for 8 Device reads (M4 pool) and 8 cached fills (free ext pool
  * space; clean + invalidate keeps any data there). Interrupts off for about 3 us, a few times a second.
  * The lines are below the region, so maintenance never touches it. A fill can evict a region line
  * that shares its set (the region spans every set), which only writes it back: no data is lost. */
-#define PROBE_FREE 0xC5FF0000u
+#define PROBE_FREE S_PROBE_SCRATCH
 _Static_assert(PROBE_FREE + 8u * 32u <= M1_REGION_ADDR, "the price check stays out of the region");
 static void mem_probe(void) {
     u32 b = CAPCFG->block;                        /* only an address: read here, not followed unless in range */
-    if (b < 0xC6000000u || b >= 0xC8000000u || (b & 31u)) return;
+    if (b < S_EXT_POOL_END || b >= 0xC8000000u || (b & 31u)) return;
     volatile M7Probe *q = PROBE;
     u32 c = PROBE_FREE, s = 0, pm;
     __asm volatile("mrs %0, primask\n cpsid i" : "=r"(pm)::"memory");
@@ -344,7 +348,7 @@ static void d0_publish(void) {
     volatile D0Count *c = D0C;
     volatile D0Load *l = D0L;
     u32 free = 0, largest = 0, chunks = 0, bad = 0;
-    for (u32 p = G(0x24000178u); p; p = G(p)) {
+    for (u32 p = G(S_M7_HEAP_FREELIST); p; p = G(p)) {
         if (p < HEAP_LO || p >= HEAP_HI - 8u || (p & 3u) || chunks >= HEAP_WALK_MAX) { bad = 1; break; }
         u32 size = G(p + 4u);
         free += size;
@@ -369,19 +373,19 @@ static void d0_publish(void) {
     clean(PROBE, sizeof(M7Probe));
     d->heap_free = free; d->chunks = chunks; d->largest = largest; d->bad = bad;
     if (!bad && free < d->heap_min) d->heap_min = free;
-    d->dtcm_used = G(0x2401B0B8u); d->axi_used = G(0x24000448u);
-    d->ext_left = G(0x24000160u); d->shared_left = G(0x2400016Cu);
-    d->wrong_half = G(0x2401D9D8u + 4u);
-    d->head_min = d->wrong_half ? G(0x2401D9D8u + 0x18u) : G(0x2401D9D8u + 0xCu);
-    d->gap_over = G(0x2401D9F8u + 0x10u); d->gap_max = G(0x2401D9F8u + 8u);
-    c->blocks = G(0x2401D9D8u); c->events = G(0x2401D33Cu) >> 1;
-    c->waited = G(0x2401D9F8u + 0x1Cu); c->timeouts = G(0x2401D9F8u + 0x14u);
-    c->max_polls = G(0x2401D9F8u + 0x18u); c->gap_under = G(0x2401D9F8u + 0xCu);
+    d->dtcm_used = G(S_DTCM_USED); d->axi_used = G(S_AXI_USED);
+    d->ext_left = G(S_POOL_LEFT_RAM); d->shared_left = G(S_SHARED_POOL_LEFT);
+    d->wrong_half = G(S_AUDIO_BLOCK_STATS + 4u);
+    d->head_min = d->wrong_half ? G(S_AUDIO_BLOCK_STATS + 0x18u) : G(S_AUDIO_BLOCK_STATS + 0xCu);
+    d->gap_over = G(S_AUDIO_GAP_STATS + 0x10u); d->gap_max = G(S_AUDIO_GAP_STATS + 8u);
+    c->blocks = G(S_AUDIO_BLOCK_STATS); c->events = G(S_AUDIO_DMA_EVENTS) >> 1;
+    c->waited = G(S_AUDIO_GAP_STATS + 0x1Cu); c->timeouts = G(S_AUDIO_GAP_STATS + 0x14u);
+    c->max_polls = G(S_AUDIO_GAP_STATS + 0x18u); c->gap_under = G(S_AUDIO_GAP_STATS + 0xCu);
     volatile D0Link *k = D0LINK;
     k->rx = G(LINK + 0x194u); k->bad = G(LINK + 0x19Cu); k->tx = G(LINK + 0x190u);
     if (k->rx < k->rx_prev) k->restarts++;
     k->rx_prev = k->rx;
-    k->version = G16(LINK + 0x1A2u); k->reboots = G(0x24000450u);
+    k->version = G16(LINK + 0x1A2u); k->reboots = G(S_LINK_REBOOTS);
     k->spi_state = G8(SPI1_HANDLE + 0x81u);
     k->frame_type = G8(PANEL_TYPE);
     clean(k, sizeof(D0Link));

@@ -27,28 +27,28 @@
 #define W(p, o) (*(volatile u32 *)((u8 *)(p) + (o)))
 #define H(p, o) (*(volatile u16 *)((u8 *)(p) + (o)))
 #define B(p, o) (*(volatile u8 *)((u8 *)(p) + (o)))
-#define MODEL ((void *)0x30024B00u)
-#define REGISTRY (*(volatile u32 *)0x30031484u)
-#define REG_KEYS 499u
-#define DRUM_KEYS ((volatile u16 *)0x300000BCu)   /* step view's 8 slot keys */
-#define UI_TICK_MS (*(volatile u32 *)0x30035F40u)
+#define MODEL ((void *)S_MODEL)
+#define REGISTRY (*(volatile u32 *)S_REGISTRY)
+#define REG_KEYS S_REG_KEYS
+#define DRUM_KEYS ((volatile u16 *)S_DRUM_KEYS)   /* step view's 8 slot keys */
+#define UI_TICK_MS (*(volatile u32 *)S_UI_TICK_MS)
 
-#define XML_FIND 0x08109C64u      /* (node, name) -> attr */
-#define XML_GET_U32 0x08109566u   /* (attr, &v) -> 0 ok */
-#define XML_ADD 0x08109CDCu       /* (node, name) -> attr */
-#define XML_SET_U32 0x0810958Eu   /* (attr, v) */
-#define NOTE_GET 0x0810D2C0u      /* (container, i, rec) -> ok */
-#define NOTE_PUT 0x0810D1AAu      /* (container, rec) */
-#define PUBLISH 0x08136544u       /* (MODEL, view+0x113E4, container) */
-#define SEQ_COPY 0x0812E6D8u      /* (model, sequence handle, dest container): the sequence's notes -> dest */
-#define MODEL_SCRATCH ((void *)((u8 *)MODEL + 0x3C80))   /* stock's shared working container (12 KB), refilled per use */
-#define GRID 0x0815C4B8u          /* (view) */
-#define STEP_MATCH 0x0815B9C0u    /* (view, absolute step) -> held/selected */
-#define ANY_SELECTED 0x0815BAB0u  /* (view) */
-#define SNAPSHOT 0x0815BA04u      /* (view, rec) -> selected note */
-#define SLOT_SET 0x08171C1Cu      /* (slot, key, value, 1) */
-#define SLOT_TITLE 0x0817E85Eu    /* (slot + 0x3C8, text) */
-#define BAR_TEXT 0x08170656u      /* (bar, slot, text or 0) */
+#define XML_FIND S_XML_FIND      /* (node, name) -> attr */
+#define XML_GET_U32 S_XML_GET_U32   /* (attr, &v) -> 0 ok */
+#define XML_ADD S_XML_ADD       /* (node, name) -> attr */
+#define XML_SET_U32 S_XML_SET_U32   /* (attr, v) */
+#define NOTE_GET S_NOTE_GET      /* (container, i, rec) -> ok */
+#define NOTE_PUT S_NOTE_PUT      /* (container, rec) */
+#define PUBLISH S_PUBLISH       /* (MODEL, view+0x113E4, container) */
+#define SEQ_COPY S_SEQ_COPY      /* (model, sequence handle, dest container): the sequence's notes -> dest */
+#define MODEL_SCRATCH ((void *)((u8 *)MODEL + S_MODEL_WORK))   /* stock's shared working container (12 KB), refilled per use */
+#define GRID S_GRID          /* (view) */
+#define STEP_MATCH S_STEP_MATCH    /* (view, absolute step) -> held/selected */
+#define ANY_SELECTED S_ANY_SELECTED  /* (view) */
+#define SNAPSHOT S_SNAPSHOT      /* (view, rec) -> selected note */
+#define SLOT_SET S_SLOT_SET      /* (slot, key, value, 1) */
+#define SLOT_TITLE S_SLOT_TITLE    /* (slot + 0x3C8, text) */
+#define BAR_TEXT S_BAR_TEXT      /* (bar, slot, text or 0) */
 
 static const char ATTR[] = "be_step_v1";
 
@@ -125,7 +125,7 @@ __attribute__((used, retain)) void step_load(void *node, void *rec) {
 /* ---- registry keys -------------------------------------------------------- */
 
 typedef struct { u32 magic, gen; u16 ok, key[11]; } StepUI;   /* one M4-only line */
-#define SU ((volatile StepUI *)0x3003C880u)
+#define SU ((volatile StepUI *)SLICE(0x880u))
 #define SU_MAGIC 0x36505453u /* "STP6": eleven keys (+ Range) since v3.59 */
 #define SU_KEYS 11u
 _Static_assert(sizeof(StepUI) <= 32, "step UI state is one cache line");
@@ -158,7 +158,7 @@ static void nm_desc(u16 *key, u32 *val);
 static int nm_key(u32 key);
 static void nm_edit(u32 key, u32 value);
 static void nm_slots(void *v, void *bar, u32 first, u32 desc);
-#define NM_ACTION 0x10F3u          /* SEQ header button: the bar shows Note Mod (v3.62) */
+#define NM_ACTION S_ACT_NM         /* SEQ header button: the bar shows Note Mod (v3.62) */
 
 /* Claim SU_KEYS empty registry keys (from the top), once per boot. */
 static int claim(void) {
@@ -376,7 +376,7 @@ __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
     if (!SU->ok || !drum_step_view(v)) return 0;
     if (nm_mode() && nm_key(key)) {                 /* Note Mod (v3.62) */
         nm_edit(key, value < 0 ? 0u : (u32)value);
-        FN(0x0815C27Cu, void (*)(void *))(v);
+        FN(S_DRUM_HEADER, void (*)(void *))(v);
         return 1;
     }
     u32 which = 4;
@@ -400,7 +400,7 @@ __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
         FN(PUBLISH, void (*)(void *, void *, void *))(MODEL, (u8 *)v + 0x113E4, container);
         FN(GRID, void (*)(void *))(v);
     }
-    FN(0x0815C27Cu, void (*)(void *))(v);   /* rebuild the header: shows the new values */
+    FN(S_DRUM_HEADER, void (*)(void *))(v);   /* rebuild the header: shows the new values */
     return 1;
 }
 
@@ -412,12 +412,12 @@ __attribute__((used, retain)) int step_encoder(void *v, u32 key, int value) {
  * Any view (drum Sequence page): stock's insert (0x0812E070, strike_insert)
  * applies the strike of the note's pad if it is fresh and unused.
  * Applied strikes are locked if they differ from the pad default. */
-#define STEP_HAS_NOTE 0x0815BCB4u   /* (view, visible index) */
+#define STEP_HAS_NOTE S_STEP_HAS_NOTE   /* (view, visible index) */
 #define STRIKE_WINDOW_MS 3000u
 #define STRIKE_FRESH_MS 500u
-#define BUMP_CUR (*(volatile u32 *)0x3000004Cu)
-#define BUMP_END (*(volatile u32 *)0x30000048u)
-#define BUMP_ALLOC 0x08104C08u
+#define BUMP_CUR (*(volatile u32 *)S_UI_BUMP_CUR)
+#define BUMP_END (*(volatile u32 *)S_UI_BUMP_END)
+#define BUMP_ALLOC S_UI_BUMP_ALLOC
 
 typedef struct {
     u32 gen;
@@ -598,9 +598,9 @@ __attribute__((used, retain)) void toggle_post(void *v, u32 idx, u32 had) {
  * (view+0x122D28) and stock's commit FUN_08157860, like stock's own edits. */
 #define PIANO_SLOT 6u
 #define PIANO_SEL 0x122D28u
-#define PIANO_SELECTED 0x0815884Cu   /* (view, sel list, &n, rec) */
-#define PIANO_COMMIT 0x08157860u     /* (view) */
-#define PIANO_HEADER 0x081599BCu     /* (view): patched entry */
+#define PIANO_SELECTED S_PIANO_SELECTED   /* (view, sel list, &n, rec) */
+#define PIANO_COMMIT S_PIANO_COMMIT     /* (view) */
+#define PIANO_HEADER S_PIANO_HEADER     /* (view): patched entry */
 
 static int piano_note_view(void *v) { return v && !B(v, 0x125DAC) && W(v, 0x11CD00); }
 
@@ -640,9 +640,10 @@ __attribute__((used, retain)) void piano_header_after(void *v) {
     if (!has) FN(BAR_TEXT, void (*)(void *, u32, const char *))(bar, PIANO_SLOT, "--");
 }
 
-#define TAB_EVENT 0x49u              /* header tabs: Event (drum: Step), Sequence, Automation */
-#define TAB_SEQUENCE 0x4Au
-#define TAB_AUTOMATION 0x4Bu
+#define TAB_EVENT S_EV_TAB_EVENT     /* header tabs: Event (drum: Step), Sequence, Automation */
+#define TAB_SEQUENCE S_EV_TAB_SEQUENCE
+#define TAB_AUTOMATION S_EV_TAB_AUTOMATION
+#define EV_ENCODER S_EV_ENCODER     /* view event: encoder slot value (ev[2] key, ev[3] value) */
 /* Piano-roll event handler entry 0x0815A598 (view, event). 1 = handled. */
 int strike_event(void *v, const u16 *ev);
 static int at_event(void *v, const u32 *ev);
@@ -650,14 +651,14 @@ __attribute__((used, retain)) int piano_event(void *v, const u32 *ev) {
     if ((ev[0] & 0xFFFFu) == STRIKE_ACTION || (ev[0] & 0xFFFFu) == NM_ACTION) return strike_event(v, (const u16 *)ev);
     if (SU->ok && nm_mode() && (ev[0] & 0xFFFFu) >= TAB_EVENT && (ev[0] & 0xFFFFu) <= TAB_AUTOMATION)
         nm_set(0);                                  /* a tab is a way back: stock then rebuilds the bar */
-    if (SU->ok && v && nm_mode() && (ev[0] & 0xFFFFu) == 0xCFu && nm_key(ev[2])) {   /* Note Mod (v3.62) */
+    if (SU->ok && v && nm_mode() && (ev[0] & 0xFFFFu) == EV_ENCODER && nm_key(ev[2])) {   /* Note Mod (v3.62) */
         nm_edit(ev[2], (int)ev[3] < 0 ? 0u : ev[3]);
         FN(PIANO_HEADER, void (*)(void *))(v);
         return 1;
     }
-    if (SU->ok && v && B(v, 0x125DAC) && (ev[0] & 0xFFFFu) == 0xCFu && (ev[2] == SU->key[4] || ev[2] == SU->key[5]))
+    if (SU->ok && v && B(v, 0x125DAC) && (ev[0] & 0xFFFFu) == EV_ENCODER && (ev[2] == SU->key[4] || ev[2] == SU->key[5]))
         return at_event(v, ev);
-    if (!SU->ok || !piano_note_view(v) || (ev[0] & 0xFFFFu) != 0xCFu || ev[2] != SU->key[0]) return 0;
+    if (!SU->ok || !piano_note_view(v) || (ev[0] & 0xFFFFu) != EV_ENCODER || ev[2] != SU->key[0]) return 0;
     void *sel = (u8 *)v + PIANO_SEL;
     u32 e[6], changed = 0;
     int value = (int)ev[3];
@@ -677,42 +678,51 @@ __attribute__((used, retain)) int piano_event(void *v, const u32 *ev) {
 
 /* ---- "Strike Vel" button in the header bar (drum step / sequence view) ----
  * From bento-community-lab's header_actions.c (GPL-3.0-or-later), which put
- * its Select toggle in the same place. Stock's header description (0x1C4 B,
- * generated each UI tick by 0x08134800) holds six 48-byte action records at
- * +0x74: +0x00 label, +0x20 empty, +0x21 active (lit outline), +0x22 tab group,
- * +0x2C action id. On SEQ page 0x27 the free slots are 3 and 4 (between
+ * its Select toggle in the same place. Stock's header description (S_HEADER_DESC_SIZE,
+ * 1.6.1: 0x1C4 B, generated each UI tick by HEADER_GEN) holds HEADER_ACTIONS action
+ * records of HEADER_ACTION_SIZE at HEADER_DESC_ACTIONS (1.6.1: six of 48 B at +0x74):
+ * +0x00 label, then (S_HEADER_ACTION_*) empty, active (lit outline), tab group, action id. On SEQ page 0x27 the free slots are 3 and 4 (between
  * Sequence and Undo); we take the rightmost free normal slot, left of Undo.
  * Stock applies a slot's visibility only while the header root's layout flag
- * (+0x117C) is armed (page change), so header_sync re-arms it when our button
- * differs from the applied header (root+0x34). The button's action id arrives
+ * (S_HEADER_ARMED) is armed (page change), so header_sync re-arms it when our button
+ * differs from the applied header (root + S_HEADER_APPLIED). The button's action id arrives
  * at the drum view's event handler (0x0815D600). */
-#define HEADER_ROOT ((volatile u8 *)0x30034D48u)
-#define HEADER_ROOT_VTABLE 0x081B3680u
-#define REC(p, i) ((volatile u8 *)(p) + 0x74u + (u32)(i) * 48u)
-#define MODEL_PAGE (*(volatile u8 *)((u8 *)MODEL + 0x12C))
+#define HEADER_ROOT ((volatile u8 *)S_HEADER_ROOT)
+#define HEADER_ROOT_VTABLE S_HEADER_ROOT_VTABLE
+#define REC(p, i) ((volatile u8 *)(p) + S_HEADER_DESC_ACTIONS + (u32)(i) * S_HEADER_ACTION_SIZE)
+#define NREC S_HEADER_ACTIONS
+#define R_EMPTY S_HEADER_ACTION_EMPTY   /* the label is below it: at most R_EMPTY - 1 characters */
+#define R_LIT S_HEADER_ACTION_LIT
+#define R_GROUP S_HEADER_ACTION_GROUP
+#define R_ID S_HEADER_ACTION_ID
+#define APPLIED (HEADER_ROOT + S_HEADER_APPLIED)
+#define ARM_HEADER() (HEADER_ROOT[S_HEADER_ARMED] = 1)
+#define MODEL_PAGE (*(volatile u8 *)((u8 *)MODEL + S_MODEL_PAGE))
+#define PAGE_SEQ S_PAGE_SEQ
+#define PAGE_SEQ_DRUM S_PAGE_SEQ_DRUM
 static const char STRIKE_LABEL[] = "Strike Vel";
 
-static u32 rid(volatile const u8 *r) { return (u32)r[44] | ((u32)r[45] << 8); }
+static u32 rid(volatile const u8 *r) { return (u32)r[R_ID] | ((u32)r[R_ID + 1] << 8); }
 
 /* Put (or update) our lit/unlit button; 1 if the description changed. */
 static int header_action_lit(void *out, u32 id, const char *label, int lit) {
-    for (u32 i = 0; i < 6; i++) {
+    for (u32 i = 0; i < NREC; i++) {
         volatile u8 *d = REC(out, i);
         if (rid(d) != id) continue;
-        int change = d[0x20] != 0 || d[0x21] != (lit ? 1 : 0);
-        d[0x20] = 0; d[0x21] = lit ? 1 : 0;
+        int change = d[R_EMPTY] != 0 || d[R_LIT] != (lit ? 1 : 0);
+        d[R_EMPTY] = 0; d[R_LIT] = lit ? 1 : 0;
         u32 n = 0;
-        do { if (d[n] != (u8)label[n]) change = 1; d[n] = (u8)label[n]; } while (label[n++] && n < 31);
-        d[31] = 0;
+        do { if (d[n] != (u8)label[n]) change = 1; d[n] = (u8)label[n]; } while (label[n++] && n < R_EMPTY - 1u);
+        d[R_EMPTY - 1u] = 0;
         return change;
     }
-    for (int i = 5; i >= 0; i--) {                   /* rightmost free normal slot */
+    for (int i = (int)NREC - 1; i >= 0; i--) {       /* rightmost free normal slot */
         volatile u8 *d = REC(out, i);
-        if (rid(d) || d[0] || d[0x22]) continue;
-        for (u32 j = 0; j < 48; j++) d[j] = 0;
+        if (rid(d) || d[0] || d[R_GROUP]) continue;
+        for (u32 j = 0; j < S_HEADER_ACTION_SIZE; j++) d[j] = 0;
         u32 n = 0;
-        do { d[n] = (u8)label[n]; } while (label[n++] && n < 31);
-        d[31] = 0; d[0x21] = lit ? 1 : 0; d[44] = (u8)id; d[45] = (u8)(id >> 8);
+        do { d[n] = (u8)label[n]; } while (label[n++] && n < R_EMPTY - 1u);
+        d[R_EMPTY - 1u] = 0; d[R_LIT] = lit ? 1 : 0; d[R_ID] = (u8)id; d[R_ID + 1] = (u8)(id >> 8);
         return 1;
     }
     return 0;
@@ -720,14 +730,14 @@ static int header_action_lit(void *out, u32 id, const char *label, int lit) {
 
 static void header_sync(void *out) {
     if (*(volatile u32 *)HEADER_ROOT != HEADER_ROOT_VTABLE) return;
-    for (u32 i = 0; i < 6; i++) {
-        volatile u8 *a = REC(out, i), *b = REC(HEADER_ROOT + 0x34, i);
+    for (u32 i = 0; i < NREC; i++) {
+        volatile u8 *a = REC(out, i), *b = REC(APPLIED, i);
         u32 ia = rid(a), ib = rid(b);
         if (ia != STRIKE_ACTION && ib != STRIKE_ACTION && ia != ROWS_ACTION && ib != ROWS_ACTION && ia != MOD_ACTION && ib != MOD_ACTION
             && ia != NM_ACTION && ib != NM_ACTION)
             continue;
-        if (rid(a) != rid(b) || a[0x20] != b[0x20] || a[0x21] != b[0x21] || a[0x22] != b[0x22]) {
-            HEADER_ROOT[0x117C] = 1;
+        if (rid(a) != rid(b) || a[R_EMPTY] != b[R_EMPTY] || a[R_LIT] != b[R_LIT] || a[R_GROUP] != b[R_GROUP]) {
+            ARM_HEADER();
             return;
         }
     }
@@ -739,11 +749,11 @@ static void header_sync(void *out) {
  * Step and Sequence tabs; 0x17 = the piano view object, for every other kind and for a
  * one-shot track when SEQ toggles it there. */
 static int drum_track_selected(void) {
-    u32 track = FN(0x0812DC74u, u32 (*)(void *, u32))((u8 *)MODEL + 4, 0x131), h = 0;
-    if (!FN(0x08133960u, u32 (*)(void *, u32, u32 *))(MODEL, track, &h)) return 0;
+    u32 track = FN(S_GET_PROPERTY, u32 (*)(void *, u32))((u8 *)MODEL + 4, S_KEY_SEL_TRACK), h = 0;
+    if (!FN(S_FIND_TRACK, u32 (*)(void *, u32, u32 *))(MODEL, track, &h)) return 0;
     void *obj = 0;
-    if (!FN(0x0812D80Eu, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) || !obj) return 0;
-    return ((u32 (*)(void *))W((void *)W(obj, 0), 0))(obj) == 0x0Eu;
+    if (!FN(S_RESOLVE_OBJECT, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) || !obj) return 0;
+    return ((u32 (*)(void *))W((void *)W(obj, 0), 0))(obj) == S_TYPE_ONESHOT;
 }
 
 static int doc_is_project(void) {
@@ -785,14 +795,14 @@ __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int cha
     }
     /* Every SEQ page: melodic, Multisample, Shredder, External (and one-shots shown as a
      * piano roll) are on 0x17, one-shot Step and Sequence on 0x27 (stock 0x08142D24). */
-    if (nmc && MODEL_PAGE == 0x17) changed |= header_action_lit(out, NM_ACTION, "Note Mod", nm_mode());
-    if (MODEL_PAGE == 0x27) {
+    if (nmc && MODEL_PAGE == PAGE_SEQ) changed |= header_action_lit(out, NM_ACTION, "Note Mod", nm_mode());
+    if (MODEL_PAGE == PAGE_SEQ_DRUM) {
         int drum = drum_track_selected(), ins = 0;
         if (drum) ins = header_action_lit(out, STRIKE_ACTION, STRIKE_LABEL, !STRIKE_SET->off);
         changed |= ins;
         if (nmc) changed |= header_action_lit(out, NM_ACTION, "Note Mod", nm_mode());
         u32 slot = 0xF;
-        for (u32 i = 0; i < 6; i++)
+        for (u32 i = 0; i < NREC; i++)
             if (rid(REC(out, i)) == STRIKE_ACTION) slot = i;
         STRIKE_SET->r[0]++;
         STRIKE_SET->r[1] = (u32)drum | (slot << 4) | ((u32)ins << 8);
@@ -802,12 +812,12 @@ __attribute__((used, retain)) int strike_toolbar(void *model, void *out, int cha
         volatile HdrLog *hl = &ps->hl;
         u8 pg = MODEL_PAGE;
         if (hl->pages[(hl->np - 1u) & 7u] != pg || !hl->np) hl->pages[hl->np++ & 7u] = pg;
-        if (pg == 0x27 || pg == 0x17) {
+        if (pg == PAGE_SEQ_DRUM || pg == PAGE_SEQ) {
             volatile HdrSnap *sn = &hl->s[drum_track_selected() ? 1 : 0];
             sn->valid = 1; sn->page = pg; sn->cfg_ok = mod_cfg_block() != 0; sn->nm_slot = 0xF;
             int root = *(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE;
-            for (u32 i = 0; i < 6; i++) {
-                volatile u8 *a = REC(out, i), *b = REC(HEADER_ROOT + 0x34, i);
+            for (u32 i = 0; i < NREC; i++) {
+                volatile u8 *a = REC(out, i), *b = REC(APPLIED, i);
                 sn->out_id[i] = (u16)rid(a); sn->out_c[i] = a[0] ? (char)a[0] : '.';
                 sn->app_id[i] = root ? (u16)rid(b) : 0xFFFFu; sn->app_c[i] = root && b[0] ? (char)b[0] : '.';
                 if (rid(a) == NM_ACTION) sn->nm_slot = (u8)i;
@@ -824,9 +834,9 @@ static int drum_track_selected(void);
  * "not the drum Step view" to mean a piano object, ran the piano builder on the drum view
  * when it was on its Sequence tab or had no sequence bound, and wrote the piano bar's slots
  * over the drum view's step widgets (crash at 0x0816FACE, BE3.64). */
-#define DRUM_VIEW_VT 0x0819E854u
-#define PIANO_VIEW_VT 0x0819E7B0u
-#define DRUM_SET_TAB 0x0815D1D4u     /* stock's Step / Sequence setter (view, tab) */
+#define DRUM_VIEW_VT S_DRUM_VIEW_VT
+#define PIANO_VIEW_VT S_PIANO_VIEW_VT
+#define DRUM_SET_TAB S_DRUM_SET_TAB     /* stock's Step / Sequence setter (view, tab) */
 __attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
     if (ev[0] == NM_ACTION) {                       /* Note Mod for this track, on / off */
         if (!mod_cfg_block() || !claim()) return 1;
@@ -837,7 +847,7 @@ __attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
             if (from_seq) FN(DRUM_SET_TAB, void (*)(void *, u32))(v, 0);
             if (!drum_step_view(v)) nm_set(0);      /* no sequence bound: nothing to show */
             else if (!from_seq || !nm_mode()) nm_set(!nm_mode());
-            FN(0x0815C27Cu, void (*)(void *))(v);
+            FN(S_DRUM_HEADER, void (*)(void *))(v);
         } else if (vt == PIANO_VIEW_VT) {
             if (nm_mode()) nm_bar_clear(v);
             nm_set(!nm_mode());
@@ -845,7 +855,7 @@ __attribute__((used, retain)) int strike_event(void *v, const u16 *ev) {
         } else {
             return 1;                               /* no other view has this button */
         }
-        if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) HEADER_ROOT[0x117C] = 1;
+        if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) ARM_HEADER();
         return 1;
     }
     if (ev[0] == TAB_SEQUENCE && SU->ok && nm_mode()) nm_set(0);   /* drum: leaving Step leaves Note Mod */
@@ -974,8 +984,8 @@ static void log_inserter(u32 lr, const u32 *rec) {
  * so note-on binds the note's pitch to the oldest held pad not yet bound
  * (note-ons arrive in press order, so chords map pad by pad) and note-off
  * attaches that slot's curve. */
-#define MEL_NOTE_ON 0x081377CEu
-#define MEL_NOTE_OFF 0x081378F8u
+#define MEL_NOTE_ON S_MEL_NOTE_ON
+#define MEL_NOTE_OFF S_MEL_NOTE_OFF
 static volatile CapBlock *cap_block4(void) {
     u32 b = CAPCFG->block;
     return CAPCFG->magic == CAPCFG_MAGIC && CAPCFG->check == ~b && b ? (volatile CapBlock *)b : 0;
@@ -1016,7 +1026,7 @@ __attribute__((used, retain)) void curve_update(u32 *rec, u32 lr) {
     attach_from(rec, s, pad, idx);
 }
 
-#define SEQ_PAGE_INSERT 0x0813B4BAu   /* drum Sequence page: creates the note at pad press */
+#define SEQ_PAGE_INSERT S_SEQ_PAGE_INSERT   /* drum Sequence page: creates the note at pad press */
 #define STRIKE_SETTLE_MS 60u          /* the M7's peak covers the press + 8 pressure samples */
 static void late_queue(volatile PadState *ps, u32 model, u32 seq, const u32 *rec, u32 pad) {
     u32 k = 0;
@@ -1100,9 +1110,9 @@ __attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr, u32 model, u3
  * ...\curves.bnt next to a ...\project.xml through the 4 KB SDRAM buffer (the
  * SD DMA cannot reach D2) and decodes every curve into the pool with
  * consecutive handles; index i maps to base + i - 1. Same task as stock's load. */
-#define F_OPEN(f, p, m) FN(0x08120148, u32 (*)(void *, const char *, u32))((f), (p), (m))
-#define F_READ(f, b, n, d) FN(0x08120464, u32 (*)(void *, void *, u32, u32 *))((f), (b), (n), (d))
-#define F_CLOSE(f) FN(0x08120974, u32 (*)(void *))((f))
+#define F_OPEN(f, p, m) FN(S_FS_OPEN, u32 (*)(void *, const char *, u32))((f), (p), (m))
+#define F_READ(f, b, n, d) FN(S_FS_READ, u32 (*)(void *, void *, u32, u32 *))((f), (b), (n), (d))
+#define F_CLOSE(f) FN(S_FS_CLOSE, u32 (*)(void *))((f))
 
 __attribute__((used, retain)) void doc_begin(const char *path) {
     volatile LoadState *ls = LOADSTATE;
@@ -1261,11 +1271,11 @@ static u32 curve_for_index(u32 idx) {
  * (Off/Poly/Channel) for the selected track. Recording checks AT Rec when a
  * curve attaches; the M7 checks AT Out by the note's MIDI port/channel in the
  * published destination table. Saved in the project's sidecar (TRKS). */
-#define PROJECT_DIRTY 0x36C4u     /* app byte: project modified (Save enabled) */
-#define PROJECT_TOUCH 0x0813130Cu /* (app): stock's refresh after an edit */
+#define PROJECT_DIRTY S_MODEL_DIRTY   /* app byte: project modified (Save enabled) */
+#define PROJECT_TOUCH S_PROJECT_TOUCH /* (app): stock's refresh after an edit */
 #define AT_SLOT_REC 4u
 #define AT_SLOT_OUT 5u
-static u32 sel_track(void) { return FN(0x0812DC74u, u32 (*)(void *, u32))((u8 *)MODEL + 4, 0x131); }
+static u32 sel_track(void) { return FN(S_GET_PROPERTY, u32 (*)(void *, u32))((u8 *)MODEL + 4, S_KEY_SEL_TRACK); }
 
 static volatile AtSet *at_set(void) {
     volatile AtSet *a = AT_SET;
@@ -1293,10 +1303,10 @@ static void at_publish(void) {
     for (u32 i = 0; i < 8; i++) {
         u32 h = 0; void *obj = 0;
         t->d[i].valid = 0;
-        if (!FN(0x08133960u, u32 (*)(void *, u32, u32 *))(MODEL, i, &h)) continue;
-        if (!FN(0x0812D80Eu, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) || !obj) continue;
-        t->d[i].port = (u8)FN(0x0812DC74u, u32 (*)(void *, u32))(obj, 0x0F);
-        t->d[i].ch = (u8)FN(0x0812DC74u, u32 (*)(void *, u32))(obj, 0x10);
+        if (!FN(S_FIND_TRACK, u32 (*)(void *, u32, u32 *))(MODEL, i, &h)) continue;
+        if (!FN(S_RESOLVE_OBJECT, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) || !obj) continue;
+        t->d[i].port = (u8)FN(S_GET_PROPERTY, u32 (*)(void *, u32))(obj, 0x0F);
+        t->d[i].ch = (u8)FN(S_GET_PROPERTY, u32 (*)(void *, u32))(obj, 0x10);
         t->d[i].mode = a->out_mode[i];
         t->d[i].valid = 1;
     }
@@ -1337,17 +1347,17 @@ static void mod_cfg(void) {
  * button (ROWS_ACTION). Edits go to the selected track's ModTrack (odd seq while
  * writing, so the M7 re-reads it). */
 #define EXT_BAR 0x3D0u
-#define UI_POST 0x0816FC34u        /* (view, event): bubbles up the view tree */
-#define BAR_SET 0x08170394u
-#define EXT_BUILD 0x08147138u
-#define K_LFO_SHAPE 0x4Au
-#define K_LFO_RATE 0x4Bu
-#define K_LFO_DEPTH 0x4Cu
-#define K_LFO_SRATE 0x4Fu
-#define K_ENV_A 0x1Eu
-#define K_ENV_D 0x1Fu
-#define K_ENV_S 0x20u
-#define K_ENV_R 0x21u
+#define UI_POST S_UI_POST        /* (view, event): bubbles up the view tree */
+#define BAR_SET S_BAR_SET
+#define EXT_BUILD S_EXT_BUILD
+#define K_LFO_SHAPE S_KEY_LFO_SHAPE
+#define K_LFO_RATE S_KEY_LFO_RATE
+#define K_LFO_DEPTH S_KEY_LFO_DEPTH
+#define K_LFO_SRATE S_KEY_LFO_SRATE
+#define K_ENV_A S_KEY_ENV_A
+#define K_ENV_D S_KEY_ENV_D
+#define K_ENV_S S_KEY_ENV_S
+#define K_ENV_R S_KEY_ENV_R
 #define ROWS 6u
 #define ROW_NOTE 5u
 static const char *const ROW_NAMES[ROWS] = {"Main", "LFO 1", "LFO 2", "Env 1", "Env 2", "Note Mod"};
@@ -1496,9 +1506,9 @@ __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
     if (type == MOD_ACTION) {                       /* open the Mod Matrix as stock's "Modulation" menu item does */
         u32 ctx = W(v, 0x34);
         MODHEAD->mx_ctx = ctx;
-        struct { u16 type, pad; u32 a, b, c, d; } m = {0xA8u, 0, ctx, 0, 0, 0};
+        struct { u16 type, pad; u32 a, b, c, d; } m = {S_EV_MX_TAKE_TRACK, 0, ctx, 0, 0, 0};
         FN(UI_POST, void (*)(void *, void *))(v, &m);   /* the matrix view takes this track */
-        m.type = 0x0Au;
+        m.type = S_EV_PAGE_CHANGE;
         FN(UI_POST, void (*)(void *, void *))(v, &m);   /* page change (as the INST dashboard posts) */
         return 1;
     }
@@ -1508,7 +1518,7 @@ __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
         return 1;
     }
     u32 r = row_now();
-    if (type != 0xCFu || !r) return 0;
+    if (type != EV_ENCODER || !r) return 0;
     volatile ModCfg *m = mod_cfg_block();
     volatile ModTrack *t = mod_track();
     if (!m || !t) return 0;
@@ -1523,7 +1533,7 @@ __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
         mod_write_end(m);
         nm_edit(key, value);
         ext_build(v);
-        if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) HEADER_ROOT[0x117C] = 1;
+        if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) ARM_HEADER();
         return 1;
     } else if (r <= 2u) {
         volatile ModLfo *l = &t->lfo[r - 1u];
@@ -1542,7 +1552,7 @@ __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
     }
     mod_write_end(m);
     ext_build(v);                                   /* show the new value (and Rate <-> Sync Rate) */
-    if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) HEADER_ROOT[0x117C] = 1;
+    if (*(volatile u32 *)HEADER_ROOT == HEADER_ROOT_VTABLE) ARM_HEADER();
     return 1;
 }
 
@@ -1550,9 +1560,9 @@ __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
 static void ext_toolbar(void *out, int *changed) {
     volatile ModHead *h = MODHEAD;
     if (h->inst_pending) {                          /* matrix Dashboard: the INST button, as the hold shortcuts press it */
-        u32 e[5] = {0x73u, 0, 10u, 0, 0};
+        u32 e[5] = {S_EV_BUTTON, 0, S_BTN_INST, 0, 0};
         h->inst_pending = 0;
-        FN(0x08142AFCu, void (*)(void *, u32 *))(MODEL, e);
+        FN(S_BUTTON_EVENT, void (*)(void *, u32 *))(MODEL, e);
     }
     if (h->magic != MODHEAD_MAGIC || !h->view || MODEL_PAGE != (u8)h->page) return;
     u32 r = row_now();
@@ -1574,7 +1584,8 @@ static void ext_toolbar(void *out, int *changed) {
 #define MX_LINE 0x86B5Cu           /* view: selected row (-1 none) */
 #define MX_CTX 0x8AC44u
 #define MX_DESC 0x8ABF4u           /* view: bar descriptor {ctx[8]; key[8]; val[8]} */
-static const u16 MX_SOURCES[8] = {0x00, 0x04, 0x05, 0x01, 0x02, 0x0D, 0x20, 0x0E};
+static const u16 MX_SOURCES[8] = {S_MXSRC_NONE, S_MXSRC_LFO1, S_MXSRC_LFO2, S_MXSRC_ENV1, S_MXSRC_ENV2,
+                                   S_MXSRC_VEL, S_MXSRC_PRESS, S_MXSRC_KEY};   /* stock's matrix source ids */
 static const u8 MX_TO_OURS[8] = {MOD_SRC_NONE, MOD_SRC_LFO1, MOD_SRC_LFO2, MOD_SRC_ENV1, MOD_SRC_ENV2,
                                  MOD_SRC_VEL, MOD_SRC_PRESS, MOD_SRC_KEY};
 
@@ -1608,9 +1619,9 @@ static void mx_row(void *v, u32 i, volatile ModDest *d) {
 }
 
 static void mx_redraw(void *v) {
-    struct { u16 type, pad; u32 a, b, c, d; } e = {0xC3u, 0, 0, 0, 0, 0};
-    FN(0x0814C568u, void (*)(void *))(v);              /* bar (our hook adds Dest) */
-    FN(0x0814C7C4u, void (*)(void *, void *))(v, &e);  /* every row */
+    struct { u16 type, pad; u32 a, b, c, d; } e = {S_EV_MX_REBUILD, 0, 0, 0, 0, 0};
+    FN(S_MX_BAR, void (*)(void *))(v);              /* bar (our hook adds Dest) */
+    FN(S_MX_ROWS_BUILD, void (*)(void *, void *))(v, &e);  /* every row */
 }
 
 /* Row builder (view, &ctx): 1 = ours. */
@@ -1621,8 +1632,8 @@ __attribute__((used, retain)) int mx_build(void *v, const u32 *ctx) {
     if (!c || !ctx || *ctx != c || !t) return 0;
     MODHEAD->dbg_n += 1u;
     if (W(v, MX_CTX) != c) {                          /* another track: back to the top, as stock */
-        FN(0x0816B9FAu, void (*)(void *, u32))((u8 *)v + MX_LIST, 0);
-        FN(0x0816BB5Cu, void (*)(void *, u32))((u8 *)v + MX_LIST, 0);
+        FN(S_LIST_SCROLL, void (*)(void *, u32))((u8 *)v + MX_LIST, 0);
+        FN(S_LIST_SELECT, void (*)(void *, u32))((u8 *)v + MX_LIST, 0);
     }
     W(v, MX_CTX) = c; W(v, 0x8AC48u) = c;
     B(v, 0x8AC4Cu) = 0x20;                            /* no stock instrument kind */
@@ -1634,7 +1645,7 @@ __attribute__((used, retain)) int mx_build(void *v, const u32 *ctx) {
         mx_row(v, i, &t->d[i]);
     }
     if ((int)W(v, MX_LINE) < 0 || W(v, MX_LINE) >= MX_ROWS) W(v, MX_LINE) = 0;
-    FN(0x0814C4FCu, void (*)(void *))(v);
+    FN(S_MX_REFRESH, void (*)(void *))(v);
     mx_redraw(v);
     return 1;
 }
@@ -1661,11 +1672,11 @@ __attribute__((used, retain)) int mx_edit(void *v, const u32 *ev) {
     volatile ModTrack *t = mod_track();
     u32 line = W(v, MX_LINE), key = ev[2];
     int value = (int)ev[3];
-    if (!m || !t || line >= MX_ROWS || key < 0x171u || key > 0x176u) return 1;
-    u32 j = (key - 0x171u) / 2u;
+    if (!m || !t || line >= MX_ROWS || key < S_KEY_MX_FIRST || key > S_KEY_MX_LAST) return 1;
+    u32 j = (key - S_KEY_MX_FIRST) / 2u;
     volatile ModDest *d = &t->d[line];
     mod_write_begin(m);
-    if (!((key - 0x171u) & 1u)) {                     /* Source 1-3: list index */
+    if (!((key - S_KEY_MX_FIRST) & 1u)) {                     /* Source 1-3: list index */
         if (value >= 0 && value < 8) d->src[j] = MX_TO_OURS[value];
     } else {                                          /* Amount 1-3: -1000..1000 */
         d->amt[j] = (short)(value < -1000 ? -1000 : value > 1000 ? 1000 : value);
@@ -1687,20 +1698,20 @@ __attribute__((used, retain)) void mx_bar_after(void *v) {
     FN(BAR_SET, void (*)(void *, void *))((u8 *)v + 0x38u, (u8 *)v + MX_DESC);
     /* the slot's range: stock sets ranges per slot (0x0817048E) and slot 8 kept a
      * leftover one (v3.50: Dest stopped at "CC 0 Bank") */
-    FN(0x0817048Eu, void (*)(void *, u32, u32, u32, u32))((u8 *)v + 0x38u, 7u, dest_index(&t->d[line]), 0u, DEST_N - 1u);
+    FN(S_SLOT_RANGE, void (*)(void *, u32, u32, u32, u32))((u8 *)v + 0x38u, 7u, dest_index(&t->d[line]), 0u, DEST_N - 1u);
 }
 
 /* Matrix events (view, ev): 1 = ours. */
 __attribute__((used, retain)) int mx_event(void *v, const u32 *ev) {
     u32 type = ev[0] & 0xFFFFu;
-    if (type == 2u || type == 3u || type == 0x16u || type == 0xCFu) mx_note(v, ev, 2);
+    if (type == S_EV_MX_SELECT || type == S_EV_DASHBOARD || type == S_EV_DASHBOARD_ALT || type == EV_ENCODER) mx_note(v, ev, 2);
     if (!mx_ours(v)) return 0;
-    if (type == 2u) return 1;
-    if (type == 3u || type == 0x16u) {                /* the header's "Dashboard" (action = destination page) */
+    if (type == S_EV_MX_SELECT) return 1;
+    if (type == S_EV_DASHBOARD || type == S_EV_DASHBOARD_ALT) {                /* the header's "Dashboard" (action = destination page) */
         MODHEAD->inst_pending = 1;                    /* press INST at the next UI tick (v3.51's page 0x21 did nothing) */
         return 1;
     }
-    if (type != 0xCFu || !claim() || ev[2] != SU->key[9]) return 0;
+    if (type != EV_ENCODER || !claim() || ev[2] != SU->key[9]) return 0;
     volatile ModCfg *m = mod_cfg_block();
     volatile ModTrack *t = mod_track();
     u32 line = W(v, MX_LINE), k = ev[3];
@@ -1754,9 +1765,9 @@ static void nm_scale(void) {
     if (!m || UI_TICK_MS - m->nm_poll < 250u || !W(MODEL, 0)) return;   /* no model yet (early boot) */
     m->nm_poll = UI_TICK_MS;
     u32 ctx = 0, sc = 0, root = 0;
-    FN(0x08133E54u, void (*)(void *, u32 *))(MODEL, &ctx);
-    FN(0x08133614u, void (*)(void *, u32 *, u32, u32 *))(MODEL, &ctx, 0x8Du, &sc);
-    FN(0x08133614u, void (*)(void *, u32 *, u32, u32 *))(MODEL, &ctx, 0x8Eu, &root);
+    FN(S_SCALE_CONTEXT, void (*)(void *, u32 *))(MODEL, &ctx);
+    FN(S_CONTEXT_GET, void (*)(void *, u32 *, u32, u32 *))(MODEL, &ctx, S_KEY_SCALE, &sc);
+    FN(S_CONTEXT_GET, void (*)(void *, u32 *, u32, u32 *))(MODEL, &ctx, S_KEY_ROOT, &root);
     if (sc >= 23u || root >= 12u) return;
     u32 key = sc | root << 8 | 1u << 16;
     if (m->key == key) return;

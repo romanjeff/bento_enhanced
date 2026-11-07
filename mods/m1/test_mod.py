@@ -12,14 +12,18 @@ import json, struct, sys, unittest
 from pathlib import Path
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
 from unicorn.arm_const import *
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bases import from_build
+S = from_build(sys.argv[2], Path(sys.argv[1]).read_bytes())   # the base table this build was made from
+D2 = S.D2_SLICE                                                # our shared slice (per base)
 
-BASE, SENT, STACK, CYC = 0x08040000, 0x08000100, 0x2407F000, 0xE0001004
-ENGINE = 0x24060000
+BASE, SENT, STACK, CYC = 0x08040000, 0x08000100, 0x2407F000, 0xE0001004  # addr-ok: harness
+ENGINE = 0x24060000  # addr-ok: harness
 QUEUE = ENGINE + 0x7C8
-CFG, REGION, MAGIC = 0x3003C1E0, 0xC5FFC000, 0x31474144
-MODHEAD, MODCFG, MOD_MAGIC = 0x3003DFC0, 0xC6200000, 0x37444F4D
-CLOCK, TRACK = 0x24071000, 0x24064000
-MSG_SEND = 0x08065600
+CFG, REGION, MAGIC = D2 + 0x1E0, S.REGION, 0x31474144
+MODHEAD, MODCFG, MOD_MAGIC = D2 + 0x1FC0, 0xC6200000, 0x37444F4D  # addr-ok: harness
+CLOCK, TRACK = 0x24071000, 0x24064000  # addr-ok: harness
+MSG_SEND = S.MSG_SEND
 MS = 480000
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
@@ -38,9 +42,9 @@ class Rig:
         u = self.u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M7)
         u.mem_map(0x08000000, 0x200000); u.mem_write(BASE, IMG); u.mem_write(SENT, b"\xfe\xe7")
-        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x400000), (0xE0000000, 0x100000)):
+        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (S.PROBE_SCRATCH, 0x10000), (S.EXT_POOL_END, 0x400000), (0xE0000000, 0x100000)):
             u.mem_map(a, n)
-        w32(u, 0x24000160, 3405824); w32(u, 0x24000164, 0xC6000000 - 3405824)   # stock's ext pool: left, cursor
+        w32(u, S.POOL_LEFT_RAM, 3405824); w32(u, S.POOL_CUR_RAM, S.EXT_POOL_END - 3405824)   # stock's ext pool: left, cursor
         u.mem_write(CFG, struct.pack("<8I", MAGIC, REGION, 0x3000, 1, 0, 0, 0, 0))
         u.mem_write(TRACK, bytes(0x8800))
         u.mem_write(TRACK + 0x31, bytes([1, 2])); u.mem_write(TRACK + 0x86D1, b"\x01")
@@ -86,7 +90,7 @@ class Rig:
         self.call(SYM7["mod_block"], track, CLOCK, 0, ENGINE)
 
     def note(self, n, vel=100, on=True, track=TRACK):
-        ev = 0x24070000
+        ev = 0x24070000  # addr-ok: harness
         self.u.mem_write(ev, struct.pack("<6I", 0x5B if on else 0x5C, 0, 1, 2, n, vel))
         self.call(SYM7["h_note"], QUEUE, ev, track)
 
@@ -257,17 +261,17 @@ class WireFormat(unittest.TestCase):
         g.track_cfg(dests=[(CC, 20, (VEL, 0, 0), (1000, 0, 0))])
         g.block(0); g.note(60, vel=100); g.block(20)
         raw = [e[4] for e in g.sent if e[0] == 0x5E][-1]
-        self.assertEqual((raw >> 7, raw & 0x7F), (100, 0), "data byte = word 5 >> 7 (0x08105D10)")
+        self.assertEqual((raw >> 7, raw & 0x7F), (100, 0), "data byte = word 5 >> 7 (stock's 14-bit writer)")
 
 
 class RingGuard(unittest.TestCase):
     """v3.45: modulation waits while the M7->M4 ring (*0x2401BD3C, 16 slots, no
     full check) holds >= 6 unread entries; BE-MT4 peaked at 12 of 16."""
-    RING = 0x24078000
+    RING = 0x24078000  # addr-ok: harness
 
     def rig(self, fill):
         g = Rig()
-        w32(g.u, 0x2401BD3C, self.RING)
+        w32(g.u, S.PRODUCER_GLOBAL, self.RING)
         w32(g.u, self.RING + 0x2340, 100); w32(g.u, self.RING + 0x2360, 100 + fill)
         g.track_cfg(dests=[(CC, 20, (VEL, 0, 0), (1000, 0, 0))])
         g.block(0)
@@ -307,7 +311,7 @@ class Output(unittest.TestCase):
 
     def test_tracks_are_independent(self):
         g = Rig()
-        t2 = 0x2406D000
+        t2 = 0x2406D000  # addr-ok: harness
         g.u.mem_write(t2, bytes(0x8800)); g.u.mem_write(t2 + 0x31, bytes([1, 3])); g.u.mem_write(t2 + 0x86D1, b"\x01")
         w32(g.u, t2 + 0x86D4, 1)
         g.track_cfg(0, dests=[(CC, 20, (VEL, 0, 0), (1000, 0, 0))])

@@ -21,24 +21,28 @@ import json, struct, sys, unittest
 from pathlib import Path
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_MEM_WRITE
 from unicorn.arm_const import *
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bases import from_build
+S = from_build(sys.argv[2], Path(sys.argv[1]).read_bytes())   # the base table this build was made from
+D2 = S.D2_SLICE                                                # our shared slice (per base)
 
 BASE = 0x08040000
 SENT = 0x08000100
-STACK = 0x2407F000
+STACK = 0x2407F000  # addr-ok: harness
 CYC = 0xE0001004
-ENGINE = 0x24060000              # stock posts MIDI-out events with msg_send(ENGINE + 0x7C8, ev)
+ENGINE = 0x24060000              # stock posts MIDI-out events with msg_send(ENGINE + 0x7C8, ev) (addr-ok: harness)
 QUEUE = ENGINE + 0x7C8
-CFG = 0x3003C1E0
-REGION = 0xC5FFC000
-LEFT, CURSOR, POOL_END, LEFT0 = 0x24000160, 0x24000164, 0xC6000000, 3405824   # stock's ext pool
+CFG = D2 + 0x1E0
+REGION = S.REGION
+LEFT, CURSOR, POOL_END, LEFT0 = S.POOL_LEFT_RAM, S.POOL_CUR_RAM, S.EXT_POOL_END, 3405824   # stock's ext pool
 REGION_SIZE = 9208               # sizeof(Region)
 DCCMVAC = 0xE000EF68
 OFF = set(json.loads((Path(sys.argv[2]) / "manifest.json").read_text()).get("disabled", []))
-SCAN_HI = 0x3003CF60
+SCAN_HI = D2 + 0xF60
 MAGIC = 0x31474144
 REGS = [UC_ARM_REG_R0 + i for i in range(13)] + [UC_ARM_REG_SP, UC_ARM_REG_LR]
-NOTE_SITES = [(0x0805F92C, UC_ARM_REG_R4), (0x0805FF50, UC_ARM_REG_R4), (0x0805FE44, UC_ARM_REG_R4),
-              (0x08060088, UC_ARM_REG_R4), (0x08061966, UC_ARM_REG_R6)]
+NOTE_SITES = [(S.POLYCAP_SEQ_ON_SITE, UC_ARM_REG_R4), (S.POLYCAP_PAD_ON_SITE, UC_ARM_REG_R4), (S.POLYCAP_SEQ_OFF_SITE, UC_ARM_REG_R4),
+              (S.POLYCAP_PAD_OFF_SITE, UC_ARM_REG_R4), (S.POLYCAP_ALL_OFF_SITE, UC_ARM_REG_R6)]
 
 CH10 = Path(sys.argv[1]).read_bytes()
 OUT = Path(sys.argv[2])
@@ -53,7 +57,7 @@ def emu(img, region=True):
     u.mem_map(0x08000000, 0x200000)
     u.mem_write(BASE, img)
     u.mem_write(SENT, b"\xfe\xe7")
-    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x200000), (0xE0000000, 0x100000)):
+    for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (S.REGION & ~0xFFFF, 0x10000), (S.EXT_POOL_END, 0x200000), (0xE0000000, 0x100000)):
         u.mem_map(a, n)
     pool(u)
     if region:   # what the M4 publishes at boot
@@ -66,7 +70,7 @@ def pool(u, left=LEFT0, end=POOL_END):
     """The ext pool's counters as stock's startup leaves them (cursor + left is constant)."""
     w32(u, LEFT, left); w32(u, CURSOR, end - left)
 
-def track(u, port=1, ch=2, midi=1, base=0x24064000):
+def track(u, port=1, ch=2, midi=1, base=0x24064000):  # addr-ok: harness
     u.mem_write(base, bytes(0x8800))
     u.mem_write(base + 0x31, bytes([port, ch]))
     u.mem_write(base + 0x86D1, bytes([midi]))
@@ -88,19 +92,19 @@ class Voices:
     """Drive h_note directly, as the five post-site stubs do."""
     def __init__(self, img=None, region=True):
         self.u = emu(img or IMG, region)
-        self.t1 = track(self.u, port=1, ch=2, base=0x24064000)
-        self.t2 = track(self.u, port=1, ch=3, base=0x2406D000)
+        self.t1 = track(self.u, port=1, ch=2, base=0x24064000)  # addr-ok: harness
+        self.t2 = track(self.u, port=1, ch=3, base=0x2406D000)  # addr-ok: harness
         w32(self.u, CYC, 10_000_000)
 
     def ev(self, t, note, w1=0, port=1, ch=2, vel=100):
-        at = 0x24070000
+        at = 0x24070000  # addr-ok: harness
         self.u.mem_write(at, struct.pack("<6I", t, w1, port, ch, note, vel))
         return at
 
     def on(self, note, tr=None, **k): call(self.u, SYM7["h_note"], QUEUE, self.ev(0x5B, note, **k), tr or self.t1)
     def off(self, note, tr=None, **k): call(self.u, SYM7["h_note"], QUEUE, self.ev(0x5C, note, **k), tr or self.t1)
     def pressure(self, note, value, tr=None):
-        at = 0x24070100
+        at = 0x24070100  # addr-ok: harness
         self.u.mem_write(at, struct.pack("<6I", 0x0E, 0, 0x71, note, value, 0))
         call(self.u, SYM7["h_poly"], tr or self.t1, at, ENGINE)
     def out(self): return [(e[0], e[4]) for e in queued(self.u)]
@@ -173,7 +177,7 @@ class RegionReservation(unittest.TestCase):
 
     def test_unknown_pool_shapes_stay_off_and_notes_pass(self):
         for name, left, end in (("tail too small", 0x3000, POOL_END), ("one byte short", 0x3FFF, POOL_END),
-                                ("other end", LEFT0, 0xC5F00000), ("past the end", LEFT0, POOL_END + 0x4000),
+                                ("other end", LEFT0, 0xC5F00000), ("past the end", LEFT0, POOL_END + 0x4000),  # addr-ok: harness
                                 ("not set up", 0, 0)):
             with self.subTest(name):
                 v = Voices(); u = v.u
@@ -209,7 +213,7 @@ class RegionReservation(unittest.TestCase):
 
     def test_a_pointer_from_older_firmware_is_not_followed(self):
         """CFG survives a reset; only the M4's own boot code replaces it."""
-        OLD = 0xC6100000
+        OLD = 0xC6100000  # addr-ok: harness
         w32(self.u, CFG + 4, OLD)
         writes = []
         h = self.u.hook_add(UC_HOOK_MEM_WRITE, lambda uc, k, a, n, v, _: writes.append(a), begin=OLD, end=OLD + 0x4000)
@@ -224,7 +228,7 @@ class RegionReservation(unittest.TestCase):
         def w(uc, k, a, n, v, _):
             if a == LEFT: seen.append((v, uc.reg_read(UC_ARM_REG_PRIMASK)))
         h = self.u.hook_add(UC_HOOK_MEM_WRITE, w)
-        args = 0x24070200                           # nm_off takes the region before it masks anything
+        args = 0x24070200                           # nm_off takes the region before it masks anything (addr-ok: harness)
         self.u.mem_write(args, struct.pack("<4I", self.v.t1, 60, 0, 0))
         self.assertEqual(self.u.reg_read(UC_ARM_REG_PRIMASK), 0)
         call(self.u, SYM7["nm_off"], args)
@@ -236,7 +240,7 @@ class RegionReservation(unittest.TestCase):
         self.touch()
         acc = []
         def m(uc, k, a, n, v, _):
-            if 0x24000140 <= a < 0x24000180: acc.append((k == UC_MEM_WRITE, a))
+            if S.POOL_LEFT_RAM - 0x20 <= a < S.POOL_LEFT_RAM + 0x20: acc.append((k == UC_MEM_WRITE, a))
         h = self.u.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, m)
         self.u.ctl_flush_tb()                       # code that already ran doesn't see a later hook
         self.touch()
@@ -258,7 +262,7 @@ class RegionReservation(unittest.TestCase):
             if a == stop: uc.emu_stop()
         h = u.hook_add(UC_HOOK_MEM_WRITE, w)
         u.ctl_flush_tb()
-        args = 0x24070200
+        args = 0x24070200  # addr-ok: harness
         u.mem_write(args, struct.pack("<4I", self.v.t1, 99, 0, 0))
         u.reg_write(UC_ARM_REG_R0, args); u.reg_write(UC_ARM_REG_SP, STACK); u.reg_write(UC_ARM_REG_LR, SENT | 1)
         u.emu_start(SYM7["nm_off"] | 1, SENT, count=400000)
@@ -309,7 +313,7 @@ class RegionReservation(unittest.TestCase):
         if "trace" not in OFF:
             self.assertEqual(at(1_000_000_000), [], "d0_publish's job")
         else:
-            self.assertEqual(IMG[0x080655A0 - BASE:0x080655A4 - BASE], bytes.fromhex("d0f80036"), "h_consume is unpatched")
+            self.assertEqual(IMG[S.H_CONSUME_SITE - BASE:S.H_CONSUME_SITE + 4 - BASE], S.orig("H_CONSUME_SITE"), "h_consume is unpatched")
             self.assertEqual(at(1_000_000_000), ALL, "the three lines the M4 prints")
             self.assertEqual(at(1_000_000_000 + 13 * 480000 - 1), [], "rate limited")
             self.assertEqual(at(1_000_000_000 + 13 * 480000), ALL, "again after 13 ms")
@@ -324,7 +328,7 @@ class PolyCap(unittest.TestCase):
                     for img in (CH10, IMG):
                         u = emu(img)
                         tr = track(u)
-                        ev = 0x24070000
+                        ev = 0x24070000  # addr-ok: harness
                         u.mem_write(ev, struct.pack("<6I", t, 7, 1, 2, 60, 99))
                         u.reg_write(UC_ARM_REG_R0, QUEUE); u.reg_write(UC_ARM_REG_R1, ev)
                         u.reg_write(treg, tr); u.reg_write(UC_ARM_REG_SP, STACK)
@@ -411,8 +415,8 @@ class PolyHook(unittest.TestCase):
         for i, r in enumerate(REGS[:13]):
             u.reg_write(r, 0x01010101 * (i + 1))
         u.reg_write(UC_ARM_REG_R3, r3); u.reg_write(UC_ARM_REG_R6, v.t1); u.reg_write(UC_ARM_REG_R8, ENGINE)
-        u.reg_write(UC_ARM_REG_SP, sp); u.reg_write(UC_ARM_REG_LR, 0x08062001)
-        u.emu_start(0x08062464 | 1, 0x08062080, count=40000)
+        u.reg_write(UC_ARM_REG_SP, sp); u.reg_write(UC_ARM_REG_LR, 0x08062001)  # addr-ok: harness
+        u.emu_start(S.POLY_DISPATCH | 1, S.POLY_RESUME, count=40000)
         return u, [u.reg_read(r) for r in REGS], bytes(u.mem_read(0x24000000, 0x80000)), queued(u)[n0:]
 
     def test_other_types_untouched(self):
@@ -438,7 +442,7 @@ class LiveAtOut(unittest.TestCase):
     pressure as event 0x60 and 0 once all are released; no table = poly."""
     def rig(self, mode):
         v = Voices()
-        v.u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + bytes([1, 3, mode, 1]) + bytes(28))
+        v.u.mem_write(D2 + 0x1F80, struct.pack("<II", 0x31544441, 1) + bytes([1, 3, mode, 1]) + bytes(28))
         return v
 
     def at(self, v, ms): w32(v.u, CYC, 10_000_000 + ms * 480_000)
@@ -472,16 +476,16 @@ class LiveInternal(unittest.TestCase):
     post, h_live(bus, ev, router)): Poly passes through untouched; Off drops it;
     Channel gives every pressed note the highest pressure; drum tracks and
     External tracks pass through."""
-    BUS_POST, ROUTER, KEY, IDX = 0x0809ECA0, 0x24050000, 0x0123, 3
+    BUS_POST, ROUTER, KEY, IDX = S.BUS_POST, 0x24050000, 0x0123, 3  # addr-ok: harness
 
     def rig(self, mode=None, drum=False, ext=False):
         v = Voices()
         u = v.u
-        w32(u, self.ROUTER + 0x2C8, self.IDX)
-        w32(u, self.ROUTER + 0x2CC + 4 * self.IDX, 0xFFFFFF00 if drum else self.KEY)
+        w32(u, self.ROUTER + S.ROUTER_SEL_TRACK, self.IDX)
+        w32(u, self.ROUTER + S.ROUTER_PAD_KEYS + 4 * self.IDX, 0xFFFFFF00 if drum else self.KEY)
         if mode is not None:
             e = bytes(4 * self.IDX) + bytes([0, 2 if ext else 0, mode, 1])
-            u.mem_write(0x3003DF80, struct.pack("<II", 0x31544441, 1) + e + bytes(32 - len(e)))
+            u.mem_write(D2 + 0x1F80, struct.pack("<II", 0x31544441, 1) + e + bytes(32 - len(e)))
         v.posts = []
         def post(uc, addr, size, _):
             ev = struct.unpack("<6I", uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 24))
@@ -492,7 +496,7 @@ class LiveInternal(unittest.TestCase):
 
     def press(self, v, note, value, ms=0):
         w32(v.u, CYC, 10_000_000 + ms * 480_000)
-        at = 0x24070100
+        at = 0x24070100  # addr-ok: harness
         v.u.mem_write(at, struct.pack("<6I", 0x0E, 0, self.KEY, note, value, 0))
         call(v.u, SYM7["h_live"], ENGINE, at, self.ROUTER)
 
@@ -560,45 +564,45 @@ class PolyRate(unittest.TestCase):
         self.assertGreaterEqual(len(self.sent()), 6, "refilled tokens flush the held-back notes")
 
 class M4Handler(unittest.TestCase):
-    CALLS = (0x08105D56, 0x08105C44, 0x08105C5E, 0x08105CFE, 0x08105904, 0x08105C4C, 0x08105B74)
+    CALLS = (S.M4MIDI_BEGIN, S.M4MIDI_STATUS, S.M4MIDI_CHANNEL, S.M4MIDI_DATA, S.M4MIDI_SEND, S.M4MIDI_RESULT, S.M4MIDI_DONE)
 
     def trace(self, start):
         u = emu(IMG)
         log = []
         def hook(uc, addr, size, _):
             log.append((addr, uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2)))
-            uc.reg_write(UC_ARM_REG_R0, 0x30000123)
+            uc.reg_write(UC_ARM_REG_R0, 0x30000123)  # addr-ok: harness
             uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
         for a in self.CALLS:
             u.hook_add(UC_HOOK_CODE, hook, begin=a, end=a)
-        for r, v in ((UC_ARM_REG_R5, 0x30005550), (UC_ARM_REG_R6, 0x30006660), (UC_ARM_REG_R7, 0x40),
+        for r, v in ((UC_ARM_REG_R5, 0x30005550), (UC_ARM_REG_R6, 0x30006660), (UC_ARM_REG_R7, 0x40),  # addr-ok: harness
                      (UC_ARM_REG_R8, 0x02), (UC_ARM_REG_R9, 0x01), (UC_ARM_REG_R11, 0x55)):
             u.reg_write(r, v)
         u.reg_write(UC_ARM_REG_SP, STACK)
-        u.emu_start(start | 1, 0x081050DE, count=2000)
+        u.emu_start(start | 1, S.M4_LOOP, count=2000)
         return log
 
     def test_same_calls_as_native_note_on_except_status(self):
-        native, ours = self.trace(0x0810509A), self.trace(POLY)
+        native, ours = self.trace(S.M4_NOTE_ON_CASE), self.trace(POLY)
         self.assertEqual(len(native), 8)  # init, status, channel, note, value, send, 2 finishing calls
         self.assertEqual(len(native), len(ours))
-        i = [k for k, c in enumerate(native) if c[0] == 0x08105C44][0]
+        i = [k for k, c in enumerate(native) if c[0] == S.M4MIDI_STATUS][0]
         self.assertEqual((native[i][2], ours[i][2]), (0x90, 0xA0))
         self.assertEqual(native[:i] + native[i + 1:], ours[:i] + ours[i + 1:])
 
     def test_channel_pressure_handler(self):
         """M2-5b: 0x60 -> status 0xD0, channel (word 3), ONE data byte (word 4)."""
-        native, ours = self.trace(0x0810509A), self.trace(CHAN)
-        i = [k for k, c in enumerate(native) if c[0] == 0x08105C44][0]
+        native, ours = self.trace(S.M4_NOTE_ON_CASE), self.trace(CHAN)
+        i = [k for k, c in enumerate(native) if c[0] == S.M4MIDI_STATUS][0]
         want = list(native)
         want[i] = (want[i][0], want[i][1], 0xD0, want[i][3])
-        second = [k for k, c in enumerate(native) if c[0] == 0x08105CFE][1]   # the velocity byte
+        second = [k for k, c in enumerate(native) if c[0] == S.M4MIDI_DATA][1]   # the velocity byte
         del want[second]
         self.assertEqual(ours, want)
-        self.assertEqual([c[2] for c in ours if c[0] == 0x08105CFE], [0x40], "the value from word 4")
+        self.assertEqual([c[2] for c in ours if c[0] == S.M4MIDI_DATA], [0x40], "the value from word 4")
 
     def test_only_slots_5f_60_changed(self):
-        jt = lambda img: [struct.unpack_from("<I", img, 0x08105294 - BASE + 4 * i)[0] for i in range(9)]
+        jt = lambda img: [struct.unpack_from("<I", img, S.MIDI_JT - BASE + 4 * i)[0] for i in range(9)]
         a, b = jt(CH10), jt(IMG)
         self.assertEqual((b[4], b[5]), (POLY | 1, CHAN | 1))
         self.assertEqual(a[:4] + a[6:], b[:4] + b[6:])

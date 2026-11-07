@@ -12,15 +12,19 @@ import json, struct, sys, unittest
 from pathlib import Path
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE
 from unicorn.arm_const import *
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bases import from_build
+S = from_build(sys.argv[2], Path(sys.argv[1]).read_bytes())   # the base table this build was made from
+D2 = S.D2_SLICE                                                # our shared slice (per base)
 
 BASE, SENT = 0x08040000, 0x08000100
-CFG, REGION, MAGIC = 0x3003C1E0, 0xC5FFC000, 0x31474144
-MODHEAD, MODCFG, MOD_MAGIC = 0x3003DFC0, 0xC6200000, 0x37444F4D
+CFG, REGION, MAGIC = D2 + 0x1E0, S.REGION, 0x31474144
+MODHEAD, MODCFG, MOD_MAGIC = D2 + 0x1FC0, 0xC6200000, 0x37444F4D  # addr-ok: harness
 NM_AT = MODCFG + 12 + 8 * 232                    # ModNote nm[8] after the tracks
 KEY_AT = NM_AT + 8 * 12
-CLOCK, ROUTER, S = 0x24071000, 0x24060000, 0x2407E000
-NOTE_ROUTE, NOTE_OFF, TO_OFFSET = 0x0805F8E0, 0x0805FE00, 0x080A2200
-ACCEPT, OFF_SITES, ALL_OFF = 0x08060B9A, (0x080605D2, 0x08060A4C), 0x080618E0
+CLOCK, ROUTER, CALLER_SP = 0x24071000, 0x24060000, 0x2407E000  # addr-ok: harness
+NOTE_ROUTE, NOTE_OFF, TO_OFFSET = S.NOTE_ROUTE, S.NM_NOTE_OFF, S.TICK_TO_OFFSET
+ACCEPT, OFF_SITES, ALL_OFF = S.RETRIG_ACCEPT_SITE, (S.NM_OFF_SITE_1, S.NM_OFF_SITE_2), S.NM_ALL_OFF
 MELODIC = 0                                       # melodic records carry pad 0 (absent chan), not 0xFFFF
 SQUARE, SAW, RANDOM = 6, 1, 8
 MAJOR, C, D = 1, 3, 5                            # stock's Root list starts at A
@@ -37,11 +41,11 @@ class Rig:
         u = self.u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M7)
         u.mem_map(0x08000000, 0x200000); u.mem_write(BASE, IMG); u.mem_write(SENT, b"\xfe\xe7")
-        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (0xC5FF0000, 0x10000), (0xC6000000, 0x400000), (0xE0000000, 0x100000)):
+        for a, n in ((0x24000000, 0x80000), (0x30000000, 0x48000), (S.PROBE_SCRATCH, 0x10000), (S.EXT_POOL_END, 0x400000), (0xE0000000, 0x100000)):
             u.mem_map(a, n)
-        w32(u, 0x24000160, 3405824); w32(u, 0x24000164, 0xC6000000 - 3405824)   # stock's ext pool: left, cursor
+        w32(u, S.POOL_LEFT_RAM, 3405824); w32(u, S.POOL_CUR_RAM, S.EXT_POOL_END - 3405824)   # stock's ext pool: left, cursor
         u.mem_write(CFG, struct.pack("<8I", MAGIC, REGION, 0x3000, 1, 0, 0, 0, 0))
-        self.t = 0x24064000
+        self.t = 0x24064000  # addr-ok: harness
         u.mem_write(self.t, bytes(0x8800)); u.mem_write(self.t + 0x86D1, b"\x01\x01")   # MIDI out + internal
         for p in range(16):
             w32(u, self.t + 0x86DC + 4 * p, 0x1000 + p)                                   # every pad has a sound
@@ -72,23 +76,23 @@ class Rig:
 
     def note_on(self, note, pad=MELODIC, tick=1000, word=0):
         u = self.u
-        w32(u, CLOCK, 1000); u.mem_write(S, bytes(0x90))
-        w32(u, S, pad); w32(u, S + 4, ROUTER); w32(u, S + 0x20, tick); w32(u, S + 0x24, 0); w32(u, S + 0x3C, word)
+        w32(u, CLOCK, 1000); u.mem_write(CALLER_SP, bytes(0x90))
+        w32(u, CALLER_SP, pad); w32(u, CALLER_SP + 4, ROUTER); w32(u, CALLER_SP + 0x20, tick); w32(u, CALLER_SP + 0x24, 0); w32(u, CALLER_SP + 0x3C, word)
         for i, v in enumerate((self.t, note, 100, 0)):
             u.reg_write(UC_ARM_REG_R0 + i, v)
-        u.reg_write(UC_ARM_REG_R6, CLOCK); u.reg_write(UC_ARM_REG_SP, S)
+        u.reg_write(UC_ARM_REG_R6, CLOCK); u.reg_write(UC_ARM_REG_SP, CALLER_SP)
         u.emu_start(ACCEPT | 1, ACCEPT + 4, count=400000)
-        assert u.reg_read(UC_ARM_REG_SP) == S
+        assert u.reg_read(UC_ARM_REG_SP) == CALLER_SP
         return self.on[-1]
 
     def note_off(self, note, pad=MELODIC, site=OFF_SITES[0]):
         u = self.u
-        w32(u, S, ROUTER)
+        w32(u, CALLER_SP, ROUTER)
         for i, v in enumerate((self.t, note, 7, pad)):
             u.reg_write(UC_ARM_REG_R0 + i, v)
-        u.reg_write(UC_ARM_REG_SP, S)
+        u.reg_write(UC_ARM_REG_SP, CALLER_SP)
         u.emu_start(site | 1, site + 4, count=400000)
-        assert u.reg_read(UC_ARM_REG_SP) == S
+        assert u.reg_read(UC_ARM_REG_SP) == CALLER_SP
         return self.off[-1][:2]
 
     def all_off(self):
@@ -96,7 +100,7 @@ class Rig:
         w32(u, self.t + 0x238, 0)                         # stock's own pending list: empty
         for i, v in enumerate((self.t, 9, ROUTER)):
             u.reg_write(UC_ARM_REG_R0 + i, v)
-        u.reg_write(UC_ARM_REG_SP, S); u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        u.reg_write(UC_ARM_REG_SP, CALLER_SP); u.reg_write(UC_ARM_REG_LR, SENT | 1)
         u.emu_start(ALL_OFF | 1, SENT, count=400000)
 
 
@@ -164,11 +168,11 @@ class NoteMod(unittest.TestCase):
         word = (0xB5 << 24) | (3 << 13) | ((4 + 1) << 9)  # 3 hits
         g.note_on(60, tick=1000, word=word)
         u = g.u
-        w32(u, CLOCK, 1000); w32(u, S, ROUTER)
+        w32(u, CLOCK, 1000); w32(u, CALLER_SP, ROUTER)
         for i, v in enumerate((g.t, CLOCK, 0, 2000)):
             u.reg_write(UC_ARM_REG_R0 + i, v)
-        u.reg_write(UC_ARM_REG_SP, S)
-        u.emu_start(0x08060820 | 1, 0x08060824, count=400000)
+        u.reg_write(UC_ARM_REG_SP, CALLER_SP)
+        u.emu_start(S.RETRIG_EMIT_SITE | 1, S.RETRIG_EMIT_SITE + 4, count=400000)
         self.assertGreaterEqual(len(g.on), 2, "hits were posted")
         self.assertEqual({n for n, _ in g.on}, {64}, "every hit plays the first hit's pitch")
 
@@ -188,11 +192,11 @@ class NoteMod(unittest.TestCase):
         def blocks(n):
             for _ in range(n):
                 w32(u, 0xE0001004, r32(u, 0xE0001004) + 480000 * 40)          # 40 ms per block
-                w32(u, CLOCK, 1000); w32(u, S, ROUTER)
+                w32(u, CLOCK, 1000); w32(u, CALLER_SP, ROUTER)
                 for i, v in enumerate((g.t, CLOCK, 0, 0)):
                     u.reg_write(UC_ARM_REG_R0 + i, v)
-                u.reg_write(UC_ARM_REG_SP, S)
-                u.emu_start(0x08060820 | 1, 0x08060824, count=400000)
+                u.reg_write(UC_ARM_REG_SP, CALLER_SP)
+                u.emu_start(S.RETRIG_EMIT_SITE | 1, S.RETRIG_EMIT_SITE + 4, count=400000)
         got = []
         for i in range(4):
             got.append(g.note_on(60, tick=1000 + 960 * i)[0]); g.note_off(60)
@@ -221,11 +225,11 @@ class NoteMod(unittest.TestCase):
         u = g.u
         for _ in range(n):
             w32(u, 0xE0001004, r32(u, 0xE0001004) + 480000 * 40)
-            w32(u, CLOCK, 1000); w32(u, S, ROUTER)
+            w32(u, CLOCK, 1000); w32(u, CALLER_SP, ROUTER)
             for i, v in enumerate((g.t, CLOCK, 0, 0)):
                 u.reg_write(UC_ARM_REG_R0 + i, v)
-            u.reg_write(UC_ARM_REG_SP, S)
-            u.emu_start(0x08060820 | 1, 0x08060824, count=400000)
+            u.reg_write(UC_ARM_REG_SP, CALLER_SP)
+            u.emu_start(S.RETRIG_EMIT_SITE | 1, S.RETRIG_EMIT_SITE + 4, count=400000)
 
     def test_unshifted_when_the_map_is_full(self):
         g = Rig(); g.nm(amount=286)
