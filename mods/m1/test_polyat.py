@@ -38,6 +38,12 @@ LEFT, CURSOR, POOL_END, LEFT0 = S.POOL_LEFT_RAM, S.POOL_CUR_RAM, S.EXT_POOL_END,
 REGION_SIZE = 9208               # sizeof(Region)
 DCCMVAC = 0xE000EF68
 OFF = set(json.loads((Path(sys.argv[2]) / "manifest.json").read_text()).get("disabled", []))
+# S6a: with the synth groups in the image (1.6.8; also in a BE_DISABLE=analog bisect) the one reservation takes the synth
+# area below the Region too: 32 KB more, and only while the pool keeps 1 MB (typed here, not read from synth_shared.h).
+SYNTH = "analog" not in json.loads((Path(sys.argv[2]) / "manifest.json").read_text()).get("omitted", [])
+SYNTH_BYTES, SYNTH_MARGIN = 0x8000, 0x100000
+TOTAL = 0x4000 + (SYNTH_BYTES if SYNTH else 0)
+SA = REGION - SYNTH_BYTES                                       # the synth area (synth_shared.h)
 SCAN_HI = D2 + 0xF60
 MAGIC = 0x31474144
 REGS = [UC_ARM_REG_R0 + i for i in range(13)] + [UC_ARM_REG_SP, UC_ARM_REG_LR]
@@ -123,7 +129,7 @@ class RegionReservation(unittest.TestCase):
         self.u = self.v.u
 
     def state(self): return r32(self.u, LEFT), r32(self.u, CURSOR)
-    def reserved(self): return LEFT0 - 0x4000, POOL_END - LEFT0
+    def reserved(self): return LEFT0 - TOTAL, POOL_END - LEFT0
     def new_gen(self): w32(self.u, CFG + 12, r32(self.u, CFG + 12) + 1)
     def touch(self): call(self.u, SYM7["curve_emit"], 1, 0, 0, 128)   # region() and nothing else: midi_q is 0
     def trash(self):
@@ -194,7 +200,7 @@ class RegionReservation(unittest.TestCase):
                 self.assertEqual(bytes(u.mem_read(REGION, 16)), bytes([0xA5]) * 16, "region untouched")
                 pool(u)                             # the known shape: it comes up
                 call(u, SYM7["curve_emit"], 1, 0, 0, 128)
-                self.assertEqual((r32(u, LEFT), r32(u, REGION)), (LEFT0 - 0x4000, 0x36424D31))
+                self.assertEqual((r32(u, LEFT), r32(u, REGION)), (LEFT0 - TOTAL, 0x36424D31))
 
     def test_an_interrupted_allocation_only_turns_the_state_off_for_that_call(self):
         """Stock's allocator lowers left, then raises the cursor, with interrupts on."""
@@ -207,7 +213,7 @@ class RegionReservation(unittest.TestCase):
         self.v.on(60)                               # state kept: same note, so a retrigger
         out = self.v.out()
         self.assertEqual(out, [(0x5B, 60), (0x5B, 61), (0x5C, 60), (0x5B, 60)])
-        self.assertEqual(self.state(), (LEFT0 - 0x4020, POOL_END - LEFT0 + 0x20), "stock's allocation kept, no second drop")
+        self.assertEqual(self.state(), (LEFT0 - TOTAL - 0x20, POOL_END - LEFT0 + 0x20), "stock's allocation kept, no second drop")
 
     def test_stock_allocating_below_the_reservation_is_left_alone(self):
         self.v.on(60)
@@ -237,8 +243,77 @@ class RegionReservation(unittest.TestCase):
         self.assertEqual(self.u.reg_read(UC_ARM_REG_PRIMASK), 0)
         call(self.u, SYM7["nm_off"], args)
         self.u.hook_del(h)
-        self.assertEqual(seen, [(LEFT0 - 0x4000, 1)])
+        self.assertEqual(seen, [(LEFT0 - TOTAL, 1)])
         self.assertEqual(self.u.reg_read(UC_ARM_REG_PRIMASK), 0, "and back on")
+
+    # ---- S6a: the synth area, taken in the same reservation (m7_polyat.c synth_take, synth_shared.h)
+    def synth_head(self): return struct.unpack("<5I", self.u.mem_read(SA, 20))
+    def take_word(self): return r32(self.u, D2 + 0x1D8)
+
+    def test_synth_area_comes_with_the_region(self):
+        if not SYNTH:
+            self.skipTest("no synth groups in this image (1.6.1): the v3.70 reservation")
+        self.u.mem_write(SA, bytes([0xA5]) * SYNTH_BYTES)
+        self.touch()
+        self.assertEqual(self.state(), self.reserved(), "one drop of 48 KB")
+        self.assertEqual(self.synth_head(), (0x37534542, 1, 2, 0xC000, 1), "M7 header: magic, generation 1, layout 2, total, boot 1")
+        self.assertEqual(self.take_word(), 0xA5 << 24 | 1, "SYNTH_TAKE: both taken, no Region-only take")
+        b = bytes(self.u.mem_read(SA, 0x800))
+        self.assertEqual(b[0x14:0x20] + b[0x40:0x200] + b[0x400:0x800], bytes(0xC + 0x1C0 + 0x400), "the M7's lines zeroed")
+        self.assertEqual(b[0x20:0x40] + b[0x200:0x400], bytes([0xA5]) * 0x220, "the M4's lines left alone")
+        self.assertEqual(bytes(self.u.mem_read(SA + 0x800, 0x7800)), bytes([0xA5]) * 0x7800, "nothing else written")
+
+    def test_m7_only_reset_moves_the_synth_generation(self):
+        if not SYNTH:
+            self.skipTest("no synth groups in this image")
+        self.touch()
+        self.u.mem_write(SA + 0x200, b"M4TABLE!")
+        pool(self.u); self.touch()                  # stock's startup restored the counters: taken again
+        self.assertEqual(self.state(), self.reserved())
+        self.assertEqual(self.synth_head()[:2], (0x37534542, 2), "generation 2: the M4 republishes")
+        self.assertEqual(bytes(self.u.mem_read(SA + 0x200, 8)), b"M4TABLE!", "the M4's table survives an M7-only reset")
+        self.v.on(60); self.touch()
+        self.assertEqual(self.synth_head()[1], 2, "no new generation without a new take")
+
+    def test_synth_reservation_keeps_a_megabyte_else_the_region_alone(self):
+        """Review S1 (build): a pool with less than 1 MB to spare still gets the Region (poly cap, curves, Note Mod), as
+        v4.10 did; only the synth area is left out, and SYNTH_TAKE says so for the black box."""
+        if not SYNTH:
+            self.skipTest("no synth groups in this image")
+        for left, taken in ((TOTAL + SYNTH_MARGIN - 4, False), (TOTAL + SYNTH_MARGIN, True)):
+            with self.subTest(left=hex(left)):
+                v = Voices(); u = v.u
+                pool(u, left)
+                u.mem_write(SA, struct.pack("<5I", 0x37534542, 9, 2, 0xC000, 1))   # a header a previous take left
+                call(u, SYM7["curve_emit"], 1, 0, 0, 128)
+                self.assertEqual(r32(u, LEFT), left - (TOTAL if taken else 0x4000))
+                self.assertEqual(r32(u, SA), 0x37534542 if taken else 0, "a live header only when taken (else cleared: free memory)")
+                self.assertEqual(r32(u, REGION), 0x36424D31, "the Region is up either way")
+                self.assertEqual(r32(u, D2 + 0x1D8), 0xA5 << 24 | (1 if taken else 1 << 8 | 2))
+                for n in range(60, 67): v.on(n)
+                self.assertIn((0x5C, 60), v.out(), "the poly cap works: the 7th note stole the 1st")
+                call(u, SYM7["curve_emit"], 1, 0, 0, 128)
+                self.assertEqual(r32(u, LEFT), left - (TOTAL if taken else 0x4000), "no second drop on the next call")
+
+    def test_region_only_below_the_header_leaves_stocks_memory_alone(self):
+        """Less than the whole 48 KB free: the header's address may be stock's, so it is not written."""
+        if not SYNTH:
+            self.skipTest("no synth groups in this image")
+        v = Voices(); u = v.u
+        pool(u, 0x6000)
+        u.mem_write(SA, b"STOCK!!!")
+        call(u, SYM7["curve_emit"], 1, 0, 0, 128)
+        self.assertEqual((r32(u, LEFT), r32(u, REGION)), (0x2000, 0x36424D31))
+        self.assertEqual(bytes(u.mem_read(SA, 8)), b"STOCK!!!")
+
+    def test_the_header_names_a_new_m4_boot(self):
+        """Review S2 (build): the M4 trusts a header only for its own boot; an M4-only reset moves the generation."""
+        if not SYNTH:
+            self.skipTest("no synth groups in this image")
+        self.touch()
+        self.new_gen(); self.touch()
+        self.assertEqual(self.synth_head()[1:], (1, 2, 0xC000, 2), "same take (generation 1), stamped for boot 2")
+
 
     def test_the_check_costs_two_reads_of_one_line_on_the_fast_path(self):
         self.touch()

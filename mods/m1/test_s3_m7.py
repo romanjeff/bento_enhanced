@@ -382,6 +382,8 @@ class GroupSplit(unittest.TestCase):
     """S3 split poly / cond / inta into the part S3 ports and the S4/S5 part (build.py)."""
     S3 = {"poly_cap", "retrig", "cond_engine", "nmod", "inta_curve", "cond_ui", "poly_at", "inta_live", "step", "hold"}   # + S4/S5
     LATER = {"mx"}                             # deferred (Jeff): left out by default on 1.6.8 (BASE_SETTINGS default_off)
+    # S6a: what each base leaves out by default (1.6.1: analog, which exists on 1.6.8 only; 1.6.8: mx), typed here
+    OFF_BY_DEFAULT = {"stock_161": {"analog"}, "stock_168": {"mx"}}
 
     def test_aliases_keep_the_old_names(self):
         self.assertEqual(build.ALIASES, {"poly": ("poly_cap", "poly_at"), "cond": ("cond_engine", "cond_ui"),
@@ -393,18 +395,17 @@ class GroupSplit(unittest.TestCase):
     def test_each_s3_part_plans_with_every_later_part_off(self):
         for g in sorted(self.S3):
             with self.subTest(group=g):
-                inc, omitted, refused, _ = build.plan(S, self.LATER | (self.S3 - {g}))
+                inc, omitted, refused, _ = build.plan(S, self.OFF_BY_DEFAULT[S.module] | (self.S3 - {g}))
                 self.assertEqual(refused, {})
                 self.assertIn(g, inc)
 
     def test_default_build_lists_every_later_part(self):
         inc, omitted, refused, _ = build.plan(S, set())
-        if S.module == "stock_161":
-            self.assertEqual(refused, {})
-            return
-        self.assertEqual(set(refused), self.LATER)
+        later = self.OFF_BY_DEFAULT[S.module]
+        self.assertEqual(set(refused), later)
+        self.assertEqual(set(build.BASE_SETTINGS[S.module].get("default_off", ())), later, "build() leaves them out by default")
         msg = build.refuse_message(S, refused, omitted)
-        self.assertIn("Build without them: BE_DISABLE=" + ",".join(sorted(self.LATER)), msg)
+        self.assertIn("Build without them: BE_DISABLE=" + ",".join(sorted(later)), msg)
 
 
 if __name__ == "__main__":

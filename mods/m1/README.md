@@ -174,6 +174,24 @@ builder: every key we name carries the same parameter on each base; claim()'s ke
 (`StockConsumer` / `StockButtons` / `StockMixer`), test_polyat (`M4MidiTask`: stock's MIDI-out task), test_s3_m7
 (the player, incl. the Play Count wrap), test_holdstep.
 
+**Analog oscillators on 1.6.8 (S6a, v4.21; v4.20 before its review).** Group `analog` (1.6.8 only: 1.6.1 lists its groups and leaves it out,
+`-DBE_OMIT_SYNTH`, so v3.72 keeps its bytes). An "Analog" entry in the instrument menu makes a Wavetable track whose
+WT1 / WT2 play a band-limited saw -> square -> 8 % pulse (Position), with Glide and hard Sync on the free 4th slots;
+saved as `bento_analog*` on the track's params element. The DSP is a hard-float ELF (`dsp/`, a readable rewrite of
+bento-playground's analog.h, GPL-3.0-or-later) in M7_DSP .. M7_DSP_LIMIT (stock's zero gap), reached through two
+Wavetable vtable words; `compile_dsp` / `check_dsp_elf` refuse soft float, doubles, 64-bit division, RAM data,
+constructors, unwind data and undefined symbols, `check_dsp_assumptions` the window. The M4 side is `m4_synth.c`
+after BE4.10's image end (menu, page keys, value reads through CONTEXT_GET, encoder edits at the synth view, pane
+texts, a CPU indicator in WT1's label from the synth view's tick, XML save / load). Which tracks are Analog lives in
+the M4's own table in our slice (AN4, `AN4_SLICE`, taken from the canary's end), so a project load works before the
+M7 is up; the M7 reads a published copy in the synth area (`synth_shared.h`): 32 KB below the Region, taken in the
+same reservation (48 KB, m7_polyat.c; the Region alone when the pool keeps less than 1 MB) from the first audio block
+after the M4's config line (h_consume), with a handshake (the M4 writes nothing there before the M7 header is stamped
+for its boot). Any stock instrument action on an Analog track ends it; a sweep retires entries whose handle is gone.
+The black box prints an `ANALOG` line at every save (CPU cycles per block, LOAD while Analog plays, keys, tracks,
+why the area is not taken). No voice cap (Jeff). Suites: test_analog (stock's oscillator and voice code, golden kernel model, cost), test_inst_xml (stock's
+instrument writer / reader), test_synth_ui, test_keys (the allow-list). Details: docs/plan-synths-168.md, "S6a".
+
 **Our slice on 1.6.8 (S2).** 1.6.8 owns D2 0x3003C000..0x30040000 (SAI DMA buffers, M7 MPU R14),
 so on 1.6.8 `S_D2_SLICE` is AXI 0x2404D000..0x24050000 (the name stays): RAMCHK `axi`
 0x2404CDC0..0x2404D000 is a guard band above the M7 stack, the slice uses +0..+0x2000, RAMCHK `top`

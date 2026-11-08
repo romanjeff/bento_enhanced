@@ -1,0 +1,121 @@
+bento_enhanced v4.21: Analog (VA) oscillators on Wavetable tracks, on stock 1.6.8 (sprint S6a, after its review)
+================================================================================================================
+
+Kit: flash\bento_enhanced-v4.21   boot label BE4.21
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.21.txt)
+The v4.20 kit (flash\bento_enhanced-v4.20) is superseded and was never flashed: do not flash it.
+
+In this image: everything BE4.10 has (docs\checklist-v4.10.txt), plus the analog group:
+  - a 9th entry "Analog" in the instrument menu: a Wavetable track whose WT1 / WT2 play band-limited analog shapes
+    instead of a wavetable. Position = shape: saw (0) -> square (middle) -> narrow 8 % pulse (full). The sub
+    oscillator, filters, envelopes, LFOs and the mixer are stock's.
+  - Glide on WT1's 4th encoder slot (0..1000 = 0..2 s), Sync (hard sync WT2 to WT1) on WT2's 4th slot, Analog tracks only.
+  - a CPU indicator: on an Analog track WT1's label reads "Analog CPU nn%" (the M7's average load over the last
+    half second or so), with " !" for 2 s after an audio block ran over its time. It shows the load; it limits nothing.
+  - saved in project.xml / presets as bento_analog, bento_analog_sync, bento_analog_glide (stock ignores them).
+  - one memory reservation of 48 KB at the top of the M7's SDRAM pool (BE4.10: 16 KB), taken right after boot: the
+    32 KB synth area below the M1 Region, which keeps its address. If the pool ever has less than 1 MB to spare at
+    that moment, only the Region (16 KB) is taken, as on v4.10, and Analog tracks stay silent that boot.
+  - black box: an "ANALOG ..." line in BENTO_SAVES.log at every save (CPU figures, keys, tracks, why the area is not
+    taken if it is not).
+NOT in it: drum synths (S6c), the Mod Matrix (deferred), the pane drawing the analog wave (the pane graphic is stock's).
+No voice cap and no voice dropping on Analog tracks (Jeff, 2026-11-08): too many voices may glitch or slip timing.
+
+0. Gate
+[ ] Flash this kit ONLY after docs\checklist-v4.10.txt has passed on this unit. If v4.10 is not done: stop here.
+[ ] Back up the whole SD card on the computer (a folder copy of every file). Section 7 restores it.
+[ ] Work on copies only: on a computer, copy SPACED to SPACED_A (for section 5) and make two new empty projects,
+    ANALOG_T for sections 2-4 and PLAIN_T for 4b. Hash the project.xml files (sha256) and write the hashes down.
+[ ] From the v4.10 run, write down BENTO_SAVES.log's "ext left=" (M7MEM line). Expected on BE4.21: that value
+    minus 32768.
+
+1. Boot and black box
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.21.
+[ ] Load ANALOG_T, save (no note played yet). BENTO_SAVES.log: header "firmware BE4.21"; a "# saved:" line; and a
+    line "ANALOG gen=N keys=ok tracks=0 | blocks=0 ...". Write down the line. If it says "area not taken" or
+    "keys=TAKEN": STOP and bring the log back (the reason is on the same line).
+[ ] M7MEM "ext left=" = the v4.10 value - 32768 (see 0). Any other value: bring the log back.
+[ ] RAMCHK quiet (as v4.10), no "!!!" lines, AUDIO blocks rising.
+[ ] Region still alive (it shares the reservation): on an internal melodic track record a note with pad pressure in
+    the piano roll, play it back: pressure plays (curves); CURVES line "sent" counts > 0 at the save.
+
+2. Menu and the Analog track
+[ ] On an empty track of ANALOG_T open the instrument menu: 9 entries, the last "Analog". Pick it.
+    Expected: the track becomes a Wavetable track; its INST page shows the Wavetable page.
+[ ] The two oscillator panes read "Analog" / "Saw > Square > Pulse" where a plain Wavetable track says "No WAV".
+    Within a second WT1's "Analog" becomes "Analog CPU nn%". Write down where that text sits on the screen and
+    the number while idle. (The pane graphic itself is stock's: note what it draws.)
+[ ] WT1's 4th encoder slot shows "Glide", WT2's 4th slot shows "Sync" (Off / On). A plain Wavetable track
+    (pick Wavetable from the menu on another track) has neither.
+[ ] Glide, one encoder detent at a time from the middle of its range: the value goes up with every detent and down
+    with every detent (none stuck). Write down how the value is shown (0..1000, 0.0..100.0, a time ...) and its maximum.
+[ ] Pick "Analog" again on the Analog track: Sync and Glide keep their values.
+[ ] Pick "Wavetable" on the Analog track: it is a plain Wavetable track again (no Glide / Sync, "No WAV").
+    Pick "Analog" again for the next sections.
+
+3. Sound (headphones or monitors; a tuner app for the first item)
+[ ] Play note 60 (middle C) from a pad: the tuner reads about 261.6 Hz. An octave up: about 523 Hz.
+[ ] Position from 0 to full: saw -> square (hollow) -> thin pulse (nasal). No clicks while turning slowly.
+[ ] Turn WT1 level down, WT2 level up: WT2 alone sounds. Detune WT2 (its pitch knob) a fifth up, then Sync On:
+    the tone turns metallic / harsh and its pitch follows WT1; Sync Off: two pitches again.
+[ ] Glide 0 / 500 / 1000 (or the display's low / middle / top): play two notes an octave apart one after the other.
+    0: jumps; middle: about a second's slide; top: about two seconds. The slide starts from the track's previous
+    note, also across voices.
+[ ] Glide and the sub: sub oscillator level up, Glide about a third of its range. Play fast overlapping notes
+    (legato runs, new notes while the slide is still moving), then hold one note for 3 s: the sub is in tune with
+    WT1 (same pitch class as before the runs; no lasting detune). Repeat with Glide 0.
+[ ] Native parts act: filter cutoff / resonance, amp envelope (attack, release), LFO -> pitch, the sub oscillator
+    level: each audibly changes the Analog sound as on a Wavetable track.
+[ ] Hold a 10-note chord (two hands / latch): all 10 sound; no reset. The CPU indicator rises. Note any crackle.
+
+4. Keys, save and reload
+[ ] Edit Sync and Glide on the Analog track, then look at the track's other Wavetable pages (WT1 / WT2 level,
+    pitch, position; the filter and envelope pages): no native value changed by the Sync / Glide edits.
+[ ] Save ANALOG_T. The ANALOG line: tracks=1, "ui ... saves=1", "handle seen=... ok=1" once a note played.
+    "ok=0" after notes played on the Analog track: bring the log back (the M7 <-> M4 handle link failed).
+[ ] Power cycle. Load ANALOG_T: still Analog, Sync and Glide as saved, sound as before. ANALOG: "loads=1".
+[ ] Autoload: make ANALOG_T the project the Bento opens at power on (load it last, power off, or however the Bento
+    picks its start project), power cycle, and touch nothing: the Analog track is Analog (Glide / Sync on its page,
+    the analog sound). Save without changing anything: ANALOG "tracks=1", and project.xml still has bento_analog="1".
+[ ] Save a preset of the Analog track, load it onto another track: that track is Analog with the same Sync / Glide.
+[ ] A plain Wavetable track with a WAV in ANALOG_T (load any WAV onto it): unchanged sound before / after.
+[ ] Change the Analog track to Sampler (instrument menu): it is a Sampler track; the next save's ANALOG line has
+    one track fewer. Pick Analog on it again for section 5.
+[ ] Open ANALOG_T on a computer: project.xml has bento_analog="1" bento_analog_sync=.. bento_analog_glide=.. on the
+    Analog track's params element, nothing new elsewhere.
+
+4b. Plain Wavetable tracks after Analog ones (the M7 reuses its track objects)
+[ ] In PLAIN_T put a WAV on a Wavetable track (no Analog track anywhere in PLAIN_T). Save.
+[ ] Load ANALOG_T, play its Analog track. Then load PLAIN_T and play the Wavetable track: it plays its WAV, not a
+    saw. Load ANALOG_T again: the Analog track is Analog.
+[ ] In ANALOG_T change the Analog track to Sampler, then on another empty track pick Wavetable and load a WAV: it
+    plays the WAV. (Pick Analog on the first track again afterwards if you continue.)
+
+5. CPU spot check (the full measurement is S6b)
+[ ] Load SPACED_A, add one Analog track (a free track), play SPACED_A with it: 1 held note, then 4, then 10.
+    Write down the CPU indicator for each and whether a "!" shows. Listen for glitches. Save after each. Bring
+    BENTO_SAVES.log back: its LOAD and ANALOG lines (avg / peak pm, share histogram, osc_peak, voices_peak,
+    load_pm, over_with_analog) are the S6b starting point. A reset: bring BENTO_CRASHES.log.
+[ ] Expected (emulator, not measured on the device): about 6,300 instructions per Analog voice per block on top
+    of the native voice, so 10 voices = roughly 5-10 % of the CPU. LOAD avg on SPACED was 59-65 % on v4.10.
+
+6. Regression (BE4.10 core items)
+[ ] Curves on an External and an internal track, trigger conditions (1:2, NOT), a retrigger on a drum pad, live
+    poly AT out of an External track, the hold shortcuts (TRACKS / LAUNCH / MIXER / INST + pads), strike
+    velocity: as on v4.10.
+
+7. Rollback
+[ ] Flash the v4.10 kit (flash\bento_enhanced-v4.10\01_TEST_FIRMWARE). Load ANALOG_T: no crash; the Analog track
+    is a plain Wavetable track with no WAV (silent, "No WAV"). Do not save it there unless you mean to: v4.10
+    drops the bento_analog attributes on its next save.
+[ ] Reopen ANALOG_T on v3.72 (1.6.1 kit) only if that project was made on 1.6.1: a 1.6.8 project is not expected
+    to open on 1.6.1 (see docs\plan-168-port.md). Note what happens either way.
+[ ] Flash 03_RESTORE_STOCK (stock 1.6.8). Load ANALOG_T: the Analog track is a plain, empty Wavetable track. No crash.
+[ ] Back to BE4.21 (01_TEST_FIRMWARE) if you continue; restore the card backup from section 0 at the end.
+
+Bring back: BENTO_SAVES.log, BENTO_CRASHES.log, the ANALOG lines you wrote down, the tuner reading, where the CPU
+indicator shows and its readings, how Glide is displayed, notes for every item that did not match.

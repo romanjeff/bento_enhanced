@@ -318,7 +318,11 @@ typedef struct {
 _Static_assert(SLICE(0x1400u) + sizeof(MProf) <= SLICE(0x1800u), "M4 profile past its 1 KB");
 
 #define CANARY ((volatile u32 *)SLICE(0xA00u))
+#ifdef BE_OMIT_SYNTH
 #define CANARY_WORDS ((SLICE(0xF20u) - SLICE(0xA00u)) / 4u)   /* its last 224 B became D0, scan and probe lines (v3.64-v3.69) */
+#else
+#define CANARY_WORDS ((SLICE(AN4_SLICE) - SLICE(0xA00u)) / 4u)   /* S6a: and the 256 B below those, m4_synth.c's table */
+#endif
 #define CANARY_MAGIC 0x59524E43u /* "CNRY" */
 static u32 canary_word(u32 i) { return 0xA5C30000u ^ (i * 0x9E3779B1u); }
 static void canary_arm(void) {
@@ -980,6 +984,13 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
         puts_(&o, " events="); dec(&o, mh->dbg_n >> 20); puts_(&o, "\r\n");
     }
     d0_lines(&o);
+#if defined(BE_SYNTH_UI) && !defined(BE_NO_ANALOG)
+    {   /* S6a (X6): the synth UI's ANALOG line, from its entry table (slot 1); the block is full here */
+        u32 len = o.len;
+        ((void (*)(char *, u32 *, u32))((BE_SYNTH_UI + 4u) | 1u))(o.buf, &len, BUF_BYTES - SCRATCH_BYTES - 64u);
+        o.len = len;
+    }
+#endif
     LOADREQ->req++; LOADREQ->magic = D0_MAGIC;      /* each save reports the stretch since the last one */
     puts_(&o, "# saved: "); counters(&o);
     puts_(&o, " at ms "); dec(&o, TICK_MS); puts_(&o, "\r\n");
@@ -1001,4 +1012,7 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
 __attribute__((used, retain)) void m4_tick(u32 a, u32 b) {
     FN(S_M4_BL_TARGET, orig_fn)(a, b);
     poll();
+#if defined(BE_SYNTH_UI) && !defined(BE_NO_ANALOG)
+    ((void (*)(void))(BE_SYNTH_UI | 1u))();         /* S6a: synth UI tick (entry slot 0): keys, handshake, tables */
+#endif
 }

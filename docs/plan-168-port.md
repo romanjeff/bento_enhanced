@@ -95,7 +95,7 @@ Release notes (1.6.8, read 2026-11-07) that touch our work:
   handlers (register remap, note > 127 check), LIVE_SITE (router +0x40, live AT). EXT_BUILD and MX
   (Mod Matrix, External mod rows) are deferred. Device regression on SPACED. **Milestone M2: parity.**
   S4 and S5 were merged into one sprint (Jeff). Offline part done (2026-11-08, section "S4+S5" below): a plain
-  1.6.8 build is BE4.10, everything but the deferred `mx` group; kit `flashento_enhanced-v4.10`; the device
+  1.6.8 build is BE4.10, everything but the deferred `mx` group; kit `flash\bento_enhanced-v4.10`; the device
   regression on SPACED (checklist-v4.10.txt) is open.
 - **S6, synths:** SDRAM and CPU budget, then the first drum engine. **Milestone M3.**
 

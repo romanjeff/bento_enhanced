@@ -402,6 +402,10 @@ typedef struct { u32 blocks, events, waited, timeouts, max_polls, gap_under, mis
 #define D0A ((volatile D0Top *)SLICE(0x9A0u))
 #define LOADREQ ((volatile LoadReq *)SLICE(0x9E0u))
 #define D0C ((volatile D0Count *)SLICE(0xFC0u))                /* taken from the end of the canary */
+/* S6a review (1.6.8 with the synth groups): the M4's Analog table (m4_synth.c AN4), M4-only, the 256 B below the
+ * probe line, also from the end of the canary (m4_diag.c CANARY_WORDS stops there). The M7 never reads it. */
+#define AN4_SLICE 0xE20u
+#define AN4_SLICE_END 0xF20u
 #define D0L ((volatile D0Load *)SLICE(0xFE0u))
 #define D0_MAGIC 0x3137304Du /* "M071" */
 /* The panel Controller link (v3.65), M7 copies (stock 0x080550C0, 0x08080E60, 0x0808D080).

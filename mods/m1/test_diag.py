@@ -950,6 +950,22 @@ class ReadinessDiagnostics(FatFsRig):
         self.assertEqual(struct.unpack("<2I", self.u.mem_read(S.POOL_LEFT_RAM, 8)), (3405824, S.EXT_POOL_END - 3405824), "pool counters as stock's startup left them")
         self.assertEqual(writes, [], "nothing written at or above the probe's lines")
 
+    def test_the_first_block_after_the_m4_is_up_takes_the_reservation(self):
+        """S6a review (B1, build): h_consume takes the Region and the synth area once the M4's config line is up, so the
+        M4 can attach right after its first tick instead of waiting for the first note (late, as v4.10, in a BE_DISABLE
+        bisect of analog: that build has no call)."""
+        if "analog" in OMITTED or "analog" in OFF:
+            self.skipTest("no analog group running in this image")
+        left = lambda: r32(self.u, S.POOL_LEFT_RAM)
+        self.tick(1000); self.m7_ready(); self.heap()
+        self.assertEqual(left(), 3405824, "nothing before the first block")
+        self.hb(1)
+        self.assertEqual(left(), 3405824 - 0xC000, "the Region and the synth area, one drop")
+        self.assertEqual(struct.unpack("<5I", self.u.mem_read(self.REGION - 0x8000, 20)), (0x37534542, 1, 2, 0xC000, 1),
+                         "the synth area's header, stamped for this M4 boot")
+        self.hb(2)
+        self.assertEqual(left(), 3405824 - 0xC000, "once")
+
     def test_m4_prints_the_stats_at_the_fixed_address(self):
         self.ready()
         self.assertEqual(r32(self.u, D2 + 0x1E0 + 4), self.REGION, "published by the M4")
@@ -1310,6 +1326,9 @@ class NoCardWrites(FatFsRig):
         self.tick(1000)
         call(self.u, SYM4["dump_after_save"])
         self.assertIn("# saved: m7 dropped=", self.fs[SAVES].decode())
+        if "analog" not in MAN.get("omitted", []):    # S6a (X6): the synth UI's line, through its entry table
+            self.assertRegex(self.fs[SAVES].decode(), r"\nANALOG area not taken keys=\S+ tracks=0 \|[^\n]*\r\n",
+                             "the M7 has not taken the synth area here")
         n = len(self.writes)
         self.tick(2000)
         self.assertEqual(len(self.writes), n, "no writes between saves")

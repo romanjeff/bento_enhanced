@@ -62,6 +62,13 @@ STOCK_161 = dict(
     # UI page set (test_notemod_real; v3.65's literals)
     UI_PAGE_PIANO=0x2ED980, UI_PAGE_DRUM=0x675AF8,
     MODEL_HEADER_ON=0x14C,         # HEADER_GEN 0x08134808 ldrb.w r6,[r0,#0x14c]; beq.w out
+    # S6a (Analog; the group is 1.6.8 only): Playground's 1.6.1 values, checked in this image (rc20/s6a)
+    KEY_AN_SYNC=None, KEY_AN_GLIDE=None,   # 1.6.8 only
+    ACT_WAVETABLE=0x102A,          # menu table 0x081981F8 cell 5 {0x102A, 'Wavetable'}
+    TYPE_WAVETABLE=0x12,           # Playground's analog_pane / menu checks
+    ROOT_HANDLE=0x0C, VOICE_WT1=0x7A4, VOICE_WT2=0x994, VOICE_SUB=0x4C, OSC_KERNEL=0x10C,   # WT root ctor 0x0809BF20
+    ACT_INST_FIRST=0x1023,         # menu table 0x081981F8 cell 0 (cells 0..7 = 0x1023..0x102A)
+    VIEW_NOWAV_LABEL=0x3114,       # page builder 0x0815E124: add.w r6,r0,#0x3100; adds r6,#0x14 -> "No WAV" (0x0815E1AE)
 )
 
 # 1.6.8: only what was measured in the 1.6.8 image by someone other than the generator's mapping.
@@ -185,6 +192,15 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     UI_CODE_ENCODER=0xab,         # consumer table entry 0xAB -> 0x08140FCE (posts 0xAD) (hold)
     UI_CODE_PRESS=0xaf,           # 0xAF -> 0x08141024 (BUTTON_EVENT 0x73) (hold)
     UI_CODE_RELEASE=0xb0,         # 0xB0 -> 0x08141042 (BUTTON_EVENT 0x74) (hold)
+    # S6a (rc20/s6a): the allow-list keys (regdump.py: empty after stock's builder), the menu, the type, the M7 layout
+    KEY_AN_SYNC=0x1C0, KEY_AN_GLIDE=0x1B7,
+    ACT_WAVETABLE=0x102C,         # menu table 0x0819AD30 cell 5 (menu3.py)
+    TYPE_WAVETABLE=0x12,          # 'cmp r0,#0x12' after vtable[0]: 10 sites in both images (typ2.py)
+    ROOT_HANDLE=0x0C,             # root vtable slot 10 0x08054540: str r1,[r0,#0xc] (q5.py)
+    VOICE_WT1=0x7A4, VOICE_WT2=0x994, VOICE_SUB=0x4C,   # WT root ctor 0x0809CB20 (addw #0x7a4 / #0x994, add #0x4c)
+    OSC_KERNEL=0x10C,             # osc render 0x08081D52 add.w r0,r4,#0x10c before the kernel read
+    ACT_INST_FIRST=0x1025,        # menu table 0x0819AD30 cells 0..7 = 0x1025..0x102C (rc20/s6a2 words.py)
+    VIEW_NOWAV_LABEL=0x3114,      # page builder 0x0815FED4: add.w r6,r0,#0x3100; adds r6,#0x14; "No WAV" at 0x0815FF5E
 )}
 
 EXPECTED = {"stock_161": STOCK_161, "stock_168": STOCK_168}

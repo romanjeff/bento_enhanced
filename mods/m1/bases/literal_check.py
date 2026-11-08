@@ -52,6 +52,10 @@ def FILES(repo):
         if n.endswith((".c", ".s", ".h", ".ld")) or n == "build.py" or (n.startswith("test_") and n.endswith(".py")) \
                 or n == "lab_receiver_fixture.py":
             yield os.path.join("mods", "m1", n)
+    dsp = os.path.join(m1, "dsp")                     # S6a: the hard-float DSP ELF's sources
+    for n in sorted(os.listdir(dsp)) if os.path.isdir(dsp) else ():
+        if n.endswith((".cpp", ".h", ".ld", ".s")):
+            yield os.path.join("mods", "m1", "dsp", n)
     emu = os.path.join(repo, "tools", "display_emulator")
     for n in sorted(os.listdir(emu)):
         if n.endswith(".py"):

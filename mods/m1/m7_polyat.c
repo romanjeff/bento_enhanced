@@ -31,6 +31,9 @@
  * the region is usable, notes pass through and pressure is not sent.
  */
 #include "diag_shared.h"
+#ifndef BE_OMIT_SYNTH
+#include "synth_shared.h"
+#endif
 
 #define CYCCNT (*(volatile u32 *)0xE0001004u)
 #define DCIMVAC (*(volatile u32 *)0xE000EF5Cu)
@@ -192,17 +195,61 @@ _Static_assert(sizeof(Region) <= M1_REGION_BYTES, "region larger than the M4 all
  * Taking it also drops the cached pointer, under the same mask: the caller zeroes unmasked if it
  * wasn't masked already, and a call landing in that loop must not match the old generation and
  * use a half-zeroed region. It zeroes as well, as it does for a new generation. */
+/* S6a: on a base with the synth groups the one reservation also takes the synth area below the Region
+ * (synth_shared.h): 48 KB, and only while the pool keeps SYNTH_POOL_MARGIN (running it out hangs the M7).
+ * When the pool has less than that, the Region alone is taken, as v4.10 did (review 2026-11-08: the poly cap,
+ * curves and Note Mod must not go off because of the synths), and SYNTH_TAKE says so for the black box.
+ * A second, separate reserver would see a pool end that is neither the pool's nor ours and leave the
+ * Region off for the whole boot, so there is exactly this one. Without them (BE_OMIT_SYNTH: 1.6.1) it is
+ * the v3.70 reservation, byte for byte. */
+#ifndef BE_OMIT_SYNTH
+_Static_assert(SYNTH_AREA + SYNTH_TOTAL == EXT_POOL_END && SYNTH_AREA + SYNTH_BYTES == M1_REGION_ADDR, "synth area below the Region");
+_Static_assert(SYNTH_TOTAL == M1_REGION_RESERVE + SYNTH_BYTES, "one reservation: Region + synth area");
+static void synth_take(void);
+/* The pool ends at one of our two marks: the synth area (both taken) or the Region (the Region alone). */
 __attribute__((noinline)) static int region_reserve(void) {
     u32 p = irq_save(), left = EXT_POOL_LEFT, end = EXT_POOL_CUR + left;
-    int took = end == M1_REGION_ADDR ? 0 : -1;
+    int took = end == SYNTH_AREA || end == M1_REGION_ADDR ? 0 : -1;
     if (end == EXT_POOL_END && left >= M1_REGION_RESERVE) {
-        EXT_POOL_LEFT = left - M1_REGION_RESERVE;
+        u32 full = left >= SYNTH_TOTAL + SYNTH_POOL_MARGIN, take = SYNTH_TAKE;
+        u32 times = (take >> 24) == SYNTH_TAKE_TAG ? (take >> 8) & 0xFFFFu : 0u;
+        EXT_POOL_LEFT = left - (full ? SYNTH_TOTAL : M1_REGION_RESERVE);
+        ((volatile u32 *)M7_REGION_CACHE)[0] = 0;
+        if (full) {
+            synth_take();
+        } else if (left >= SYNTH_TOTAL) {
+            /* Not ours, but still free pool memory (above the cursor): clear the header a previous take of this
+             * M4 boot left there, so the M4 never takes it for a live area (synth_shared.h, ready rules). */
+            *(volatile u32 *)SYNTH_AREA = 0;
+            __asm volatile("dsb" ::: "memory");
+            *(volatile u32 *)SA_DCCMVAC = SYNTH_AREA;
+        }
+        if (!full && times < 0xFFFFu) times++;
+        SYNTH_TAKE = (SYNTH_TAKE_TAG << 24) | (times << 8) | (full ? SYNTH_TAKE_FULL : SYNTH_TAKE_REGION);
+        __asm volatile("dsb" ::: "memory");
+        *(volatile u32 *)SA_DCCMVAC = (u32)&SYNTH_TAKE;      /* the M4 prints it; the rest of the line is M7 private */
+        __asm volatile("dsb" ::: "memory");
+        took = 1;
+    }
+    irq_restore(p);
+    return took;
+}
+#else
+#define RESERVE_FROM M1_REGION_ADDR
+#define RESERVE_BYTES M1_REGION_RESERVE
+#define RESERVE_KEEP 0u
+__attribute__((noinline)) static int region_reserve(void) {
+    u32 p = irq_save(), left = EXT_POOL_LEFT, end = EXT_POOL_CUR + left;
+    int took = end == RESERVE_FROM ? 0 : -1;
+    if (end == EXT_POOL_END && left >= RESERVE_BYTES + RESERVE_KEEP) {
+        EXT_POOL_LEFT = left - RESERVE_BYTES;
         ((volatile u32 *)M7_REGION_CACHE)[0] = 0;
         took = 1;
     }
     irq_restore(p);
     return took;
 }
+#endif
 
 #ifdef BE_NO_TRACE
 /* d0_publish cleans the stats the M4 prints, but it runs from h_consume, whose site this build
@@ -221,6 +268,42 @@ static inline void stats_clean(void) {
 }
 #endif
 
+#ifndef BE_OMIT_SYNTH
+/* The reservation was just taken (a new M7 boot, or an M7-only reset), with interrupts masked: our synth lines start
+ * over and the generation moves, which tells the M4 to republish its table (synth_shared.h). The M4's lines are left
+ * alone: the M7 never writes them, so no stale copy of them can be in this cache. */
+static void synth_take(void) {
+    static const u32 OURS[][2] = {{SA_M7, 0x20u}, {SA_STATS, 0x1C0u}, {0x0400u, 0x400u}};
+    volatile SaM7 *h = (volatile SaM7 *)SA(SA_M7);
+    DCIMVAC = (u32)h;
+    __asm volatile("dsb" ::: "memory");
+    u32 gen = h->magic == SA_M7_MAGIC ? h->gen + 1u : 1u;
+    if (!gen) gen = 1u;
+    for (u32 k = 0; k < sizeof(OURS) / sizeof(OURS[0]); k++)
+        for (u32 a = SA(OURS[k][0]); a < SA(OURS[k][0] + OURS[k][1]); a += 4u) *(volatile u32 *)a = 0;
+    h->gen = gen; h->layout = SA_LAYOUT; h->total = SYNTH_TOTAL;
+    h->boot = CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u;     /* the M4 boot this take is for (region() restamps) */
+    __asm volatile("dmb" ::: "memory");
+    h->magic = SA_M7_MAGIC;
+    __asm volatile("dsb" ::: "memory");
+    for (u32 k = 0; k < sizeof(OURS) / sizeof(OURS[0]); k++)
+        for (u32 a = SA(OURS[k][0]); a < SA(OURS[k][0] + OURS[k][1]); a += 32u) *(volatile u32 *)SA_DCCMVAC = a;
+    __asm volatile("dsb" ::: "memory");
+}
+/* A new M4 boot generation with the reservation unchanged (an M4-only reset, or the M7 took it while the config
+ * line still named the previous boot): the header names the new boot, so the M4 attaches (it never trusts a
+ * header stamped for another boot: synth_shared.h). */
+static void synth_stamp(u32 boot) {
+    if (EXT_POOL_CUR + EXT_POOL_LEFT != SYNTH_AREA) return;
+    volatile SaM7 *h = (volatile SaM7 *)SA(SA_M7);
+    if (h->magic != SA_M7_MAGIC || h->boot == boot) return;
+    h->boot = boot;
+    __asm volatile("dsb" ::: "memory");
+    *(volatile u32 *)SA_DCCMVAC = (u32)h;
+    __asm volatile("dsb" ::: "memory");
+}
+#endif
+
 static volatile Region *region(void) {
     /* The config line is written only by the M4, so invalidating it is safe.
      * Our cached pointer lives in M7-private RAM, which survives a reset: it is
@@ -234,7 +317,12 @@ static volatile Region *region(void) {
      * taken just now also means zeroing: that reset lost whatever of the region was still dirty
      * in the cache, and the voices and owed Note Offs it remembers are for a stock that restarted. */
     int took = 0;
-    if (EXT_POOL_CUR + EXT_POOL_LEFT != M1_REGION_ADDR && (took = region_reserve()) < 0) return 0;
+#ifndef BE_OMIT_SYNTH
+    u32 end = EXT_POOL_CUR + EXT_POOL_LEFT;
+    if (end != SYNTH_AREA && end != M1_REGION_ADDR && (took = region_reserve()) < 0) return 0;
+#else
+    if (EXT_POOL_CUR + EXT_POOL_LEFT != RESERVE_FROM && (took = region_reserve()) < 0) return 0;
+#endif
     if (!took && cache[0] == M1_REGION_ADDR && cache[1] == CFG->r[0]) {
 #ifdef BE_NO_TRACE
         stats_clean();
@@ -249,8 +337,17 @@ static volatile Region *region(void) {
     r->magic = REGION_MAGIC;
     cache[0] = M1_REGION_ADDR;
     cache[1] = CFG->r[0];
+#ifndef BE_OMIT_SYNTH
+    synth_stamp(CFG->r[0]);
+#endif
     return r;
 }
+
+#ifndef BE_OMIT_SYNTH
+/* m7_diag.c h_consume, once per audio block: the reservation is taken as soon as the M4 has published its config line,
+ * not at the first note (review 2026-11-08: the synth area, and with it Analog, must not wait for one). */
+void m1_region_poll(void) { (void)region(); }
+#endif
 
 static void stats(volatile Region *r) {
     diag_stat(0, r->sent);

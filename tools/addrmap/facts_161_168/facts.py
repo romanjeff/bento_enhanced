@@ -51,6 +51,9 @@ _SEQ = ("sequencer block 1.6.1 0x0805F8E0..0x08060160 = 1.6.8 0x0805FC80..0x0806
 _PROC = ("timed-note processor 0x08060C40..0x080611C2 (1.6.1 0x08060820, +0x420) identical (offcmp, 0x582 B: 14 moved "
          "branches, one flash literal 0x080BDBEC -> 0x080BE3AC whose first 15 floats are equal)")
 
+# S6a: the evidence most of the Analog M7 helpers share
+_AF = "masked compare vs 1.6.1 (rc20/analog afcmp.py, rc20/s6a ent.py): 0 differences"
+
 REVIEWED = {
     # ======== S2 (2026-11-07): what the black-box-only 1.6.8 build uses (groups trace, stall, irq30,
     # bbox and the build's own checks). Addresses are 1.6.8 unless marked 1.6.1. Checked in scratch rc17
@@ -566,7 +569,7 @@ REVIEWED = {
     'EV_TAB_AUTOMATION': dict(value=0x4b, evidence='template 8 Automation id 0x4B; PIANO_EVENT tbh 0x49..0x4D'),  # stepui
     'EV_ENCODER': dict(value=0xcf, evidence="DRUM_EVENT cmp r3,#0xcf 0x0815F42E -> DRUM_ENCODER(view, ldrh [ev+8], [ev+0xc]) 0x0815F442; PIANO_EVENT tbh from 0xCD (subs r3,#0xcd 0x0815C34C); EXT_EVENT first insns ldrh r3,[r1]; cmp r3,#0xcf (orig 0b88cf2b); UI event ids below 0x108 unchanged (UI_POST immediates g15.py; 0x108.. grew by 1) || also checked by the stepdata investigator: EXT_EVENT's stock entry ldrh r3,[r1]; cmp r3,#0xcf (0x081487EC/EE, 1.6.1 0x08146B80/82); 25 cmp #0xcf sites in the M4 code of both images"),  # stepui+stepdata
     'TYPE_ONESHOT': dict(value=0xe, evidence="5 'blx vtable[0]; cmp r0,#0xe' on the M4 in both (1.6.8 first 0x08139C4C); 0x11 (TYPE_LOOP) 19 (1.6.1 18) || also checked by the stepdata investigator: SEQ button handler 0x08144750 (1.6.1 0x08142AFC, aligned diff: keys -2 and the recording flag only): track type = object vtable[0] (getter 0x08135490, blx at 0x081354FA); cmp r0,#0x11 -> page 0x25; cmp r0,#0xe (0x081449B4) -> page 0x27 (movs r1,#0x27 0x08144A02); else page 0x17 (0x081449CC) || also checked by the hold investigator: SEQ case: type() cmp r0,#0xe at 0x081449B4"),  # stepui+stepdata+hold
-    'CONTEXT_GET': dict(value=0x8134a70, evidence='c2.py vs 1.6.1 0x08133614: 125 insns, only RAM literals (0x30030160 -> 0x30031AC0 ...) and the key bound sub.w #0x1d4 -> #0x1d2 differ; signature (model, &ctx, key, &value) unchanged || also checked by the stepdata investigator: same code; diffs only the cached-key range sub.w #0x1d2 (1.6.1 #0x1d4: the -2 key renumbering, keys 0x1D2..0x1D6 served from a cache) and its RAM literals; 0x8D/0x8E take the generic path (0x08134B12) as on 1.6.1; 340 -> 343 callers'),  # stepui+stepdata
+    'CONTEXT_GET': dict(value=0x8134a70, orig='f0b583b0', evidence='c2.py vs 1.6.1 0x08133614: 125 insns, only RAM literals (0x30030160 -> 0x30031AC0 ...) and the key bound sub.w #0x1d4 -> #0x1d2 differ; signature (model, &ctx, key, &value) unchanged || also checked by the stepdata investigator: same code; diffs only the cached-key range sub.w #0x1d2 (1.6.1 #0x1d4: the -2 key renumbering, keys 0x1D2..0x1D6 served from a cache) and its RAM literals; 0x8D/0x8E take the generic path (0x08134B12) as on 1.6.1; 340 -> 343 callers'),  # stepui+stepdata
     'DRUM_ENCODER': dict(value=0x815e820, orig='00f58833', evidence='c2.py vs 1.6.1 0x0815CAA0: 108 insns, 1 hunk: subw r3,r1,#0x183 -> #0x181 (stock step keys -2); first insn add.w r3,r0,#0x11000 (replayed); DRUM_EVENT 0xCF calls it (view, key, value)'),  # stepui
     'DRUM_EVENT': dict(value=0x815f3ac, orig='00b59bb0', evidence='push {lr}; sub sp,#0x6c (replayed); c2.py vs 1.6.1 0x0815D600: only action ids (0x1042 -> 0x1045, 0x102B -> 0x102D, 0x1041 -> 0x1044, 0x102C -> 0x102E, 0x1032 -> 0x1034), event 0x110 -> 0x111 and the tbb data; tabs 0x49/0x4A -> DRUM_SET_TAB 0x0815EF80 (0/1), 0xCF -> DRUM_ENCODER'),  # stepui
     'PIANO_EVENT': dict(value=0x815c304, orig='f0b5ddb0', evidence='push {r4-r7,lr}; sub sp,#0x174 (replayed); c2.py vs 1.6.1 0x0815A598: ids 0x110..0x118 -> 0x111..0x119, action ids grown, keys 0x1D9 -> 0x1D8, and one reordered case (0x0815C6CE: the view+0x125DAC == 2 test before the call, same fields 0x125DAC/0x122D24/0x125D40/0x11CD00/0x11CD08); dispatch: 0x49..0x4D tbh, 0xCD.. tbh (0xCF), as 1.6.1'),  # stepui
@@ -775,6 +778,102 @@ REVIEWED = {
     'REC_MSG_5': dict(value=0x80602a0, evidence="1.6.1 0x0805FF00 with the same message build (0x08060320..0x0806038C = 1.6.1 0x0805FF80..EC instruction for instruction): r7 = 0; str r3=#5,[sp,#8]; strd r7,r7,[sp,#0xc]; str r7,[sp,#0x14]; strh r5/sb at +0x18/+0x1a; str r7,[sp,#0x1c] (word 5 = 0); copied to sp+0x20 before bl 0x080A2940 (writes only [sp..sp+7]); strb #1 at +0x18; bl BUS_APPEND. One caller 0x080629E6"),
     'REC_MSG_6': dict(value=0x80603e0, evidence="1.6.1 0x08060040, same build: r7 = 0; word 0 = 6; strd r7,r7,[sp,#0x18] then only strh r5,[sp,#0x18] (word 5 at sp+0x1c stays 0); +0x18 = 1; bl BUS_APPEND at 0x080604CA. One caller 0x08062990"),
     'BUS_APPEND': dict(value=0x809fce0, evidence="byte-identical to 1.6.1 0x0809F0E0 (0x5C B): count [bus+0x1A48] < 64, copies the 48 B to bus+0xE48 + 48 x count. Callers (bl/b scan of M7, both phases): 0x0806038C (REC_MSG_5) and 0x080604CA (REC_MSG_6) only, as 1.6.1; no pointer to it in the image; no other store to bus+0xE48.. (the other #0xe48 / #0xa48 stores are parameter-table constructors)"),
+    # ======== S6a (2026-11-08): Analog oscillators (rc20/analog investigation; rc20/s6a: ent.py, q1/q2/q5.py, keytab.py,
+    # typ2.py, regdump.py; build.py replays / orig checks; test_analog.py and test_inst_xml.py run these sites' own code).
+    'M7_DSP': dict(value=0x80d0000, evidence="stock's zero gap 0x080CFC5C..0x080E0000 (M7 .data end literal at 0x08040568 = "
+                   "0x080CFC5C); check_dsp_assumptions: zero, no literal or movt into it"),
+    'M7_DSP_LIMIT': dict(value=0x80d9000, evidence="36 KB, up to CTRL_INPUT (BE4.10 layout)"),
+    'DSP_WINDOW_WORDS': dict(value=(0x80f6a94, 0x80f6ba4, 0x80f6f08, 0x81ab750, 0x81ab860, 0x81abbc4, 0x81adaa0),
+                             evidence="every aligned word in [M7_DSP, M7_DSP_LIMIT): 3 in the SD-reader image, 4 in M4 rodata, "
+                                      "the same words at the same places in 1.6.1 (rc20/s6a lit.py); no PC-relative ldr reads "
+                                      "any of them, decoding every halfword (pclit.py); check_dsp_assumptions repeats both"),
+    'ACT_ANALOG': dict(value=0x10f4, evidence="after ACT_NM 0x10F3; stock's menu / header action ids end at 0x104A (menu table: "
+                       "0x1025..0x102C; REVIEW_OURS rule)"),
+    'KEY_AN_SYNC': dict(value=0x1c0, evidence="plan allow-list: empty after stock's builder (test_keys), no immediate in either core, "
+                        "below claim()'s 0x1C1. Stock's key-range tests that cover it both send it to their default case: M4 "
+                        "0x08132E80 (sub.w r3,r5,#0x1b8; cmp r3,#0xf; table 0x08132E98, entry 8 = the default 0x08132DF6) and M7 "
+                        "0x0805D4F4 (keys 0x1B8..0x1D1, table 0x0805D504, entry 8 = the default 0x0805D360); test_keys decodes both"),
+    'KEY_AN_GLIDE': dict(value=0x1b7, evidence="plan allow-list: as KEY_AN_SYNC; no key-range test covers it (M7 0x08059990 "
+                         "takes 0x18C..0x1B6, one below it; test_keys)"),
+    'ACT_WAVETABLE': dict(value=0x102c, evidence="instrument menu table 0x0819AD30 cell 5 {0x102C, 'Wavetable', 0, 0, 1}; the "
+                          "menu handler 0x0815095C posts {0x42, 0, 6, track} for it (0x08150BD6)"),
+    'TYPE_WAVETABLE': dict(value=0x12, evidence="'blx; cmp r0,#0x12' 10 sites in both images (and 0x13 13 / 0x0E 5 in both: the type "
+                           "numbers did not move, typ2.py); Playground's 1.6.1 type 18"),
+    'ROOT_HANDLE': dict(value=0xc, evidence="root vtable slot 10 = 0x08054540 'str r1,[r0,#0xc]'; the engine input handler gives "
+                        "a free root (key 0xFFFFFF00) the key from the M4's message (0x08059C66..76: ldr r1,[r4,#0x10]; "
+                        "vt[0x28]) and finds roots by [root,#0xc] == that key (0x08059C0C); the black box confirms it"),
+    'VOICE_WT1': dict(value=0x7a4, evidence="WT root ctor 0x0809CB20: addw r7,r4,#0x7a4; bl osc ctor; strd r7,r6,[r4,#0x178]"),
+    'VOICE_WT2': dict(value=0x994, evidence="WT root ctor: addw r6,r4,#0x994"),
+    'VOICE_SUB': dict(value=0x4c, evidence="WT root ctor: add.w r3,r4,#0x4c; str [r4,#0x180] (the third oscillator)"),
+    'OSC_KERNEL': dict(value=0x10c, evidence="WT osc render: add.w r0,r4,#0x10c; bl kernel read 0x080A2000 (0x08081D52); note "
+                       "start: add.w r0,r0,#0x10c; bl kernel reset 0x080A1FC0"),
+    'WT_VOICE_VT_SLOT': dict(value=0x80acfb0, orig='81ca0908', evidence="root vtable 0x080ACF68 (WT root ctor literal 0x0809CB80) "
+                             "+ 18 x 4; = WT_VOICE_RENDER | 1"),
+    'WT_VOICE_RENDER': dict(value=0x809ca80, evidence=f"{_AF}; loops voice +0x178..+0x180 calling osc vt[0](osc, r3, [sp]), then "
+                            "the post 0x0807FCC0"),
+    'WT_OSC_VT_SLOT': dict(value=0x80acbb4, orig='411c0808', evidence="osc ctor 0x08081E00 stores 0x080ACBB4 at [osc]; slot 0 = "
+                           "WT_OSC_RENDER | 1"),
+    'WT_OSC_RENDER': dict(value=0x8081c40, evidence=_AF),
+    'BUF_FRAMES': dict(value=0x80a2500, evidence=_AF + "; ldr r3,[r0,#4]; cbnz; ldr r3,[r0]"),
+    'PARAM_VALUE': dict(value=0x80a09a0, evidence=_AF),
+    'NOTE_OCT': dict(value=0x804f680, evidence=_AF),
+    'OCT_RATIO': dict(value=0x804f5e0, evidence=_AF + "; x*100 -> linear interpolation in the 2001-entry table 0x080C05D4, "
+                      "times 32.703 (0x4202CFDF, C1)"),
+    'EXP2': dict(value=0x80518c0, evidence="the same table and interpolation as OCT_RATIO without the C1 factor (2^x); out of "
+                 "range: the table's ends (0x08051920 / 0x08051940); 17 callers"),
+    'LEVEL_CURVE': dict(value=0x804f360, evidence=_AF),
+    'SMOOTH_SET': dict(value=0x8071a20, evidence=_AF),
+    'SMOOTH_APPLY': dict(value=0x8071820, evidence=_AF),
+    'SCRATCH_PTR': dict(value=0x80523e0, evidence=_AF),
+    'SCRATCH_SIZE': dict(value=0x8052fa0, evidence=_AF),
+    'MIX_INTO': dict(value=0x8052760, evidence=_AF),
+    'WT_ROOT_CTOR': dict(value=0x809cb20, evidence="the one bl caller 0x08058BB4 (engine init); 0x0809CB80 literal = the root vtable"),
+    'WT_OSC_CTOR': dict(value=0x8081e00, evidence=_AF),
+    'WT_NOTE_START': dict(value=0x8081dc0, evidence=_AF),
+    'VOICE_POST': dict(value=0x807fcc0, evidence=_AF + "; the one caller 0x0809CAB0"),
+    'VOICE_DRIVER': dict(value=0x807b7c0, evidence="the one caller 0x0807AFCE: only for voices whose byte 0 is set (0x0807AFB4 "
+                         "ldrb; beq); calls slot 18 (0x0807BA94 / 0x0807BA16)"),
+    'NAMED_ALLOC': dict(value=0x80a05c0, evidence="the WT root ctor's voice allocation: ldr r0,='wtVoice'; movs r1,#2; movw r2,#0xb88"),
+    'MENU_CELL': dict(value=0x819add0, orig='00000000f0c51808000000000000000001000000', evidence="menu table 0x0819AD30 + 8 x 20 "
+                      "(menu3.py: cells 0..7 the eight instruments, 8 and 9 empty and enabled)"),
+    'MENU_COUNT': dict(value=0x8142eb4, orig='0823', evidence="the same context as 1.6.1 (movs r3,#8; add.w r2,r6,#0x190; movs r1,#0xf6)"),
+    'MENU_VT_SLOT': dict(value=0x81a13f4, orig='5d091508', evidence="= MENU_HANDLER | 1 (sites.py)"),
+    'MENU_HANDLER': dict(value=0x815095c, evidence=_AF + " over the first 8 B; dispatch on ldrh [r5] with 0x102C as the top bound"),
+    'PAGE_KEYS_COPY': dict(value=0x8161446, orig='28f00ef8', evidence="bl memcpy(view+0x11CAC, 0x081A17E0, 0xB0); the key table "
+                           "rows 0 / 1 are {0xC4, 0x3, 0xC9, 0, ...} as on 1.6.1 (keytab.py)"),
+    'M4_MEMCPY': dict(value=0x8189466, evidence=_AF),
+    'PANE_TEXT_1': dict(value=0x815f714, orig='21f063f9', evidence="bl SLOT_TITLE, same context as 1.6.1 (sites.py)"),
+    'PANE_TEXT_2': dict(value=0x815f8ce, orig='21f086f8', evidence="as PANE_TEXT_1"),
+    'PANE_TEXT_3': dict(value=0x815f9ba, orig='21f010f8', evidence="as PANE_TEXT_1"),
+    'PANE_TEXT_4': dict(value=0x815ff5e, orig='20f03efd', evidence="as PANE_TEXT_1 (no literal load right before it)"),
+    'PANE_TEXT_5': dict(value=0x815ff68, orig='20f039fd', evidence="as PANE_TEXT_1"),
+    'PANE_TEXT_6': dict(value=0x815ff92, orig='20f024fd', evidence="as PANE_TEXT_1"),
+    'STR_NO_WAV': dict(value=0x818f098, evidence="'No WAV' (pane2.py, strs.py)"),
+    'SYNTH_VIEW_EV_SLOT': dict(value=0x81a178c, orig='010f1608', evidence="synth view class 0x081A175C + 0x30 = SYNTH_VIEW_EVENT | 1"),
+    'SYNTH_VIEW_EVENT': dict(value=0x8160f00, evidence="1.6.1's prologue and dispatch; 0xCF (tbh index 2) re-posts {0xD0, +4, key "
+                             "(0xD3 -> 0xD2), value, +0x10} with UI_POST (0x08161158); unknown codes return 1"),
+    # S6a review (2026-11-08, rc20/s6a2: mcmp2.py, sdis.py, words.py): the CPU indicator (A10), the instrument actions that
+    # clear the Analog flag, and the M7 .data end the DSP window must stay above.
+    'SYNTH_VIEW_TICK_SLOT': dict(value=0x81a175c, orig='81f51508', note="synth view class 0x081A175C slot 0: tick (view, flags)", evidence="synth view class 0x081A175C slot 0 (the class "
+                                 "whose slot 12 is SYNTH_VIEW_EV_SLOT) = SYNTH_VIEW_TICK | 1; 1.6.1 0x0819E894 = 0x0815D7D1"),
+    'SYNTH_VIEW_TICK': dict(value=0x815f580, evidence="(view r0, flags r1): the model read 0x08135388 (1.6.1 0x08133E74), the two "
+                            "Wavetable panes' positions 0x08184948 on view+0x3550 / +0x3830 (1.6.1 0x08182720 on +0x3550 / +0x36C8), "
+                            "then the container tick 0x08171C1C(view, flags) (1.6.1 0x0816FABC); 61 / 62 instructions, the 17 masked "
+                            "differences are offsets of the grown view (mcmp2.py)"),
+    'VIEW_NOWAV_LABEL': dict(value=0x3114, evidence="page builder 0x0815FED4: add.w r6,r0,#0x3100; adds r6,#0x14, then "
+                             "'No WAV' (0x0818F098) with bl SLOT_TITLE on r6 at PANE_TEXT_4 0x0815FF5E (stride 0x360 for WT2); "
+                             "1.6.1 0x0815E124 the same 0x3114 (PANE_TEXT_4 0x0815E1AE)"),
+    'ACT_INST_FIRST': dict(value=0x1025, evidence="instrument menu table 0x0819AD30 cells 0..7: 0x1025, 0x1026, 0x1027, 0x1029, "
+                           "0x1028, 0x102C (Wavetable), 0x102A, 0x102B: the eight instruments are 0x1025..0x102C (1.6.1 0x1023..0x102A, "
+                           "table 0x081981F8); words.py"),
+    'M7_DATA_END': dict(value=0x8040568, orig='5cfc0c08', evidence="M7 startup copy table (0x08040540..0x0804056C): the word at "
+                        "0x08040568 = 0x080CFC5C, the end of the M7 image's flash data (stock's zero gap starts there); 1.6.1 the "
+                        "same slot = 0x080CF49C"),
+    'INST_SAVE_SITE': dict(value=0x81304de, orig='80460024', evidence="instrument writer 0x08130484 (doc r0, parent r1, object "
+                           "r2 -> r6): params = XML_APPEND_CHILD(parent, XML_NEW_ELEMENT(doc, 'params')) in r0, then mov r8,r0; movs r4,#0"),
+    'INST_LOAD': dict(value=0x81309a0, orig='f0b585b0', evidence="(node r0, object r1): XML_CHILD(node, 'params'), attributes "
+                      "matched to the object's descriptors by token (0x0812F11A); unknown ones skipped"),
+    'XML_CHILD': dict(value=0x8109538, evidence="1.6.1 0x08109268's prologue and loop (ldr r4,[r0,#0x18]; child list +0x24)"),
     'BUS_TAKE': dict(value=0x809fb40, evidence="byte-identical to 1.6.1 0x0809EF40 (0x60 B): i < [bus+0x1A48] -> copies entry i, returns 1; the bus forwarder's loop 0x08057F60..78 (BUS_TAKE, then the ring enqueue 0x08082BA0)"),
 }
 

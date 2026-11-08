@@ -397,11 +397,17 @@ static void d0_publish(void) {
 /* Queue reads happen every audio block on the M7: a cheap heartbeat for the M4's
  * "M7 stopped" watch, and a frequent stack-depth sample. (Consumer discovery,
  * used to map the pad path, is no longer logged.) */
+#if !defined(BE_OMIT_SYNTH) && !defined(BE_NO_ANALOG)
+void m1_region_poll(void);                       /* m7_polyat.c */
+#endif
 __attribute__((used, retain)) void h_consume(u32 queue, u32 idx, u32 lr) {
     (void)queue; (void)lr;
     if (idx != 0 || M7H->magic != DIAG_MAGIC) return;
     diag_sp();
     int stale = d0_unreported_reset();
+#if !defined(BE_OMIT_SYNTH) && !defined(BE_NO_ANALOG)
+    m1_region_poll();                            /* S6a: the reservation (and the synth area) once the M4 is up */
+#endif
     if (!stale) load_block();
     RINGSTAT->heartbeat++;
     if ((RINGSTAT->heartbeat & 63u) == 0) clean(RINGSTAT, sizeof(RingStat));
