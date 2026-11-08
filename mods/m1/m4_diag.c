@@ -333,7 +333,11 @@ static void ram(Out *o) {
     puts_(o, " free="); dec(o, end > cur ? end - cur : 0u);
     if (CANARY[0] != CANARY_MAGIC) bad = CANARY_WORDS;
     else for (u32 i = 1; i < CANARY_WORDS; i++) bad += CANARY[i] != canary_word(i);
+#ifdef S_RAMCHK_D2A
     puts_(o, " d2 canary changed="); dec(o, bad);
+#else
+    puts_(o, " slice canary changed="); dec(o, bad);   /* 1.6.8: the slice is in AXI */
+#endif
     puts_(o, " | wd worst gap main="); dec(o, MPROF->max_main);
     puts_(o, "/3333 pcm="); dec(o, MPROF->max_pcm); puts_(o, "/6249");
 }
@@ -345,15 +349,24 @@ static void ram(Out *o) {
  * one means power was lost. Limit: a line the M7 holds dirty in its cache shows only once
  * it is evicted. */
 typedef struct { char name[4]; u32 lo, hi; } RamBlock;
+#ifdef S_RAMCHK_D2A                                   /* 1.6.1: our slice in D2, AXI above the M7 stack free */
 static const RamBlock RAM_BLOCKS[3] = {
     {"axi", S_RAMCHK_AXI, S_RAMCHK_AXI_END},          /* above the M7 stack, below the M4 pool */
     {"d2a", S_RAMCHK_D2A, S_D2_SLICE},           /* above the M4 stack, below our slice */
     {"d2b", S_RAMCHK_D2B, S_D2_SLICE_END},          /* above our slice */
 };
+#else                                                 /* 1.6.8 (S2): D2 is stock's, our slice is in AXI */
+static const RamBlock RAM_BLOCKS[2] = {
+    {"axi", S_RAMCHK_AXI, S_RAMCHK_AXI_END},          /* above the M7 stack, below our slice (guard band) */
+    {"top", S_RAMCHK_D2B, S_D2_SLICE_END},            /* above the used part of our slice */
+};
+_Static_assert(S_RAMCHK_AXI_END == S_D2_SLICE && S_RAMCHK_D2B == S_D2_SLICE + 0x2000u, "RAMCHK blocks around the slice");
+#endif
+#define RAMCHK_N (sizeof(RAM_BLOCKS) / sizeof(RAM_BLOCKS[0]))
 #define RAMCHK_MAGIC 0x32524E43u /* "CNR2" */
 static u32 ramchk_word(u32 a) { return 0x5AC30000u ^ (a * 0x9E3779B1u); }
 static void ramchk_arm(void) {
-    for (u32 b = 0; b < 3u; b++) {
+    for (u32 b = 0; b < RAMCHK_N; b++) {
         volatile u32 *p = (volatile u32 *)RAM_BLOCKS[b].lo;
         if (*p == RAMCHK_MAGIC) continue;
         for (u32 a = RAM_BLOCKS[b].lo + 4u; a < RAM_BLOCKS[b].hi; a += 4u) *(volatile u32 *)a = ramchk_word(a);
@@ -362,7 +375,7 @@ static void ramchk_arm(void) {
 }
 static void ramchk_line(Out *o) {
     puts_(o, "RAMCHK");
-    for (u32 b = 0; b < 3u; b++) {
+    for (u32 b = 0; b < RAMCHK_N; b++) {
         const RamBlock *r = &RAM_BLOCKS[b];
         puts_(o, " | "); puts_(o, r->name);
         if (*(volatile u32 *)r->lo != RAMCHK_MAGIC) { puts_(o, " not armed"); continue; }

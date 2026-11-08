@@ -11,7 +11,7 @@
 3. M4 end-to-end with FatFS stubbed: header, record lines, idle-gated flush,
    overflow accounting and reboot resynchronisation.
 """
-import json, struct, sys, unittest
+import json, re, struct, sys, unittest
 from pathlib import Path
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_MEM_WRITE
 from unicorn.arm_const import *
@@ -35,9 +35,32 @@ CH10 = Path(sys.argv[1]).read_bytes()
 OUT = Path(sys.argv[2])
 DIAG = (OUT / "bento1.bin").read_bytes()
 MAN = json.loads((OUT / "manifest.json").read_text())
+FW = re.escape(MAN["display"])   # the label this build writes into its logs: BE3.72, BE4.00, BE4stl ...
 OFF = set(MAN.get("disabled", []))   # feature groups whose stock sites this build leaves unpatched
+OMITTED = set(MAN.get("omitted", []))   # S2: groups not even built into this image (not ported to its base yet)
 SYM7 = {k: int(v, 16) for k, v in MAN["m7_symbols"].items()}
 SYM4 = {k: int(v, 16) for k, v in MAN["m4_symbols"].items()}
+M7_ONLY = {"poly", "retrig", "nmod", "cond", "inta"} & OMITTED   # m7_polyat & co. not in this image
+# Our RAM on this base (build.py our_ram): the slice and the RAMCHK blocks, (name, lo, hi).
+RAMCHK = ([("axi", S.RAMCHK_AXI, S.RAMCHK_AXI_END), ("d2a", S.RAMCHK_D2A, S.D2_SLICE), ("d2b", S.RAMCHK_D2B, S.D2_SLICE_END)]
+          if S.has("RAMCHK_D2A") else
+          [("axi", S.RAMCHK_AXI, S.RAMCHK_AXI_END), ("top", S.RAMCHK_D2B, S.D2_SLICE_END)])
+OUR_RAM = [(D2, S.D2_SLICE_END)] + [(lo, hi) for _, lo, hi in RAMCHK]
+M4_FROM = 0x08100000            # the M4 half of the main image: code there runs on the M4
+SLICE_IN_AXI = 0x24000000 <= D2 < 0x24080000   # 1.6.8: the M4's MPU maps AXI as Device
+
+# S2, alignment: the M4 reaches AXI (its MPU R0, 0x24040000 + 256 KB) through a Device mapping, where
+# an unaligned access faults: on 1.6.8 our slice, on both bases the RAMCHK block above the M7 stack
+# (test_slice M4Mpu runs stock's M4 MPU setup). Every emulator records any M4 access there that is
+# not naturally aligned, and stops (as the fault would); call() turns it into a failure,
+# tearDownModule catches the rest.
+ALIGN_RANGES = [(lo, hi) for lo, hi in OUR_RAM if 0x24040000 <= lo < 0x24080000]  # addr-ok: stock's M4 MPU R0
+ALIGN_FAULTS = []
+def _align(uc, acc, a, size, v, _):
+    pc = uc.reg_read(UC_ARM_REG_PC)
+    if pc >= M4_FROM and a % size:
+        ALIGN_FAULTS.append((pc, a, size))
+        uc.emu_stop()
 
 def emu(img):
     u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
@@ -51,6 +74,8 @@ def emu(img):
                  (0x40015000, 0x2000), (0x40020000, 0x1000)):  # SAI1-3, DMA2 (audio DMA monitor)
         u.mem_map(a, n)
     u.mem_write(S.POOL_LEFT_RAM, struct.pack("<2I", 3405824, S.EXT_POOL_END - 3405824))   # stock's ext pool: left, cursor
+    for lo, hi in ALIGN_RANGES:
+        u.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, _align, begin=lo, end=hi - 1)
     return u
 
 def w32(u, a, v): u.mem_write(a, struct.pack("<I", v & 0xFFFFFFFF))
@@ -61,8 +86,15 @@ def call(u, fn, *args, limit=200000):
         u.reg_write(UC_ARM_REG_R0 + i, v)
     u.reg_write(UC_ARM_REG_SP, STACK)
     u.reg_write(UC_ARM_REG_LR, SENT | 1)
+    n = len(ALIGN_FAULTS)
     u.emu_start(fn | 1, SENT, count=limit)
+    if len(ALIGN_FAULTS) > n:
+        pc, a, size = ALIGN_FAULTS[n]
+        raise AssertionError(f"unaligned M4 access to our (Device-mapped) RAM: {size} B at {a:#x} from pc {pc:#x}")
     return u.reg_read(UC_ARM_REG_R0)
+
+def tearDownModule():
+    assert not ALIGN_FAULTS, f"unaligned M4 accesses to our RAM: {[(hex(p), hex(a), n) for p, a, n in ALIGN_FAULTS]}"
 
 def m4_ready(u, gen=1):
     w32(u, M4H, MAGIC); w32(u, M4H + 4, 0); w32(u, M4H + 8, gen)
@@ -90,7 +122,12 @@ class Image(unittest.TestCase):
         self.assertTrue(label.startswith(b"BE") and len(label) <= 6, label)
         self.assertEqual(DIAG[S.VERSION_STR - BASE:S.VERSION_STR - BASE + 8], label.ljust(8, bytes(1)),
                          "boot screen copies the first 6 bytes of this 8-byte slot")
-        self.assertEqual(CH10[S.VERSION_STR - BASE:S.VERSION_STR - BASE + 8], b"1.6.1" + bytes(3), "stock string")
+        self.assertEqual(CH10[S.VERSION_STR - BASE:S.VERSION_STR - BASE + 8], S.version.encode().ljust(8, bytes(1)), "stock string")
+        # S2: the version line comes from the base (build.py BASE_SETTINGS): 3.x on 1.6.1, 4.x on 1.6.8
+        line = {"stock_161": "3.", "stock_168": "4."}[S.module]
+        self.assertTrue(man["version"].startswith(line), man["version"])
+        if label[2:3].isdigit():                          # not a BE_LABEL bisect label such as BEoff
+            self.assertEqual(man["display"], "BE" + man["version"].split("-")[0])
 
     def test_m7_heap_is_stock(self):
         """v3.16: the M7 heap end is back to stock (v2.3-v3.15 lowered it by 2.4 KB;
@@ -132,11 +169,17 @@ class Trampolines(unittest.TestCase):
                     b = self.run_site(DIAG, site, resume, t, ready)
                     self.assertEqual(a[0], b[0], "registers differ")
                     self.assertEqual(a[1], b[1], "flags differ")
-                    # Our slice is in D2 SRAM now (v3.16): all M7 AXI RAM must match stock,
-                    # except dead stack below the (identical) final SP (trampoline scratch).
+                    # All M7 AXI RAM must match stock, except dead stack below the (identical) final
+                    # SP (trampoline scratch) and, on 1.6.8, our own slice (in AXI since S2).
+                    def ours_masked(ram):
+                        ram = bytearray(ram)
+                        for lo, hi in OUR_RAM:
+                            if 0x24000000 <= lo < 0x24080000:
+                                ram[lo - 0x24000000:hi - 0x24000000] = bytes(hi - lo)
+                        return bytes(ram)
                     sp = a[0][13] - 0x24000000
                     dead = STACK - 0x24000000 - 0x1000
-                    self.assertEqual(a[2][:dead], b[2][:dead], "M7 AXI RAM differs from stock")
+                    self.assertEqual(ours_masked(a[2])[:dead], ours_masked(b[2])[:dead], "M7 AXI RAM differs from stock")
                     self.assertEqual(a[2][sp:], b[2][sp:], "live stack differs")
                     n = len(records(b[3])) if ready else 0
                     self.assertEqual(n, 1 if ready and t is not None else 0)  # queue reads: heartbeat only
@@ -511,7 +554,7 @@ class M4EndToEnd(FatFsRig):
         self.assertIn("BENTO black box, firmware BE", text)
         self.assertRegex(text, r"at boot \(after the black box's own buffers\): \| ram bump cur=[0-9a-f]{8} end=[0-9a-f]{8} free=\d+")
         self.assertRegex(text, r"\n# .* \| ram bump cur=[0-9a-f]{8} end=[0-9a-f]{8} free=\d+")
-        self.assertRegex(text, r"\n# .* d2 canary changed=0\b", "canary armed at boot, untouched since")
+        self.assertRegex(text, r"\n# .* (d2|slice) canary changed=0\b", "canary armed at boot, untouched since")
         self.assertEqual(r32(self.u, D2 + 0xA00), 0x59524E43, "canary magic")
         self.assertIn("# m7 dropped=0 | poly sent=0 budget_drops=0 stolen=0 retrig=0 swallowed=0"
                       " | midi ring max_fill=0 overflows=0 | m7 stack min_msp=", text)
@@ -590,14 +633,14 @@ class M4EndToEnd(FatFsRig):
         self.tick(2600)                                  # first log write of this boot
         lines = self.fs[hist].decode().splitlines()
         self.assertEqual(len(lines), 2)
-        self.assertRegex(lines[1], r"^boot fw=BE[0-9.]+ rtc=\d{6}-\d{6} gen=1 ms=2600 count=86 cause=00000005 pc=08122bc4 core=00000001")
+        self.assertRegex(lines[1], "^boot fw=" + FW + r" rtc=\d{6}-\d{6} gen=1 ms=2600 count=86 cause=00000005 pc=08122bc4 core=00000001")
         self.tick(5000)                                  # later flushes: no new history line
         self.assertEqual(len(self.fs[hist].decode().splitlines()), 2)
         w32(self.u, RTC_BKP + 4 * 24, 87)
         self.tick(50); self.tick(1700)                   # reboot, first write of boot 2
         lines = self.fs[hist].decode().splitlines()
         self.assertEqual(len(lines), 3)
-        self.assertRegex(lines[2], r"^boot fw=BE[0-9.]+ rtc=\S+ gen=2 ms=1700 count=87")
+        self.assertRegex(lines[2], "^boot fw=" + FW + r" rtc=\S+ gen=2 ms=1700 count=87")
         self.assertTrue(all(w[1] == 0x32 for w in self.writes if w[0] == hist), "append only, never truncated")
 
     def test_crash_history_live_crash_line(self):
@@ -606,7 +649,7 @@ class M4EndToEnd(FatFsRig):
         w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)  # addr-ok: harness
         self.tick(1050)
         lines = self.fs[hist].decode().splitlines()
-        self.assertRegex(lines[-1], r"^live fw=BE[0-9.]+ rtc=\S+ gen=1 ms=1050 count=1")
+        self.assertRegex(lines[-1], "^live fw=" + FW + r" rtc=\S+ gen=1 ms=1050 count=1")
         self.assertIn("pc=0808cc5a", lines[-1])
 
     # --- audio DMA monitor (DMA2 streams 5 and 7, as stock's own main-loop check)
@@ -639,7 +682,7 @@ class M4EndToEnd(FatFsRig):
         self.assertIn("HISR=00000800", text)
         self.assertIn("S5 CR,NDTR,PAR,M0AR,M1AR,FCR = 00000001 00000064 40015820", text)
         self.assertIn("periph SR=00000009", text)
-        self.assertRegex(self.fs["\\BENTO_CRASHES.log"].decode().splitlines()[-1], r"^stall fw=BE[0-9.]+ rtc=\S+ gen=1 ms=1040")
+        self.assertRegex(self.fs["\\BENTO_CRASHES.log"].decode().splitlines()[-1], "^stall fw=" + FW + r" rtc=\S+ gen=1 ms=1040")
         n = len(self.files); self.tick(1100); self.tick(3000)
         self.assertFalse(any(b"AUDIO DMA" in f for f in self.files[n:]), "reported once per boot")
         self.stream(self.S5, cr=0); self.stream(self.S7, cr=0)  # reset: audio not restarted yet
@@ -767,7 +810,7 @@ class ReadinessDiagnostics(FatFsRig):
     live = False
     D0A, D0C, D0L = D2 + 0x9A0, D2 + 0xFC0, D2 + 0xFE0
     OBJ = S.LOAD_RING
-    BLOCKS = ((S.RAMCHK_AXI, S.RAMCHK_AXI_END), (S.RAMCHK_D2A, S.D2_SLICE), (S.RAMCHK_D2B, S.D2_SLICE_END))
+    BLOCKS = tuple((lo, hi) for _, lo, hi in RAMCHK)
 
     def hb(self, n=256):
         """h_consume reaching the n-th heartbeat, as the audio loop would."""
@@ -1146,18 +1189,25 @@ class ReadinessDiagnostics(FatFsRig):
         for lo, hi in self.BLOCKS:
             self.assertEqual(r32(self.u, lo), 0x32524E43, hex(lo))
             self.assertNotEqual(r32(self.u, hi - 4), 0, "filled to the top")
-        self.assertIn("RAMCHK | axi changed=0 | d2a changed=0 | d2b changed=0", self.save_text())
-        w32(self.u, S.RAMCHK_D2A + 0x100, 1); w32(self.u, S.D2_SLICE - 4, 1)
-        self.assertIn(f"d2a changed=2 low={S.RAMCHK_D2A + 0x100:08x} high={S.D2_SLICE - 4:08x}", self.save_text())
+        self.assertIn("RAMCHK" + "".join(f" | {n} changed=0" for n, _, _ in RAMCHK) + "\r\n", self.save_text())
+        name, lo, hi = RAMCHK[1]                          # 1.6.1: d2a; 1.6.8: the block above the slice
+        w32(self.u, lo + 0x100, 1); w32(self.u, hi - 4, 1)
+        self.assertIn(f"{name} changed=2 low={lo + 0x100:08x} high={hi - 4:08x}", self.save_text())
         w32(self.u, M4H, 0)                               # a reset: the fill isn't redone
         self.tick(2000)
-        self.assertEqual(r32(self.u, S.RAMCHK_D2A + 0x100), 1, "no re-fill hides what happened")
+        self.assertEqual(r32(self.u, lo + 0x100), 1, "no re-fill hides what happened")
 
     def test_ranges_stay_clear_of_their_neighbours(self):
-        for a in (S.RAMCHK_AXI - 4, S.RAMCHK_AXI_END, S.RAMCHK_D2A - 4, D2, D2 + 0x1FFC, S.D2_SLICE_END, D2 + 0xFC0, D2 + 0xFFC):
+        if S.has("RAMCHK_D2A"):                           # 1.6.1: slice in D2
+            near = (S.RAMCHK_AXI - 4, S.RAMCHK_AXI_END, S.RAMCHK_D2A - 4, D2 + 0x1FFC, S.D2_SLICE_END, D2 + 0xFC0, D2 + 0xFFC)
+            planted = near[:3] + (D2,) + near[3:]
+        else:                                             # 1.6.8: axi block | slice | top block, all AXI
+            near = (S.RAMCHK_AXI - 4, D2 + 0x40, D2 + 0x1FFC, S.D2_SLICE_END, D2 + 0xFC0, D2 + 0xFFC)
+            planted = near
+        for a in planted:
             w32(self.u, a, 0x11223344)
         self.tick(1000)
-        for a in (S.RAMCHK_AXI - 4, S.RAMCHK_AXI_END, S.RAMCHK_D2A - 4, D2 + 0x1FFC, S.D2_SLICE_END, D2 + 0xFC0, D2 + 0xFFC):
+        for a in near:
             self.assertEqual(r32(self.u, a), 0x11223344, hex(a))
 
 
@@ -1214,6 +1264,7 @@ def movt(rd, imm16):
 
 assert movt(0, 0xC5FF) == bytes.fromhex("ccf2ff50")   # the encoding check_region_assumptions decodes
 
+@unittest.skipIf(M7_ONLY, "M7 feature code (m7_polyat.c) not in this image")
 class ScanCost(unittest.TestCase):
     """v3.66: the region is SDRAM, which the M7 then read uncached. Scanning every slot on every
     playing track's block turned a clean SPACED into a crackling one (BE3.64). Cached since v3.70,

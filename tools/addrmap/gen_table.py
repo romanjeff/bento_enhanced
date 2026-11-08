@@ -17,15 +17,18 @@ Every entry gets the mapped value, `was` (its value in <from>) and `status`:
     unmatched  no value (None)
     fact       taken from the verified facts (facts_<from>_<to>/facts.py FACTS), not from the matcher
     reviewed   settled by a person in a later sprint (facts.py REVIEWED), re-checked against the image
+    absent     settled by a person: the entry does not exist on the new base (REVIEWED absent=True;
+               no value, not in the C header; e.g. 1.6.1's D2 RAMCHK blocks on 1.6.8)
     ours       our own placement / ids, as in <from>
 
 and REVIEW="why" on anything that is not exact, not moved with high confidence and not a verified
 fact without caveats. Beyond the matcher, every entry without REVIEW is cross-checked between the
 two images: code = the first instructions with branch targets and PC-relative operands masked,
 data = the first 16 bytes with flash pointers masked, RAM = the number of literals, keys / offsets /
-events = mods/m1/expected_values.py. A disagreement makes it REVIEW. build.py refuses a table with
-any REVIEW entry (or any entry without a value) and lists them: a draft never builds, and no value
-of the old base is used silently.
+events = mods/m1/expected_values.py. A disagreement makes it REVIEW. build.py refuses to build a
+feature that uses a REVIEW entry (or an entry without a value) and lists them, and leaves a
+disabled one out of the image: no draft value is built in, and no value of the old base is used
+silently.
 
 Inputs are the two stock images (never copied into the repo; only 4-byte instruction encodings at
 patch sites and fingerprints end up in the table, as for 1.6.1) and the facts directory:
@@ -82,6 +85,11 @@ def load_facts(d):
 
 def add_review(e, why):
     e["review"] = f"{e['review']}; {why}" if e["review"] else why
+
+
+def is_open(e):
+    """Still a draft: REVIEW, or no value (unless a review found it absent on this base)."""
+    return bool(e["review"]) or (e["value"] is None and e["status"] != "absent")
 
 
 class Gen:
@@ -255,20 +263,27 @@ class Gen:
             e = self.out.get(name)
             if e is None:
                 raise SystemExit(f"facts.py HINTS names {name}, which is not in {self.old.module}")
-            if e["review"] or e["value"] is None:
+            if is_open(e):
                 add_review(e, why)
         return self.out
 
     def reviewed(self, name, s, r):
-        """A person's review from a later sprint: use it, but check it against the new image."""
+        """A person's review from a later sprint: use it, but check it against the new image.
+        absent=True (value None): the entry does not exist on the new base (status "absent").
+        note=...: replaces the old base's note (when it no longer describes the new value)."""
+        note = (r["note"] if "note" in r else s.note)
+        note = (note + " " if note else "") + f"[reviewed: {r.get('evidence', '?')}]"
+        if r.get("absent"):
+            if r.get("value") is not None:
+                raise SystemExit(f"facts.py REVIEWED {name}: absent=True takes no value")
+            return self.emit(name, s, None, "absent", None, None, note=note)
         value, why = r["value"], None
         orig = bytes.fromhex(r["orig"]) if r.get("orig") else None
         if orig is None and s.orig is not None:
             why = "REVIEWED entry has no orig (the bytes expected at this patch site)"
         elif orig is not None and self.nb(value, len(orig)) != orig:
             why = f"REVIEWED orig {orig.hex()} is not what the image holds ({self.nb(value, len(orig)).hex()})"
-        self.emit(name, s, value, "reviewed", why, orig,
-                  note=(s.note + " " if s.note else "") + f"[reviewed: {r.get('evidence', '?')}]")
+        self.emit(name, s, value, "reviewed", why, orig, note=note)
 
     def const(self, name, s):
         o = self.out
@@ -422,14 +437,15 @@ class Gen:
             return f"0x{v:X}"
         sha = hashlib.sha256(self.N).hexdigest()
         n_by = Counter(e["status"] for e in self.out.values())
-        rev = [n for n, e in self.out.items() if e["review"] or e["value"] is None]
+        rev = [n for n, e in self.out.items() if is_open(e)]
         L = ["# SPDX-License-Identifier: GPL-3.0-or-later",
              f'"""Stock Bento {version} main image: DRAFT drafted by tools/addrmap/gen_table.py from {src}.py.',
              "",
              "Every entry: the value mapped to this image, `was` (its value in the source table) and `status`",
-             "(exact / moved / inferred / changed / unmatched / fact / reviewed / ours). REVIEW marks what a",
-             "person has to check; build.py refuses this table while any entry has REVIEW or no value, and",
-             "any other reader gets an error on a REVIEW entry unless it loads the draft (allow_draft=True).",
+             "(exact / moved / inferred / changed / unmatched / fact / reviewed / absent / ours). REVIEW marks",
+             "what a person has to check; build.py refuses to build a feature that uses a REVIEW entry (or an",
+             "entry without a value) and leaves a disabled one out of the image, and any other reader gets an",
+             "error on a REVIEW entry unless it loads the draft (allow_draft=True).",
              "Do not edit this file to review an entry: record the review in",
              "tools/addrmap/facts_<from>_<to>/facts.py REVIEWED (and keys / offsets / events in",
              "mods/m1/expected_values.py), then rerun gen_table.py.",
@@ -451,7 +467,7 @@ class Gen:
                 args.append(f"note={e['note']!r}")
             args.append(f"was={fmt(e['kind'], e['was'])}")
             args.append(f"status={e['status']!r}")
-            if e["review"] or e["value"] is None:
+            if is_open(e):
                 args.append(f"REVIEW={(e['review'] or 'no value')!r}")
             L.append(f"    {name}={e['kind']}({', '.join(args)}),")
         L.append(")")

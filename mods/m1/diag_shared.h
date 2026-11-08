@@ -16,6 +16,10 @@
  * v3.15 it lived at 0x24048400 by lowering the M7 heap end, which broke
  * loading large projects. Layout inside the slice is unchanged (offset -0x24048400
  * + 0x3003C000).
+ * 1.6.8 (S2): stock owns that D2 (SAI DMA buffers, M7 MPU R14), so S_D2_SLICE is AXI 0x2404D000
+ * (to 0x24050000), above the M7 stack. The M7 sees it write-back through MPU R1 (the same rules
+ * below hold); the M4's MPU maps it as Device: M4 accesses must be naturally aligned (the M4
+ * code is built -mstrict-align on 1.6.8, and the emulated tests fault any unaligned one).
  *
  * Ownership, one writer per 32-byte cache line (offsets into the slice):
  *   +0x100 M7 header   (M7 writes, M4 reads)

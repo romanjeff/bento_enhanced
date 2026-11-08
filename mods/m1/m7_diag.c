@@ -216,9 +216,9 @@ __attribute__((used, retain)) void h_ring(u32 obj, const u32 *ev) {
      * so invalidating that line is safe. The native writer has no full check:
      * posting with 16 unread entries overwrites the oldest. */
     diag_sp();
-    DCIMVAC = (obj + 0x2340u) & ~31u;
+    DCIMVAC = (obj + S_MIDI_RING_RD) & ~31u;
     dsb();
-    u32 fill =*(volatile u32 *)(obj + 0x2360u) - *(volatile u32 *)(obj + 0x2340u);
+    u32 fill =*(volatile u32 *)(obj + S_MIDI_RING_WR) - *(volatile u32 *)(obj + S_MIDI_RING_RD);
     if (m4_ready()) { /* also initialises our side on the first call each boot */
         RINGSTAT->posts++;
         if (fill > RINGSTAT->max_fill) RINGSTAT->max_fill = fill;
@@ -276,7 +276,7 @@ static void load_clear(volatile D0Load *l) {
 
 static void load_block(void) {
     volatile D0Count *c = D0C;
-    u32 idx = G(LOADOBJ + 0x408u);
+    u32 idx = G(LOADOBJ + S_LOAD_RING_IDX);
     if (idx == c->last_idx) return;
     volatile D0Link *k = D0LINK;                 /* once a block: a slower sample misses presses */
     u32 b = G16(PANEL_BUTTONS);
@@ -285,10 +285,10 @@ static void load_block(void) {
     if (booted && !k->boot_prev) k->fw_boots++;
     k->boot_prev = booted;
     if (crc != k->crc_prev) { k->crc_changes++; k->crc_prev = crc; }
-    u32 start = G(LOADOBJ + 0x414u);
+    u32 start = G(LOADOBJ + S_LOAD_RING_START);
     if (idx == c->last_idx + 1u) {               /* value and period of the block just finished */
         u32 period = (start - D0A->prev_start) >> 8;
-        u32 pm = float_permille(G(LOADOBJ + 8u + ((idx - 1u) & 0xFFu) * 4u));
+        u32 pm = float_permille(G(LOADOBJ + S_LOAD_RING_VALUES + ((idx - 1u) & 0xFFu) * 4u));
         if (pm > 1000u) pm = 1000u;              /* a ratio by construction; guards the product */
         if (period > 4000000u) period = 4000000u;
         pm = pm * period / BLOCK_BUDGET_DIV256;
@@ -297,7 +297,7 @@ static void load_block(void) {
         if (pm > l->peak) l->peak = pm;
         l->h[pm < 500u ? 0 : pm < 800u ? 1 : pm < 1000u ? 2 : 3]++;
         volatile M7Probe *q = PROBE;
-        u32 seq = G(S_PASS_TIMER + 4u);
+        u32 seq = G(S_PASS_TIMER + S_PASS_TIMER_LAST);
         if (q->seq_n >= 0x100000u) { q->seq_sum >>= 1; q->seq_n >>= 1; }   /* cycles >> 8: no overflow */
         q->seq_sum += seq >> 8; q->seq_n++;
         if (seq > q->seq_peak) q->seq_peak = seq;
@@ -375,18 +375,18 @@ static void d0_publish(void) {
     if (!bad && free < d->heap_min) d->heap_min = free;
     d->dtcm_used = G(S_DTCM_USED); d->axi_used = G(S_AXI_USED);
     d->ext_left = G(S_POOL_LEFT_RAM); d->shared_left = G(S_SHARED_POOL_LEFT);
-    d->wrong_half = G(S_AUDIO_BLOCK_STATS + 4u);
-    d->head_min = d->wrong_half ? G(S_AUDIO_BLOCK_STATS + 0x18u) : G(S_AUDIO_BLOCK_STATS + 0xCu);
-    d->gap_over = G(S_AUDIO_GAP_STATS + 0x10u); d->gap_max = G(S_AUDIO_GAP_STATS + 8u);
+    d->wrong_half = G(S_AUDIO_BLOCK_STATS + S_AUDIO_BLOCK_WRONG_HALF);
+    d->head_min = d->wrong_half ? G(S_AUDIO_BLOCK_STATS + S_AUDIO_BLOCK_HEAD_WRONG) : G(S_AUDIO_BLOCK_STATS + S_AUDIO_BLOCK_HEAD);
+    d->gap_over = G(S_AUDIO_GAP_STATS + S_AUDIO_GAP_OVER); d->gap_max = G(S_AUDIO_GAP_STATS + S_AUDIO_GAP_MAX);
     c->blocks = G(S_AUDIO_BLOCK_STATS); c->events = G(S_AUDIO_DMA_EVENTS) >> 1;
-    c->waited = G(S_AUDIO_GAP_STATS + 0x1Cu); c->timeouts = G(S_AUDIO_GAP_STATS + 0x14u);
-    c->max_polls = G(S_AUDIO_GAP_STATS + 0x18u); c->gap_under = G(S_AUDIO_GAP_STATS + 0xCu);
+    c->waited = G(S_AUDIO_GAP_STATS + S_AUDIO_GAP_WAITS); c->timeouts = G(S_AUDIO_GAP_STATS + S_AUDIO_GAP_TIMEOUTS);
+    c->max_polls = G(S_AUDIO_GAP_STATS + S_AUDIO_GAP_POLLS); c->gap_under = G(S_AUDIO_GAP_STATS + S_AUDIO_GAP_UNDER);
     volatile D0Link *k = D0LINK;
-    k->rx = G(LINK + 0x194u); k->bad = G(LINK + 0x19Cu); k->tx = G(LINK + 0x190u);
+    k->rx = G(LINK + S_LINK_RX); k->bad = G(LINK + S_LINK_BAD); k->tx = G(LINK + S_LINK_TX);
     if (k->rx < k->rx_prev) k->restarts++;
     k->rx_prev = k->rx;
-    k->version = G16(LINK + 0x1A2u); k->reboots = G(S_LINK_REBOOTS);
-    k->spi_state = G8(SPI1_HANDLE + 0x81u);
+    k->version = G16(LINK + S_LINK_VERSION); k->reboots = G(S_LINK_REBOOTS);
+    k->spi_state = G8(SPI1_HANDLE + S_SPI_STATE);
     k->frame_type = G8(PANEL_TYPE);
     clean(k, sizeof(D0Link));
     clean(d, sizeof(D0Top));
@@ -408,8 +408,9 @@ __attribute__((used, retain)) void h_consume(u32 queue, u32 idx, u32 lr) {
     if (!stale && (RINGSTAT->heartbeat & 255u) == 0) d0_publish();
 }
 
-/* For m7_polyat.c: voice-action records and counters for the M4 trailer line. */
-void diag_put(u32 kind, u32 lr, u32 obj, const u32 *ev, u32 extra) { put(kind, lr, obj, ev, extra); }
+/* For m7_polyat.c: voice-action records and counters for the M4 trailer line. Kept in a black-box-only
+ * build too (S2, no m7_polyat.c), where the tests call it to bring the M7 side up. */
+__attribute__((used, retain)) void diag_put(u32 kind, u32 lr, u32 obj, const u32 *ev, u32 extra) { put(kind, lr, obj, ev, extra); }
 
 void diag_stat(u32 idx, u32 value) {
     if (idx >= 4 || M7H->magic != DIAG_MAGIC) return;

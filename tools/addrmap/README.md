@@ -18,15 +18,18 @@ PC-relative operands and literal-pool words masked; data: first 16 bytes with fl
 masked; RAM: literal counts; keys / offsets / events: `mods/m1/expected_values.py`), and a
 disagreement becomes `REVIEW` too. A content match on a data window that starts with zeros is
 treated as low confidence (that is how `HEADER_TEMPLATES` was first mapped wrongly).
-`build.py` refuses a table while any entry has `REVIEW` or no value, so a draft never builds and
-no old value is used silently; other readers get an error on a `REVIEW` entry unless they ask
+`build.py` refuses to build a feature that uses an entry with `REVIEW` or no value (or that no
+sprint has ported to the base yet: `BASE_SETTINGS` in build.py), and leaves a disabled one out of
+the image, so no draft value reaches a build and no old value is used silently; other readers get an error on a `REVIEW` entry unless they ask
 for the draft.
 
 Reviewing an entry means checking it in the new image (for a hook: the assumptions the wrapper
 makes there, as S5 does), then recording it in `facts_<old>_<new>/facts.py` `REVIEWED`
 (value, evidence, and `orig` for a patch site) and, for a key / offset / event, in
 `mods/m1/expected_values.py`, and rerunning the generator. Do not edit the generated table: a
-rerun rewrites it. The generator re-checks every `REVIEWED` entry against the image and makes it
+rerun rewrites it. A `REVIEWED` entry may carry `note=` (replacing the old base's note, when it no
+longer describes the new value) and, for an entry that does not exist on the new base,
+`absent=True` with `value=None` (status `absent`: reviewed, no value, left out of the C header). The generator re-checks every `REVIEWED` entry against the image and makes it
 `REVIEW` again if its bytes no longer match. `HINTS` in facts.py carries evidence for entries
 that are still open (appended to their `REVIEW`).
 

@@ -1,0 +1,63 @@
+bento_enhanced v4.00-bb168: black box only, on stock 1.6.8 (sprint S2, milestone M1)
+=================================================================================
+
+Two kits (same layout as v3.72):
+  flash\bento_enhanced-v4.00-bb168    boot label BE4.00. Black box only, stall/watchdog hooks NOT patched
+                                      in (as on v3.72, Jeff's v3.20 bisect). This is the S2 kit.
+  flash\bento_enhanced-v4.00-bb168s   boot label BEstl4. The same plus the M7 stall hooks, SysTick profile
+                                      and IRQ30 watchdog profile patched in. Optional, last (S2b below).
+In each kit:
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin). Rollback to the old setup: the v3.72 kit
+                     (flash\bento_enhanced-v3.72, its 03_RESTORE_STOCK is stock 1.6.1).
+Every other feature (poly AT, retrig, conditions, step UI, hold shortcuts, Note Mod) is NOT in these images.
+The M4-side alarms (audio DMA stall, M7 heartbeat, crash record) are on in both.
+
+S0: stock 1.6.8 first (plan, before any port image)
+[ ] Full card backup.
+[ ] Flash stock 1.6.8 (03_RESTORE_STOCK). Then roll back to v3.72 once and back: both work.
+[ ] Free RAM check: the first v3.72 boot after a stock-1.6.8 session (warm: no power-off in between)
+    prints in BENTO_SAVES.log (after a save) "RAMCHK | axi changed=..". Expect axi changed=0 (stock 1.6.8
+    never writes 0x2404CDC0..0x24050000, our new slice). d2a/d2b changed=.. is expected (1.6.8 owns that D2).
+    "not armed" means power was lost in between: that reading doesn't count, repeat it.
+    GO / NO-GO: if axi changed is not 0 in a valid reading, STOP. Do not flash 01_TEST_FIRMWARE of either
+    kit: stock 1.6.8 (or its bootloader) uses the RAM the black box would keep. Bring the log back.
+[ ] Hash a v3.72 project, load it on 1.6.8 without saving, power off, compare hashes (does load write?).
+[ ] Save it on 1.6.8: be_step_v1 dropped as expected? curves.bnt still there?
+[ ] Reopen that save on v3.72.
+[ ] Save As and Pack on 1.6.8: is curves.bnt copied?
+[ ] Input levels and settings after rolling back.
+[ ] Play SPACED on stock 1.6.8 for a baseline by ear.
+
+S2: bento_enhanced-v4.00-bb168
+[ ] Flash its 01_TEST_FIRMWARE. The boot screen shows BE4.00.
+[ ] Load a project, play a little, save. BENTO_SAVES.log gets "BENTO black box, firmware BE4.00, boot
+    gen N" (once per boot) and a "# saved:" summary per save; BENTO_CRASHES.log gets "boot fw=BE4.00".
+    Both readable on a computer. (BENTO_DIAG.log is not written by default, as since v3.68.)
+    Ignore "curves started=.. sent=.." numbers: poly AT is not in this build, so they read unreserved RAM.
+[ ] RAMCHK quiet: from the second boot on, "RAMCHK | axi changed=0 | top changed=0". (First boot after
+    v3.72: axi changed=0 already, top "not armed"; "slice canary changed=" is large once, then 0.)
+[ ] Stall / watchdog not firing (M4 side): no "!!!" lines, no "M4 main-task stall" in the header,
+    "wd worst gap main=../3333 pcm=../6249" under the limits, LINK rx counting, AUDIO blocks rising.
+    (No "M7 audio stall record" can appear: the M7 stall hooks are only in the bb168s kit.)
+[ ] A manual reset keeps the black box: after a restart without losing power, the next header says
+    "previous boot: last UI-loop pass at ms ..", gen is +1, "previous boot (from RAM)" shows the last
+    run's heartbeat, and RAMCHK reads "changed=0", not "not armed".
+[ ] Cold boot: power off for about 10 s, power on. It must boot normally into BE4.00, load and save a
+    project and write both logs. Expected in that boot's header: gen starts again (usually 1), "slice
+    canary changed=" large, RAMCHK "not armed", and the "previous boot" figures are meaningless (the
+    RAM held nothing). Then do one more manual reset: back to "changed=0" and gen +1.
+[ ] Roll back to v3.72 (flash\bento_enhanced-v3.72): boots BE3.72, projects open. Its first RAMCHK will
+    report axi (and d2a/d2b) changed: that is BE4.00's slice and 1.6.8's D2, expected.
+Bring back BENTO_SAVES.log and BENTO_CRASHES.log from each step.
+
+S2b (optional, only after S2 passed): bento_enhanced-v4.00-bb168s, the stall hooks on 1.6.8
+On 1.6.1 these hooks plus SPACED in PROJ crash-restarted the Bento and dropped the SD card (v3.20 bisect).
+This step checks the four reviewed 1.6.8 sites (stall progress / check, SysTick profile, IRQ30) for real.
+[ ] Card backup first (the v3.20 failure took the card out).
+[ ] Flash its 01_TEST_FIRMWARE. The boot screen shows BEstl4; the logs say "firmware BEstl4".
+[ ] Same checks as S2 (logs, RAMCHK, manual reset). With nothing wrong the header looks the same as on
+    BE4.00; an "M7 audio stall record" or an M7 stall profile means the hooks caught a stall: bring the log.
+[ ] The v3.20 case: open PROJ with SPACED, load it, play. STOP at the first restart or "insert microSD
+    card": roll back to bento_enhanced-v4.00-bb168 (or v3.72), then bring the logs back.
+[ ] Roll back to bento_enhanced-v4.00-bb168 when done (it is the default until we decide).

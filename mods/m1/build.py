@@ -40,11 +40,27 @@ FORBIDDEN_FROM = 0x081E0000
 # Our M7 code sits in stock's zero gap after the M7 image's data: S.CTRL_INPUT, S.CTRL_STARTUP,
 # then S.M7_TRAMP (trampolines, 1 KB since v3.59), S.M7_CODE .. S.M7_LIMIT (19 KB since v3.59).
 # M4 code is appended after stock's image end, from S.APPEND_FROM (see layout() for the blocks).
-VERSION = "3.72"                     # bump for every build that goes on the device
-DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced); max 6 characters
+# Per-base settings (S2): each stock firmware has its own version line, so a build's version
+# comes from its base, never from an edit before the build. Bump the base's "version" for every
+# build that goes on the device. m4_flags: extra compiler flags for the M4 code on that base.
+# 1.6.8 keeps our slice in AXI SRAM, which the M4's MPU maps as Device memory, where an unaligned
+# access faults: all M4 code is built strict-align there (zig cc 0.15.1 silently ignores
+# -mno-unaligned-access; -mstrict-align takes effect). Not on 1.6.1: it changes m4_step's bytes.
+# groups: the feature groups whose hooks a sprint has verified on that base (None = all). Entries
+# the matcher mapped with confidence carry no REVIEW, but their hooks' assumptions are only checked
+# when a sprint ports the feature: until then the group is refused when enabled and left out of
+# the image when disabled (S2: only the black box, S3-S5 add the rest).
+BASE_SETTINGS = {
+    "stock_161": dict(version="3.72", m4_flags=(), groups=None),
+    "stock_168": dict(version="4.00", m4_flags=("-mstrict-align",), groups=("trace", "stall", "irq30", "bbox")),
+}
+VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (display: boot label, max 6 characters)
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
 # call sites unpatched (their code stays in the image, unreachable); BE_LABEL sets
 # the boot label (<= 6 chars) and BE_TAG suffixes the kit version.
+# On a base whose table still has unreviewed entries (S2: 1.6.8), a disabled group that uses one
+# is left out of the image altogether (its code is not even compiled: a draft value never reaches
+# it), and an enabled group that uses one refuses the build (plan()).
 # Off by default since v3.20 (Jeff's bisect, 2026-10-26): with the M7 stall hooks
 # (main-loop progress/wait + SysTick profile) patched in, PROJ with a large project
 # (SPACED) crash-restarted and the SD card dropped out ("insert microSD card");
@@ -52,8 +68,6 @@ DISPLAY = f"BE{VERSION}"              # boot screen / info page (Bento Enhanced)
 # Code stays in the image, unreachable. BE_ENABLE="stall,irq30" turns them back on.
 DEFAULT_OFF = {"stall", "irq30", "modtest"}   # modtest: F1 fixed routing (test builds only)
 DISABLED = (DEFAULT_OFF - {g for g in os.environ.get("BE_ENABLE", "").split(",") if g})     | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
-DISPLAY = os.environ.get("BE_LABEL", DISPLAY)
-VERSION = VERSION + (f"-{os.environ['BE_TAG']}" if os.environ.get("BE_TAG") else "")
 PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection", "Curves")),
                 ("hold", ("Hold shortcuts",)),
                 ("cond", ("Conditions", "Probability:")),
@@ -71,7 +85,6 @@ if "diag" in DISABLED:
     DISABLED |= {"trace", "stall", "irq30", "bbox"}
 def patch_group(why):
     return next((g for g, prefixes in PATCH_GROUPS if why.startswith(prefixes)), None)
-assert len(DISPLAY) <= 6, "boot label slot copies 6 bytes"
 # Stock's version string (S.VERSION_STR, 8-byte slot). Its two users: the boot-screen label
 # (1.6.1 FUN_08162950 copies only the first 6 bytes) and "%s-cont-%d" (1.6.1 FUN_08131024).
 
@@ -143,6 +156,156 @@ HOLD_EDIT_SITES = ["STEP_EDIT_VEL", "STEP_EDIT_PROB", "STEP_EDIT_OFFSET"]   # ve
 # M7-only line CTRL_STATE (magic, suppress mask, drops, enable, pad map).
 HOLD_TAP_MS = 150   # Jeff: 400 -> 150 ms, confirmed on device v3.13
 
+# ---- What each group builds, and which table entries it uses (S2) --------------------------------
+# A build uses an entry if build.py reads it for a group it builds (GROUP_NAMES, checked against
+# what the build really read: Tracked) or if a source it compiles names it (found by preprocessing
+# the source with every entry defined as a marker: source_refs). "core" is built whatever is
+# disabled: the black box's M7 and M4 code, the layout, the version label and the base checks.
+M7_FEATURES = ("poly", "inta", "cond", "retrig", "nmod")   # m7_polyat/_conditions/_retrig/_mod call each other
+SOURCES = [  # (source, ELF, groups that need it; () = core), in compile order
+    ("m7_diag.c", "m7", ()), ("m7_polyat.c", "m7", M7_FEATURES), ("m7_conditions.c", "m7", M7_FEATURES),
+    ("m7_stall.c", "m7", ("stall",)), ("m7_retrig.c", "m7", M7_FEATURES), ("m7_mod.c", "m7", M7_FEATURES),
+    ("m4_diag.c", "m4", ()), ("m4_holdstep.c", "m4_holdstep", ("step",)),
+    ("m7_controls_input.s", "asm", ("hold",)), ("m4_controls.c", "m4_controls", ("hold",)),
+    ("m4_step.c", "m4_step", ("step",)),
+]
+GROUP_NAMES = {
+    "core": ("M7_TRAMP", "M7_CODE", "M7_LIMIT", "CTRL_INPUT", "CTRL_STARTUP", "APPEND_FROM", "D2_SLICE", "D2_SLICE_END",
+             "RAMCHK_AXI", "RAMCHK_AXI_END", "RAMCHK_D2A", "RAMCHK_D2B", "OUR_RAM_WORDS", "M7_STACK_TOP",
+             "M7_HEAP_END_LITS", "M7_HEAP_END", "VERSION_STR", "REGION", "EXT_POOL_END", "POOL_INIT_FLASH",
+             "POOL_LEFT_INIT", "POOL_CUR_INIT", "ALLOC_BUMP", "ALLOC_BUMP_LEN", "ALLOC_BUMP_SHA", "POOL_LEFT_RAM",
+             "POOL_LEFT_LITS", "POOL_CUR_RAM", "POOL_CUR_LITS", "MPU_SETUP", "MPU_SETUP_END", "MPU_SETUP_SHA",
+             "M4_STACK_BOTTOM"),
+    "trace": ("H_INPUT_SITE", "H_SEND_SITE", "H_RING_SITE", "H_CONSUME_SITE"),
+    "poly": ("EV_VOICE_PRESSURE", "POLY_RESUME", "POLY_SITE", "MSG_SEND", "POLYCAP_SEQ_ON_SITE", "POLYCAP_PAD_ON_SITE",
+             "POLYCAP_SEQ_OFF_SITE", "POLYCAP_PAD_OFF_SITE", "POLYCAP_ALL_OFF_SITE", "M4MIDI_BEGIN", "M4MIDI_STATUS",
+             "M4MIDI_CHANNEL", "M4MIDI_DATA", "M4MIDI_SEND", "M4MIDI_RESULT", "M4MIDI_DONE", "M4_LOOP",
+             "M4_NOTE_ON_CASE", "MIDI_JT", "EV_MIDI_POLY_AT", "MIDI_JT_FIRST", "EV_MIDI_CHAN_AT"),
+    "inta": ("LIVE_SITE", "BUS_POST"),
+    "retrig": ("NOTE_ROUTE", "RETRIG_ACCEPT_SITE", "RETRIG_EMIT_SITE"),
+    "nmod": ("NM_OFF_SITE_1", "NM_OFF_SITE_2", "NM_NOTE_OFF", "NM_ALL_OFF"),
+    "stall": ("STALL_PROGRESS_SITE", "WD_REFRESH", "STALL_CHECK_SITE", "MSG_PUMP", "SYSTICK_HANDLER", "HAL_INCTICK"),
+    "cond": ("COND_GATE_SITE", "COND_SKIP", "COND_LOOP_SITE", "PROB_SHOW_PIANO_SITE", "PROB_SHOW_DRUM_SITE",
+             "PROB_PIANO_REF_SITE", "PROB_PIANO_REF_BACK", "PROB_PIANO_REF_SHA", "PROB_PIANO_EDIT_SITE",
+             "PROB_PIANO_EDIT_BACK", "PROB_PIANO_EDIT_SHA"),
+    "irq30": ("M4_WD_SUPERVISOR", "M4_WD_SITE"),
+    "bbox": ("FILE_WRITER", "SAVE_WRITE_SITE", "M4_BL_TARGET", "M4_BL_SITE"),
+    "hold": ("PRODUCER_GLOBAL", "ENQUEUE", "PAD_NEXT", "PAD_CHANGED", "CTRL_INPUT_SITE", "CTRL_STARTUP_SITE",
+             "CTRL_STARTUP_LITS", "CTRL_CONSUMER_SITE", "CTRL_DISPATCH_NEXT", "CTRL_SELECTION_SITE",
+             "MIXER_RENDER_VT_SLOT", "MIXER_RENDER"),
+    "step": ("STEP_SAVE_SITE", "STEP_LOAD_SITE", "DRUM_HEADER", "DRUM_ENCODER", "PIANO_HEADER", "PIANO_EVENT",
+             "STEP_EDIT_VEL", "STEP_EDIT_PROB", "STEP_EDIT_OFFSET", "STEP_PRESS", "STEP_PRESS_SKIP", "STEP_TOGGLE",
+             "STEP_DEFAULTS_READ", "HEADER_GEN", "DRUM_EVENT", "EXT_BUILD", "EXT_EVENT", "EV_ENCODER", "MX_BUILD",
+             "MX_ROUTE", "MX_EDIT", "MX_BAR", "MX_EVENT", "NOTE_INSERT", "NOTE_UPDATE", "DOC_READ", "HOLD_TAP_PAD",
+             "HOLD_TAP_TOUCH"),
+}
+GROUP_TITLES = {"core": "black box core (always built)", "trace": "M7 event tracing", "poly": "poly AT / poly cap",
+                "inta": "internal AT", "retrig": "retrigger", "nmod": "Note Mod", "stall": "M7 stall record + profile",
+                "cond": "trigger conditions", "irq30": "M4 watchdog profile", "bbox": "black box M4 hooks",
+                "hold": "hold shortcuts", "step": "per-step UI / strike / curves / Mod Matrix"}
+assert set(GROUP_NAMES) == {"core"} | {g for g, _ in PATCH_GROUPS}
+
+
+class Tracked:
+    """The base table as build.py sees it: every entry read is recorded under the group whose code
+    is being built (`with S.group("poly"):`), so a build can show it read only what GROUP_NAMES
+    declares. Reading a REVIEW entry is an error (the table is loaded without allow_draft)."""
+    def __init__(self, base):
+        self.__dict__.update(_b=base, _cur="core", read={})
+
+    def group(self, g):
+        t = self
+        class _G:
+            def __enter__(self):
+                self.prev, t.__dict__["_cur"] = t._cur, g
+            def __exit__(self, *a):
+                t.__dict__["_cur"] = self.prev
+        return _G()
+
+    def _note(self, name):
+        if name in self._b.syms:
+            self.read.setdefault(self._cur, set()).add(name)
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        self._note(name)
+        return getattr(self._b, name)
+
+    def orig(self, name):
+        self._note(name)
+        return self._b.orig(name)
+
+    def has(self, name):
+        self._note(name)
+        return self._b.has(name)
+
+
+def source_refs(base, src, disabled, flags=()):
+    """Table names a source really uses in this build (after #ifdef BE_NO_<group>): the source is
+    preprocessed with every entry defined as a marker token (bases.Base.marker_header)."""
+    import tempfile
+    path = HERE / src
+    if src.endswith(".s"):
+        return {m for m in re.findall(r"@S_([A-Z0-9_]+)@", path.read_text())}
+    with tempfile.TemporaryDirectory() as d:
+        hdr = Path(d) / "stock_syms.h"
+        hdr.write_text(base.marker_header())
+        write_step_tables(Path(d) / "step_tables.h")
+        cpu = "cortex_m7" if src.startswith("m7_") else "cortex_m4"
+        cmd = [sys.executable, "-m", "ziglang", "cc", "-target", "thumb-freestanding-eabi", f"-mcpu={cpu}", "-E", "-P",
+               "-ffreestanding", "-nostdlib", "-include", str(hdr), f"-I{d}",
+               *[f"-DBE_NO_{g.upper()}" for g in sorted(disabled)], *flags, str(path)]
+        out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+    return set(re.findall(r"__S_REF_([A-Za-z0-9_]+)", out))
+
+
+def plan(base, disabled):
+    """(included groups, omitted groups, refusals, needs): which groups this build builds on this
+    base. A group needs its GROUP_NAMES and every entry the sources it needs use. A group that
+    needs an unreviewed entry, or is not verified on this base (BASE_SETTINGS groups), is omitted
+    (not built at all) when disabled and refuses the build when enabled; core must always build."""
+    if base.module not in BASE_SETTINGS:
+        raise SystemExit(f"build.py has no BASE_SETTINGS for {base.module} (version line, M4 flags, groups)")
+    verified = BASE_SETTINGS[base.module]["groups"]
+    refs = {src: source_refs(base, src, disabled) for src, _, _ in SOURCES}
+    def needs(g):
+        n = set(GROUP_NAMES[g])
+        for src, _, gs in SOURCES:
+            if (gs == () and g == "core") or g in gs:
+                n |= refs[src]
+        return n
+    included, omitted, refused = {"core"}, set(), {}
+    for g in GROUP_NAMES:
+        if g == "core":
+            continue
+        bad = [n for n, _ in base.unreviewed(sorted(needs(g)))]
+        if not bad and (verified is None or g in verified):
+            included.add(g)
+        elif g in disabled:
+            omitted.add(g)
+        else:
+            refused[g] = bad
+    bad = [n for n, _ in base.unreviewed(sorted(needs("core")))]
+    if bad:
+        refused["core"] = bad
+    return included, omitted, refused, {g: needs(g) for g in GROUP_NAMES}
+
+
+def refuse_message(base, refused, omitted):
+    lines = [f"{base.module} ({base.label}): enabled features are not ported to this base or use entries that are "
+             f"not reviewed for it (tools/addrmap/README.md); refusing to build."]
+    verified = BASE_SETTINGS[base.module]["groups"]
+    for g, names in refused.items():
+        why = [] if verified is None or g == "core" or g in verified else [f"not yet ported to {base.label}"]
+        if names:
+            why.append(f"{len(names)} unreviewed: " + ", ".join(names))
+        lines.append(f"  {g} ({GROUP_TITLES[g]}): " + "; ".join(why))
+    if "core" not in refused:
+        off = sorted((set(refused) | omitted) & {g for g, _ in PATCH_GROUPS})
+        lines.append(f"Build without them: BE_DISABLE={','.join(off)}")
+    return "\n".join(lines)
+
 
 def layout(S):
     """Our placement for this base: the appended M4 blocks in order, and our shared lines."""
@@ -167,16 +330,26 @@ def layout(S):
 
 
 def use_base(s):
-    """Select the base table; our layout names (M4_CODE, HOLD_WRAP, ...) become module globals."""
-    global S, MARKER, CTRL_SYMBOLS
+    """Select the base table; our layout names (M4_CODE, HOLD_WRAP, ...) become module globals, and
+    the version line comes from the base (BASE_SETTINGS)."""
+    global S, MARKER, VERSION, DISPLAY, SETTINGS
     S = s
+    if S.module not in BASE_SETTINGS:
+        raise SystemExit(f"build.py has no BASE_SETTINGS for {S.module} (version line, M4 flags)")
+    SETTINGS = BASE_SETTINGS[S.module]
+    VERSION = SETTINGS["version"] + (f"-{os.environ['BE_TAG']}" if os.environ.get("BE_TAG") else "")
+    DISPLAY = os.environ.get("BE_LABEL", f"BE{SETTINGS['version']}")
     globals().update(layout(s))
     MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:{S.label}".encode() + bytes(1)
-    CTRL_SYMBOLS = dict(STATE=hex(CTRL_STATE), STATE_MAGIC="0x31534d42", EVENT_MAGIC="0x314d5442", EVENT_TAIL="0x31525442",
-                        PRODUCER_GLOBAL=hex(S.PRODUCER_GLOBAL), ENQUEUE=hex(S.ENQUEUE | 1), PAD_NEXT=hex(S.PAD_NEXT | 1),
-                        PAD_CHANGED=hex(S.PAD_CHANGED | 1), TRACKS_MASK="0x2000", LAUNCH_MASK="0x1000", MIXER_MASK="0x400",
-                        MODIFIERS_MASK="0x3400")             # Lab: 0x3500 (incl. PROJ 0x100)
     return S
+
+
+def ctrl_symbols():
+    """Template symbols of the hold shortcuts' M7 asm (group hold)."""
+    return dict(STATE=hex(CTRL_STATE), STATE_MAGIC="0x31534d42", EVENT_MAGIC="0x314d5442", EVENT_TAIL="0x31525442",
+                PRODUCER_GLOBAL=hex(S.PRODUCER_GLOBAL), ENQUEUE=hex(S.ENQUEUE | 1), PAD_NEXT=hex(S.PAD_NEXT | 1),
+                PAD_CHANGED=hex(S.PAD_CHANGED | 1), TRACKS_MASK="0x2000", LAUNCH_MASK="0x1000", MIXER_MASK="0x400",
+                MODIFIERS_MASK="0x3400")             # Lab: 0x3500 (incl. PROJ 0x100)
 
 
 def cond_ui_helpers():
@@ -294,6 +467,7 @@ def compile_elf(srcs, cpu, ld, out, origin, limit):
            "-mfloat-abi=soft", "-Os", "-g", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-nostdlib",
            "-ffunction-sections", "-fdata-sections", "-Wall", "-Werror",
            "-Wl,--gc-sections", "-include", str(syms_h), f"-I{out.parent}", f"-Wl,--script={ld}", "-Wl,--entry=0",
+           *(SETTINGS["m4_flags"] if cpu == "cortex_m4" else ()),
            *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *map(str, srcs), "-o", str(out)]
     subprocess.run(cmd, check=True)
     return out.read_bytes()
@@ -375,6 +549,48 @@ def check_region_assumptions(img, S):
             if lo >> 16 <= v < hi >> 16:
                 fail(f"movt into the reserved range at {BASE + k:#x}")
 
+def our_ram(S):
+    """Our RAM on this base, (lo, hi) each: the shared slice and the RAMCHK blocks around it."""
+    r = [(S.D2_SLICE, S.D2_SLICE_END), (S.RAMCHK_AXI, S.RAMCHK_AXI_END)]
+    if S.has("RAMCHK_D2A"):                                  # 1.6.1 only: D2 above the M4 stack
+        r.append((S.RAMCHK_D2A, S.D2_SLICE))
+    return r + [(S.RAMCHK_D2B, S.D2_SLICE_END)]
+
+
+def check_slice_assumptions(img, S):
+    """S2: refuse a base where stock code might reach our reset-surviving RAM. Its place was checked
+    by hand (facts.py D2_SLICE); this keeps it checked: our ranges stay above the M7 stack and clear
+    of the M4's stack (M4_STACK_BOTTOM up to its initial SP), and no image word points into them other
+    than the instruction encodings the table lists (OUR_RAM_WORDS), and no movt builds an address there."""
+    def word(a): return struct.unpack_from("<I", img, a - BASE)[0]
+    def fail(what): raise SystemExit(f"Our RAM ({S.label}, S2): {what}; re-verify the slice for this firmware")
+    ranges = our_ram(S)
+    if S.D2_SLICE & 0xFFF or S.D2_SLICE_END - S.D2_SLICE < 0x2000 or S.RAMCHK_D2B != S.D2_SLICE + 0x2000:
+        fail("the slice is not a 4 KB aligned block of at least 0x2000 bytes with the top block at +0x2000")
+    if word(BASE) != S.M7_STACK_TOP:
+        fail(f"the M7's initial stack pointer is {word(BASE):#x}, not M7_STACK_TOP")
+    m4_sp = word(0x08100000)                                 # M4 vector table (the M4 image half)
+    if not S.M4_STACK_BOTTOM < m4_sp:
+        fail(f"the M4's initial stack {m4_sp:#x} is not above M4_STACK_BOTTOM {S.M4_STACK_BOTTOM:#x}")
+    for lo, hi in ranges:
+        if lo >> 24 == S.M7_STACK_TOP >> 24 and lo < S.M7_STACK_TOP:
+            fail(f"{lo:#x} is below the M7 stack top {S.M7_STACK_TOP:#x}")
+        if lo < m4_sp and S.M4_STACK_BOTTOM < hi:
+            fail(f"{lo:#x}..{hi:#x} overlaps the M4's stack {S.M4_STACK_BOTTOM:#x}..{m4_sp:#x}")
+    words = struct.unpack_from(f"<{len(img) // 4}I", img)
+    found = tuple(BASE + 4 * i for i, w in enumerate(words) if any(lo <= w < hi for lo, hi in ranges))
+    if found != tuple(sorted(S.OUR_RAM_WORDS)):
+        new, gone = sorted(set(found) - set(S.OUR_RAM_WORDS)), sorted(set(S.OUR_RAM_WORDS) - set(found))
+        fail(f"image words pointing into our RAM changed: new {[hex(a) for a in new]}, gone {[hex(a) for a in gone]}")
+    tops = {lo >> 16 for lo, hi in ranges} | {(hi - 1) >> 16 for lo, hi in ranges}
+    for k in range(0, len(img) - 3, 2):                      # movt rX, #hi16 of our RAM
+        h1, h2 = struct.unpack_from("<HH", img, k)
+        if (h1 & 0xFBF0) == 0xF2C0 and not h2 & 0x8000:
+            v = (h1 & 15) << 12 | (h1 >> 10 & 1) << 11 | (h2 >> 12 & 7) << 8 | h2 & 255
+            if v in tops:
+                fail(f"movt #{v:#x} at {BASE + k:#x} may build an address in our RAM")
+
+
 def check_sites(img, S):
     """Every patch site in the table still holds the bytes the table expects."""
     for n, s in S.syms.items():
@@ -402,15 +618,19 @@ def replaced(img, site_name, back_name, sha_name):
         raise SystemExit(f"{site_name}..{back_name}: stock's code there is not what the helper re-implements ({sha_name})")
 
 def build(base_img, out):
-    s = bases.select(base_img)                   # refuses an unknown image
-    s.require_reviewed()                         # and a draft table
-    use_base(s)
+    s = bases.select(base_img)                   # refuses an unknown image; REVIEW entries can't be read
+    included, omitted, refused, needs = plan(s, DISABLED)
+    if refused:                                  # an enabled feature (or core) uses a draft entry
+        raise SystemExit(refuse_message(s, refused, omitted))
+    use_base(Tracked(s))
+    inc = included.__contains__
     if len(base_img) != S.size:
         raise SystemExit(f"base image is {len(base_img):#x} bytes, {S.label} is {S.size:#x}")
     bad = S.verify_image(base_img)               # every address the table names, against the image
     if bad:
         raise SystemExit(f"{S.module} disagrees with its image (tools/addrmap/fingerprints.py --check):\n  " + "\n  ".join(bad))
-    bad = bases.verify_expected(S, EXPECTED)     # offsets / keys / events, against the second record
+    # offsets / keys / events, against the second record: every reviewed entry, used or not
+    bad = bases.verify_expected(s, EXPECTED, names={n for n in s.syms if s.is_reviewed(n)})
     if bad:
         raise SystemExit(f"{S.module} disagrees with expected_values.py:\n  " + "\n  ".join(bad))
     if (HERE / "stock_syms.h").exists():
@@ -419,6 +639,7 @@ def build(base_img, out):
     if bad:
         raise SystemExit("bare stock addresses outside the base tables (bases/literal_check.py):\n  " + "\n  ".join(bad))
     check_region_assumptions(base_img, S)
+    check_slice_assumptions(base_img, S)
     check_sites(base_img, S)
     out.mkdir(parents=True, exist_ok=False)
     img = bytearray(base_img)
@@ -435,160 +656,183 @@ def build(base_img, out):
         img[o:o + len(new)] = new
         writes.append(dict(address=addr, size=len(new), original_hex=old.hex(), replacement_hex=new.hex(), purpose=why))
 
-    # --- M7 heap: left at stock since v3.16 (our slice is in D2 SRAM2)
+    def extend(to, why):
+        """Grow the image with erased (0xFF) flash up to `to`."""
+        pad = b"\xff" * (to - (BASE + len(img)))
+        writes.append(dict(address=BASE + len(img), size=len(pad), original_hex="", replacement_hex=pad.hex(), purpose=why))
+        img.extend(pad)
+
+    def sources(elf):
+        return [HERE / src for src, e, gs in SOURCES if e == elf and (not gs or any(inc(g) for g in gs))]
+
+    # --- M7 heap: left at stock since v3.16 (our slice is in D2 SRAM2 on 1.6.1, AXI on 1.6.8)
     for a in S.M7_HEAP_END_LITS:
         if img[a - BASE:a - BASE + 4] != struct.pack("<I", S.M7_HEAP_END):
             raise SystemExit(f"heap literal at {a:#x} is not stock")
 
     # --- M7: compile, place, trampolines, entry patches
-    m7_elf = compile_elf([HERE / "m7_diag.c", HERE / "m7_polyat.c", HERE / "m7_conditions.c", HERE / "m7_stall.c", HERE / "m7_retrig.c", HERE / "m7_mod.c"],
-                         "cortex_m7", HERE / "m7.ld", out / "m7.elf", M7_CODE, M7_LIMIT)
+    m7_elf = compile_elf(sources("m7"), "cortex_m7", HERE / "m7.ld", out / "m7.elf", M7_CODE, M7_LIMIT)
     va, code7, s7 = elf_load(m7_elf, M7_CODE, M7_LIMIT)
     if va != M7_CODE or M7_CODE + len(code7) > M7_LIMIT:
         raise SystemExit(f"M7 code placement {va:#x}+{len(code7)} outside our slice")
     if any(base_img[M7_TRAMP - BASE:M7_LIMIT - BASE]):
         raise SystemExit("our M7 slice is not all zero in the base image")
     tramps = b""
-    for name, site_name, displaced, setup in M7_HOOKS:
-        site, orig, resume = getattr(S, site_name), S.orig(site_name), getattr(S, site_name) + 4
-        replays(site_name, displaced)
-        t = M7_TRAMP + len(tramps)
-        src = ("push.w {r0, r1, r2, r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
-               f"{setup}bl {s7[name]:#x}; "
-               "pop.w {r12, lr}; msr apsr_nzcvq, r12; pop.w {r0, r1, r2, r3, r12, lr}; "
-               f"{displaced}; b.w {resume:#x}")
-        code = asm(src, t)
-        tramps += code + bytes(-len(code) % 4)
-        patch(site, asm(f"b.w {t:#x}", site), orig, f"M1 diag: {name} entry trampoline")
-        if len(asm(f"b.w {t:#x}", site)) != 4:
-            raise SystemExit(f"{name}: branch is not 4 bytes")
-    t = M7_TRAMP + len(tramps)
-    head = asm(f"cmp r3, #{S.EV_VOICE_PRESSURE:#x}", t)
-    head += bcond_w("ne", t + len(head), S.POLY_RESUME)          # not ours -> stock path
-    poly_src = ("push.w {r0, r1, r2, r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
-                "mov r0, r6; add r1, sp, #0x40; mov r2, r8; "   # event was at sp+0x20; we pushed 0x20
-                f"bl {s7['h_poly']:#x}; "
-                "pop.w {r12, lr}; msr apsr_nzcvq, r12; pop.w {r0, r1, r2, r3, r12, lr}; "
-                f"b.w {S.POLY_RESUME:#x}")
-    code = head + asm(poly_src, t + len(head))
-    tramps += code + bytes(-len(code) % 4)
-    new_branch = bcond_w("ne", S.POLY_SITE, t)
-    if bcond_w("ne", S.POLY_SITE, S.POLY_RESUME) != S.orig("POLY_SITE"):
-        raise SystemExit("hand encoder does not reproduce the original bne.w")
-    patch(S.POLY_SITE, new_branch, S.orig("POLY_SITE"), "M1 poly AT: External handler 0x0E -> h_poly")
-    for site_name, reg, role in NOTE_SITES:
-        site = getattr(S, site_name)
-        stub = M7_TRAMP + len(tramps)
-        code = asm(f"mov r2, {reg}; b.w {s7['h_note']:#x}", stub)   # h_note(queue, ev, track); returns to site+4
-        tramps += code + bytes(-len(code) % 4)
-        orig = asm(f"bl {S.MSG_SEND:#x}", site)
-        if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
-            raise SystemExit(f"{site:#x}: not the expected bl msg_send")
-        patch(site, asm(f"bl {stub:#x}", site), orig, f"M1b poly cap: {role} -> h_note")
-    if "inta" not in DISABLED:
-        stub = M7_TRAMP + len(tramps)
-        code = asm(f"mov r2, r5; b.w {s7['h_live']:#x}", stub)    # h_live(bus, ev, router); returns to site+4
-        tramps += code + bytes(-len(code) % 4)
-    orig = asm(f"bl {S.BUS_POST:#x}", S.LIVE_SITE)
-    if bytes(base_img[S.LIVE_SITE - BASE:S.LIVE_SITE - BASE + 4]) != orig:
-        raise SystemExit(f"{S.LIVE_SITE:#x}: not the expected bl bus_post")
-    patch(S.LIVE_SITE, asm(f"bl {stub:#x}", S.LIVE_SITE) if "inta" not in DISABLED else orig, orig,
-          "Internal AT: pad router pressure post -> h_live (AT Out on internal tracks)")
-    # Retrigger (m7_retrig.c): accept = stub around stock's bl note_route;
-    # emit = entry trampoline of the timed-note processor.
-    stub = M7_TRAMP + len(tramps)
-    # F5 (v3.59): Note Mod picks the sent note / pad first (nm_on(track, note, &pad, caller sp));
-    # note_route and retrig_accept (bursts, curves) get the sent ones.
-    code = asm("push {r3, r4, r5, r6, r7, lr}; mov r4, r0; mov r5, r1; mov r6, r2; mov r7, r3; "
-               "ldr r0, [sp, #24]; ldr r1, [sp, #28]; sub sp, #8; str r0, [sp]; str r1, [sp, #4]; "   # pad, router
-               f"mov r0, r4; mov r1, r5; mov r2, sp; add r3, sp, #32; bl {s7['nm_on']:#x}; mov r5, r0; "
-               f"mov r0, r4; mov r1, r5; mov r2, r6; mov r3, r7; bl {S.NOTE_ROUTE:#x}; "
-               "ldr.w r12, [sp]; str r6, [sp]; str.w r12, [sp, #4]; "                                # vel, sent pad
-               "mov r0, r4; mov r1, r5; add r2, sp, #32; ldr r3, [sp, #20]; "                        # caller sp; caller r6 (clock)
-               f"bl {s7['retrig_accept']:#x}; add sp, #8; pop {{r3, r4, r5, r6, r7, pc}}", stub)
-    check_branches(code, stub, {s7["nm_on"], S.NOTE_ROUTE, s7["retrig_accept"]}, "retrigger accept stub")
-    tramps += code + bytes(-len(code) % 4)
-    orig = asm(f"bl {S.NOTE_ROUTE:#x}", S.RETRIG_ACCEPT_SITE)
-    patch(S.RETRIG_ACCEPT_SITE, asm(f"bl {stub:#x}", S.RETRIG_ACCEPT_SITE), orig, "Retrigger: accepted note -> note_route, then queue the burst")
-    t = M7_TRAMP + len(tramps)
-    code = asm("push.w {r0, r1, r2, r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
-               "ldr r12, [sp, #32]; sub sp, #8; str r12, [sp]; "                                       # 5th argument (router)
-               f"bl {s7['retrig_emit']:#x}; add sp, #8; "
-               "pop.w {r12, lr}; msr apsr_nzcvq, r12; pop.w {r0, r1, r2, r3, r12, lr}; "
-               f"{PUSH_R4_R11_LR}; b.w {S.RETRIG_EMIT_SITE + 4:#x}", t)
-    check_branches(code, t, {s7["retrig_emit"], S.RETRIG_EMIT_SITE + 4}, "retrigger emit trampoline")
-    tramps += code + bytes(-len(code) % 4)
-    replays("RETRIG_EMIT_SITE", PUSH_R4_R11_LR)
-    patch(S.RETRIG_EMIT_SITE, asm(f"b.w {t:#x}", S.RETRIG_EMIT_SITE), S.orig("RETRIG_EMIT_SITE"),
-          "Retrigger: timed-note processor entry -> post due hits")
-    # F5 Note Mod: stock's sequencer Note Off (two call sites) goes out as the sent pitch;
-    # stock's stop / all-notes-off ends the shifted notes first.
-    for site_name in NM_OFF_SITES:
-        site = getattr(S, site_name)
-        stub = M7_TRAMP + len(tramps)
-        code = asm(f"push {{r0, r1, r2, r3, r12, lr}}; mov r0, sp; bl {s7['nm_off']:#x}; "
-                   f"pop {{r0, r1, r2, r3, r12, lr}}; b.w {S.NM_NOTE_OFF:#x}", stub)
-        check_branches(code, stub, {s7["nm_off"], S.NM_NOTE_OFF}, "Note Mod note-off stub")
-        tramps += code + bytes(-len(code) % 4)
-        orig = asm(f"bl {S.NM_NOTE_OFF:#x}", site)
-        if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
-            raise SystemExit(f"{site:#x}: not the expected bl to stock's Note Off")
-        patch(site, asm(f"bl {stub:#x}", site), orig, "Note Mod: sequencer Note Off -> the sent pitch")
-    t = M7_TRAMP + len(tramps)
-    code = asm(f"push {{r0, r1, r2, r3, r12, lr}}; bl {s7['nm_all_off']:#x}; pop {{r0, r1, r2, r3, r12, lr}}; "
-               f"{PUSH_R4_R11_LR}; b.w {S.NM_ALL_OFF + 4:#x}", t)
-    check_branches(code, t, {s7["nm_all_off"], S.NM_ALL_OFF + 4}, "Note Mod all-off trampoline")
-    tramps += code + bytes(-len(code) % 4)
-    replays("NM_ALL_OFF", PUSH_R4_R11_LR)
-    patch(S.NM_ALL_OFF, asm(f"b.w {t:#x}", S.NM_ALL_OFF), S.orig("NM_ALL_OFF"),
-          "Note Mod: stop / all-notes-off ends the shifted notes first")
-    # Audio stall snapshot: the main audio loop's two calls (see m7_stall.c).
-    for site_name, target_name, fn, why in STALL_SITES:
-        site, target = getattr(S, site_name), getattr(S, target_name)
-        stub = M7_TRAMP + len(tramps)
-        code = asm(f"push {{r0, lr}}; bl {s7[fn]:#x}; pop {{r0, lr}}; b.w {target:#x}", stub)
-        check_branches(code, stub, {s7[fn], target}, f"stall stub {fn}")
-        tramps += code + bytes(-len(code) % 4)
-        orig = asm(f"bl {target:#x}", site)
-        if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
-            raise SystemExit(f"{site:#x}: not the expected bl {target:#x}")
-        patch(site, asm(f"bl {stub:#x}", site), orig, why)
-    # Trigger conditions (Lab T2 trampolines): save r0-r12, lr, flags (64 B).
-    save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; "
-    restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
-    t = M7_TRAMP + len(tramps)
-    gate = asm(save + f"mov r0, r8; ldrb.w r1, [sp, #105]; ldr r2, [sp, #124]; bl {s7['cond_decide']:#x}; "   # value sp+0x29, word sp+0x3C
-               "cmp r0, #0; beq skip; cmp r0, #1; beq play; "
-               + restore + f"ldrb.w r3, [sp, #0x29]; b.w {S.COND_GATE_SITE + 4:#x}; "         # native probability
-               "play: " + restore + f"movs r3, #0; b.w {S.COND_GATE_SITE + 4:#x}; "          # always
-               "skip: " + restore + f"b.w {S.COND_SKIP:#x}", t)
-    check_branches(gate, t, {S.COND_GATE_SITE + 4, S.COND_SKIP, s7["cond_decide"]}, "condition gate")
-    tramps += gate + bytes(-len(gate) % 4)
-    replays("COND_GATE_SITE", "ldrb.w r3, [sp, #0x29]")
-    patch(S.COND_GATE_SITE, asm(f"b.w {t:#x}", S.COND_GATE_SITE), S.orig("COND_GATE_SITE"),
-          "Conditions (Lab T2): probability gate -> cond_decide")
-    t = M7_TRAMP + len(tramps)
-    loop = asm(save + f"ldr r0, [sp, #8]; bl {s7['cond_loop']:#x}; " + restore     # r0 = the sequence
-               + f"{PUSH_R4_R9_LR}; b.w {S.COND_LOOP_SITE + 4:#x}", t)
-    check_branches(loop, t, {S.COND_LOOP_SITE + 4, s7["cond_loop"]}, "condition loop hook")
-    tramps += loop + bytes(-len(loop) % 4)
-    replays("COND_LOOP_SITE", PUSH_R4_R9_LR)
-    patch(S.COND_LOOP_SITE, asm(f"b.w {t:#x}", S.COND_LOOP_SITE), S.orig("COND_LOOP_SITE"),
-          "Conditions (Lab T2): sequence loop boundary -> cond_loop")
-    # Stall profile (v3.17): the M7 SysTick handler is a lone `b.w HAL_IncTick`;
-    # sample the interrupted frame first (m7_stall.c prof_sample).
-    t = M7_TRAMP + len(tramps)
-    # The M7 is bare-metal and always on MSP (SVC/PendSV are default stubs), so the
-    # frame is at MSP. Keystone cannot assemble `mrs r0, msp`: emit F3EF 8008.
-    tick = bytes.fromhex("eff30880") + asm(
-        f"push {{r0, lr}}; bl {s7['prof_sample']:#x}; pop {{r0, lr}}; b.w {S.HAL_INCTICK:#x}", t + 4)
-    check_branches(tick, t, {s7["prof_sample"], S.HAL_INCTICK}, "SysTick profile hook")
-    tramps += tick + bytes(-len(tick) % 4)
-    orig = asm(f"b.w {S.HAL_INCTICK:#x}", S.SYSTICK_HANDLER)
-    if bytes(base_img[S.SYSTICK_HANDLER - BASE:S.SYSTICK_HANDLER - BASE + 4]) != orig:
-        raise SystemExit("SysTick handler is not the expected b.w HAL_IncTick")
-    patch(S.SYSTICK_HANDLER, asm(f"b.w {t:#x}", S.SYSTICK_HANDLER), orig,
-          "Stall profile: M7 SysTick samples the interrupted PC/LR while audio is stalled")
+    with S.group("trace"):
+        for name, site_name, displaced, setup in M7_HOOKS:
+            site, orig, resume = getattr(S, site_name), S.orig(site_name), getattr(S, site_name) + 4
+            replays(site_name, displaced)
+            t = M7_TRAMP + len(tramps)
+            src = ("push.w {r0, r1, r2, r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
+                   f"{setup}bl {s7[name]:#x}; "
+                   "pop.w {r12, lr}; msr apsr_nzcvq, r12; pop.w {r0, r1, r2, r3, r12, lr}; "
+                   f"{displaced}; b.w {resume:#x}")
+            code = asm(src, t)
+            tramps += code + bytes(-len(code) % 4)
+            patch(site, asm(f"b.w {t:#x}", site), orig, f"M1 diag: {name} entry trampoline")
+            if len(asm(f"b.w {t:#x}", site)) != 4:
+                raise SystemExit(f"{name}: branch is not 4 bytes")
+    if inc("poly"):
+        with S.group("poly"):
+            t = M7_TRAMP + len(tramps)
+            head = asm(f"cmp r3, #{S.EV_VOICE_PRESSURE:#x}", t)
+            head += bcond_w("ne", t + len(head), S.POLY_RESUME)          # not ours -> stock path
+            poly_src = ("push.w {r0, r1, r2, r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
+                        "mov r0, r6; add r1, sp, #0x40; mov r2, r8; "   # event was at sp+0x20; we pushed 0x20
+                        f"bl {s7['h_poly']:#x}; "
+                        "pop.w {r12, lr}; msr apsr_nzcvq, r12; pop.w {r0, r1, r2, r3, r12, lr}; "
+                        f"b.w {S.POLY_RESUME:#x}")
+            code = head + asm(poly_src, t + len(head))
+            tramps += code + bytes(-len(code) % 4)
+            new_branch = bcond_w("ne", S.POLY_SITE, t)
+            if bcond_w("ne", S.POLY_SITE, S.POLY_RESUME) != S.orig("POLY_SITE"):
+                raise SystemExit("hand encoder does not reproduce the original bne.w")
+            patch(S.POLY_SITE, new_branch, S.orig("POLY_SITE"), "M1 poly AT: External handler 0x0E -> h_poly")
+            for site_name, reg, role in NOTE_SITES:
+                site = getattr(S, site_name)
+                stub = M7_TRAMP + len(tramps)
+                code = asm(f"mov r2, {reg}; b.w {s7['h_note']:#x}", stub)   # h_note(queue, ev, track); returns to site+4
+                tramps += code + bytes(-len(code) % 4)
+                orig = asm(f"bl {S.MSG_SEND:#x}", site)
+                if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
+                    raise SystemExit(f"{site:#x}: not the expected bl msg_send")
+                patch(site, asm(f"bl {stub:#x}", site), orig, f"M1b poly cap: {role} -> h_note")
+    if inc("inta"):
+        with S.group("inta"):
+            if "inta" not in DISABLED:
+                stub = M7_TRAMP + len(tramps)
+                code = asm(f"mov r2, r5; b.w {s7['h_live']:#x}", stub)    # h_live(bus, ev, router); returns to site+4
+                tramps += code + bytes(-len(code) % 4)
+            orig = asm(f"bl {S.BUS_POST:#x}", S.LIVE_SITE)
+            if bytes(base_img[S.LIVE_SITE - BASE:S.LIVE_SITE - BASE + 4]) != orig:
+                raise SystemExit(f"{S.LIVE_SITE:#x}: not the expected bl bus_post")
+            patch(S.LIVE_SITE, asm(f"bl {stub:#x}", S.LIVE_SITE) if "inta" not in DISABLED else orig, orig,
+                  "Internal AT: pad router pressure post -> h_live (AT Out on internal tracks)")
+    if inc("retrig"):
+        with S.group("retrig"):
+            # Retrigger (m7_retrig.c): accept = stub around stock's bl note_route;
+            # emit = entry trampoline of the timed-note processor.
+            stub = M7_TRAMP + len(tramps)
+            # F5 (v3.59): Note Mod picks the sent note / pad first (nm_on(track, note, &pad, caller sp));
+            # note_route and retrig_accept (bursts, curves) get the sent ones.
+            code = asm("push {r3, r4, r5, r6, r7, lr}; mov r4, r0; mov r5, r1; mov r6, r2; mov r7, r3; "
+                       "ldr r0, [sp, #24]; ldr r1, [sp, #28]; sub sp, #8; str r0, [sp]; str r1, [sp, #4]; "   # pad, router
+                       f"mov r0, r4; mov r1, r5; mov r2, sp; add r3, sp, #32; bl {s7['nm_on']:#x}; mov r5, r0; "
+                       f"mov r0, r4; mov r1, r5; mov r2, r6; mov r3, r7; bl {S.NOTE_ROUTE:#x}; "
+                       "ldr.w r12, [sp]; str r6, [sp]; str.w r12, [sp, #4]; "                                # vel, sent pad
+                       "mov r0, r4; mov r1, r5; add r2, sp, #32; ldr r3, [sp, #20]; "                        # caller sp; caller r6 (clock)
+                       f"bl {s7['retrig_accept']:#x}; add sp, #8; pop {{r3, r4, r5, r6, r7, pc}}", stub)
+            check_branches(code, stub, {s7["nm_on"], S.NOTE_ROUTE, s7["retrig_accept"]}, "retrigger accept stub")
+            tramps += code + bytes(-len(code) % 4)
+            orig = asm(f"bl {S.NOTE_ROUTE:#x}", S.RETRIG_ACCEPT_SITE)
+            patch(S.RETRIG_ACCEPT_SITE, asm(f"bl {stub:#x}", S.RETRIG_ACCEPT_SITE), orig, "Retrigger: accepted note -> note_route, then queue the burst")
+            t = M7_TRAMP + len(tramps)
+            code = asm("push.w {r0, r1, r2, r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
+                       "ldr r12, [sp, #32]; sub sp, #8; str r12, [sp]; "                                       # 5th argument (router)
+                       f"bl {s7['retrig_emit']:#x}; add sp, #8; "
+                       "pop.w {r12, lr}; msr apsr_nzcvq, r12; pop.w {r0, r1, r2, r3, r12, lr}; "
+                       f"{PUSH_R4_R11_LR}; b.w {S.RETRIG_EMIT_SITE + 4:#x}", t)
+            check_branches(code, t, {s7["retrig_emit"], S.RETRIG_EMIT_SITE + 4}, "retrigger emit trampoline")
+            tramps += code + bytes(-len(code) % 4)
+            replays("RETRIG_EMIT_SITE", PUSH_R4_R11_LR)
+            patch(S.RETRIG_EMIT_SITE, asm(f"b.w {t:#x}", S.RETRIG_EMIT_SITE), S.orig("RETRIG_EMIT_SITE"),
+                  "Retrigger: timed-note processor entry -> post due hits")
+    if inc("nmod"):
+        with S.group("nmod"):
+            # F5 Note Mod: stock's sequencer Note Off (two call sites) goes out as the sent pitch;
+            # stock's stop / all-notes-off ends the shifted notes first.
+            for site_name in NM_OFF_SITES:
+                site = getattr(S, site_name)
+                stub = M7_TRAMP + len(tramps)
+                code = asm(f"push {{r0, r1, r2, r3, r12, lr}}; mov r0, sp; bl {s7['nm_off']:#x}; "
+                           f"pop {{r0, r1, r2, r3, r12, lr}}; b.w {S.NM_NOTE_OFF:#x}", stub)
+                check_branches(code, stub, {s7["nm_off"], S.NM_NOTE_OFF}, "Note Mod note-off stub")
+                tramps += code + bytes(-len(code) % 4)
+                orig = asm(f"bl {S.NM_NOTE_OFF:#x}", site)
+                if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
+                    raise SystemExit(f"{site:#x}: not the expected bl to stock's Note Off")
+                patch(site, asm(f"bl {stub:#x}", site), orig, "Note Mod: sequencer Note Off -> the sent pitch")
+            t = M7_TRAMP + len(tramps)
+            code = asm(f"push {{r0, r1, r2, r3, r12, lr}}; bl {s7['nm_all_off']:#x}; pop {{r0, r1, r2, r3, r12, lr}}; "
+                       f"{PUSH_R4_R11_LR}; b.w {S.NM_ALL_OFF + 4:#x}", t)
+            check_branches(code, t, {s7["nm_all_off"], S.NM_ALL_OFF + 4}, "Note Mod all-off trampoline")
+            tramps += code + bytes(-len(code) % 4)
+            replays("NM_ALL_OFF", PUSH_R4_R11_LR)
+            patch(S.NM_ALL_OFF, asm(f"b.w {t:#x}", S.NM_ALL_OFF), S.orig("NM_ALL_OFF"),
+                  "Note Mod: stop / all-notes-off ends the shifted notes first")
+    if inc("stall"):
+        with S.group("stall"):
+            # Audio stall snapshot: the main audio loop's two calls (see m7_stall.c).
+            for site_name, target_name, fn, why in STALL_SITES:
+                site, target = getattr(S, site_name), getattr(S, target_name)
+                stub = M7_TRAMP + len(tramps)
+                code = asm(f"push {{r0, lr}}; bl {s7[fn]:#x}; pop {{r0, lr}}; b.w {target:#x}", stub)
+                check_branches(code, stub, {s7[fn], target}, f"stall stub {fn}")
+                tramps += code + bytes(-len(code) % 4)
+                orig = asm(f"bl {target:#x}", site)
+                if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
+                    raise SystemExit(f"{site:#x}: not the expected bl {target:#x}")
+                patch(site, asm(f"bl {stub:#x}", site), orig, why)
+    if inc("cond"):
+        with S.group("cond"):
+            # Trigger conditions (Lab T2 trampolines): save r0-r12, lr, flags (64 B).
+            save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; "
+            restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
+            t = M7_TRAMP + len(tramps)
+            gate = asm(save + f"mov r0, r8; ldrb.w r1, [sp, #105]; ldr r2, [sp, #124]; bl {s7['cond_decide']:#x}; "   # value sp+0x29, word sp+0x3C
+                       "cmp r0, #0; beq skip; cmp r0, #1; beq play; "
+                       + restore + f"ldrb.w r3, [sp, #0x29]; b.w {S.COND_GATE_SITE + 4:#x}; "         # native probability
+                       "play: " + restore + f"movs r3, #0; b.w {S.COND_GATE_SITE + 4:#x}; "          # always
+                       "skip: " + restore + f"b.w {S.COND_SKIP:#x}", t)
+            check_branches(gate, t, {S.COND_GATE_SITE + 4, S.COND_SKIP, s7["cond_decide"]}, "condition gate")
+            tramps += gate + bytes(-len(gate) % 4)
+            replays("COND_GATE_SITE", "ldrb.w r3, [sp, #0x29]")
+            patch(S.COND_GATE_SITE, asm(f"b.w {t:#x}", S.COND_GATE_SITE), S.orig("COND_GATE_SITE"),
+                  "Conditions (Lab T2): probability gate -> cond_decide")
+            t = M7_TRAMP + len(tramps)
+            loop = asm(save + f"ldr r0, [sp, #8]; bl {s7['cond_loop']:#x}; " + restore     # r0 = the sequence
+                       + f"{PUSH_R4_R9_LR}; b.w {S.COND_LOOP_SITE + 4:#x}", t)
+            check_branches(loop, t, {S.COND_LOOP_SITE + 4, s7["cond_loop"]}, "condition loop hook")
+            tramps += loop + bytes(-len(loop) % 4)
+            replays("COND_LOOP_SITE", PUSH_R4_R9_LR)
+            patch(S.COND_LOOP_SITE, asm(f"b.w {t:#x}", S.COND_LOOP_SITE), S.orig("COND_LOOP_SITE"),
+                  "Conditions (Lab T2): sequence loop boundary -> cond_loop")
+    if inc("stall"):
+        with S.group("stall"):
+            # Stall profile (v3.17): the M7 SysTick handler is a lone `b.w HAL_IncTick`;
+            # sample the interrupted frame first (m7_stall.c prof_sample).
+            t = M7_TRAMP + len(tramps)
+            # The M7 is bare-metal and always on MSP (SVC/PendSV are default stubs), so the
+            # frame is at MSP. Keystone cannot assemble `mrs r0, msp`: emit F3EF 8008.
+            tick = bytes.fromhex("eff30880") + asm(
+                f"push {{r0, lr}}; bl {s7['prof_sample']:#x}; pop {{r0, lr}}; b.w {S.HAL_INCTICK:#x}", t + 4)
+            check_branches(tick, t, {s7["prof_sample"], S.HAL_INCTICK}, "SysTick profile hook")
+            tramps += tick + bytes(-len(tick) % 4)
+            orig = asm(f"b.w {S.HAL_INCTICK:#x}", S.SYSTICK_HANDLER)
+            if bytes(base_img[S.SYSTICK_HANDLER - BASE:S.SYSTICK_HANDLER - BASE + 4]) != orig:
+                raise SystemExit("SysTick handler is not the expected b.w HAL_IncTick")
+            patch(S.SYSTICK_HANDLER, asm(f"b.w {t:#x}", S.SYSTICK_HANDLER), orig,
+                  "Stall profile: M7 SysTick samples the interrupted PC/LR while audio is stalled")
     if M7_TRAMP + len(tramps) > M7_CODE:
         raise SystemExit("trampolines overrun into M7 code")
     patch(M7_TRAMP, tramps, bytes(len(tramps)), "M1 diag: M7 trampolines")
@@ -604,94 +848,168 @@ def build(base_img, out):
     stock_end = BASE + len(img)
     if stock_end > S.APPEND_FROM:
         raise SystemExit("base image already reaches our append area")
-    pad = b"\xff" * (M4_LIMIT - stock_end)
-    img += pad
-    writes.append(dict(address=stock_end, size=len(pad), original_hex="", replacement_hex=pad.hex(),
-                       purpose="M1: extend image with erased (0xFF) flash for appended M4 code"))
+    extend(M4_LIMIT, "M1: extend image with erased (0xFF) flash for appended M4 code")
     patch(M4_CODE, code4 + MARKER, None, "M1 diag: M4 black-box code (appended)")
-    # M4 main-task watchdog profile (v3.18): the IRQ30 handler's `bl` to stock's
-    # heartbeat supervisor goes through a stub that first calls main_prof(msp, psp).
-    # Keystone cannot assemble `mrs r1, psp`: emit F3EF 8109.
     stub = (M4_CODE + len(code4) + len(MARKER) + 3) & ~3
-    sup = asm("mov r0, sp", stub) + bytes.fromhex("eff30981")
-    sup += asm(f"push {{r3, lr}}; bl {s4['main_prof']:#x}; pop {{r3, lr}}; b.w {S.M4_WD_SUPERVISOR:#x}", stub + len(sup))
-    check_branches(sup, stub, {s4["main_prof"], S.M4_WD_SUPERVISOR}, "M4 watchdog profile stub")
-    if stub + len(sup) > M4_LIMIT:
-        raise SystemExit("M4 watchdog profile stub overruns the black-box block")
-    patch(stub, sup, None, "M4 watchdog profile: stub before the heartbeat supervisor")
-    orig = asm(f"bl {S.M4_WD_SUPERVISOR:#x}", S.M4_WD_SITE)
-    if bytes(base_img[S.M4_WD_SITE - BASE:S.M4_WD_SITE - BASE + 4]) != orig:
-        raise SystemExit(f"{S.M4_WD_SITE:#x}: not the expected bl to the heartbeat supervisor")
-    patch(S.M4_WD_SITE, asm(f"bl {stub:#x}", S.M4_WD_SITE), orig,
-          "M4 watchdog profile: IRQ30 -> main_prof, then stock's heartbeat supervisor")
-    # Diagnostics dump (v3.22): our only card access, right after stock's own
-    # project-file write, from the same task (FUN_0813032C -> FUN_08130958).
-    dstub = (stub + len(sup) + 3) & ~3
-    dump = asm(f"push {{r3, r4, r5, lr}}; mov r5, r0; bl {S.FILE_WRITER:#x}; mov r4, r0; "   # r0 = the file's path
-               f"mov r0, r5; bl {s4['dump_after_save']:#x}; mov r0, r4; pop {{r3, r4, r5, pc}}", dstub)
-    check_branches(dump, dstub, {S.FILE_WRITER, s4["dump_after_save"]}, "diagnostics dump stub")
-    if dstub + len(dump) > M4_LIMIT:
-        raise SystemExit("diagnostics dump stub overruns the black-box block")
-    patch(dstub, dump, None, "Diag dump: stub around stock's project-file write")
-    orig = asm(f"bl {S.FILE_WRITER:#x}", S.SAVE_WRITE_SITE)
-    if bytes(base_img[S.SAVE_WRITE_SITE - BASE:S.SAVE_WRITE_SITE - BASE + 4]) != orig:
-        raise SystemExit(f"{S.SAVE_WRITE_SITE:#x}: not the expected bl to stock's file writer")
-    patch(S.SAVE_WRITE_SITE, asm(f"bl {dstub:#x}", S.SAVE_WRITE_SITE), orig,
-          "Diag dump: project save writes the file, then the black box appends its log")
+    sup = b""
+    if inc("irq30"):
+        with S.group("irq30"):
+            # M4 main-task watchdog profile (v3.18): the IRQ30 handler's `bl` to stock's
+            # heartbeat supervisor goes through a stub that first calls main_prof(msp, psp).
+            # Keystone cannot assemble `mrs r1, psp`: emit F3EF 8109.
+            sup = asm("mov r0, sp", stub) + bytes.fromhex("eff30981")
+            sup += asm(f"push {{r3, lr}}; bl {s4['main_prof']:#x}; pop {{r3, lr}}; b.w {S.M4_WD_SUPERVISOR:#x}", stub + len(sup))
+            check_branches(sup, stub, {s4["main_prof"], S.M4_WD_SUPERVISOR}, "M4 watchdog profile stub")
+            if stub + len(sup) > M4_LIMIT:
+                raise SystemExit("M4 watchdog profile stub overruns the black-box block")
+            patch(stub, sup, None, "M4 watchdog profile: stub before the heartbeat supervisor")
+            orig = asm(f"bl {S.M4_WD_SUPERVISOR:#x}", S.M4_WD_SITE)
+            if bytes(base_img[S.M4_WD_SITE - BASE:S.M4_WD_SITE - BASE + 4]) != orig:
+                raise SystemExit(f"{S.M4_WD_SITE:#x}: not the expected bl to the heartbeat supervisor")
+            patch(S.M4_WD_SITE, asm(f"bl {stub:#x}", S.M4_WD_SITE), orig,
+                  "M4 watchdog profile: IRQ30 -> main_prof, then stock's heartbeat supervisor")
+    with S.group("bbox"):
+        # Diagnostics dump (v3.22): our only card access, right after stock's own
+        # project-file write, from the same task (FUN_0813032C -> FUN_08130958).
+        dstub = (stub + len(sup) + 3) & ~3
+        dump = asm(f"push {{r3, r4, r5, lr}}; mov r5, r0; bl {S.FILE_WRITER:#x}; mov r4, r0; "   # r0 = the file's path
+                   f"mov r0, r5; bl {s4['dump_after_save']:#x}; mov r0, r4; pop {{r3, r4, r5, pc}}", dstub)
+        check_branches(dump, dstub, {S.FILE_WRITER, s4["dump_after_save"]}, "diagnostics dump stub")
+        if dstub + len(dump) > M4_LIMIT:
+            raise SystemExit("diagnostics dump stub overruns the black-box block")
+        patch(dstub, dump, None, "Diag dump: stub around stock's project-file write")
+        orig = asm(f"bl {S.FILE_WRITER:#x}", S.SAVE_WRITE_SITE)
+        if bytes(base_img[S.SAVE_WRITE_SITE - BASE:S.SAVE_WRITE_SITE - BASE + 4]) != orig:
+            raise SystemExit(f"{S.SAVE_WRITE_SITE:#x}: not the expected bl to stock's file writer")
+        patch(S.SAVE_WRITE_SITE, asm(f"bl {dstub:#x}", S.SAVE_WRITE_SITE), orig,
+              "Diag dump: project save writes the file, then the black box appends its log")
 
-    # --- Probability editor conversions (Lab T2 sites, clamp only since v3.3)
-    ui = bytearray(); ui_syms = {}
-    for name, src, back in cond_ui_helpers():
-        while len(ui) % 4:
-            ui.append(0)
-        a = COND_UI + len(ui)
-        code = asm(src, a)
-        check_branches(code, a, {back}, f"condition UI helper {name}")
-        ui_syms[name] = a
-        ui += code
-    if COND_UI + len(ui) > COND_UI_LIMIT:
-        raise SystemExit("probability conversion helpers overrun their block")
-    patch(COND_UI, bytes(ui), b"\xff" * len(ui), "Probability editor conversions (clamp legacy condition values)")
-    # each helper re-executes (or re-implements) what it takes over: check that against this base
-    replays("PROB_SHOW_PIANO_SITE", "subs r3, #1; str r3, [r6]")      # show(): store register r6
-    replays("PROB_SHOW_DRUM_SITE", "subs r3, #1; str r3, [r1]")       # show(): store register r1
-    replays("PROB_PIANO_REF_SITE", "ldrb.w r3, [sp, #0x25]")
-    replaced(base_img, "PROB_PIANO_REF_SITE", "PROB_PIANO_REF_BACK", "PROB_PIANO_REF_SHA")
-    replays("PROB_PIANO_EDIT_SITE", "ldrb.w r3, [sp, #0x19]")
-    replaced(base_img, "PROB_PIANO_EDIT_SITE", "PROB_PIANO_EDIT_BACK", "PROB_PIANO_EDIT_SHA")   # [sp,#0x84], [sp,#0x31]
-    for site_name, name in COND_UI_SITES:
-        site = getattr(S, site_name)
-        patch(site, asm(f"b.w {ui_syms[name]:#x}", site), S.orig(site_name), f"Probability: {name} clamp")
+    if inc("cond"):
+        with S.group("cond"):
+            # --- Probability editor conversions (Lab T2 sites, clamp only since v3.3)
+            ui = bytearray(); ui_syms = {}
+            for name, src, back in cond_ui_helpers():
+                while len(ui) % 4:
+                    ui.append(0)
+                a = COND_UI + len(ui)
+                code = asm(src, a)
+                check_branches(code, a, {back}, f"condition UI helper {name}")
+                ui_syms[name] = a
+                ui += code
+            if COND_UI + len(ui) > COND_UI_LIMIT:
+                raise SystemExit("probability conversion helpers overrun their block")
+            patch(COND_UI, bytes(ui), b"\xff" * len(ui), "Probability editor conversions (clamp legacy condition values)")
+            # each helper re-executes (or re-implements) what it takes over: check that against this base
+            replays("PROB_SHOW_PIANO_SITE", "subs r3, #1; str r3, [r6]")      # show(): store register r6
+            replays("PROB_SHOW_DRUM_SITE", "subs r3, #1; str r3, [r1]")       # show(): store register r1
+            replays("PROB_PIANO_REF_SITE", "ldrb.w r3, [sp, #0x25]")
+            replaced(base_img, "PROB_PIANO_REF_SITE", "PROB_PIANO_REF_BACK", "PROB_PIANO_REF_SHA")
+            replays("PROB_PIANO_EDIT_SITE", "ldrb.w r3, [sp, #0x19]")
+            replaced(base_img, "PROB_PIANO_EDIT_SITE", "PROB_PIANO_EDIT_BACK", "PROB_PIANO_EDIT_SHA")   # [sp,#0x84], [sp,#0x31]
+            for site_name, name in COND_UI_SITES:
+                site = getattr(S, site_name)
+                patch(site, asm(f"b.w {ui_syms[name]:#x}", site), S.orig(site_name), f"Probability: {name} clamp")
 
-    # --- Inspect a step: encoder-edit wrappers at HOLD_WRAP, C at HOLD_CODE
-    hold_elf = compile_elf([HERE / "m4_holdstep.c"], "cortex_m4", HERE / "m4_holdstep.ld", out / "m4_holdstep.elf", HOLD_CODE, HOLD_LIMIT)
-    vah, codeh, sh = elf_load(hold_elf, HOLD_CODE, HOLD_LIMIT)
-    if vah != HOLD_CODE:
-        raise SystemExit(f"hold-step code placement {vah:#x}")
-    pad = b"\xff" * (HOLD_LIMIT - (BASE + len(img)))
-    writes.append(dict(address=BASE + len(img), size=len(pad), original_hex="", replacement_hex=pad.hex(),
-                       purpose="Inspect a step: extend image with erased (0xFF) flash"))
-    img += pad
-    wrap = bytearray()
-    def wrap_block(src, exits):
-        while len(wrap) % 4:
-            wrap.append(0)
-        a = HOLD_WRAP + len(wrap)
-        code = asm(src, a)
-        check_branches(code, a, exits, "hold-step wrapper")
-        wrap.extend(code)
-        return a
-    # (the three edit sites are wrapped in the per-step block: protection + defaults/locks)
-    hold_marker = b"BENTO_MOD:step-edit-keeps-step(from Lab T2)\0"
-    if HOLD_CODE + len(codeh) + len(hold_marker) > HOLD_LIMIT:
-        raise SystemExit("hold-step code overruns its slice")
-    patch(HOLD_CODE, codeh + hold_marker, b"\xff" * (len(codeh) + len(hold_marker)), "Inspect a step (Lab T2): code")
-    s4.update({f"hold.{k}": v for k, v in sh.items()})
+    if inc("step"):
+        with S.group("step"):
+            # --- Inspect a step: encoder-edit wrappers at HOLD_WRAP, C at HOLD_CODE
+            hold_elf = compile_elf(sources("m4_holdstep"), "cortex_m4", HERE / "m4_holdstep.ld", out / "m4_holdstep.elf", HOLD_CODE, HOLD_LIMIT)
+            vah, codeh, sh = elf_load(hold_elf, HOLD_CODE, HOLD_LIMIT)
+            if vah != HOLD_CODE:
+                raise SystemExit(f"hold-step code placement {vah:#x}")
+            extend(HOLD_LIMIT, "Inspect a step: extend image with erased (0xFF) flash")
+            # (the three edit sites are wrapped in the per-step block: protection + defaults/locks)
+            hold_marker = b"BENTO_MOD:step-edit-keeps-step(from Lab T2)\0"
+            if HOLD_CODE + len(codeh) + len(hold_marker) > HOLD_LIMIT:
+                raise SystemExit("hold-step code overruns its slice")
+            patch(HOLD_CODE, codeh + hold_marker, b"\xff" * (len(codeh) + len(hold_marker)), "Inspect a step (Lab T2): code")
+            s4.update({f"hold.{k}": v for k, v in sh.items()})
 
-    # --- Hold shortcuts (Lab K16 port): M7 pad input + startup, M4 consumer/observer/mixer render
+    if inc("hold"):
+        with S.group("hold"):
+            hold_shortcuts(base_img, img, patch, extend, sources, s4, out)
+
+    if inc("step"):
+        with S.group("step"):
+            per_step(base_img, img, patch, extend, sources, s4, sh, out)
+
+    if M4_CODE + len(code4) + 20 > M4_LIMIT:
+        raise SystemExit("M4 code + marker overrun")
+    if M4_CODE + len(code4) + len(MARKER) > M4_LIMIT:
+        raise SystemExit("M4 diag code + marker overruns its slice")
+    if inc("poly"):
+        with S.group("poly"):
+            if BASE + len(img) < M4_POLY:                # a build without the per-step block (S2: never on 1.6.1)
+                extend(M4_POLY, "M1 poly AT: extend image with erased (0xFF) flash up to the M4 handler block")
+            m4_poly_handlers(base_img, img, patch, extend)
+    with S.group("bbox"):
+        bl_check = asm(f"bl {S.M4_BL_TARGET:#x}", S.M4_BL_SITE)
+        if bl_check != S.orig("M4_BL_SITE"):
+            raise SystemExit("assembler disagrees with the original BL encoding")
+        patch(S.M4_BL_SITE, asm(f"bl {s4['m4_tick']:#x}", S.M4_BL_SITE), S.orig("M4_BL_SITE"),
+              "M1 diag: defaultTask loop BL -> m4_tick (calls the original first)")
+
+    # --- visible version label
+    if not 1 <= len(DISPLAY) <= 6 or not DISPLAY.isascii():
+        raise SystemExit(f"display label {DISPLAY!r}: the boot screen shows at most 6 ASCII characters")
+    patch(S.VERSION_STR, DISPLAY.encode().ljust(8, b"\0"), S.orig("VERSION_STR"), f"Visible version label {DISPLAY}")
+
+    # --- invariants
+    if len(img) > PROVEN_MAX_SIZE or BASE + len(img) > FORBIDDEN_FROM:
+        raise SystemExit(f"image of {len(img):#x} bytes exceeds the size proven on the device ({PROVEN_MAX_SIZE:#x})")
+    if len(img) % 4:
+        raise SystemExit("image not word aligned (a misaligned image fails to program)")
+    if any(w["address"] + w["size"] > FORBIDDEN_FROM for w in writes):
+        raise SystemExit(f"a write reaches {FORBIDDEN_FROM:#x}")
+    undo = bytearray(img)
+    for w in reversed(writes):
+        o = w["address"] - BASE
+        if w["original_hex"]:
+            undo[o:o + w["size"]] = bytes.fromhex(w["original_hex"])
+        else:
+            del undo[o:o + w["size"]]
+    if bytes(undo) != base_img:
+        raise SystemExit("reversal does not reproduce the stock base")
+    # build.py read only what GROUP_NAMES declares for each group (plan() refuses from those lists)
+    for g, names in S.read.items():
+        extra = sorted(names - set(GROUP_NAMES[g]))
+        if extra:
+            raise SystemExit(f"build.py read {extra} while building {g}: add them to GROUP_NAMES[{g!r}]")
+
+    (out / "bento1.bin").write_bytes(img)
+    shown = dict(LAYOUT)
+    if omitted:                                  # S2: only the blocks this image has, and where it really ends
+        for g, keys in (("hold", ("HOLD_WRAP", "HOLD_CODE", "CTRL_WRAP", "CTRL_CODE")), ("step", ("STEP_WRAP", "STEP_CODE")),
+                        ("poly", ("M4_POLY",))):
+            if g in omitted:
+                for k in keys:
+                    shown.pop(k)
+        shown["IMAGE_END"] = BASE + len(img)
+    man = dict(label=f"{DISPLAY} (bento_enhanced v{VERSION} on stock {S.version})", version=VERSION, display=DISPLAY, disabled=sorted(DISABLED), layout={k: hex(v) for k, v in shown.items()}, base=S.module, base_label=S.label, base_sha256=S.sha256, sha256=hashlib.sha256(img).hexdigest(),
+               m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
+               m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
+    if omitted:                                  # S2: groups left out of the image (not only unpatched)
+        man["omitted"] = sorted(omitted)
+        man["uses"] = {g: sorted(n for n in needs[g] if s.syms.get(n)) for g in sorted(included)}
+    (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
+    print(f"built {man['label']} sha256={man['sha256']}")
+    if omitted:
+        print(f"left out of the image (not ported to {S.label} yet): {sorted(omitted)}")
+    if skipped:
+        print(f"disabled groups {sorted(DISABLED)}; {len(skipped)} stock sites left unpatched:")
+        for a, why in skipped:
+            print(f"  {a:#x} {why}")
+    print(f"  M7 code {len(code7)} B at {M7_CODE:#x}, trampolines {len(tramps)} B; M4 code {len(code4)} B at {M4_CODE:#x}")
+    print(f"  image {len(img):#x} bytes (proven max {PROVEN_MAX_SIZE:#x}); {len(writes)} writes, reversal to stock verified")
+    return img, man
+
+
+def hold_shortcuts(base_img, img, patch, extend, sources, s4, out):
+    """Hold shortcuts (Lab K16 port): M7 pad input + startup, M4 consumer/observer/mixer render."""
+    syms = ctrl_symbols()
     def template(path, addr):
         src = "\n".join(x.split("//")[0] for x in path.read_text().splitlines())
-        for k, v in {**CTRL_SYMBOLS, **S.asm_symbols()}.items():
+        for k, v in {**syms, **S.asm_symbols()}.items():
             src = src.replace(f"@{k}@", v)
         if "@" in src:
             raise SystemExit(f"{path.name}: unresolved template symbol")
@@ -709,7 +1027,7 @@ def build(base_img, out):
         "zero: str r1, [r0], #4; subs r2, #1; bne zero; "
         f"ldr r0, ={CTRL_STATE:#x}; movs r1, #1; strb r1, [r0, #12]; movs r1, #0; "
         "map: add.w r2, r0, #16; strb r1, [r2, r1]; adds r1, #1; cmp r1, #16; bne map; "
-        f"ldr r1, ={CTRL_SYMBOLS['STATE_MAGIC']}; dsb; str r1, [r0]; pop.w {{r0-r12, lr}}; "
+        f"ldr r1, ={syms['STATE_MAGIC']}; dsb; str r1, [r0]; pop.w {{r0-r12, lr}}; "
         f"ldr r0, ={lit[0]:#x}; ldr r1, ={lit[1]:#x}; "                       # the two displaced literal loads
         f"push {{r0, r1}}; ldr r0, ={(S.CTRL_STARTUP_SITE + 4) | 1:#x}; str r0, [sp, #4]; pop {{r0, pc}}", CTRL_STARTUP)
     if tuple(lit) != S.CTRL_STARTUP_LITS or CTRL_STARTUP + len(startup) > CTRL_STARTUP + 0x100:
@@ -718,14 +1036,11 @@ def build(base_img, out):
     patch(S.CTRL_STARTUP_SITE, asm(f"b.w {CTRL_STARTUP:#x}", S.CTRL_STARTUP_SITE), S.orig("CTRL_STARTUP_SITE"),
           "Hold shortcuts (Lab K16): M7 startup -> state init")
 
-    ctl_elf = compile_elf([HERE / "m4_controls.c"], "cortex_m4", HERE / "m4_controls.ld", out / "m4_controls.elf", CTRL_CODE, CTRL_LIMIT)
+    ctl_elf = compile_elf(sources("m4_controls"), "cortex_m4", HERE / "m4_controls.ld", out / "m4_controls.elf", CTRL_CODE, CTRL_LIMIT)
     vac, codec, sc = elf_load(ctl_elf, CTRL_CODE, CTRL_LIMIT)
     if vac != CTRL_CODE:
         raise SystemExit(f"controls code placement {vac:#x}")
-    pad = b"\xff" * (CTRL_LIMIT - (BASE + len(img)))
-    writes.append(dict(address=BASE + len(img), size=len(pad), original_hex="", replacement_hex=pad.hex(),
-                       purpose="Hold shortcuts: extend image with erased (0xFF) flash"))
-    img += pad
+    extend(CTRL_LIMIT, "Hold shortcuts: extend image with erased (0xFF) flash")
     consumer = asm(
         "push.w {r0-r12, lr}; sub sp, #8; add.w r0, sp, #608; str r0, [sp]; "   # record (orig sp+0x220)
         f"mov r0, r4; mov r1, r5; mov r2, r6; mov r3, r7; bl {sc['controls_dispatch']:#x}; "
@@ -761,15 +1076,14 @@ def build(base_img, out):
           "Hold shortcuts (Lab K16): mixer render shows Solo/Mute while MIXER is held")
     s4.update({f"controls.{k}": v for k, v in sc.items()})
 
-    # --- Per-step Condition / Retrigger UI (m4_step.c)
-    st_elf = compile_elf([HERE / "m4_step.c"], "cortex_m4", HERE / "m4_step.ld", out / "m4_step.elf", STEP_CODE, STEP_LIMIT)
+
+def per_step(base_img, img, patch, extend, sources, s4, sh, out):
+    """Per-step Condition / Retrigger UI, strike velocity, curves, Mod Matrix rows (m4_step.c)."""
+    st_elf = compile_elf(sources("m4_step"), "cortex_m4", HERE / "m4_step.ld", out / "m4_step.elf", STEP_CODE, STEP_LIMIT)
     vas, codes, ss = elf_load(st_elf, STEP_CODE, STEP_LIMIT)
     if vas != STEP_CODE:
         raise SystemExit(f"step code placement {vas:#x}")
-    pad = b"\xff" * (STEP_LIMIT - (BASE + len(img)))
-    writes.append(dict(address=BASE + len(img), size=len(pad), original_hex="", replacement_hex=pad.hex(),
-                       purpose="Per-step UI: extend image with erased (0xFF) flash"))
-    img += pad
+    extend(STEP_LIMIT, "Per-step UI: extend image with erased (0xFF) flash")
     wrap = bytearray()
     def sblock(src, exits, what):
         while len(wrap) % 4:
@@ -931,10 +1245,10 @@ def build(base_img, out):
         raise SystemExit("step code overruns its slice")
     patch(STEP_CODE, codes + step_marker, b"\xff" * (len(codes) + len(step_marker)), "Per-step: UI code")
     s4.update({f"step.{k}": v for k, v in ss.items()})
-    if M4_CODE + len(code4) + 20 > M4_LIMIT:
-        raise SystemExit("M4 code + marker overrun")
-    if M4_CODE + len(code4) + len(MARKER) > M4_LIMIT:
-        raise SystemExit("M4 diag code + marker overruns its slice")
+
+
+def m4_poly_handlers(base_img, img, patch, extend):
+    """Poly AT (M4): MIDI task jump-table slots 0x5F / 0x60 -> copies of stock's Note On case."""
     h = asm(f"mov r0, r5; bl {S.M4MIDI_BEGIN:#x}; "
             f"movs r1, #0xa0; mov r0, r5; bl {S.M4MIDI_STATUS:#x}; "           # Polyphonic Key Pressure
             f"uxtb.w r1, r8; mov r0, r5; bl {S.M4MIDI_CHANNEL:#x}; "             # channel (event word 3)
@@ -945,10 +1259,7 @@ def build(base_img, out):
             f"b.w {S.M4_LOOP:#x}", M4_POLY)
     if M4_POLY + len(h) > M4_POLY_LIMIT or BASE + len(img) != M4_POLY:
         raise SystemExit("M4 poly handler block layout")
-    pad = b"\xff" * (M4_POLY_LIMIT - M4_POLY)
-    writes.append(dict(address=M4_POLY, size=len(pad), original_hex="", replacement_hex=pad.hex(),
-                       purpose="M1 poly AT: extend image with erased (0xFF) flash for the M4 handler"))
-    img += pad
+    extend(M4_POLY_LIMIT, "M1 poly AT: extend image with erased (0xFF) flash for the M4 handler")
     # Cross-check: the native Note On case assembles to the same shape with 0x90.
     native = base_img[S.M4_NOTE_ON_CASE - BASE:S.M4_LOOP - BASE]
     ours_as_native = asm(h_src_native := (f"mov r0, r5; bl {S.M4MIDI_BEGIN:#x}; movs r1, #0x90; mov r0, r5; bl {S.M4MIDI_STATUS:#x}; "
@@ -975,45 +1286,7 @@ def build(base_img, out):
         raise SystemExit("M4 channel pressure handler layout")
     patch(M4_CHAN, hc, b"\xff" * len(hc), "M2-5b AT Out Channel: M4 0x60 handler (status 0xD0)")
     patch(jt_5f + 4, struct.pack("<I", M4_CHAN | 1), old, "M2-5b AT Out Channel: MIDI task jump table slot 0x60 -> handler")
-    bl_check = asm(f"bl {S.M4_BL_TARGET:#x}", S.M4_BL_SITE)
-    if bl_check != S.orig("M4_BL_SITE"):
-        raise SystemExit("assembler disagrees with the original BL encoding")
-    patch(S.M4_BL_SITE, asm(f"bl {s4['m4_tick']:#x}", S.M4_BL_SITE), S.orig("M4_BL_SITE"),
-          "M1 diag: defaultTask loop BL -> m4_tick (calls the original first)")
 
-    # --- visible version label
-    if not 1 <= len(DISPLAY) <= 6 or not DISPLAY.isascii():
-        raise SystemExit(f"display label {DISPLAY!r}: the boot screen shows at most 6 ASCII characters")
-    patch(S.VERSION_STR, DISPLAY.encode().ljust(8, b"\0"), S.orig("VERSION_STR"), f"Visible version label {DISPLAY}")
-
-    # --- invariants
-    if len(img) > PROVEN_MAX_SIZE or BASE + len(img) > FORBIDDEN_FROM:
-        raise SystemExit(f"image of {len(img):#x} bytes exceeds the size proven on the device ({PROVEN_MAX_SIZE:#x})")
-    if len(img) % 4:
-        raise SystemExit("image not word aligned (a misaligned image fails to program)")
-    undo = bytearray(img)
-    for w in reversed(writes):
-        o = w["address"] - BASE
-        if w["original_hex"]:
-            undo[o:o + w["size"]] = bytes.fromhex(w["original_hex"])
-        else:
-            del undo[o:o + w["size"]]
-    if bytes(undo) != base_img:
-        raise SystemExit("reversal does not reproduce the stock base")
-
-    (out / "bento1.bin").write_bytes(img)
-    man = dict(label=f"{DISPLAY} (bento_enhanced v{VERSION} on stock {S.version})", version=VERSION, display=DISPLAY, disabled=sorted(DISABLED), layout={k: hex(v) for k, v in LAYOUT.items()}, base=S.module, base_label=S.label, base_sha256=S.sha256, sha256=hashlib.sha256(img).hexdigest(),
-               m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
-               m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
-    (out / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
-    print(f"built {man['label']} sha256={man['sha256']}")
-    if skipped:
-        print(f"disabled groups {sorted(DISABLED)}; {len(skipped)} stock sites left unpatched:")
-        for a, why in skipped:
-            print(f"  {a:#x} {why}")
-    print(f"  M7 code {len(code7)} B at {M7_CODE:#x}, trampolines {len(tramps)} B; M4 code {len(code4)} B at {M4_CODE:#x}")
-    print(f"  image {len(img):#x} bytes (proven max {PROVEN_MAX_SIZE:#x}); {len(writes)} writes, reversal to stock verified")
-    return img, man
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()

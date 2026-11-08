@@ -20,6 +20,7 @@ HEX = re.compile(r"(?<![0-9A-Za-z_])0[xX]([0-9A-Fa-f]{7,8})(?![0-9A-Fa-f])")
 # Genuine constants: identical for every firmware version by construction.
 GENUINE = {
     0x08040000: "main image load address (bootloader contract)",
+    0x08100000: "M4 half of the main image: its vector table (the M4 boot address, flash bank 2)",
     0x08200000: "end of internal flash",
     0x081E0000: "persistent-storage region; nothing may reach it (bootloader/MPU contract)",
     0x10000000: "D2 SRAM alias base (memory map)",

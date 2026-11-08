@@ -53,6 +53,12 @@ STOCK_161 = dict(
     EV_TRACK_NOTE_ON=0x02, EV_TRACK_NOTE_OFF=0x03, EV_OBJ_NOTE_ON=0xB9, EV_OBJ_NOTE_OFF=0xBA,
     EV_MIDI_NOTE_ON=0x5B, EV_MIDI_NOTE_OFF=0x5C, EV_MIDI_BEND=0x5D, EV_MIDI_CC=0x5E,
     EV_MIDI_POLY_AT=0x5F, EV_MIDI_CHAN_AT=0x60, EV_MIDI_RT_FIRST=0x61, EV_MIDI_RT_LAST=0x63,
+    # fields of stock objects the black box reads (m7_diag.c literals of v3.72)
+    MIDI_RING_RD=0x2340, MIDI_RING_WR=0x2360, LOAD_RING_VALUES=0x8, LOAD_RING_IDX=0x408, LOAD_RING_START=0x414,
+    LINK_TX=0x190, LINK_RX=0x194, LINK_BAD=0x19C, LINK_VERSION=0x1A2, SPI_STATE=0x81, PASS_TIMER_LAST=0x4,
+    AUDIO_BLOCK_WRONG_HALF=0x4, AUDIO_BLOCK_HEAD=0xC, AUDIO_BLOCK_HEAD_WRONG=0x18,
+    AUDIO_GAP_MAX=0x8, AUDIO_GAP_UNDER=0xC, AUDIO_GAP_OVER=0x10, AUDIO_GAP_TIMEOUTS=0x14, AUDIO_GAP_POLLS=0x18,
+    AUDIO_GAP_WAITS=0x1C,
 )
 
 # 1.6.8: only what was measured in the 1.6.8 image by someone other than the generator's mapping.
@@ -67,6 +73,44 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     KEY_MX_FIRST=0x16F, KEY_MX_LAST=0x174,  # MX_EDIT hand check: key range 0x171 -> 0x16F
     KEY_DRUM_STEP_PARAM=0x182,    # DRUM_ENCODER hand check: key base 0x183 -> 0x181 (same -2 shift)
     KEY_SCALE=0x8D, KEY_ROOT=0x8E,  # hand check 0x081419DE -> 0x081436A8: keys 0x8E / 0x8D unchanged
+    # S2: the event ids the black box reads, each from the 1.6.8 code that posts or compares it
+    EV_PAD_PRESS=0xAC,            # pad receiver movs r3,#0xac at 0x0808DEBA
+    EV_PAD_RELEASE=0xAD,          # pad receiver movs r3,#0xad at 0x0808DCFE
+    EV_PAD_PRESSURE=0xAE,         # pad router cmp r3,#0xae at 0x08085FFA
+    EV_VOICE_PRESSURE=0x0E,       # External handler: not 2/3 -> bne.w at POLY_SITE 0x08062986 (0x0E path as 1.6.1)
+    EV_TRACK_NOTE_ON=0x02,        # External handler cmp r3,#2 at 0x08062980
+    EV_TRACK_NOTE_OFF=0x03,       # cmp r3,#3 at 0x08062984
+    EV_OBJ_NOTE_ON=0xB9,          # cmp r3,#0xb9 at 0x0805D620
+    EV_OBJ_NOTE_OFF=0xBA,         # cmp r3,#0xba at 0x0805D624
+    EV_MIDI_NOTE_ON=0x5B,         # M4 MIDI task cmp r5,#0x5b at 0x081053D8; subs #0x5b, cmp #8 (MIDI_JT 0x081053EC)
+    EV_MIDI_NOTE_OFF=0x5C,        # cmp r5,#0x5c at 0x081053DC; MIDI_JT[1]
+    EV_MIDI_BEND=0x5D,            # MIDI_JT[2]
+    EV_MIDI_CC=0x5E,              # MIDI_JT[3]
+    EV_MIDI_POLY_AT=0x5F,         # MIDI_JT[4] = M4_LOOP (unused by stock)
+    EV_MIDI_CHAN_AT=0x60,         # MIDI_JT[5] = M4_LOOP (unused by stock)
+    EV_MIDI_RT_FIRST=0x61,        # MIDI_JT[6]
+    EV_MIDI_RT_LAST=0x63,         # MIDI_JT[8], bound cmp r5,#8 at 0x081053E2
+    # S2 review: fields of stock objects the black box reads, from the 1.6.8 code that uses them (scratch rc17/s3)
+    MIDI_RING_RD=0x2340,          # M4 reader add.w r0,sl,#0x2340 at 0x081053D0 (7 add.w #0x2340 on the M4, as 1.6.1); M7 ctor 0x08082FF6
+    MIDI_RING_WR=0x2360,          # M7 writer: add.w ip,r0,#0x2000; ldr [ip,#0x360] at 0x08082F20/24; movw #0x2360 at 0x08082F4E
+    LOAD_RING_VALUES=0x8,         # load ring code 0x08056EC0 = 1.6.1 0x08056F00 (masked): +8 + 4*idx
+    LOAD_RING_IDX=0x408,          # same code: +0x408
+    LOAD_RING_START=0x414,        # same code: +0x414
+    LINK_TX=0x190,                # CTRL_LINK users: ldr/str [r,#0x190] 1/1 as 1.6.1 (literal-tracked scan offs3.py)
+    LINK_RX=0x194,                # str [r,#0x194] 1/1
+    LINK_BAD=0x19C,               # str [r,#0x19c] 1/1
+    LINK_VERSION=0x1A2,           # ldrh [r,#0x1a2] 1/1
+    SPI_STATE=0x81,               # HAL SPI State: M7 ldrb.w #0x81 11, strb.w 14 (both); SPI1_HANDLE users identical (masked)
+    PASS_TIMER_LAST=0x4,          # pass timer 0x08057CA0 (1.6.1 0x08057CC0): 77 instructions identical (masked), str [r,#4]
+    AUDIO_BLOCK_WRONG_HALF=0x4,   # main audio loop 0x0808E9F6 (1.6.1 0x0808DF12), block stats in sb: ldr/str [sb,#4] at 0x0808ED8A/90
+    AUDIO_BLOCK_HEAD=0xC,         # ldr [sb,#0xc] 0x0808EBFA/0x0808EC04, str 0x0808ED44
+    AUDIO_BLOCK_HEAD_WRONG=0x18,  # ldr/str [sb,#0x18] 0x0808ED98/0x0808EDA2
+    AUDIO_GAP_MAX=0x8,            # gap stats, same loop: ldr/str [r1,#8] 0x0808EBC4/CA
+    AUDIO_GAP_UNDER=0xC,          # [r2,#0xc] 0x0808EBD6/DA
+    AUDIO_GAP_OVER=0x10,          # [r2,#0x10] 0x0808EDB2/B6
+    AUDIO_GAP_TIMEOUTS=0x14,      # [r2,#0x14] 0x0808EDE6/EA
+    AUDIO_GAP_POLLS=0x18,         # [r3,#0x18] 0x0808ED60/68
+    AUDIO_GAP_WAITS=0x1C,         # [r3,#0x1c] 0x0808ED5A/5E
 )}
 
 EXPECTED = {"stock_161": STOCK_161, "stock_168": STOCK_168}

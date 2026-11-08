@@ -112,6 +112,41 @@ Three checks keep a table honest, all run by every build:
   test-harness scratch memory carries an `addr-ok` comment). It finds addresses only: offsets,
   keys and event ids are kept out of the sources by review, and checked by the record above.
 
+**Per base, per feature (S2).** A draft table no longer refuses every build: `build.py plan()`
+works out, per patch group, which entries it uses (`GROUP_NAMES` for what build.py itself reads,
+and every `S_` name each source it needs uses, found by preprocessing the source with every entry
+defined as a marker), and the base's `BASE_SETTINGS` say which groups a sprint has ported to it
+(1.6.1: all; 1.6.8: `trace`, `stall`, `irq30`, `bbox`, the black box). An enabled group that isn't
+ported or uses a `REVIEW` entry refuses the build and the message lists them, with the
+`BE_DISABLE` that builds the rest; a disabled one is left out of the image altogether (manifest
+`omitted`: not compiled, its trampolines and blocks not written, the image ends earlier). So a
+draft value never reaches the image: the generated header leaves `REVIEW` entries out, build.py
+can't read them (`Tracked` records every entry it reads per group and refuses one `GROUP_NAMES`
+doesn't list), and only reviewed entries are compared with `expected_values.py`. An entry
+reviewed as `absent` (1.6.1's D2 RAMCHK blocks on 1.6.8) is not in the header: `#ifdef
+S_RAMCHK_D2A` picks the 1.6.1 layout. `BASE_SETTINGS` also gives the base's version line (1.6.1
+stays 3.72, 1.6.8 starts at 4.00: BE4.00) and its M4 flags (1.6.8: `-mstrict-align`, see the
+slice below). On 1.6.1 nothing changes: every group is ported and reviewed, the build is
+byte-identical to v3.72 and so are the `BE_DISABLE` bisect builds.
+
+**Our slice on 1.6.8 (S2).** 1.6.8 owns D2 0x3003C000..0x30040000 (SAI DMA buffers, M7 MPU R14),
+so on 1.6.8 `S_D2_SLICE` is AXI 0x2404D000..0x24050000 (the name stays): RAMCHK `axi`
+0x2404CDC0..0x2404D000 is a guard band above the M7 stack, the slice uses +0..+0x2000, RAMCHK `top`
+is the rest (as 1.6.1's `d2b`), and there is no D2 block. The M7 sees it through MPU R1, write-back
+like 1.6.1's default map, so the same clean / invalidate rules hold (one writer per line, the M7
+cleans what the M4 reads and invalidates what it reads from the M4). The M4's MPU maps AXI as
+Device, where an unaligned access faults: all M4 code is built `-mstrict-align` on 1.6.8 (zig cc
+0.15.1 ignores `-mno-unaligned-access`), and every emulated suite faults an unaligned M4 access
+wherever the M4 sees Device memory (`ALIGN_RANGES` in test_diag.py: the slice on 1.6.8, RAMCHK `axi`
+on both). `check_slice_assumptions` refuses a base where our RAM is below the M7 stack top,
+overlaps the M4's stack (`M4_STACK_BOTTOM` up to its vector SP), or is pointed at by any image
+word except the instruction encodings the table lists (`OUR_RAM_WORDS`) or by a `movt`.
+[`test_slice.py`](test_slice.py) runs stock's own reset handlers and both cores' MPU setups in the
+emulator, the cache model (`M7Cache`: M7 lines reach the M4, and the M7 rereads the M4's lines it
+cached before the M4 booted; with cleans or invalidates ignored they don't) and the refusals. The
+fields of stock objects the black box reads (ring indexes, link and audio counters) are `offset`
+entries too, so a new base has to measure them.
+
 The builder checks:
 - the base image's hash and the original bytes at every patch site (the table's `orig`, plus
   each wrapper's replayed prologue against those bytes, and for the two probability helpers
