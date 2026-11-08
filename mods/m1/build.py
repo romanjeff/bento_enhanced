@@ -55,10 +55,20 @@ FORBIDDEN_FROM = 0x081E0000
 # the poly cap, retrigger MIDI hits, curves and Note Mod pass such notes on untouched instead of
 # treating them as note & 0x7F (a per-base flag, so the 1.6.1 build stays byte-identical).
 # S3 ported the M7 parts: poly_cap, retrig (with External curve playback), cond_engine, nmod, inta_curve.
+# S4+S5 ported the rest except mx (Jeff deferred the Mod Matrix page and the External rows): cond_ui, poly_at,
+# inta_live, step, hold. default_off: groups a plain build leaves out on that base (1.6.8: mx; BE_ENABLE asks for
+# one, and is refused while it is not ported). m4_note_on: how stock's MIDI-out task holds an event in its Note On
+# case (registers per event word, the message in r5, the MIDI sink); 1.6.8 recompiled the task (note_on_case).
+# BE_PLAY_COUNT_WRAP (1.6.8): cond_loop gets the boundary call's return address, so 1.6.8's new 256-step wrap in the
+# count-on mode (track +0x30; S3 called it Play Count, it is most likely open-length recording) is not counted as a pass (A:B keeps the 1.6.1 phase). BE_REC_WORD_LOG (1.6.8): the black box
+# counts the +0x14 words stock gives recorded melodic notes (their producer is not traced; expected all 0).
 BASE_SETTINGS = {
-    "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=None),
-    "stock_168": dict(version="4.01", m4_flags=("-mstrict-align",), m7_flags=("-DBE_NOTES_ABOVE_127",),
-                      groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve")),
+    "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=None,
+                      m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
+    "stock_168": dict(version="4.10", m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+                      groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
+                              "poly_at", "inta_live", "cond_ui", "step", "hold"), default_off=("mx",),
+                      m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
 }
 VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (display: boot label, max 6 characters)
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
@@ -73,7 +83,8 @@ VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (di
 # BS-C (stall off) was fine, BS-D (stall on) failed. irq30 (v3.18) is unproven.
 # Code stays in the image, unreachable. BE_ENABLE="stall,irq30" turns them back on.
 DEFAULT_OFF = {"stall", "irq30", "modtest"}   # modtest: F1 fixed routing (test builds only)
-DISABLED = (DEFAULT_OFF - {g for g in os.environ.get("BE_ENABLE", "").split(",") if g})     | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
+ENABLED = {g for g in os.environ.get("BE_ENABLE", "").split(",") if g}
+DISABLED = (DEFAULT_OFF - ENABLED) | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
 # S3 split poly, cond and inta into the part S3 ports (M7 only) and the part a later sprint does, so the
 # S3 part builds on 1.6.8 alone: poly_cap (S3) + poly_at (S5: External handler h_poly and the M4 MIDI
 # 0x5F/0x60 handlers), cond_engine (S3: M7 gate and loop) + cond_ui (S4: the M4 probability clamps),
@@ -84,7 +95,18 @@ ALIASES = {"poly": ("poly_cap", "poly_at"), "cond": ("cond_engine", "cond_ui"), 
 for _a, _parts in ALIASES.items():
     if _a in DISABLED:
         DISABLED |= set(_parts)
-PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection", "Curves")),
+# S4+S5 split the Mod Matrix page and the External INST rows (mx) out of step (Jeff deferred them on 1.6.8).
+# mx's code lives in m4_step.c and its hooks call into it, so mx can't run without step: BE_DISABLE=step
+# still leaves every per-step site stock (the same image as before the split; the manifest also lists mx).
+if "step" in DISABLED:
+    DISABLED.add("mx")
+# A group left out of the image (omitted: not ported to the base) whose code shares a source with a built
+# group: the define that compiles it out of that source. Passed only when the group is omitted, never for a
+# bisect (BE_DISABLE leaves the code in the image), so a base where it builds keeps its bytes.
+OMIT_DEFINES = {"mx": "-DBE_OMIT_MX"}
+OMITTED = set()                       # set by build(): the groups this image leaves out
+PATCH_GROUPS = [("mx", ("Per-step: External", "Per-step: Mod Matrix", "Per-step: modulation routing")),   # before step
+                ("step", ("Per-step", "Step edit", "Strike", "Step inspection", "Curves")),
                 ("hold", ("Hold shortcuts",)),
                 ("cond_engine", ("Conditions",)),                   # M7 probability gate + loop counter
                 ("cond_ui", ("Probability:",)),                     # M4 probability editor clamps
@@ -102,6 +124,14 @@ if "diag7" in DISABLED:
     DISABLED |= {"trace", "stall"}
 if "diag" in DISABLED:
     DISABLED |= {"trace", "stall", "irq30", "bbox"}
+# S4+S5 review: a misspelt name (BE_DISABLE=inta_lve) used to build the default image silently, so a
+# "bisect" kit would really be the default. Every name must be a group, an alias, or a define-only switch
+# (rmidi: -DBE_NO_RMIDI in m7_retrig.c; modtest: -DBE_NO_MODTEST in m4_step.c).
+DEFINE_ONLY = {"rmidi", "modtest"}
+KNOWN_NAMES = {g for g, _ in PATCH_GROUPS} | set(ALIASES) | {"diag", "diag7"} | DEFINE_ONLY | DEFAULT_OFF
+_unknown = sorted((ENABLED | DISABLED) - KNOWN_NAMES)
+if _unknown:
+    raise SystemExit(f"unknown BE_DISABLE/BE_ENABLE name(s): {', '.join(_unknown)}; known: {', '.join(sorted(KNOWN_NAMES))}")
 def patch_group(why):
     return next((g for g, prefixes in PATCH_GROUPS if why.startswith(prefixes)), None)
 # Stock's version string (S.VERSION_STR, 8-byte slot). Its two users: the boot-screen label
@@ -186,7 +216,7 @@ SOURCES = [  # (source, ELF, groups that need it; () = core), in compile order
     ("m7_stall.c", "m7", ("stall",)), ("m7_retrig.c", "m7", M7_FEATURES), ("m7_mod.c", "m7", M7_FEATURES),
     ("m4_diag.c", "m4", ()), ("m4_holdstep.c", "m4_holdstep", ("step",)),
     ("m7_controls_input.s", "asm", ("hold",)), ("m4_controls.c", "m4_controls", ("hold",)),
-    ("m4_step.c", "m4_step", ("step",)),
+    ("m4_step.c", "m4_step", ("step", "mx")),
 ]
 GROUP_NAMES = {
     "core": ("M7_TRAMP", "M7_CODE", "M7_LIMIT", "CTRL_INPUT", "CTRL_STARTUP", "APPEND_FROM", "D2_SLICE", "D2_SLICE_END",
@@ -200,7 +230,8 @@ GROUP_NAMES = {
                  "POLYCAP_ALL_OFF_SITE"),
     "poly_at": ("EV_VOICE_PRESSURE", "POLY_RESUME", "POLY_SITE", "M4MIDI_BEGIN", "M4MIDI_STATUS",
                 "M4MIDI_CHANNEL", "M4MIDI_DATA", "M4MIDI_SEND", "M4MIDI_RESULT", "M4MIDI_DONE", "M4_LOOP",
-                "M4_NOTE_ON_CASE", "MIDI_JT", "EV_MIDI_POLY_AT", "MIDI_JT_FIRST", "EV_MIDI_CHAN_AT"),
+                "M4_NOTE_ON_CASE", "MIDI_JT", "EV_MIDI_POLY_AT", "MIDI_JT_FIRST", "EV_MIDI_CHAN_AT", "M4_NOTE_ON_END",
+                "M4MIDI_SINK"),
     "inta_curve": ("BUS_POST",),
     "inta_live": ("LIVE_SITE", "BUS_POST"),
     "retrig": ("NOTE_ROUTE", "RETRIG_ACCEPT_SITE", "RETRIG_EMIT_SITE"),
@@ -216,9 +247,9 @@ GROUP_NAMES = {
              "MIXER_RENDER_VT_SLOT", "MIXER_RENDER"),
     "step": ("STEP_SAVE_SITE", "STEP_LOAD_SITE", "DRUM_HEADER", "DRUM_ENCODER", "PIANO_HEADER", "PIANO_EVENT",
              "STEP_EDIT_VEL", "STEP_EDIT_PROB", "STEP_EDIT_OFFSET", "STEP_PRESS", "STEP_PRESS_SKIP", "STEP_TOGGLE",
-             "STEP_DEFAULTS_READ", "HEADER_GEN", "DRUM_EVENT", "EXT_BUILD", "EXT_EVENT", "EV_ENCODER", "MX_BUILD",
-             "MX_ROUTE", "MX_EDIT", "MX_BAR", "MX_EVENT", "NOTE_INSERT", "NOTE_UPDATE", "DOC_READ", "HOLD_TAP_PAD",
+             "STEP_DEFAULTS_READ", "HEADER_GEN", "DRUM_EVENT", "NOTE_INSERT", "NOTE_UPDATE", "DOC_READ", "HOLD_TAP_PAD",
              "HOLD_TAP_TOUCH"),
+    "mx": ("EXT_BUILD", "EXT_EVENT", "EV_ENCODER", "MX_BUILD", "MX_ROUTE", "MX_EDIT", "MX_BAR", "MX_EVENT"),
 }
 GROUP_TITLES = {"core": "black box core (always built)", "trace": "M7 event tracing", "poly_cap": "poly cap (M7)",
                 "poly_at": "poly AT: External handler + M4 MIDI 0x5F/0x60 handlers (S5)",
@@ -226,7 +257,8 @@ GROUP_TITLES = {"core": "black box core (always built)", "trace": "M7 event trac
                 "retrig": "retrigger + curve playback hooks", "nmod": "Note Mod engine (M7)", "stall": "M7 stall record + profile",
                 "cond_engine": "trigger conditions engine (M7)", "cond_ui": "probability editor clamps (M4, S4)",
                 "irq30": "M4 watchdog profile", "bbox": "black box M4 hooks",
-                "hold": "hold shortcuts", "step": "per-step UI / strike / curves / Mod Matrix"}
+                "hold": "hold shortcuts", "step": "per-step UI / strike / curves / Note Mod UI",
+                "mx": "Mod Matrix page + External INST rows (deferred on 1.6.8)"}
 assert set(GROUP_NAMES) == {"core"} | {g for g, _ in PATCH_GROUPS}
 
 
@@ -294,11 +326,14 @@ def plan(base, disabled):
     verified = BASE_SETTINGS[base.module]["groups"]
     m7_flags = BASE_SETTINGS[base.module]["m7_flags"]                 # the defines the M7 code is compiled with
     refs = {src: source_refs(base, src, disabled, m7_flags if src.startswith("m7_") else ()) for src, _, _ in SOURCES}
+    # a source shared with an OMIT_DEFINES group (m4_step.c: step + mx): what it uses without that group's code
+    lean = {src: source_refs(base, src, disabled, tuple(OMIT_DEFINES[g] for g in gs if g in OMIT_DEFINES))
+            for src, _, gs in SOURCES if any(g in OMIT_DEFINES for g in gs)}
     def needs(g):
         n = set(GROUP_NAMES[g])
         for src, _, gs in SOURCES:
             if (gs == () and g == "core") or g in gs:
-                n |= refs[src]
+                n |= lean[src] if src in lean and g not in OMIT_DEFINES else refs[src]
         return n
     included, omitted, refused = {"core"}, set(), {}
     for g in GROUP_NAMES:
@@ -327,8 +362,13 @@ def refuse_message(base, refused, omitted):
             why.append(f"{len(names)} unreviewed: " + ", ".join(names))
         lines.append(f"  {g} ({GROUP_TITLES[g]}): " + "; ".join(why))
     if "core" not in refused:
-        off = sorted((set(refused) | omitted) & {g for g, _ in PATCH_GROUPS})
-        lines.append(f"Build without them: BE_DISABLE={','.join(off)}")
+        default_off = set(BASE_SETTINGS[base.module].get("default_off", ()))
+        asked = sorted(set(refused) & default_off & ENABLED)          # on by BE_ENABLE only: dropping it is enough
+        off = sorted((set(refused) | omitted) & {g for g, _ in PATCH_GROUPS} - set(asked))
+        if asked:
+            lines.append(f"Build without them: drop {','.join(asked)} from BE_ENABLE (left out by default on {base.label})")
+        if off:
+            lines.append(f"Build without them: BE_DISABLE={','.join(off)}")
     return "\n".join(lines)
 
 
@@ -459,8 +499,10 @@ def dest_tables():
     d = dest_list()
     return (f"#define DEST_N {len(d)}\n"
             + f"static const char *const DEST_LABELS[{len(d)}] = {{" + ", ".join(f'"{x[0]}"' for x in d) + "};\n"
+            + "#ifndef BE_OMIT_MX\n"                     # used by the Mod Matrix code only (mx)
             + f"static const unsigned char DEST_TYPE[{len(d)}] = {{" + ", ".join(str(x[1]) for x in d) + "};\n"
-            + f"static const unsigned char DEST_NUM[{len(d)}] = {{" + ", ".join(str(x[2]) for x in d) + "};\n")
+            + f"static const unsigned char DEST_NUM[{len(d)}] = {{" + ", ".join(str(x[2]) for x in d) + "};\n"
+            + "#endif\n")
 
 def write_step_tables(path):
     """Generated C tables for m4_step.c (single source: the lists above)."""
@@ -493,7 +535,8 @@ def compile_elf(srcs, cpu, ld, out, origin, limit):
            "-ffunction-sections", "-fdata-sections", "-Wall", "-Werror",
            "-Wl,--gc-sections", "-include", str(syms_h), f"-I{out.parent}", f"-Wl,--script={ld}", "-Wl,--entry=0",
            *(SETTINGS["m4_flags"] if cpu == "cortex_m4" else SETTINGS["m7_flags"]),
-           *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *map(str, srcs), "-o", str(out)]
+           *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *[OMIT_DEFINES[g] for g in sorted(OMITTED & set(OMIT_DEFINES))],
+           *map(str, srcs), "-o", str(out)]
     subprocess.run(cmd, check=True)
     return out.read_bytes()
 
@@ -628,6 +671,7 @@ def check_sites(img, S):
 # Prologue replays: the stock instruction(s) a wrapper re-executes after taking over a site.
 PUSH_R4_R11_LR = "push.w {r4, r5, r6, r7, r8, r9, r10, r11, lr}"
 PUSH_R4_R9_LR = "push.w {r4, r5, r6, r7, r8, r9, lr}"
+PUSH_R4_R10_LR = "push.w {r4, r5, r6, r7, r8, r9, r10, lr}"
 def replays(site_name, displaced):
     """The instruction(s) a wrapper replays must be what stock has at the site (a new base
     whose prologue changed is refused here, not run with the old prologue)."""
@@ -643,10 +687,14 @@ def replaced(img, site_name, back_name, sha_name):
         raise SystemExit(f"{site_name}..{back_name}: stock's code there is not what the helper re-implements ({sha_name})")
 
 def build(base_img, out):
+    global DISABLED, OMITTED
     s = bases.select(base_img)                   # refuses an unknown image; REVIEW entries can't be read
+    if s.module in BASE_SETTINGS:                # per-base default-off groups (1.6.8: mx, deferred); BE_ENABLE asks for one
+        DISABLED = DISABLED | (set(BASE_SETTINGS[s.module].get("default_off", ())) - ENABLED)
     included, omitted, refused, needs = plan(s, DISABLED)
     if refused:                                  # an enabled feature (or core) uses a draft entry
         raise SystemExit(refuse_message(s, refused, omitted))
+    OMITTED = set(omitted)
     use_base(Tracked(s))
     inc = included.__contains__
     if len(base_img) != S.size:
@@ -839,7 +887,9 @@ def build(base_img, out):
             patch(S.COND_GATE_SITE, asm(f"b.w {t:#x}", S.COND_GATE_SITE), S.orig("COND_GATE_SITE"),
                   "Conditions (Lab T2): probability gate -> cond_decide")
             t = M7_TRAMP + len(tramps)
-            loop = asm(save + f"ldr r0, [sp, #8]; bl {s7['cond_loop']:#x}; " + restore     # r0 = the sequence
+            # 1.6.8 (BE_PLAY_COUNT_WRAP): cond_loop(seq, caller's lr) tells the 256-step Play Count wrap apart
+            lr_arg = "ldr r1, [sp, #0x3c]; " if "-DBE_PLAY_COUNT_WRAP" in BASE_SETTINGS[S.module]["m7_flags"] else ""
+            loop = asm(save + f"ldr r0, [sp, #8]; {lr_arg}bl {s7['cond_loop']:#x}; " + restore     # r0 = the sequence
                        + f"{PUSH_R4_R9_LR}; b.w {S.COND_LOOP_SITE + 4:#x}", t)
             check_branches(loop, t, {S.COND_LOOP_SITE + 4, s7["cond_loop"]}, "condition loop hook")
             tramps += loop + bytes(-len(loop) % 4)
@@ -960,7 +1010,7 @@ def build(base_img, out):
 
     if inc("step"):
         with S.group("step"):
-            per_step(base_img, img, patch, extend, sources, s4, sh, out)
+            per_step(base_img, img, patch, extend, sources, s4, sh, out, inc)
 
     if M4_CODE + len(code4) + 20 > M4_LIMIT:
         raise SystemExit("M4 code + marker overrun")
@@ -1070,14 +1120,26 @@ def hold_shortcuts(base_img, img, patch, extend, sources, s4, out):
     if vac != CTRL_CODE:
         raise SystemExit(f"controls code placement {vac:#x}")
     extend(CTRL_LIMIT, "Hold shortcuts: extend image with erased (0xFF) flash")
+    # How the stock consumer holds the event at the site (S4/S5): 1.6.1 preloads it into registers
+    # (r5 code, r6 context, r7 index, record copy at sp+0x220); 1.6.8 keeps only the record pointer r6
+    # (sp+0x218) and reads the code with ldrb r3,[r6]. r4 is the model in both. Chosen by the bytes at the
+    # site, so a base with other bytes is refused here (replays) instead of getting the wrong registers.
+    CONSUMER = {
+        "a5f11103": ("add.w r0, sp, #608; str r0, [sp]; mov r0, r4; mov r1, r5; mov r2, r6; mov r3, r7",   # record (orig sp+0x220)
+                     "sub.w r3, r5, #17"),
+        "3378113b": ("str r6, [sp]; mov r0, r4; ldrb r1, [r6]; ldr r2, [r6, #8]; ldr r3, [r6, #12]",
+                     "ldrb r3, [r6]; subs r3, #0x11"),
+    }
+    if S.orig("CTRL_CONSUMER_SITE").hex() not in CONSUMER:
+        raise SystemExit(f"CTRL_CONSUMER_SITE: no wrapper for stock's {S.orig('CTRL_CONSUMER_SITE').hex()}")
+    args, displaced = CONSUMER[S.orig("CTRL_CONSUMER_SITE").hex()]
     consumer = asm(
-        "push.w {r0-r12, lr}; sub sp, #8; add.w r0, sp, #608; str r0, [sp]; "   # record (orig sp+0x220)
-        f"mov r0, r4; mov r1, r5; mov r2, r6; mov r3, r7; bl {sc['controls_dispatch']:#x}; "
+        f"push.w {{r0-r12, lr}}; sub sp, #8; {args}; bl {sc['controls_dispatch']:#x}; "
         "cmp r0, #0; add sp, #8; pop.w {r0-r12, lr}; bne consumed; "
-        f"sub.w r3, r5, #17; b.w {S.CTRL_CONSUMER_SITE + 4:#x}; "                    # displaced instruction
+        f"{displaced}; b.w {S.CTRL_CONSUMER_SITE + 4:#x}; "                          # displaced instruction(s)
         f"consumed: b.w {S.CTRL_DISPATCH_NEXT:#x}", CTRL_WRAP)
     check_branches(consumer, CTRL_WRAP, {sc["controls_dispatch"], S.CTRL_CONSUMER_SITE + 4, S.CTRL_DISPATCH_NEXT}, "controls consumer")
-    replays("CTRL_CONSUMER_SITE", "sub.w r3, r5, #17")
+    replays("CTRL_CONSUMER_SITE", displaced)
     sel_at = CTRL_WRAP + 0x80
     selection = asm(
         "push.w {r0-r3, r12, lr}; mrs r12, apsr; push.w {r12, lr}; "
@@ -1106,8 +1168,9 @@ def hold_shortcuts(base_img, img, patch, extend, sources, s4, out):
     s4.update({f"controls.{k}": v for k, v in sc.items()})
 
 
-def per_step(base_img, img, patch, extend, sources, s4, sh, out):
-    """Per-step Condition / Retrigger UI, strike velocity, curves, Mod Matrix rows (m4_step.c)."""
+def per_step(base_img, img, patch, extend, sources, s4, sh, out, inc):
+    """Per-step Condition / Retrigger UI, strike velocity, curves, Note Mod UI (m4_step.c); with mx, the External
+    INST rows and the Mod Matrix page (their wrappers stay where they were, so a build with mx keeps its bytes)."""
     st_elf = compile_elf(sources("m4_step"), "cortex_m4", HERE / "m4_step.ld", out / "m4_step.elf", STEP_CODE, STEP_LIMIT)
     vas, codes, ss = elf_load(st_elf, STEP_CODE, STEP_LIMIT)
     if vas != STEP_CODE:
@@ -1197,8 +1260,13 @@ def per_step(base_img, img, patch, extend, sources, s4, sh, out):
                {ss["toggle_defaults"], S.STEP_DEFAULTS_READ + 4}, "new-step defaults")
     patch(S.STEP_DEFAULTS_READ, asm(f"b.w {a:#x}", S.STEP_DEFAULTS_READ), orig, "Step page: a new step takes the pad's defaults")
     # "Strike Vel" header button: inject after stock's header generator; catch its action
-    replays("HEADER_GEN", "push.w {r4, r5, r6, r7, r8, r9, r10, lr}")
-    orig_gen = sblock(f"push.w {{r4, r5, r6, r7, r8, r9, r10, lr}}; b.w {S.HEADER_GEN + 4:#x}", {S.HEADER_GEN + 4}, "header replay")
+    # 1.6.8 recompiled the generator (one register fewer, sub sp #0xc: the same 0x28 frame; args model r0, description
+    # r1, &flag r2, r3 as before): the replay is the base's own prologue, by its bytes; any other prologue is refused.
+    gen_push = {"2de9f047": PUSH_R4_R10_LR, "2de9f043": PUSH_R4_R9_LR}.get(S.orig("HEADER_GEN").hex())
+    if gen_push is None:
+        raise SystemExit(f"HEADER_GEN: no replay for stock's prologue {S.orig('HEADER_GEN').hex()}")
+    replays("HEADER_GEN", gen_push)
+    orig_gen = sblock(f"{gen_push}; b.w {S.HEADER_GEN + 4:#x}", {S.HEADER_GEN + 4}, "header replay")
     a = sblock(f"push {{r4, r5, r6, lr}}; mov r4, r0; mov r5, r1; bl {orig_gen:#x}; mov r2, r0; mov r0, r4; mov r1, r5; "
                f"bl {ss['strike_toolbar']:#x}; pop {{r4, r5, r6, pc}}", {orig_gen, ss["strike_toolbar"]}, "header wrapper")
     patch(S.HEADER_GEN, asm(f"b.w {a:#x}", S.HEADER_GEN), S.orig("HEADER_GEN"), "Strike Vel: header button (slot left of Undo)")
@@ -1207,44 +1275,46 @@ def per_step(base_img, img, patch, extend, sources, s4, sh, out):
                {ss["strike_event"], S.DRUM_EVENT + 4}, "drum event")
     replays("DRUM_EVENT", "push {lr}; sub sp, #0x6c")
     patch(S.DRUM_EVENT, asm(f"b.w {a:#x}", S.DRUM_EVENT), S.orig("DRUM_EVENT"), "Strike Vel: button action in the drum view")
-    # F2a: External INST page row sets: the bar builder (view) and the view's events (view, ev)
-    a = sblock(save + f"ldr r0, [sp, #8]; bl {ss['ext_build']:#x}; cmp r0, #0; beq stock; " + restore + "bx lr; "
-               "stock: " + restore + f"{PUSH_R4_R11_LR}; b.w {S.EXT_BUILD + 4:#x}",
-               {ss["ext_build"], S.EXT_BUILD + 4}, "external bar builder")
-    replays("EXT_BUILD", PUSH_R4_R11_LR)
-    patch(S.EXT_BUILD, asm(f"b.w {a:#x}", S.EXT_BUILD), S.orig("EXT_BUILD"), "Per-step: External bar builder -> LFO/Env rows")
-    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['ext_event']:#x}; cmp r0, #0; beq stock; "
-               + restore + "movs r0, #0; bx lr; stock: " + restore + f"ldrh r3, [r1]; cmp r3, #{S.EV_ENCODER:#x}; b.w {S.EXT_EVENT + 4:#x}",
-               {ss["ext_event"], S.EXT_EVENT + 4}, "external event")
-    replays("EXT_EVENT", f"ldrh r3, [r1]; cmp r3, #{S.EV_ENCODER:#x}")
-    patch(S.EXT_EVENT, asm(f"b.w {a:#x}", S.EXT_EVENT), S.orig("EXT_EVENT"), "Per-step: External view events -> row button + row encoders")
-    # F2b: the Mod Matrix page for External tracks
-    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['mx_build']:#x}; cmp r0, #0; beq stock; " + restore + "bx lr; "
-               "stock: " + restore + f"{PUSH_R4_R11_LR}; b.w {S.MX_BUILD + 4:#x}",
-               {ss["mx_build"], S.MX_BUILD + 4}, "matrix rows")
-    replays("MX_BUILD", PUSH_R4_R11_LR)
-    patch(S.MX_BUILD, asm(f"b.w {a:#x}", S.MX_BUILD), S.orig("MX_BUILD"), "Per-step: Mod Matrix rows -> MIDI destinations (External)")
-    a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #20]; ldr r2, [sp, #64]; bl {ss['mx_route']:#x}; "
-               "cmn r0, #1; beq stock; str r0, [sp, #8]; " + restore + "bx lr; "
-               "stock: " + restore + f"{PUSH_R4_R11_LR}; b.w {S.MX_ROUTE + 4:#x}",
-               {ss["mx_route"], S.MX_ROUTE + 4}, "matrix routing read")
-    replays("MX_ROUTE", PUSH_R4_R11_LR)
-    patch(S.MX_ROUTE, asm(f"b.w {a:#x}", S.MX_ROUTE), S.orig("MX_ROUTE"), "Per-step: modulation routing read -> ours for External rows")
-    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['mx_edit']:#x}; cmp r0, #0; beq stock; " + restore + "bx lr; "
-               "stock: " + restore + f"{PUSH_R4_R11_LR}; b.w {S.MX_EDIT + 4:#x}",
-               {ss["mx_edit"], S.MX_EDIT + 4}, "matrix edit")
-    replays("MX_EDIT", PUSH_R4_R11_LR)
-    patch(S.MX_EDIT, asm(f"b.w {a:#x}", S.MX_EDIT), S.orig("MX_EDIT"), "Per-step: Mod Matrix edits -> ours for External rows")
-    replays("MX_BAR", PUSH_R4_R9_LR)
-    orig_bar = sblock(f"{PUSH_R4_R9_LR}; b.w {S.MX_BAR + 4:#x}", {S.MX_BAR + 4}, "matrix bar replay")
-    a = sblock(f"push {{r4, lr}}; mov r4, r0; bl {orig_bar:#x}; mov r0, r4; bl {ss['mx_bar_after']:#x}; pop {{r4, pc}}",
-               {orig_bar, ss["mx_bar_after"]}, "matrix bar")
-    patch(S.MX_BAR, asm(f"b.w {a:#x}", S.MX_BAR), S.orig("MX_BAR"), "Per-step: Mod Matrix bar -> Dest on encoder 8 (External)")
-    a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['mx_event']:#x}; cmp r0, #0; beq stock; "
-               + restore + "movs r0, #0; bx lr; stock: " + restore + f"push {{r4, lr}}; sub sp, #0x18; b.w {S.MX_EVENT + 4:#x}",
-               {ss["mx_event"], S.MX_EVENT + 4}, "matrix event")
-    replays("MX_EVENT", "push {r4, lr}; sub sp, #0x18")
-    patch(S.MX_EVENT, asm(f"b.w {a:#x}", S.MX_EVENT), S.orig("MX_EVENT"), "Per-step: Mod Matrix events -> Dest encoder (External)")
+    if inc("mx"):
+        with S.group("mx"):   # deferred on 1.6.8, left out of its image there (m4_step.c: -DBE_OMIT_MX)
+            # F2a: External INST page row sets: the bar builder (view) and the view's events (view, ev)
+            a = sblock(save + f"ldr r0, [sp, #8]; bl {ss['ext_build']:#x}; cmp r0, #0; beq stock; " + restore + "bx lr; "
+                       "stock: " + restore + f"{PUSH_R4_R11_LR}; b.w {S.EXT_BUILD + 4:#x}",
+                       {ss["ext_build"], S.EXT_BUILD + 4}, "external bar builder")
+            replays("EXT_BUILD", PUSH_R4_R11_LR)
+            patch(S.EXT_BUILD, asm(f"b.w {a:#x}", S.EXT_BUILD), S.orig("EXT_BUILD"), "Per-step: External bar builder -> LFO/Env rows")
+            a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['ext_event']:#x}; cmp r0, #0; beq stock; "
+                       + restore + "movs r0, #0; bx lr; stock: " + restore + f"ldrh r3, [r1]; cmp r3, #{S.EV_ENCODER:#x}; b.w {S.EXT_EVENT + 4:#x}",
+                       {ss["ext_event"], S.EXT_EVENT + 4}, "external event")
+            replays("EXT_EVENT", f"ldrh r3, [r1]; cmp r3, #{S.EV_ENCODER:#x}")
+            patch(S.EXT_EVENT, asm(f"b.w {a:#x}", S.EXT_EVENT), S.orig("EXT_EVENT"), "Per-step: External view events -> row button + row encoders")
+            # F2b: the Mod Matrix page for External tracks
+            a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['mx_build']:#x}; cmp r0, #0; beq stock; " + restore + "bx lr; "
+                       "stock: " + restore + f"{PUSH_R4_R11_LR}; b.w {S.MX_BUILD + 4:#x}",
+                       {ss["mx_build"], S.MX_BUILD + 4}, "matrix rows")
+            replays("MX_BUILD", PUSH_R4_R11_LR)
+            patch(S.MX_BUILD, asm(f"b.w {a:#x}", S.MX_BUILD), S.orig("MX_BUILD"), "Per-step: Mod Matrix rows -> MIDI destinations (External)")
+            a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #20]; ldr r2, [sp, #64]; bl {ss['mx_route']:#x}; "
+                       "cmn r0, #1; beq stock; str r0, [sp, #8]; " + restore + "bx lr; "
+                       "stock: " + restore + f"{PUSH_R4_R11_LR}; b.w {S.MX_ROUTE + 4:#x}",
+                       {ss["mx_route"], S.MX_ROUTE + 4}, "matrix routing read")
+            replays("MX_ROUTE", PUSH_R4_R11_LR)
+            patch(S.MX_ROUTE, asm(f"b.w {a:#x}", S.MX_ROUTE), S.orig("MX_ROUTE"), "Per-step: modulation routing read -> ours for External rows")
+            a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['mx_edit']:#x}; cmp r0, #0; beq stock; " + restore + "bx lr; "
+                       "stock: " + restore + f"{PUSH_R4_R11_LR}; b.w {S.MX_EDIT + 4:#x}",
+                       {ss["mx_edit"], S.MX_EDIT + 4}, "matrix edit")
+            replays("MX_EDIT", PUSH_R4_R11_LR)
+            patch(S.MX_EDIT, asm(f"b.w {a:#x}", S.MX_EDIT), S.orig("MX_EDIT"), "Per-step: Mod Matrix edits -> ours for External rows")
+            replays("MX_BAR", PUSH_R4_R9_LR)
+            orig_bar = sblock(f"{PUSH_R4_R9_LR}; b.w {S.MX_BAR + 4:#x}", {S.MX_BAR + 4}, "matrix bar replay")
+            a = sblock(f"push {{r4, lr}}; mov r4, r0; bl {orig_bar:#x}; mov r0, r4; bl {ss['mx_bar_after']:#x}; pop {{r4, pc}}",
+                       {orig_bar, ss["mx_bar_after"]}, "matrix bar")
+            patch(S.MX_BAR, asm(f"b.w {a:#x}", S.MX_BAR), S.orig("MX_BAR"), "Per-step: Mod Matrix bar -> Dest on encoder 8 (External)")
+            a = sblock(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['mx_event']:#x}; cmp r0, #0; beq stock; "
+                       + restore + "movs r0, #0; bx lr; stock: " + restore + f"push {{r4, lr}}; sub sp, #0x18; b.w {S.MX_EVENT + 4:#x}",
+                       {ss["mx_event"], S.MX_EVENT + 4}, "matrix event")
+            replays("MX_EVENT", "push {r4, lr}; sub sp, #0x18")
+            patch(S.MX_EVENT, asm(f"b.w {a:#x}", S.MX_EVENT), S.orig("MX_EVENT"), "Per-step: Mod Matrix events -> Dest encoder (External)")
     # strike velocity for notes created by any view (drum Sequence page)
     a = sblock(save + f"ldr r0, [sp, #16]; ldr r1, [sp, #60]; ldr r2, [sp, #8]; ldr r3, [sp, #12]; bl {ss['strike_insert']:#x}; " + restore   # record, caller lr, model, sequence
                + f"push {{r4, r5, r6, lr}}; sub sp, #0x20; b.w {S.NOTE_INSERT + 4:#x}", {ss["strike_insert"], S.NOTE_INSERT + 4}, "note insert")
@@ -1276,27 +1346,66 @@ def per_step(base_img, img, patch, extend, sources, s4, sh, out):
     s4.update({f"step.{k}": v for k, v in ss.items()})
 
 
+def note_on_case(status, two_data=True, native=False, guard=False):
+    """Stock's MIDI-out Note On case (M4_NOTE_ON_CASE..M4_NOTE_ON_END) as a template, with this base's registers
+    (BASE_SETTINGS m4_note_on: event word 3 channel, 4 note, 5 value, 2 port; the message at sp+4 in r5; the
+    sink object). 1.6.8 recompiled the task: every case sets r5 itself and loads the sink from a literal.
+    native=True: stock's own form (status 0x90), checked against the image; our copies load the sink with
+    movw/movt (no literal pool) and, guard=True, drop a note above 127 as stock does for 0x5B / 0x5C on 1.6.8."""
+    r = BASE_SETTINGS[S.module]["m4_note_on"]
+    ux = lambda d, s_: f"uxtb.w {d}, {s_}" if s_ in ("r8", "r9", "r10", "r11", "r12") else f"uxtb {d}, {s_}"
+    head = (f"cmp {r['note']}, #0x7f; bgt out; " if guard else "") + r["msg"]
+    head += (f"mov r0, r5; bl {S.M4MIDI_BEGIN:#x}; movs r1, #{status:#x}; mov r0, r5; bl {S.M4MIDI_STATUS:#x}; "
+             f"{ux('r1', r['ch'])}; mov r0, r5; bl {S.M4MIDI_CHANNEL:#x}; {ux('r1', r['note'])}; mov r0, r5; bl {S.M4MIDI_DATA:#x}; ")
+    if two_data:
+        head += f"{ux('r1', r['val'])}; mov r0, r5; bl {S.M4MIDI_DATA:#x}; "
+    sink = "" if not r["sink_lit"] or native else f"movw {r['sink']}, #{S.M4MIDI_SINK & 0xFFFF:#x}; movt {r['sink']}, #{S.M4MIDI_SINK >> 16:#x}; "
+    tail = (f"{ux('r2', r['port'])}; mov r1, r5; mov r0, {r['sink']}; bl {S.M4MIDI_SEND:#x}; "
+            f"mov r0, r5; bl {S.M4MIDI_RESULT:#x}; mov r1, r0; mov r0, {r['sink']}; bl {S.M4MIDI_DONE:#x}")
+    return head, sink, tail
+
+
+def check_native_note_on(base_img):
+    """Our handlers copy stock's Note On case: the template with 0x90 must be the image's bytes, the sink it
+    loads must be M4MIDI_SINK, and the case must end in the loop head."""
+    from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB as CT, CS_MODE_MCLASS
+    md = Cs(CS_ARCH_ARM, CT | CS_MODE_MCLASS)
+    r = BASE_SETTINGS[S.module]["m4_note_on"]
+    native = bytes(base_img[S.M4_NOTE_ON_CASE - BASE:S.M4_NOTE_ON_END - BASE])
+    head, _, tail = note_on_case(0x90, native=True)
+    h = asm(head.rstrip("; "), S.M4_NOTE_ON_CASE)
+    at = S.M4_NOTE_ON_CASE + len(h)
+    if r["sink_lit"]:
+        i = next(md.disasm(native[len(h):len(h) + 2], at), None)
+        if not i or i.mnemonic != "ldr" or not i.op_str.startswith(f"{r['sink']}, [pc, #"):
+            raise SystemExit(f"Note On case: no sink load at {at:#x}")
+        lit = ((at + 4) & ~3) + int(i.op_str.split("#")[1].rstrip("]"), 0)
+        if struct.unpack_from("<I", base_img, lit - BASE)[0] != S.M4MIDI_SINK:
+            raise SystemExit(f"Note On case: the sink literal at {lit:#x} is not M4MIDI_SINK")
+        at += 2
+    t = asm(tail, at)
+    if h + native[len(h):len(h) + at - S.M4_NOTE_ON_CASE - len(h)] + t != native:
+        raise SystemExit("our copy of the Note On case does not match the native bytes")
+    if S.M4_NOTE_ON_END != S.M4_LOOP:                          # 1.6.8: the case branches back to the loop head
+        i = next(md.disasm(bytes(base_img[S.M4_NOTE_ON_END - BASE:S.M4_NOTE_ON_END - BASE + 4]), S.M4_NOTE_ON_END), None)
+        if not i or i.mnemonic not in ("b", "b.w") or int(i.op_str[1:], 16) != S.M4_LOOP:
+            raise SystemExit(f"Note On case: {S.M4_NOTE_ON_END:#x} is not a branch to M4_LOOP")
+    jt0 = struct.unpack_from("<I", base_img, S.MIDI_JT - BASE)[0]
+    if jt0 != S.M4_NOTE_ON_CASE | 1:
+        raise SystemExit(f"MIDI_JT[0] {jt0:#x} is not the Note On case")
+
+
 def m4_poly_handlers(base_img, img, patch, extend):
     """Poly AT (M4): MIDI task jump-table slots 0x5F / 0x60 -> copies of stock's Note On case."""
-    h = asm(f"mov r0, r5; bl {S.M4MIDI_BEGIN:#x}; "
-            f"movs r1, #0xa0; mov r0, r5; bl {S.M4MIDI_STATUS:#x}; "           # Polyphonic Key Pressure
-            f"uxtb.w r1, r8; mov r0, r5; bl {S.M4MIDI_CHANNEL:#x}; "             # channel (event word 3)
-            f"uxtb r1, r7; mov r0, r5; bl {S.M4MIDI_DATA:#x}; "               # note (word 4)
-            f"uxtb.w r1, r11; mov r0, r5; bl {S.M4MIDI_DATA:#x}; "            # pressure (word 5)
-            f"uxtb.w r2, r9; mov r1, r5; mov r0, r6; bl {S.M4MIDI_SEND:#x}; " # send on port (word 2)
-            f"mov r0, r5; bl {S.M4MIDI_RESULT:#x}; mov r1, r0; mov r0, r6; bl {S.M4MIDI_DONE:#x}; "
-            f"b.w {S.M4_LOOP:#x}", M4_POLY)
+    guard = "-DBE_NOTES_ABOVE_127" in BASE_SETTINGS[S.module]["m7_flags"]    # 1.6.8: stock drops notes > 127
+    head, sink, tail = note_on_case(0xA0, guard=guard)
+    h = asm(head + sink + tail + f"; out: b.w {S.M4_LOOP:#x}", M4_POLY)        # 0x5F: Polyphonic Key Pressure
+    check_branches(h, M4_POLY, {S.M4MIDI_BEGIN, S.M4MIDI_STATUS, S.M4MIDI_CHANNEL, S.M4MIDI_DATA, S.M4MIDI_SEND,
+                                S.M4MIDI_RESULT, S.M4MIDI_DONE, S.M4_LOOP}, "M4 0x5F handler")
     if M4_POLY + len(h) > M4_POLY_LIMIT or BASE + len(img) != M4_POLY:
         raise SystemExit("M4 poly handler block layout")
     extend(M4_POLY_LIMIT, "M1 poly AT: extend image with erased (0xFF) flash for the M4 handler")
-    # Cross-check: the native Note On case assembles to the same shape with 0x90.
-    native = base_img[S.M4_NOTE_ON_CASE - BASE:S.M4_LOOP - BASE]
-    ours_as_native = asm(h_src_native := (f"mov r0, r5; bl {S.M4MIDI_BEGIN:#x}; movs r1, #0x90; mov r0, r5; bl {S.M4MIDI_STATUS:#x}; "
-            f"uxtb.w r1, r8; mov r0, r5; bl {S.M4MIDI_CHANNEL:#x}; uxtb r1, r7; mov r0, r5; bl {S.M4MIDI_DATA:#x}; "
-            f"uxtb.w r1, r11; mov r0, r5; bl {S.M4MIDI_DATA:#x}; uxtb.w r2, r9; mov r1, r5; mov r0, r6; bl {S.M4MIDI_SEND:#x}; "
-            f"mov r0, r5; bl {S.M4MIDI_RESULT:#x}; mov r1, r0; mov r0, r6; bl {S.M4MIDI_DONE:#x}"), S.M4_NOTE_ON_CASE)
-    if ours_as_native != native:
-        raise SystemExit("our copy of the Note On case does not match the native bytes")
+    check_native_note_on(base_img)
     patch(M4_POLY, h, b"\xff" * len(h), "M1 poly AT: M4 0x5F handler (Note On case copy, status 0xA0)")
     old = struct.pack("<I", S.M4_LOOP | 1)                     # unused slots point at the loop
     jt_5f = S.MIDI_JT + 4 * (S.EV_MIDI_POLY_AT - S.MIDI_JT_FIRST)
@@ -1304,13 +1413,8 @@ def m4_poly_handlers(base_img, img, patch, extend):
         raise SystemExit("the channel pressure handler's slot must follow the poly pressure slot")
     patch(jt_5f, struct.pack("<I", M4_POLY | 1), old, "M1 poly AT: MIDI task jump table slot 0x5F -> handler")
     # M2-5b: event 0x60 {port w2, ch w3, value w4} -> Channel Pressure 0xD0 (two bytes)
-    hc = asm(f"mov r0, r5; bl {S.M4MIDI_BEGIN:#x}; "
-             f"movs r1, #0xd0; mov r0, r5; bl {S.M4MIDI_STATUS:#x}; "          # Channel Pressure
-             f"uxtb.w r1, r8; mov r0, r5; bl {S.M4MIDI_CHANNEL:#x}; "            # channel (word 3)
-             f"uxtb r1, r7; mov r0, r5; bl {S.M4MIDI_DATA:#x}; "              # pressure (word 4)
-             f"uxtb.w r2, r9; mov r1, r5; mov r0, r6; bl {S.M4MIDI_SEND:#x}; "# send on port (word 2)
-             f"mov r0, r5; bl {S.M4MIDI_RESULT:#x}; mov r1, r0; mov r0, r6; bl {S.M4MIDI_DONE:#x}; "
-             f"b.w {S.M4_LOOP:#x}", M4_CHAN)
+    head, sink, tail = note_on_case(0xD0, two_data=False)
+    hc = asm(head + sink + tail + f"; b.w {S.M4_LOOP:#x}", M4_CHAN)
     if M4_POLY + len(h) > M4_CHAN or M4_CHAN + len(hc) > M4_POLY_LIMIT:
         raise SystemExit("M4 channel pressure handler layout")
     patch(M4_CHAN, hc, b"\xff" * len(hc), "M2-5b AT Out Channel: M4 0x60 handler (status 0xD0)")

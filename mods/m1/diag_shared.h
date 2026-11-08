@@ -298,6 +298,13 @@ _Static_assert(sizeof(CurveLogEntry) == 64, "curve log entry is 64 bytes");
 typedef struct { u32 magic, gen, total, last_kind, lr[8], count[8]; } InsLog;
 #define INSLOG ((volatile InsLog *)SLICE(0x1D00u))
 #define INSLOG_MAGIC 0x31534E49u /* "INS1" */
+/* S4+S5 (1.6.8 only, BE_REC_WORD_LOG): stock's melodic recording handler copies the M7 message's word 5 into the
+ * recorded note's +0x14 (our per-step word) and the producer of that message is not traced: count the inserts at
+ * MEL_NOTE_ON, how many arrived with a nonzero word, the last nonzero one, as stock made them. Reset with INSLOG. */
+typedef struct { u32 magic, n, nonzero, last; } RecWord;
+#define RECWORD ((volatile RecWord *)SLICE(0x1D50u))   /* the 16 B between INSLOG and BINDS */
+#define RECWORD_MAGIC 0x31574352u /* "RCW1" */
+_Static_assert(0x1D00u + sizeof(InsLog) <= 0x1D50u && 0x1D50u + sizeof(RecWord) <= 0x1D60u, "recorded-word log");
 /* M4: melodic note-on binds a pitch to the capture slot just pressed (pitch
  * | 0x10000 so 0 means free); note-off looks it up. */
 typedef struct { u32 pitch, pad, seq, r_; } Bind;

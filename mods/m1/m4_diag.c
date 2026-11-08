@@ -915,6 +915,12 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
         for (u32 i = 0; i < 8 && INSLOG->lr[i]; i++) {
             puts_(&o, " "); hex(&o, INSLOG->lr[i], 8); puts_(&o, "x"); dec(&o, INSLOG->count[i]);
         }
+#ifdef BE_REC_WORD_LOG
+        if (RECWORD->magic == RECWORD_MAGIC) {      /* recorded melodic notes: stock's +0x14 (expected: nonzero=0) */
+            puts_(&o, " | recw n="); dec(&o, RECWORD->n); puts_(&o, " nonzero="); dec(&o, RECWORD->nonzero);
+            puts_(&o, " last="); hex(&o, RECWORD->last, 8);
+        }
+#endif
         puts_(&o, "\r\n");
     }
     volatile u32 *pads = (volatile u32 *)STRIKE_SET->pads;

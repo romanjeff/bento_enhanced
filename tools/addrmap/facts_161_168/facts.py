@@ -450,6 +450,332 @@ REVIEWED = {
     "PAD_NOTE_OFF": dict(value=0x080603E0,
         evidence="ldrb.w r3,[r0,#0x30]; push.w {r4-r9,lr}; mov r4,r0; sub sp,#0x54 ... bl MSG_SEND at +0x48 "
                  "(POLYCAP_PAD_OFF_SITE 0x08060428), same code as 1.6.1 0x08060040 (bl targets only)"),
+    # ======== S5 (2026-11-07, investigator rc19/s5parts): poly_at's M4 side, inta_live, cond_ui, Play Count
+    # ---- poly_at: the M4 MIDI-out task (1.6.8 recompiled it: new register map, a note > 127 guard) ----
+    "M4_NOTE_ON_CASE": dict(value=0x08105242,
+        note="MIDI task: the Note On case (MIDI_JT[0]); our 0x5F / 0x60 handlers copy it (build.py note_on_case)",
+        evidence="MIDI_JT[0] = 0x08105243 and the 0x5B guard's ble.w 0x08105242 (0x08105412). The case: add r5,sp,#4; "
+                 "BEGIN 0x08105F1E; movs r1,#0x90; STATUS 0x08105E0C; uxtb.w r1,sb CHANNEL 0x08105E26; uxtb r1,r6 DATA "
+                 "0x08105EC6; uxtb r1,r4 DATA; ldr r4,[pc,#0x210] (literal 0x08105480 = 0x30001120 = M4MIDI_SINK); uxtb r2,r7; "
+                 "SEND 0x08105ACC(r4, r5, port); RESULT 0x08105E14; DONE 0x08105D3C(r4, result); b 0x08105416 at 0x08105286. "
+                 "Registers per event word (loop head 0x08105380..0x081053CC): type r5 = byte +0, port r7 = +8, channel sb = "
+                 "+0xC, note r6 = +0x10, value r4 = ldrh +0x14 (1.6.1: r4 / sb / r8 / r7 / fp, sink r6 from the prologue, "
+                 "msg r5 set once). The matcher's 0x08105244 skips the case's own add r5,sp,#4"),
+    "M4_NOTE_ON_END": dict(value=0x08105286,
+        evidence="the Note On case's b 0x08105416 (M4_LOOP) after DONE; 1.6.1's case falls into its loop head (0x081050DE)"),
+    "M4_LOOP": dict(value=0x08105416,
+        evidence="loop head ldr.w sl,[r8]; add r3,sl,#0x2000; ldr [r3,#0x360] / [r3,#0x340]; cmp; bne 0x08105380 (read the "
+                 "next event) else FLUSH 0x08105C40 and return; the prologue's b 0x08105416 (0x08105240), every case's b back, "
+                 "MIDI_JT[4] = MIDI_JT[5] = 0x08105417 (0x5F / 0x60 unused by stock); bhi 0x08105416 bound at 0x081053E4"),
+    "MIDI_JT": dict(value=0x081053EC,
+        evidence="cmp r5,#0x5b; beq 0x08105410 (note <= 127 -> case) / cmp r5,#0x5c; beq 0x08105436 (note <= 127 -> Note "
+                 "Off) at 0x081053D8..DE (new in 1.6.8: notes above 127 dropped); subs r5,#0x5b; cmp r5,#8; bhi loop; adr r3,#4 "
+                 "(0x081053E6); ldr.w pc,[r3,r5,lsl #2] (0x081053E8). Words: 0x08105243 0x0810543B 0x08105289 0x081052C7 "
+                 "0x08105417 0x08105417 0x08105365 0x0810530D 0x08105339 (on, off, bend, CC, -, -, clock, start, stop)"),
+    "MIDI_JT_FIRST": dict(value=0x5B, evidence="subs r5,#0x5b at 0x081053E0; cmp r5,#8 (0x081053E2) bounds the 9 words"),
+    "M4MIDI_SINK": dict(value=0x30001120,
+        evidence="every 1.6.8 case loads it from literal 0x08105480 (ldr at 0x0810526C, 0x081052AA, 0x081052F0, 0x0810531C, "
+                 "0x08105348, 0x08105378, 0x08105464) and FLUSH gets it (0x0810542A); 1.6.1: ldr r6,[pc,#0x220] in the "
+                 "prologue (0x08105096, literal 0x081052B8)"),
+    # ---- poly_at test rig (test_polyat M4MidiTask runs stock's task on each base) ----
+    "M4_MIDI_TASK": dict(value=0x08105214,
+        evidence="ldrb r3,[r0,#1]; cbnz; bx lr; push.w {r4-sl,lr}; sub sp,#0x30 ... (1.6.1 0x08105068: push.w {r4-fp,lr}; "
+                 "sub sp,#0x34); one caller, 0x08105488 (push {r3,lr}; ldr r0,[pc,#8] = 0x3000111C; bl)"),
+    "M4_MIDI_TASK_ARG": dict(value=0x3000111C, evidence="literal 0x08105494 of the task's only caller 0x08105488 (1.6.1: literal 0x081052CC of 0x081052C0, the same value)"),
+    "M4MIDI_RING_PTR": dict(value=0x3000F65C,
+        evidence="the task's ldr.w r8,[pc,#0x244] at 0x0810523C (literal 0x08105484); the loop reads [r8] + 0x2340 / 0x2360 "
+                 "(MIDI_RING_RD / _WR) and entries +0x21C0 + 24 x (rd & 0xF); 1.6.1: ldr.w sl,[pc,#0x228] (0x08105090) = 0x3000F650"),
+    "M4MIDI_FLUSH": dict(value=0x08105C40,
+        evidence="push.w {r4-r8,lr}; sub sp,#0x18; add.w r3,r0,#0xd000; ldr.w r2,[r3,#0x420] ... same code as 1.6.1 "
+                 "0x08105A78 (only the bl target 0x08105848 / 0x08105680 differs); called at 0x0810542C with M4MIDI_SINK"),
+    # ---- inta_live: the pad router's pressure post ----
+    "LIVE_SITE": dict(value=0x080865EA, orig="19f059f9",
+        evidence="bl BUS_POST 0x0809F8A0 in the pad router 0x08085FC0 (1.6.1 0x08085540; push.w {r4-sl,lr}; mov r6,r1 bus; "
+                 "mov r5,r0 router, kept), case 0xAE (tbh 0x08086000 -> 0x0808658E; 1.6.1 0x08085B0E): pad sb = [sp,#0x14] "
+                 "<= 15, value r7 = min(raw, 0xD000) x 127 / 0xD000; ev at sp+0x38 = {0x0E, 0, key, note, value}; idx = "
+                 "[r5,#0x308], key = [r5 + 4 idx + 0x30C]; drum (key 0xFFFFFF00) -> 0x08087398: key = [r5 + 4 (pad + 16 idx + "
+                 "0x42)], b.w 0x080865E4 (the only branch to the post block); melodic: note = [r5 + 4 pad + 0x34]; both: add "
+                 "r1,sp,#0x38; mov r0,r6; str r2,[sp,#0x40]; bl BUS_POST (the site); b loop. Changed: the melodic note is the "
+                 "pad's Note On note (new router table +0x34[16], written at 0x08085352 by the press path, 0..163 through "
+                 "PAD_NOTE_CLAMP) where 1.6.1 re-derived it (key map + usat #7, 0x08086290..0x080862BC); the table is why "
+                 "every later router field moved +0x40. The only 0x0E post in the router (movs r2,#0xe at 0x080865BC)"),
+    # ---- cond_ui: probability editor clamps ----
+    "PROB_SHOW_PIANO_SITE": dict(value=0x0815B8F2, orig="013b3360",
+        evidence="piano roll value display 0x0815B730 (1.6.1 0x081599BC): ldrb.w r3,[sp,#0x49]; cbnz r3 -> site; movs r3,#0x63; "
+                 "str r3,[r6]; b; site: subs r3,#1; str r3,[r6]; b 0x0815B88A, the same bytes as 1.6.1 0x08159B74..0x08159B86. "
+                 "The function differs only in registry key immediates (-2: 0x17F/0x181/0x182/0x186 -> 0x17D/0x17F/0x180/0x184; "
+                 "0x1DF -> 0x1DE, now a 4-byte cmp.w, hence site +0x1C4 -> +0x1C2) and the MODEL literal 0x30025300; its tbb "
+                 "table bytes are equal (mcmp.py)"),
+    "PROB_PIANO_EDIT_SITE": dict(value=0x0815A7C0, orig="9df81930",
+        evidence="piano roll edit 0x0815A63C (1.6.1 0x081588F8), site at +0x184 in both; masked compare of 0x5F8 B: 550 / 550 "
+                 "instructions, one code diff, ldr r1,[sp,#0x1c] -> [sp,#0x34] at 0x0815A92A (1.6.1 0x08158BE6), in the "
+                 "960-tick grid path after BACK, not touching sp+0x19 / 0x84 / 0x31; the replaced range is byte-identical "
+                 "(PROB_PIANO_EDIT_SHA exact): ldrb.w r3,[sp,#0x19]; ... ldr r2,[sp,#0x84] ... strb.w [sp,#0x31]"),
+    "PROB_PIANO_EDIT_BACK": dict(value=0x0815A7F0,
+        evidence="cmp.w sl,#0 after the strbhi / strbls pair; the cbz r3 at 0x0815A7BE skips to it (1.6.1 0x08158A7A -> "
+                 "0x08158AAC); +0x1B4 in both"),
+    # ---- tests only (test_conditions: our build leaves these stock) ----
+    "T2_LIST_SITE_1": dict(value=0x08167E0C,
+        evidence="literal 0x081A21D4 = the probability label list ('1%%'..'99%%', 'Always', then 'Default'), loaded by ldr "
+                 "r3,[pc,#0x270] at 0x08167B98 for the registration of key 0x182 (bl 0x0816576C, r1 = #0x182); 1.6.1: "
+                 "0x08165F8C = 0x0819F30C, loaded at 0x08165D44 for key 0x184"),
+    "T2_LIST_SITE_2": dict(value=0x08167B94,
+        evidence="str.w r8,[sp] with r8 = #0x64 (100 entries) before that registration (mov.w r8,#0x64 at 0x08167B90); 1.6.1 "
+                 "0x08165D40, the same instructions with key 0x184"),
+    # ---- cond_engine: Play Count (Jeff's default: 1.6.8's 256-step wrap is not a pass) ----
+    "COND_LOOP_CALL_1": dict(value=0x0806072C, orig="01f018fa",
+        evidence="the player's first bl COND_LOOP_SITE (0x08061B60; 1.6.1 0x08060384 'bl 0x08061740'). Reached from "
+                 "0x08060724 at a restart (count+1 == 0), at a wrap with track byte +0x30 clear, and (new) from 0x08060AE6 "
+                 "after bl 0x08061E80 when +0x30 is set and count+1 > 0xFF (0x080609C0 / 0x08060AE0 cmp r3,#0xff). With +0x30 "
+                 "set, its only other call is the restart. The second caller 0x0806093A has no +0x30 test, as 1.6.1 0x0806059A"),
+    # ======== S4+S5 (2026-11-07): step, hold (and the shared helpers they call). Reviews from the investigators
+    # rc19/stepui (header, views, keys, pages), rc19/stepdata (be_step_v1 save / load, Note Mod plumbing) and
+    # rc19/hold (hold shortcuts, CTRL consumer); entries more than one of them re-derived independently carry
+    # each one's evidence (they agree on every value). Implementer's own spot checks: rc19/impl/bdis.py.
+    'HEADER_GEN': dict(value=0x8135d74, orig='2de9f043', evidence="header description generator (model r0, out r1, &flag r2, r3): push.w {r4-r9,lr}; sub sp,#0xc (1.6.1 push.w {r4-r10,lr}; sub sp,#8: same 0x28-byte frame, sl no longer used, args r2/r3 -> sb/r8); body = 1.6.1's with model fields +0xB19C -> +0xC2F0 etc. and the description grown 0x1C4 -> 0x1DC (HEADER_GEN 0x08135D74 (1.6.1 0x08134800): builds the description at model+0x4338 (1.6.1 +0x3A00): copies 0x20 from +0x4514/+0x4534/+0x4554 and now 0x20 (1.6.1: 8) from +0x4574 into desc +0/+0x20/+0x40/+0x60, bytes +0x80..+0x82 (1.6.1 +0x68..+0x6A), text fields +0x1AE/+0x1CA (1.6.1 +0x196/+0x1B2): every field after +0x60 moved +0x18; memcpy(out, desc, 0x1DC) at 0x08135E50); returns r6 as 1.6.1; 3 callers as 1.6.1 (0x081701C4, 0x081820CC, 0x081822E4); the per-tick caller 0x081820AC = 1.6.1 0x0817FE70 (memcpy 0x1DC template, HEADER_GEN, compare with root+0x34, HEADER_BUILD). WRAPPER: replay must be 'push.w {r4, r5, r6, r7, r8, r9, lr}' on 1.6.8"),  # stepui
+    'HEADER_DESC_ACTIONS': dict(value=0x8c, evidence="header templates (HEADER_TEMPLATES 0x0819BB40, 0x26 x 0x1DC; tpl.py): every template's action records sit at +0x8C (1.6.1 +0x74), 6 x 0x30, label +0, empty +0x20, lit +0x21, tab group +0x22, id u16 +0x2C; page byte +0x1DA (1.6.1 +0x1C2); same pages, labels and groups as 1.6.1, only ids >= 0x1013 grew (Undo 0x1032 -> 0x1034); HEADER_BUILD 0x08181C7C (1.6.1 0x0817FAF8): action loop r7 = desc+0x8C (add.w r7,r6,#0x8c 0x0818204A), adds r7,#0x30 per record, 6 records (widgets root+0xA44..+0xF24 step 0xD0); per record ldrb [r7,#0x22] group (0x08181E36), vt+0x2C(button, [rec+0x20]) hidden (0x08181E5C), WIDGET_SET_ACTIVE(button, [rec+0x21]) (0x08181E64), vt+0x24(button, ldrh [rec+0x2C]) id (0x08181E1E); applied only while root+0x1000+0x194 is set (ldrb [sl,#0x194] 0x08181E4E, sl = root+0x1000); end: memcpy(root+0x34, desc, 0x1DC) 0x08181F48..52, then if root+0x1194: post 0xCD and clear it (0x08181F56, 0x08182014) -- the same code as 1.6.1 with +0x74 -> +0x8C, 0x117C -> 0x1194"),  # stepui
+    'HEADER_ACTIONS': dict(value=0x6, evidence='6 records per template (tpl.py) and per HEADER_BUILD loop (HEADER_BUILD 0x08181C7C (1.6.1 0x0817FAF8): action loop r7 = desc+0x8C (add.w r7,r6,#0x8c 0x0818204A), adds r7,#0x30 per record, 6 records (widgets root+0xA44..+0xF24 step 0xD0); per record ldrb [r7,#0x22] group (0x08181E36), vt+0x2C(button, [rec+0x20]) hidden (0x08181E5C), WIDGET_SET_ACTIVE(button, [rec+0x21]) (0x08181E64), vt+0x24(button, ldrh [rec+0x2C]) id (0x08181E1E); applied only while root+0x1000+0x194 is set (ldrb [sl,#0x194] 0x08181E4E, sl = root+0x1000); end: memcpy(root+0x34, desc, 0x1DC) 0x08181F48..52, then if root+0x1194: post 0xCD and clear it (0x08181F56, 0x08182014) -- the same code as 1.6.1 with +0x74 -> +0x8C, 0x117C -> 0x1194)'),  # stepui
+    'HEADER_ACTION_SIZE': dict(value=0x30, evidence="HEADER_BUILD adds r7,#0x30 per record (0x08181E2C); header templates (HEADER_TEMPLATES 0x0819BB40, 0x26 x 0x1DC; tpl.py): every template's action records sit at +0x8C (1.6.1 +0x74), 6 x 0x30, label +0, empty +0x20, lit +0x21, tab group +0x22, id u16 +0x2C; page byte +0x1DA (1.6.1 +0x1C2); same pages, labels and groups as 1.6.1, only ids >= 0x1013 grew (Undo 0x1032 -> 0x1034)"),  # stepui
+    'HEADER_ACTION_EMPTY': dict(value=0x20, evidence='ldrb r1,[r6,#0x20] -> button vt+0x2C at 0x08181E5C; templates: 1 on every empty record, 0 on labelled ones (tpl.py)'),  # stepui
+    'HEADER_ACTION_LIT': dict(value=0x21, evidence='ldrb r1,[r6,#0x21] -> WIDGET_SET_ACTIVE 0x0816C62E at 0x08181E64; templates: Sequence lit on page 0x17, Step lit on page 0x27'),  # stepui
+    'HEADER_ACTION_GROUP': dict(value=0x22, evidence='ldrb r3,[r7,#0x22] at 0x08181E36 selects the tab widget set; templates: 1 on Event/Sequence/Automation/Step, 0 on Clear/Undo'),  # stepui
+    'HEADER_ACTION_ID': dict(value=0x2c, evidence='ldrh r1,[r6,#0x2c] -> button vt+0x24 at 0x08181E1E; templates: u16 ids 0x49/0x4A/0x4B tabs, 0x1034 Undo'),  # stepui
+    'HEADER_APPLIED': dict(value=0x34, evidence='HEADER_BUILD memcpy(root+0x34, desc, 0x1DC) 0x08181F48..0x08181F52; the per-tick caller compares the new description with root+0x34 (add.w r1,r6,#0x34 0x081820D2)'),  # stepui
+    'HEADER_ARMED': dict(value=0x1194, evidence='root+0x1000 (add.w r5,r4,#0x1000 0x08181EF6; sl in the record loop) +0x194: ldrb [sl,#0x194] gates hidden/lit per record (0x08181E4E); after the copy ldrb [r5,#0x194] 0x08181F56 -> post 0xCD, strb 0 0x08182014 (1.6.1 the same at +0x17C)'),  # stepui
+    'HEADER_BUTTONS': dict(value=0x564, evidence='HEADER_ROOT_INIT 0x081823D4: 6 x button ctor 0x0816C520 at root+0x564 step 0xD0 to +0xA44 (0x08182576..88), 6 x tab ctor 0x08182950 at +0xA44..+0xF24; 1.6.1 +0x54C/+0xA2C/+0xF0C (+0x18 everywhere after the description copy)'),  # stepui
+    'HEADER_BUTTON_STRIDE': dict(value=0xd0, evidence='adds r7,#0xd0 0x08182584 / 0x08182594; HEADER_BUILD adds r5,#0xd0'),  # stepui
+    'HEADER_BUTTON_COUNT': dict(value=0xc, evidence='6 buttons + 6 tab buttons (HEADER_ROOT_INIT loops above); the id lookups 0x08182128/6A/AC walk root+0x564..+0xA44 checking [+0x14] and [+0x4F4]'),  # stepui
+    'HEADER_BUTTON_HIDDEN': dict(value=0x30, evidence="button widget ctor 0x0816C520 = 1.6.1 0x0816A4D8 (c2.py: 65 insns, 0 hunks), WIDGET_SET_HIDDEN / _ACTIVE / label setter 0x0816C5F8 same code: the widget layout is 1.6.1's (display emulator field; confirm with render_seq_headers on 1.6.8)"),  # stepui
+    'HEADER_BUTTON_LABEL': dict(value=0x6d, evidence='as HEADER_BUTTON_HIDDEN (same widget code)'),  # stepui
+    'HEADER_BUILD': dict(value=0x8181c7c, evidence='HEADER_BUILD 0x08181C7C (1.6.1 0x0817FAF8): action loop r7 = desc+0x8C (add.w r7,r6,#0x8c 0x0818204A), adds r7,#0x30 per record, 6 records (widgets root+0xA44..+0xF24 step 0xD0); per record ldrb [r7,#0x22] group (0x08181E36), vt+0x2C(button, [rec+0x20]) hidden (0x08181E5C), WIDGET_SET_ACTIVE(button, [rec+0x21]) (0x08181E64), vt+0x24(button, ldrh [rec+0x2C]) id (0x08181E1E); applied only while root+0x1000+0x194 is set (ldrb [sl,#0x194] 0x08181E4E, sl = root+0x1000); end: memcpy(root+0x34, desc, 0x1DC) 0x08181F48..52, then if root+0x1194: post 0xCD and clear it (0x08181F56, 0x08182014) -- the same code as 1.6.1 with +0x74 -> +0x8C, 0x117C -> 0x1194; callers 0x081820E8 / 0x08182300 (1.6.1 0x0817FEAC / 0x081800C4), each right after its bl HEADER_GEN'),  # stepui
+    'HEADER_ROOT_INIT': dict(value=0x81823d4, evidence="push.w {r4-r11,lr}; sub sp,#0x5c; stores HEADER_ROOT_VTABLE 0x081B6560 at [r0] (str r3,[r0],#0x34 0x081823E4; the vtable's only literal 0x08182710 is in this function), builds the 12 buttons (HEADER_BUTTONS); same prologue as 1.6.1 0x08180198"),  # stepui
+    'HEADER_TPL_SEQ': dict(value=0x8, evidence='template 8: page byte 0x17, StepSeq, Event/Sequence/Automation/Clear/Undo (tpl.py)'),  # stepui
+    'HEADER_TPL_SEQ_ALT': dict(value=0x14, evidence='template 20: page byte 0x1A (tpl.py), as 1.6.1'),  # stepui
+    'HEADER_TPL_SEQ_DRUM': dict(value=0x24, evidence='template 36: page byte 0x27, StepSeq, Step/Sequence/-/-/Undo (tpl.py)'),  # stepui
+    'ACT_STRIKE': dict(value=0x10f0, evidence="our id; stock action ids on the M4 end at 0x104A: every 'sub #0x1000' dispatcher is bounded (0x081420FC: 0x1001..0x1045; 0x08146EBC: 0x1010..0x1049; 0x08151A44: 0x100A..0x101A; 0x08135870: 0x100C..0x100E), the drum / piano event handlers' bound is movw #0x1045 (0x0815F3F4, 0x0815C3AC); M4 immediates 0x10xx: highest action-range value 0x104A, 0x1060/0x1080/0x10A0/0x10E0 are offsets/sizes (0x10E0: add.w only); no u16 0x10F0..0x10F3 in flash data (hits are code / pointer bytes)"),  # stepui
+    'ACT_ROWS': dict(value=0x10f1, evidence='as ACT_STRIKE'),  # stepui
+    'ACT_MOD': dict(value=0x10f2, evidence='as ACT_STRIKE'),  # stepui
+    'ACT_NM': dict(value=0x10f3, evidence='as ACT_STRIKE'),  # stepui
+    'MODEL_PAGE': dict(value=0x12c, evidence='NAVIGATE 0x08143D44: ldrb r3,[r4,#0x12c]; strb r3,[r4,#0x13a]; strb r5,[r4,#0x12c] at 0x08143F14..1C (1.6.1 0x081422BC..C4); HEADER_GEN ldrb [r0,#0x12c] cmp #1 (0x08135D8C); 3 strb / 50 ldrb #0x12c on the M4 (1.6.1 3 / 47) || also checked by the stepdata investigator: SEQ button handler reads the current page ldrb [r6,#0x12c] (0x08144992, 0x081449BA, 0x081449E8) before NAVIGATE(r6, page) (0x08143D44); Double 0x0813CEFA ldrb [r4,#0x12c]; cmp #0x27; model dispatcher 0x0814056C ldrb [r4,#0x12c]; cmp #1 || also checked by the hold investigator: NAVIGATE ldrb/strb [r4,#0x12c] (0x08143F14/1C), BUTTON_EVENT cases ldrb [r0,#0x12c] (0x081447B8)'),  # stepui+stepdata+hold
+    'MODEL_WORK': dict(value=0x45d0, evidence="the working note container: SEQ_COPY's dest in 7 callers is model+0x4580+0x50 (add.w rX,rY,#0x4580; adds rX,#0x50 at 0x08137F26, 0x081383F6, 0x0813857A, 0x0813C60C, 0x0813CABA, 0x0813CEA8, 0x0813ED50); 1.6.1 add.w #0x3c80 at its 6 callers; MODEL_MIXER_MODE 0x45CC sits right below as in 1.6.1 (0x3C7C) || also checked by the stepdata investigator: add.w rX,model,#0x4580; adds rX,#0x50 where 1.6.1 has add.w #0x3c80, as the SEQ_COPY destination, in all six paired functions (0x081383F6, 0x08138B74, 0x08139178, 0x081396CC, 0x0813CABA, 0x0813CEA8); the same +0x950 shift as the recording flag 0x9CA0 -> 0xA5F0"),  # stepui+stepdata
+    'PAGE_SEQ': dict(value=0x17, evidence='template 8 page byte; HEADER_TPL_SEQ || also checked by the stepdata investigator: SEQ button handler: cmp r3,#0x17 / movs r1,#0x17 (0x081449BE, 0x081449CC) for non-one-shot tracks'),  # stepui+stepdata
+    'PAGE_SEQ_DRUM': dict(value=0x27, evidence='template 36 page byte; HEADER_TPL_SEQ_DRUM || also checked by the stepdata investigator: SEQ button handler: cmp r3,#0x27 / movs r1,#0x27 (0x081449F0, 0x08144A02) for type 0x0E; Double 0x0813CEFE cmp #0x27 || also checked by the hold investigator: SEQ button, one-shot track: movs r1,#0x27 at 0x08144A02; NAVIGATE cmp r5,#0x27 at 0x08143D6C'),  # stepui+stepdata+hold
+    'PAGE_SEQ_ALT': dict(value=0x1a, evidence='template 20 page byte'),  # stepui
+    'EV_TAB_EVENT': dict(value=0x49, evidence='template ids (8: Event, 36: Step); DRUM_EVENT tbb over 0x47..0x50 (subs r3,#0x47 0x0815F3CA): 0x49 -> DRUM_SET_TAB(view, 0) 0x0815F448; PIANO_EVENT subs #0x49 0x0815C330'),  # stepui
+    'EV_TAB_SEQUENCE': dict(value=0x4a, evidence='templates; DRUM_EVENT 0x4A -> DRUM_SET_TAB(view, 1) 0x0815F454'),  # stepui
+    'EV_TAB_AUTOMATION': dict(value=0x4b, evidence='template 8 Automation id 0x4B; PIANO_EVENT tbh 0x49..0x4D'),  # stepui
+    'EV_ENCODER': dict(value=0xcf, evidence="DRUM_EVENT cmp r3,#0xcf 0x0815F42E -> DRUM_ENCODER(view, ldrh [ev+8], [ev+0xc]) 0x0815F442; PIANO_EVENT tbh from 0xCD (subs r3,#0xcd 0x0815C34C); EXT_EVENT first insns ldrh r3,[r1]; cmp r3,#0xcf (orig 0b88cf2b); UI event ids below 0x108 unchanged (UI_POST immediates g15.py; 0x108.. grew by 1) || also checked by the stepdata investigator: EXT_EVENT's stock entry ldrh r3,[r1]; cmp r3,#0xcf (0x081487EC/EE, 1.6.1 0x08146B80/82); 25 cmp #0xcf sites in the M4 code of both images"),  # stepui+stepdata
+    'TYPE_ONESHOT': dict(value=0xe, evidence="5 'blx vtable[0]; cmp r0,#0xe' on the M4 in both (1.6.8 first 0x08139C4C); 0x11 (TYPE_LOOP) 19 (1.6.1 18) || also checked by the stepdata investigator: SEQ button handler 0x08144750 (1.6.1 0x08142AFC, aligned diff: keys -2 and the recording flag only): track type = object vtable[0] (getter 0x08135490, blx at 0x081354FA); cmp r0,#0x11 -> page 0x25; cmp r0,#0xe (0x081449B4) -> page 0x27 (movs r1,#0x27 0x08144A02); else page 0x17 (0x081449CC) || also checked by the hold investigator: SEQ case: type() cmp r0,#0xe at 0x081449B4"),  # stepui+stepdata+hold
+    'CONTEXT_GET': dict(value=0x8134a70, evidence='c2.py vs 1.6.1 0x08133614: 125 insns, only RAM literals (0x30030160 -> 0x30031AC0 ...) and the key bound sub.w #0x1d4 -> #0x1d2 differ; signature (model, &ctx, key, &value) unchanged || also checked by the stepdata investigator: same code; diffs only the cached-key range sub.w #0x1d2 (1.6.1 #0x1d4: the -2 key renumbering, keys 0x1D2..0x1D6 served from a cache) and its RAM literals; 0x8D/0x8E take the generic path (0x08134B12) as on 1.6.1; 340 -> 343 callers'),  # stepui+stepdata
+    'DRUM_ENCODER': dict(value=0x815e820, orig='00f58833', evidence='c2.py vs 1.6.1 0x0815CAA0: 108 insns, 1 hunk: subw r3,r1,#0x183 -> #0x181 (stock step keys -2); first insn add.w r3,r0,#0x11000 (replayed); DRUM_EVENT 0xCF calls it (view, key, value)'),  # stepui
+    'DRUM_EVENT': dict(value=0x815f3ac, orig='00b59bb0', evidence='push {lr}; sub sp,#0x6c (replayed); c2.py vs 1.6.1 0x0815D600: only action ids (0x1042 -> 0x1045, 0x102B -> 0x102D, 0x1041 -> 0x1044, 0x102C -> 0x102E, 0x1032 -> 0x1034), event 0x110 -> 0x111 and the tbb data; tabs 0x49/0x4A -> DRUM_SET_TAB 0x0815EF80 (0/1), 0xCF -> DRUM_ENCODER'),  # stepui
+    'PIANO_EVENT': dict(value=0x815c304, orig='f0b5ddb0', evidence='push {r4-r7,lr}; sub sp,#0x174 (replayed); c2.py vs 1.6.1 0x0815A598: ids 0x110..0x118 -> 0x111..0x119, action ids grown, keys 0x1D9 -> 0x1D8, and one reordered case (0x0815C6CE: the view+0x125DAC == 2 test before the call, same fields 0x125DAC/0x122D24/0x125D40/0x11CD00/0x11CD08); dispatch: 0x49..0x4D tbh, 0xCD.. tbh (0xCF), as 1.6.1'),  # stepui
+    'PIANO_HEADER': dict(value=0x815b730, orig='2de9f04f', evidence='push.w {r4-r11,lr} (replayed); c2.py vs 1.6.1 0x081599BC: only MODEL literals and stock keys -2 (0x17F -> 0x17D ... 0x1DF -> 0x1DE, 0x1DB -> 0x1DA); no view offset changed (slot keys +0x11BCC0, values +0x11BCD0, ctx +0x11BCA0, bar +0x55F0)'),  # stepui
+    'SEQ_PAGE_INSERT': dict(value=0x813cc74, evidence="return address of 'bl NOTE_INSERT 0x0812EF64' at 0x0813CC70 (drum Sequence page, record sp+0x10, r0 = [r5], r1 = [r7+4]; 1.6.1 0x0813B4B6 [r6+4]); NOTE_INSERT callers 5 in both || also checked by the stepdata investigator: return address of bl NOTE_INSERT at 0x0813CC70 in 0x0813CAB0 (1.6.1 0x0813B2F8), the model's handler for UI event 0xE9 (tbh at 0x08141ED4: case 0xE9 -> 0x08142702; 1.6.1 case 0xE9 -> 0x08140C00), which the drum Step view's STEP_SET (UI_POST 0xE9 at 0x0815ED64..8C) and the Sequence page post; aligned diff: r6/r7 swap, MODEL_WORK, MODEL_DIRTY (strb [r3,#0xff4] 0x0813CCD0); fresh record +0x14 zeroed (str r4,[sp,#0x24], r4=0, 0x0813CAF0)"),  # stepui+stepdata
+    'MEL_NOTE_ON': dict(value=0x8138ef6, evidence="return of bl NOTE_INSERT at 0x08138EF2 (record sp+0x48, r0 = [fp], r1 = [[sp+0x18]+0x10]) = 1.6.1 0x081377CA || also checked by the stepdata investigator: return address of bl NOTE_INSERT at 0x08138EF2 (handler +0x3EE, as 1.6.1 0x081377CE); record sp+0x48 = copy of the message's first 6 words with kind forced to 1 (0x08138D10..26). melodic recording handler 0x08138B08 (1.6.1 0x081373E0; entry guard model+0xA5F0, 1.6.1 +0x9CA0): aligned diff only MODEL_WORK (add.w #0x4580; adds #0x50, 1.6.1 add.w #0x3c80) and RAM literal 0x3000F650 -> 0x3000F65C, same instruction count (586), so every return address keeps its function offset"),  # stepui+stepdata
+    'MEL_NOTE_OFF': dict(value=0x8139020, evidence='return of bl NOTE_UPDATE 0x0812EFC2 at 0x0813901C (length = n*0x3C0, record sp+0x60) = 1.6.1 0x081378F4. NOTE_UPDATE gained a 4th caller 0x0813863E (curve_update ignores it: lr filter) || also checked by the stepdata investigator: return address of bl NOTE_UPDATE at 0x0813901C (handler +0x518, as 1.6.1 0x081378F8); record sp+0x60 with its new length (str [sp,#0x68] 0x0813900E). melodic recording handler 0x08138B08 (1.6.1 0x081373E0; entry guard model+0xA5F0, 1.6.1 +0x9CA0): aligned diff only MODEL_WORK (add.w #0x4580; adds #0x50, 1.6.1 add.w #0x3c80) and RAM literal 0x3000F650 -> 0x3000F65C, same instruction count (586), so every return address keeps its function offset'),  # stepui+stepdata
+    'UI_PAGES_CTOR': dict(value=0x8164f98, evidence='bl at 0x081153BC right after UI_BUMP_ALLOC(0x68B6D8) (1.6.1 0x08115050, size 0x689A98), same surroundings; stores the page-set vtable 0x081A1AD0'),  # stepui
+    'UI_PAGES_INIT': dict(value=0x816495c, evidence='slot 0 of the page-set vtable 0x081A1AD0 (= 0x0816495D), called as [[r5]][0] at 0x081153C2..C8 (1.6.1 0x0819EC08[0] = 0x08162ADD)'),  # stepui
+    'UI_WALK_CTX': dict(value=0x30018dbc, evidence="opaque: UI_TICK_WALK 0x08171C1C (same code as 1.6.1) and the drum view's tick (vt[0] 0x0815EED8) only forward r1 to the children's vt[0]; the value is 1.6.1's device crash-record value, kept as a harness value (no stock literal in either image)"),  # stepui
+    'GFX_CACHE_LDR': dict(value=0x811538a, evidence='ldr r0,[pc,#0xf0]; bl GFX_CACHE_INIT 0x08180524 (literal 0x0811547C = 0x300378FC; 1.6.1 0x0811501E -> 0x30035F44), same form as 1.6.1'),  # stepui
+    'DRUM_MENU_SITE': dict(value=0x8143140, evidence='movs r3,#4; addw r2,r6,#0xd48; movs r1,#0xfa; add.w r0,r5,#0xfc0; bl 0x08142D70, the same 10 instructions around it as 1.6.1 0x081415F8'),  # stepui
+    'DRUM_MENU_TABLE': dict(value=0x819b938, evidence="the drum menu records {0, 1, id, label, 0} (20 B): 1.6.8 ids 0x1034/0x1044/0x1045/0x102E at 0x0819B8E8+20i (1.6.1 0x1032/0x1041/0x1042/0x102C at 0x08198DB0), the entry is the id word of the first empty record after them (1.6.1 0x08198E00 = 0x08198DF8+8). The matcher's 0x0819ADA8 is another table (ids 0x102A/0x102B)"),  # stepui
+    'KEY_LFO_SHAPE': dict(value=0x4a, evidence="registry init 0x08165848: key 0x4A registered as 'LFO Shape' (0x08165F02) || also checked by the stepdata investigator: stock's registry builder run in emulation (rc19/stepdata/reg.py: 0x08165848, 1.6.1 0x081639A8): key 0x4A type 7 'LFO Shape' 9 choices in both"),  # stepui+stepdata
+    'KEY_LFO_RATE': dict(value=0x4b, evidence="key 0x4B 'LFO Rate' (0x08165EB2) || also checked by the stepdata investigator: reg.py: 0x4B type 10 'LFO Rate' in both"),  # stepui+stepdata
+    'KEY_LFO_DEPTH': dict(value=0x4c, evidence="key 0x4C 'LFO Depth' (0x08165EDA) || also checked by the stepdata investigator: reg.py: 0x4C type 10 'LFO Depth' in both"),  # stepui+stepdata
+    'KEY_LFO_SRATE': dict(value=0x4f, evidence="key 0x4F 'LFO Rate' synced list (0x08165EC6) || also checked by the stepdata investigator: reg.py: 0x4F type 7 'LFO Rate' 15 choices (synced) in both"),  # stepui+stepdata
+    'KEY_ENV_A': dict(value=0x1e, evidence="key 0x1E 'Attack' (0x08165A56, 0x081664A2) || also checked by the stepdata investigator: reg.py: 0x1E type 10 'Attack' in both"),  # stepui+stepdata
+    'KEY_ENV_D': dict(value=0x1f, evidence="key 0x1F 'Decay' || also checked by the stepdata investigator: reg.py: 0x1F type 10 'Decay' in both"),  # stepui+stepdata
+    'KEY_ENV_S': dict(value=0x20, evidence="key 0x20 'Sustain' || also checked by the stepdata investigator: reg.py: 0x20 type 10 'Sustain' in both"),  # stepui+stepdata
+    'KEY_ENV_R': dict(value=0x21, evidence="key 0x21 'Release' || also checked by the stepdata investigator: reg.py: 0x21 type 10 'Release' in both"),  # stepui+stepdata
+    'STEP_SAVE_SITE': dict(value=0x81303e4, orig='9df80830', evidence="ldrb.w r3,[sp,#8] (the replayed kind-byte load) right after the 'step' and 'chan' attributes, then subs/cmp #3/jump table over kinds 1..4 (0x081303E8..F0); record = NOTE_GET(container sl, r7, sp+8) at 0x08130372..78; node r4 = the new 'seqevent' element (0x0813038E bl add-child -> mov r4,r0 0x08130392), the node every attribute of this note goes to (XML_ADD 'step' 0x081303B6). Wrapper: push.w {r0-r12,lr} + push {r0,r1} = 64 B, so add r1,sp,#72 = record, r4 untouched. note writer 0x081301E0 (1.6.1 0x0812F2EC) identical over its code (229 instructions, masked) except one RAM literal 0x30021AE4 -> 0x300222E4 (the container it writes, +0x800 like MODEL); one caller in both"),  # stepdata
+    'STEP_LOAD_SITE': dict(value=0x8130aa8, orig='09a90f98', evidence="add r1,sp,#0x24; ldr r0,[sp,#0x3c] (replayed) before bl 0x0812F558 (sequence add = container append at child+0xC; 1.6.1 0x0812E664 identical). Record at sp+0x24: kind strb #1 0x08130B36 (notes), +0x14 = sp+0x38 zeroed for every item at 0x08130B3C and set only for kinds 2/3/4 (value2), 'cond' parsed into +1 (strb [sp,#0x25] 0x08130AA4) before the site; node r4 = current seqevent (0x08130A3C first, 0x08130AB8 next). Wrapper add r1,sp,#100 = 64 + 0x24. note reader 0x08130A10 (1.6.1 0x0812FB1C) identical over its code (238 instructions, 0 masked diffs); two callers in both"),  # stepdata
+    'XML_FIND': dict(value=0x8109f34, evidence="identical whole function (18 insns, masked); 27 callers in both; the note reader's lookups ('step' 0x08130AC6, 'cond' 0x08130A96)"),  # stepdata
+    'XML_GET_U32': dict(value=0x8109836, evidence='identical whole function (10 insns); 27 callers in both; used right after XML_FIND in the reader (0x08130AD0)'),  # stepdata
+    'XML_ADD': dict(value=0x8109fac, evidence="identical over its code (110 insns, 0 masked diffs; the one 'diff' the first pass showed was its literal pool); 39 callers in both; the writer's attribute add ('step' 0x081303B6, 'chan' 0x081303DA)"),  # stepdata
+    'XML_SET_U32': dict(value=0x810985e, evidence='identical whole function (14 insns); 26 callers in both; follows every XML_ADD in the writer (0x081303C2)'),  # stepdata
+    'NOTE_GET': dict(value=0x810d590, evidence='(container, i, rec): count at container+0x3000, 24-byte records (0x0810D590..BC), identical; 41 -> 42 callers'),  # stepdata
+    'NOTE_PUT': dict(value=0x810d47a, evidence='(container, rec): replace by id (+0xC), identical (30 insns); 6 callers in both, each paired with its 1.6.1 caller (aligned diff: literals / MODEL only)'),  # stepdata
+    'DOC_READ': dict(value=0x813190c, orig='2de9f04f', evidence='push.w {r4-r11,lr} replayed; identical over its code (93 insns) except RAM literal 0x30024AE8 -> 0x300252E8 (+0x800); 4 callers in both (incl. project load 0x081313EC at 0x08131416, which Pack 0x0812A590 now also calls); path in r0 (bl strlen-like 0x081894B8 first)'),  # stepdata
+    'NOTE_INSERT': dict(value=0x812ef64, orig='70b588b0', evidence="(model store, sequence, record): push {r4,r5,r6,lr}; sub sp,#0x20 replayed; identical (39 insns); 5 callers in both (0x081384E4, 0x08138EF2, 0x0813CC70, 0x0813D0DA, 0x0813D19A), each paired with its 1.6.1 caller; wrapper's [sp,#16]=r2 record, [sp,#60]=lr, [sp,#8]=r0, [sp,#12]=r1"),  # stepdata
+    'NOTE_UPDATE': dict(value=0x812efc2, orig='10b582b0', evidence='push {r4,lr}; sub sp,#8 replayed; identical (15 insns); callers 3 -> 4: new 0x0813863E in 0x08138548 (record-take undo: restores whole records from the snapshot container model+0xA5F8, so the word travels with the note); curve_update acts only for lr == MEL_NOTE_OFF'),  # stepdata
+    'SEQ_COPY': dict(value=0x812f5cc, evidence="identical (16 insns); callers 7 -> 9 (new: record-take snapshot 0x081394F0, record-take undo 0x08138548); stock's pattern SEQ_COPY([model], seq, model+MODEL_WORK) at 0x0813CAC6"),  # stepdata
+    'PUBLISH': dict(value=0x8137adc, evidence='identical (57 insns); 5 callers in both, paired (drum edits, piano commit)'),  # stepdata
+    'SCALE_CONTEXT': dict(value=0x8135368, evidence="identical (15 insns); 25 callers both; stock's Scale + Root summary calls it then CONTEXT_GET(.., 0x8E) and (.., 0x8D) at 0x081436A8..C0 (1.6.1 0x081419DE)"),  # stepdata
+    'GET_PROPERTY': dict(value=0x812eb68, evidence='identical (21 insns); stock reads the selected track as GET_PROPERTY(model+4, 0x131) at 0x08143470 (1.6.1 0x081416F8), as sel_track() does || also checked by the hold investigator: = 1.6.1 0x0812DC74 (21/21, 0 diffs)'),  # stepdata+hold
+    'FIND_TRACK': dict(value=0x8134dbc, evidence='identical (28 insns); 31 -> 32 callers || also checked by the hold investigator: = 1.6.1 0x08133960 (28/28, 0 diffs)'),  # stepdata+hold
+    'RESOLVE_OBJECT': dict(value=0x812e6fe, evidence='identical (10 insns); 44 -> 46 callers; first call of the recording handler (0x08138B2A) || also checked by the hold investigator: = 1.6.1 0x0812D80E (20/20, 0 diffs)'),  # stepdata+hold
+    'PROJECT_TOUCH': dict(value=0x81322cc, evidence='identical (8 insns); 58 -> 59 callers (e.g. after the 0xE9 insert, 0x0813CCD6)'),  # stepdata
+    'CTRL_INPUT_SITE': dict(value=0x808dcde, orig='9c42f6d0', evidence='PAD_RECEIVER 0x0808DB60 = 1.6.1 0x0808D080: 754/754 instructions, 0 diffs (masked compare incl. immediates and offsets); site +0x17E in both: ldrh r4,[r6,#2]!; ldrh r3,[r6,#0x30]; cmp r4,r3 (site); beq PAD_NEXT; r4 new / r3 old pressure, r7 pad (adds r7,#1 at 0x0808DCD2), fp receiver (ldr.w r0,[fp,#0x8c8] at 0x0808DCBE); the panel packet is copied to receiver+0x1328 (movw r5,#0x1328 at 0x0808DB64), so the button mask our hook reads at fp+0x1338 is packet+0x10 as on 1.6.1'),  # hold
+    'PAD_NEXT': dict(value=0x808dcd0, evidence="receiver +0x170 (as 1.6.1): cmp r8,r6; add.w r7,r7,#1; beq: the per-pad loop step, CTRL_INPUT_SITE's beq target"),  # hold
+    'PAD_CHANGED': dict(value=0x808dce2, evidence='receiver +0x182 (as 1.6.1): cmp r3,#0 right after the site (pressure changed path)'),  # hold
+    'PAD_RECEIVER': dict(value=0x808db60, evidence='see CTRL_INPUT_SITE; caller 0x0808EB20 passes r0 = 0x2401BD40 (S2 PANEL_BOOTED)'),  # hold
+    'ENQUEUE': dict(value=0x8082b00, evidence='UI ring enqueue = 1.6.1 0x08082220 (19/19 instructions, 0 diffs); 11 callers in both images, none posts 0xFE; ring fields +0x2000+0x180 / +0x1A0 and entries +0x980 (24 B) are what the M4 consumer reads (0x08140DF2..0x08140DFA, 0x081413CC..0x081413F2)'),  # hold
+    'ENGINE_ENQUEUE': dict(value=0x80595c0, evidence="= 1.6.1 0x080595E0 (0 diffs); test_controls' receiver fixture only"),  # hold
+    'M7_MEMCPY': dict(value=0x80a46ae, evidence='= 1.6.1 0x080A3F0E (29/29, 0 diffs); fixture only'),  # hold
+    'M7_MEMCMP': dict(value=0x80a4640, evidence='= 1.6.1 0x080A3EA0 (48/48, 0 diffs); fixture only'),  # hold
+    'M7_RECORD_INIT': dict(value=0x80a10c0, evidence='= 1.6.1 0x080A04A0 (16/16, 0 diffs); called by the receiver at 0x0808DCAA'),  # hold
+    'PACKET_VALID': dict(value=0x80a35a0, evidence='= 1.6.1 0x080A2E00 (28/28, 0 diffs); fixture only'),  # hold
+    'TRANSPORT_BUTTONS': dict(value=0x80585e0, evidence='= 1.6.1 0x08058600 (0 diffs over its 0x20 B to the next function); fixture only'),  # hold
+    'CTRL_STARTUP_SITE': dict(value=0x80404b6, orig='24482449', evidence='M7 reset handler, the C++ init-array loop: ldr r0,=start; ldr r1,=end (site, replayed by our stub); cmp; beq; ldr r2,[r0]; adds #4; push {r0,r1}; blx r2: 0x080404A0..0x080404CE identical to 1.6.1'),  # hold
+    'CTRL_STARTUP_LITS': dict(value=(134899548, 134899624), evidence='the words the two loads read (pool 0x08040548 / 0x0804054C): the init array, 19 entries as on 1.6.1 (0x080A5F9C..0x080A5FE8); build.py re-reads and compares them'),  # hold
+    'CTRL_CONSUMER_SITE': dict(value=0x8141408, orig='3378113b', evidence='UI consumer 0x081404C8 (1.6.1 0x0813EC08; one caller each, 0x08164C2A / 0x08162DB2, with r0 = MODEL 0x30025300 / 0x30024B00); r4 = model for the whole function (mov r4,r0 at 0x081404D0, rewritten only in the epilogue 0x0814079C). CHANGED event registers: the fetch block 0x081413CC copies the 24-byte record into r6 = sp+0x218 (add r6,sp,#0x218 at 0x08140DEA, loop-invariant) and keeps no field in a register (1.6.1 0x0813F956..68: r5 code, r6 +8, r7 +0xC, [sp+8] +0x10, record copy at sp+0x220). Site: ldrb r3,[r6]; subs r3,#0x11 (4 B, replayed); cmp r3,#0xb3; bhi.w CTRL_DISPATCH_NEXT; ldr.w pc table at 0x08141418 (codes 0x11..0xC4). Cases read context [sp+0x220] = record+8 and index [sp+0x224] = record+0xC (0xAF at 0x08141024, 0xB0 at 0x08141042). The wrapper passes (r4, ldrb [r6], [r6,#8], [r6,#0xc], record r6); r5 is the event counter (adds r5,#1 at 0x081413FE), r7 = &ENGINE_PTR, r8 = sp+0x214'),  # hold
+    'CTRL_DISPATCH_NEXT': dict(value=0x8140dee, evidence="dispatch loop head ldr.w lr,[r7] (r7 = 0x3000F65C, ldr at 0x08140DE8); ring empty test +0x2000 +0x1A0 / +0x180, bne.w to the fetch 0x081413CC; the jump table's default (bhi.w at 0x0814140E) and every case's return (b at 0x08141022, 0x08141040, 0x0814105E ...); as 1.6.1 0x0813F2FC. The set of non-default codes is the same in both tables (jt.py: 33 codes, 0x11 .. 0xC4)"),  # hold
+    'CTRL_SELECTION_SITE': dict(value=0x813d504, orig='f0b589b0', evidence='drum cell selection = 1.6.1 0x0813BD10: 45/45 instructions, 0 diffs; push {r4-r7,lr}; sub sp,#0x24 (replayed); r2 = cell; 10 callers in both images'),  # hold
+    'MIXER_RENDER_VT_SLOT': dict(value=0x81a0be8, orig='39d21408', evidence='holds MIXER_RENDER|1; same vtable shape as 1.6.1 0x0819DD20 (MIXER_EVENT 12 slots later in both; the vtable is referenced by the literal 0x081A0BA8, 1.6.1 0x0819DCE0, 0x38 below the slot)'),  # hold
+    'MIXER_RENDER': dict(value=0x814d238, evidence='= 1.6.1 0x0814B630: 91/91 instructions, diffs only literal values (MODEL, 0x30031AC0/C4 for 0x30030160/64)'),  # hold
+    'MIXER_EVENT': dict(value=0x814d6f2, evidence='CHANGED ids: (pane, event); range cmp.w #0x10e / subw #0x109 / tbb (1.6.1: #0x10c / #0x108): every case moved up 1; case 0x10D (0x0814D838) toggles pane+0x9A08 and posts 0x10D upward (1.6.1 case 0x10C at 0x0814BC30); 0x109..0x10C set column keys 0x134/0x13D/0x13E/0x13F (1.6.1 0x134/0x13F/0x140/0x141). pane+0x9A08 (our mixer_render) unchanged'),  # hold
+    'MIXER_PAD_MODE': dict(value=0x813d418, evidence='(model, event): ldr r2,[r1,#8]; movne r2,#1; strb.w r2,[model+0x45CC]; bl 0x0813A880 (pad LED refresh, uses model+0x19D0); ignores the event code; 1.6.1 stored at +0x3C7C'),  # hold
+    'NAVIGATE': dict(value=0x8143d44, evidence='= 1.6.1 0x081420EC: 285/285 instructions, the 29 diffs are all model offsets >= 0x1000; (model, page r1, r2, r3, byte [sp+0xc0]); previous page = page at 0x08143F14..1C; context pointers r4+0x13C..0x148 (0x08143FBA.., 0x0814417A); no page id changed (cmp r5,#0x27 at 0x08143D6C as 1.6.1)'),  # hold
+    'SELECT_TRACK': dict(value=0x813d430, evidence='= 1.6.1 0x0813BC3C: 80/80 instructions, diffs model +0x9CA0 -> +0xA5F0 (x2) and the ENGINE_PTR literal; (model, track): set(model+4, 0x131, track) at 0x0813D44C'),  # hold
+    'TRACK_PROPERTY_EVENT': dict(value=0x8132d40, evidence='(model, event): same entry as 1.6.1 0x08131AE0 (handle +4, key +8, value +0xC; RESOLVE_OBJECT([model]); GET_PROPERTY(obj,0x73); set 0x0812ECF4; notify 0x0810B920); the key switch was rebuilt for the -2 renumbering (0x150 -> 0x14E; 0x139..0x14E jump table at 0x08132E24); Mute 0x13B / Solo 0x13C take the default path (set, notify, post 0xC3) as 0x13D / 0x13E did; the event code is not read'),  # hold
+    'BUTTON_EVENT': dict(value=0x8144750, evidence='= 1.6.1 0x08142AFC prologue (blocked by [model+0x19BE]; ldrh [r1] 0x73 press / 0x74 release); the press switch over ids 0..14 (ldr.w pc table at 0x0814477C) has the same case per id, each identical over 0x40 B except model +0x9CA0 -> +0xA5F0 (jtb.py)'),  # hold
+    'PLAYING_STATUS': dict(value=0x81336b0, evidence='= 1.6.1 0x081322AC (19/19; the ENGINE_PTR literal only)'),  # hold
+    'SELECT_SEQUENCE': dict(value=0x8138168, evidence='= 1.6.1 0x08136BD4 (154 instructions, 0 diffs to its end)'),  # hold
+    'ENGINE_PROPERTY': dict(value=0x810b898, evidence='= 1.6.1 0x0810B5C8 (46/46, 0 diffs)'),  # hold
+    'FLUSH_PAD_LIGHTS': dict(value=0x8125b5c, evidence='= 1.6.1 0x081257F0 (86/86; the ENGINE_PTR literal only); called with model+0x19D0 (0x08140ECA)'),  # hold
+    'CLEAR_PAD_HIGHLIGHTS': dict(value=0x8125b38, evidence='= 1.6.1 0x081257CC (8/8, 0 diffs)'),  # hold
+    'ENGINE_PTR': dict(value=0x3000f65c, evidence="the consumer's ring object (ldr r7,=0x3000F65C at 0x08140DE8) and ENGINE_PROPERTY's first argument (ldr r0,=0x3000F65C; ldr r0,[r0] at 0x08132DC8 / 0x0813804E); literal in SELECT_TRACK, PLAYING_STATUS, FLUSH_PAD_LIGHTS where 1.6.1 had 0x3000F650"),  # hold
+    'UI_REQUEST': dict(value=0xfe, evidence="the consumer's bound subs #0x11; cmp #0xb3; bhi (0x0814140A..0E): codes above 0xC4 go to CTRL_DISPATCH_NEXT; no UI enqueue caller posts 0xFE (11 callers, both images)"),  # hold
+    'UI_CODE_ENCODER': dict(value=0xab, evidence='consumer table: 0xAB -> 0x08140FCE (posts 0xAD to the view, +0x160); new guards [model+0x45C8] and 0x081079DE before the post'),  # hold
+    'UI_CODE_PRESS': dict(value=0xaf, evidence='consumer table: 0xAF -> 0x08141024: BUTTON_EVENT(model, {0x73, context, index})'),  # hold
+    'UI_CODE_RELEASE': dict(value=0xb0, evidence='consumer table: 0xB0 -> 0x08141042: BUTTON_EVENT(model, {0x74, ...})'),  # hold
+    'EV_BUTTON': dict(value=0x73, evidence='movs r1,#0x73 at 0x08141028; BUTTON_EVENT cmp r3,#0x73 at 0x08144762'),  # hold
+    'EV_TRACK_PROPERTY': dict(value=0xd3, evidence='MIXER_EVENT posts {0xD3, handle, key, value} (movs r0,#0xd3 at 0x0814D792)'),  # hold
+    'EV_MIXER_PAD_MODE': dict(value=0x10d, evidence='MIXER_EVENT case 0x10D (movw r2,#0x10d at 0x0814D848; toggle at 0x0814D838); 1.6.1 0x10C'),  # hold
+    'BTN_TRACKS': dict(value=0x2, evidence='button press id 2 -> 0x081447B8: navigate(model, 2) unless page 2'),  # hold
+    'BTN_LAUNCH': dict(value=0x3, evidence='id 3 -> 0x08144AE6: navigate(0x1E) unless page 0x1E'),  # hold
+    'BTN_MIXER': dict(value=0x5, evidence='id 5 -> 0x08144AAC: navigate(0x1F)'),  # hold
+    'BTN_INST': dict(value=0xa, evidence='id 10 -> 0x081447D0: page 9 stays, page 7 -> 0x14, else INST'),  # hold
+    'BTN_SEQ': dict(value=0xb, evidence='id 11 -> 0x08144978: type 0x11 -> page 0x25, 0x0E -> 0x27 (0x08144A02), else 0x17'),  # hold
+    'PAGE_TRACKS': dict(value=0x2, evidence='movs r1,#2 at 0x081447C8 (TRACKS button)'),  # hold
+    'PAGE_INST': dict(value=0x7, evidence='INST case cmp r3,#7 at 0x081447D8'),  # hold
+    'PAGE_INST_ALT1': dict(value=0x9, evidence='INST case cmp r3,#9 at 0x081447D4'),  # hold
+    'PAGE_INST_ALT2': dict(value=0x14, evidence='INST case navigate(0x14) at 0x08144830'),  # hold
+    'PAGE_LAUNCH': dict(value=0x1e, evidence='movs r1,#0x1e at 0x08144AF8'),  # hold
+    'PAGE_MIXER': dict(value=0x1f, evidence='movs r1,#0x1f at 0x08144AB4'),  # hold
+    'TYPE_LOOP': dict(value=0x11, evidence='SEQ case cmp r0,#0x11 at 0x0814498C; 0x0813352E cmp r0,#0x11 before the 0x2E enumeration'),  # hold
+    'CHILD_LOOP_CLIPS': dict(value=0x2e, evidence='vtable +0x1C (obj, 0x2e, 0, &child): ldr r4,[r3,#0x1c]; movs r1,#0x2e; blx r4 at 0x08133538..40'),  # hold
+    'CHILD_SEQUENCES': dict(value=0x18, evidence='vtable +0x1C (obj, 0x18, i, &child) at 0x08136A68..70 (6 users with 0x18 in both images)'),  # hold
+    'ENGINE_PROP_RUN': dict(value=0x64, evidence="movs r2,#0x64; bl ENGINE_PROPERTY at 0x08138030/36 (value = GET_PROPERTY(obj,0x64), registry 'PlayMode'); the same 5 call sites as 1.6.1"),  # hold
+    'ENGINE_PROP_CLIP': dict(value=0x63, evidence='movs r2,#0x63; bl ENGINE_PROPERTY at 0x0813804E/56 (and 0x0813967C, 0x0813E892)'),  # hold
+    'MODEL_PREV_PAGE': dict(value=0x13a, evidence='NAVIGATE strb.w r3,[r4,#0x13a] at 0x08143F18'),  # hold
+    'MODEL_CTX': dict(value=0x13c, evidence='NAVIGATE passes r4+0x13C / +0x140 (0x08143FBA, 0x08143FCE); INST case ldr [r0,#0x13c] at 0x081447DE'),  # hold
+    'MODEL_SEQ': dict(value=0x144, evidence='NAVIGATE ldr.w r3,[r4,#0x144] (0x081442B2); SEQ case ldr.w r1,[r6,#0x144] (0x081449DA)'),  # hold
+    'MODEL_SCENE': dict(value=0x148, evidence='NAVIGATE add.w r2,r4,#0x148 at 0x0814417A (1.6.1 0x08142522, same place)'),  # hold
+    'MODEL_PAD_LEDS': dict(value=0x19d0, evidence='FLUSH_PAD_LIGHTS(model+0x19C0+0x10) at 0x08140ECA (1.6.1 +0x19C0+4 at 0x0813F3CA); all 14 add.w #0x19c0 sites are followed by +0x10 (1.6.1 +4); model+0x19C4..0x19C7 are new bytes (consumer 0x081404EA..)'),  # hold
+    'MODEL_MIXER_MODE': dict(value=0x45cc, evidence='MIXER_PAD_MODE strb.w r2,[r3,#0x5cc] with r3 = model+0x4000 (0x0813D426); NAVIGATE +0x45CD/+0x4598 where 1.6.1 had +0x3C7D/+0x3C48'),  # hold
+    'KEY_SEL_CLIP': dict(value=0x133, evidence="registry 'Selected Cell Pos' 0x133 in both (rc14 layout/registry.json)"),  # hold
+    'KEY_LOOP_ROW': dict(value=0x6f, evidence="registry 'Group Index' 0x6F in both; the 0x2E children's row"),  # hold
+    'KEY_SEQ_ROW': dict(value=0x73, evidence="registry 'Disp Pos' 0x73 in both; GET_PROPERTY(child,0x73) at 0x08144846 / 0x08132D6E"),  # hold
+    'KEY_MUTE': dict(value=0x13b, evidence="registry 'Mute' 0x13B (1.6.1 0x13D); TRACK_PROPERTY_EVENT default path"),  # hold
+    'KEY_SOLO': dict(value=0x13c, evidence="registry 'Solo' 0x13C (1.6.1 0x13E)"),  # hold
+    # ---- S4+S5 implementer: the UI page-set layout (test_notemod_real) and the selected-track key ----
+    "UI_PAGES_SIZE": dict(value=0x68B6D8,
+        evidence="ldr r0,[pc,#0xd8] at 0x081153B0 (literal 0x0811548C, the only word 0x68B6D8 in the image), UI_BUMP_ALLOC, "
+                 "str r0,[r6]; bl UI_PAGES_CTOR 0x08164F98 at 0x081153BC (1.6.1: 0x08115044, literal 0x08115120 = 0x689A98)"),
+    "UI_PAGE_PIANO": dict(value=0x2EF4D0,
+        evidence="the page-set member UI_PAGES_CTOR gives PIANO_VIEW_VT (member 14; stepui g10.py; 1.6.1 +0x2ED980); "
+                 "test_notemod_real runs the real constructor and asserts PIANO_VIEW_VT at block + this offset"),
+    "UI_PAGE_DRUM": dict(value=0x677738,
+        evidence="the page-set member that gets DRUM_VIEW_VT (member 33; 1.6.1 +0x675AF8); test_notemod_real asserts it the same way"),
+    "KEY_SEL_TRACK": dict(value=0x131,
+        evidence="SELECT_TRACK 0x0813D430 (track r1 <= 7): movw r1,#0x131; adds r0,r5,#4; bl 0x0812ECC2 (set property on "
+                 "model+4) at 0x0813D44C; GET_PROPERTY(model+4, 0x131) at 0x0814346A..0x08143470 (stepdata: stock reads the "
+                 "selected track this way, as our sel_track() does); keys below 0x13C are not renumbered"),
+    # ---- S4+S5 implementer: stock code test_step_xml runs (real note writer, XML library and reader) ----
+    "NOTE_SEQ_WRITER": dict(value=0x081301E0,
+        evidence="the function around STEP_SAVE_SITE 0x081303E4 (+0x204 as 1.6.1 0x0812F2EC / 0x0812F4F0); stepdata: identical "
+                 "over its 229 instructions (masked) except the container literal 0x300222E4 (NOTE_WRITE_SRC); one caller in both. "
+                 "test_step_xml runs it unstubbed on 1.6.8: every record comes back from the reader"),
+    "NOTE_WRITE_SRC": dict(value=0x300222E4,
+        evidence="the writer's only RAM literal that differs from 1.6.1's (0x30021AE4, +0x800 like MODEL); NOTE_GET(this, i, sp+8) "
+                 "at 0x08130372..78 (stepdata)"),
+    "NOTE_SEQ_READER": dict(value=0x08130A10,
+        evidence="the function around STEP_LOAD_SITE 0x08130AA8 (+0x98 as 1.6.1 0x0812FB1C / 0x0812FBB4); stepdata: 238 instructions, "
+                 "0 masked diffs, two callers in both; test_step_xml: zeroes +0x14 of every note (0x08130B3C), keeps kind 2's value2"),
+    "XML_DOC_INIT": dict(value=0x0810A390,
+        evidence="push {r4-r6,lr}; mov r4,r0; mov r6,r1; mov r5,r2; movs r1,#0 = 1.6.1 0x0810A0C0; the XML library moved +0x2D0 "
+                 "as a block (XML_FIND 0x08109C64 -> 0x08109F34, reviewed); test_step_xml builds the document with it"),
+    "XML_NEW_ELEMENT": dict(value=0x0810A5E6,
+        evidence="push.w {r4-r8,lr}; mov r4,r0; mov r6,r1; ldr r3,[r0,#0x74]; cbz = 1.6.1 0x0810A316 (+0x2D0)"),
+    "XML_APPEND_CHILD": dict(value=0x081096E2,
+        evidence="push {r3-r5,lr}; ldr r2,[r1,#4]; ldr r3,[r0,#4]; cmp; bne = 1.6.1 0x08109412 (+0x2D0)"),
+    "M4_DATA_INIT": dict(value=0x081B6D30,
+        evidence="the M4 reset handler's copy source for 0x30000000.. (stepdata); same first words as 1.6.1's 0x081B3E38 "
+                 "(ff000000 ff000000 ffffffff ff333333); +0x48 / +0x4C = 0xC8000000 / 0xC6000000, the UI bump arena (stepdata)"),
+    "M4_DATA_INIT_LEN": dict(value=0x104, evidence="the first block of the copy table, 0x104 B in both (stepdata)"),
+    "REG_BUILD": dict(value=0x08165848,
+        evidence="push.w {r4-fp,lr}; sub sp,#0x14; mov sl,r0; mov.w r0,#0x3e40 (498 x 32 = REG_KEYS); bl M4_MALLOC 0x08104DB4; "
+                 "ldr r3,=REGISTRY; str r0,[r3] at 0x08165848..0x0816585A (1.6.1 0x081639A8: #0x3e60 = 499 x 32); stepdata ran it "
+                 "(reg.py); test_keys runs it and finds every key we name with its 1.6.1 title"),
+    "M4_MALLOC": dict(value=0x08104DB4,
+        evidence="push {r3,lr}; mov r3,r0; bic r2,r0,#0x1f; adds r2,#0x20 = 1.6.1 0x08104C08; REG_BUILD's first call"),
+    # ---- S4+S5 implementer: the header path test_notemod_real HeaderThroughStock runs on stock code ----
+    "HEADER_TPL_LOAD": dict(value=0x081435BC,
+        evidence="push.w {r4-r8,lr}; sub.w sp,sp,#0x470; mov r6,r0 (model); mov r5,r1 (page); add.w r3,r0,#0x4000 (1.6.1 "
+                 "0x08141944: the same with #0x3000, the model grew); stepui: the template loader (model, page); with page 0x27 "
+                 "the rig's applied header then has the drum Step / Sequence tabs and Undo, as on the device"),
+    "HEADER_TICK": dict(value=0x081820AC,
+        evidence="push {r4-r6,lr}; sub sp,#0x1f8; mov r6,r0 (root); mov r4,r1 (ev); memcpy(sp+0x1c, [pc], 0x1dc = HEADER_DESC_SIZE); "
+                 "bl HEADER_GEN at 0x081820CC and bl HEADER_BUILD at 0x081820E8 (1.6.1 0x0817FE70: #0x1c4; 0x0817FE90 / 0x0817FEAC); "
+                 "one of HEADER_GEN's 3 callers in both"),
+    "TEMPO_GET": dict(value=0x0810BEF8,
+        evidence="push {r3,lr}; add.w r0,r0,#0x5180; adds r0,#0x3c (= 1.6.1 0x0810BC28); 2 callers, one in HEADER_GEN (0x08135EF8)"),
+    "M4_LOCK_PAIR": dict(value=0x08104AC0,
+        evidence="push {r4,lr}; mov r4,r0; ldr r0,[r0]; cbz -> calls itself; ldr r3,[r4,#4]; cbz; bl 0x08117518 x2, bl 0x08117464 "
+                 "x2 (RTOS take / give on the two handles); 22 callers, wrappers 0x08104B48..0x08104CE4 (1.6.1 0x08104914, same "
+                 "code). Without the RTOS objects (the rig) it recurses until the stack runs out: stepui's fault"),
+    "MODEL_HEADER_ON": dict(value=0x14C, evidence="HEADER_GEN 0x08135D7C ldrb.w r6,[r0,#0x14c]; cmp r6,#0; beq.w 0x08135F46 (1.6.1 0x08134808)"),
+    # ---- S4+S5 implementer: the moved / exact entries the default 1.6.8 build uses (now reviewed) ----
+    'ANY_SELECTED': dict(value=0x815d830, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; in the drum view block 1.6.1 0x0815B9C0.. = 1.6.8 0x0815D740.. (+0x1D80), which the step UI investigator compared whole (only literals, keys and action ids differ)"),
+    'BAR_TEXT': dict(value=0x81727b6, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs (+0x2160); stepui: masked compare of the widget setters"),
+    'DRUM_HEADER': dict(value=0x815dffc, orig='2de9f043', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; push.w {r4-r9,lr} replayed by our wrapper (build.py replays); DRUM_KEYS 0x300000BC is still its only literal (stepui); test_notemod_real runs it under our hook on the real drum view"),
+    'DRUM_SET_TAB': dict(value=0x815ef80, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; stepui: 0x49 / 0x4A call DRUM_SET_TAB(0/1) at 0x0815F448 / 0x0815F454 in DRUM_EVENT"),
+    'DRUM_VIEW_VT': dict(value=0x81a171c, evidence='the vtable page-set member 33 gets in UI_PAGES_CTOR (stepui); first 8 words: same layout as 1.6.1 0x0819E854 (flash pointers); test_notemod_real asserts it at UI_PAGE_DRUM on the real page set'),
+    'GRID': dict(value=0x815e238, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs from the entry (the one diff 0xC before it is the previous function's literal)"),
+    'HEADER_ROOT': dict(value=0x300366e8, evidence='3 literal words in both images; HEADER_ROOT_INIT is constructed at it (stepui); test_notemod_real HeaderThroughStock runs HEADER_TICK on it and reads the buttons HEADER_BUILD made there'),
+    'HEADER_ROOT_VTABLE': dict(value=0x81b6560, evidence="the only literal of it is in HEADER_ROOT_INIT (0x08182710, stepui); first 8 words flash pointers as 1.6.1 0x081B3680; our header_sync compares the root's first word with it, test_notemod_real sees it there"),
+    'HOLD_TAP_PAD': dict(value=0x815f030, orig='b3f57a7f', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 1 diff, the UI_TICK_MS literal (0x30035F40 -> 0x300378F8, a fact); hold investigator: pad release +0x48, cmp.w r3,#1000 (b3f57a7f) in both; test_holdstep runs stock's release"),
+    'HOLD_TAP_TOUCH': dict(value=0x815f230, orig='b3f57a7f', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 1 diff, the UI_TICK_MS literal; touch release +0x40, cmp.w r3,#1000 (hold investigator); test_holdstep"),
+    'M4MIDI_BEGIN': dict(value=0x8105f1e, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs (+0x1C8, the MIDI builders moved as a block); s5parts: whole-function masked compare 0 diffs; test_polyat M4MidiTask runs it"),
+    'M4MIDI_CHANNEL': dict(value=0x8105e26, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; s5parts: 0 diffs; M4MidiTask"),
+    'M4MIDI_DATA': dict(value=0x8105ec6, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; s5parts: 0 diffs; M4MidiTask"),
+    'M4MIDI_DONE': dict(value=0x8105d3c, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; s5parts: 0 diffs; M4MidiTask stubs it after stock's case called it"),
+    'M4MIDI_RESULT': dict(value=0x8105e14, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; s5parts: 0 diffs; M4MidiTask"),
+    'M4MIDI_SEND': dict(value=0x8105acc, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; s5parts: 0 diffs; M4MidiTask records (sink, port, bytes) here"),
+    'M4MIDI_STATUS': dict(value=0x8105e0c, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; s5parts: 0 diffs; M4MidiTask"),
+    'PIANO_COMMIT': dict(value=0x81595a4, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs from the entry (+0x1D44, the piano block; stepui compared it)"),
+    'PIANO_SELECTED': dict(value=0x815a590, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs from the entry (stepui: piano block)"),
+    'PIANO_VIEW_VT': dict(value=0x81a1678, evidence='the vtable page-set member 14 gets (stepui); first 8 words as 1.6.1 0x0819E7B0; test_notemod_real asserts it at UI_PAGE_PIANO'),
+    'PROB_PIANO_REF_BACK': dict(value=0x815ac6a, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; s5parts: the ref function differs from 1.6.1 only in the MODEL literal; PROB_PIANO_REF_SHA exact over SITE..BACK (build.py replaced())"),
+    'PROB_PIANO_REF_SITE': dict(value=0x815ac60, orig='9df82530', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; ldrb.w r3,[sp,#0x25] (replayed, build.py); s5parts as BACK"),
+    'PROB_SHOW_DRUM_SITE': dict(value=0x815e152, orig='013b0b60', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; subs r3,#1; str r3,[r1] (replayed); s5parts: context 0 diffs"),
+    'SLOT_SET': dict(value=0x8173d7c, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs from the entry (+0x2160)"),
+    'SLOT_TITLE': dict(value=0x81809de, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs (+0x2180)"),
+    'SNAPSHOT': dict(value=0x815d784, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs (drum view block)"),
+    'STEP_DEFAULTS_READ': dict(value=0x815ee1c, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs; add.w r2,r4,#0x11000 checked by build.py at the site; the view offsets 0x114C0..C8 unchanged (stepui)"),
+    'STEP_EDIT_OFFSET': dict(value=0x815e710, orig='2de9f04f', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs from the entry (push.w {r4-fp,lr} replayed); hold: the three edit hooks match; test_holdstep runs stock's edit"),
+    'STEP_EDIT_PROB': dict(value=0x815e62c, orig='2de9f04f', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs from the entry; as STEP_EDIT_OFFSET"),
+    'STEP_EDIT_VEL': dict(value=0x815e544, orig='2de9f04f', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs from the entry; as STEP_EDIT_OFFSET"),
+    'STEP_HAS_NOTE': dict(value=0x815da34, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs from the entry (drum view block)"),
+    'STEP_MATCH': dict(value=0x815d740, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs"),
+    'STEP_PRESS': dict(value=0x815ef98, orig='0f2921d8', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 1 diff, the UI_TICK_MS literal at +0x4C; build.py checks cmp r1,#15; bhi STEP_PRESS_SKIP at the site"),
+    'STEP_PRESS_SKIP': dict(value=0x815efe0, evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 1 diff, the UI_TICK_MS literal; the bhi target of STEP_PRESS (build.py)"),
+    'STEP_TOGGLE': dict(value=0x815eeb8, orig='38b51f29', evidence="implementer's masked compare (rc19/impl/vmoved0.py: 0x60 B from the entry, branches inside relative, outside masked, literals by value): 0 diffs from the entry; push {r3-r5,lr}; cmp r1,#0x1f replayed (build.py)"),
+    'DRUM_KEYS': dict(value=0x300000bc, evidence="RAM literal 0x300000BC, 1 word in both images: DRUM_HEADER's only literal (stepui); the step view's 8 slot keys"),
+    'KEY_ROOT': dict(value=0x8e, evidence="test_keys: stock's registry builder on 1.6.8 has 'Root Note' (type 7, 12 choices) at 0x8E, as 1.6.1"),
+    'KEY_SCALE': dict(value=0x8d, evidence="test_keys: 'Scale' (type 7, 23 choices) at 0x8D, as 1.6.1"),
+    'PROB_PIANO_REF_SHA': dict(value='b4a5ebca1082bd7ad8133a0b69a75f6ce7dff3ab254489f9c06c85eb517c2de6', evidence='build.py replaced(): sha256 of PROB_PIANO_REF_SITE..BACK in the 1.6.8 image equals this (the default build checks it)'),
+    'PROB_PIANO_EDIT_SHA': dict(value='82d2ea2c828e8f1ddbed98d19f29414b1c2bfe37f8b4a48c8b269b1b7c3c111a', evidence='build.py replaced(): sha256 of PROB_PIANO_EDIT_SITE..BACK in the 1.6.8 image equals this (checked by every build); s5parts: byte-identical'),
+    # S4+S5 review fix: the producer of recorded notes' +0x14 (rc19/impl2). The M4 consumer copies the M7 -> M4 ring entry
+    # (ENGINE_PTR+0x2FC0) and dispatches on its byte +0x18 (0x08140930: 1 -> the recording handler 0x08138B08, which copies
+    # words 0..5 into the note, so +0x14 = word 5; 6 -> 0x08138A04, no insert). The ring's enqueue 0x08082BA0 has two callers:
+    # the engine-outbox forwarder 0x0808D540 (type 6) and the bus forwarder 0x08057F60, which reads the bus with BUS_TAKE.
+    'REC_MSG_5': dict(value=0x80602a0, evidence="1.6.1 0x0805FF00 with the same message build (0x08060320..0x0806038C = 1.6.1 0x0805FF80..EC instruction for instruction): r7 = 0; str r3=#5,[sp,#8]; strd r7,r7,[sp,#0xc]; str r7,[sp,#0x14]; strh r5/sb at +0x18/+0x1a; str r7,[sp,#0x1c] (word 5 = 0); copied to sp+0x20 before bl 0x080A2940 (writes only [sp..sp+7]); strb #1 at +0x18; bl BUS_APPEND. One caller 0x080629E6"),
+    'REC_MSG_6': dict(value=0x80603e0, evidence="1.6.1 0x08060040, same build: r7 = 0; word 0 = 6; strd r7,r7,[sp,#0x18] then only strh r5,[sp,#0x18] (word 5 at sp+0x1c stays 0); +0x18 = 1; bl BUS_APPEND at 0x080604CA. One caller 0x08062990"),
+    'BUS_APPEND': dict(value=0x809fce0, evidence="byte-identical to 1.6.1 0x0809F0E0 (0x5C B): count [bus+0x1A48] < 64, copies the 48 B to bus+0xE48 + 48 x count. Callers (bl/b scan of M7, both phases): 0x0806038C (REC_MSG_5) and 0x080604CA (REC_MSG_6) only, as 1.6.1; no pointer to it in the image; no other store to bus+0xE48.. (the other #0xe48 / #0xa48 stores are parameter-table constructors)"),
+    'BUS_TAKE': dict(value=0x809fb40, evidence="byte-identical to 1.6.1 0x0809EF40 (0x60 B): i < [bus+0x1A48] -> copies entry i, returns 1; the bus forwarder's loop 0x08057F60..78 (BUS_TAKE, then the ring enqueue 0x08082BA0)"),
 }
 
 # Registry keys missing from registry_keys.txt (entries without a title to match by): the measured

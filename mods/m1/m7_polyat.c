@@ -439,6 +439,11 @@ static void poly_body(u32 track, const u32 *ev, u32 engine) {
     u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u);
     u32 mode = at_mode(port, ch, &how);
     volatile Voices *v = voices(r, track, 0);
+#ifdef BE_NOTES_ABOVE_127
+    /* 1.6.8: the pad router's pressure carries the pad's Note On note (router +0x34[pad], 0..163) and the M4
+     * sends no MIDI note above 127: no pressure for it either (as note & 0x7F it would press a real note). */
+    if (ev[3] > 0x7Fu) v = 0;
+#endif
     if (mode == AT_OFF) {
         r->live_off++;
     } else if (v && find(v, note) >= 0) {           /* only notes that are sounding */
@@ -762,9 +767,14 @@ static void curve_emit_body(u32 track, u32 clock, int start, int len) {
 #define INT_GAP (4u * MS_CYC)
 #define KEY_TAG 0x10000u                 /* PEnt.track for a live internal note: key | tag */
 #define LIVE_STALE (300u * MS_CYC)       /* no update for this long: the pad was let go */
+#ifdef BE_NOTES_ABOVE_127
+#define INT_NOTE 0xFFu                   /* 1.6.8: live pad notes reach 163 (router +0x34[pad]); PEnt.note is a u8 */
+#else
+#define INT_NOTE 0x7Fu
+#endif
 
 static void int_post(volatile Region *r, u32 key, u32 note, u32 value) {
-    u32 ev[6] = {S_EV_VOICE_PRESSURE, 0, key, note & 0x7Fu, value & 0x7Fu, 0};
+    u32 ev[6] = {S_EV_VOICE_PRESSURE, 0, key, note & INT_NOTE, value & 0x7Fu, 0};
     FN7(BUS_POST, void (*)(u32, const u32 *))(r->bus, ev);
     r->int_sent++;
 }
@@ -838,7 +848,7 @@ static void live_body(u32 bus, const u32 *ev, u32 router) {
     DCIMVAC = (u32)AT_DEST & ~31u; DCIMVAC = ((u32)AT_DEST + 32u) & ~31u;
     __asm volatile("dsb" ::: "memory");
     int internal = AT_DEST->magic == AT_DEST_MAGIC && AT_DEST->d[idx].valid && !AT_DEST->d[idx].ch;
-    u32 mode = internal ? AT_DEST->d[idx].mode : AT_POLY, key = ev[2] & 0xFFFFu, note = ev[3] & 0x7Fu, now = CYCCNT;
+    u32 mode = internal ? AT_DEST->d[idx].mode : AT_POLY, key = ev[2] & 0xFFFFu, note = ev[3] & INT_NOTE, now = CYCCNT;
     r->live_int = idx | (key << 8) | (mode << 24);
     if (!internal || mode == AT_POLY) { FN7(BUS_POST, void (*)(u32, const u32 *))(bus, ev); return; }
     if (mode == AT_OFF) { r->live_off++; return; }

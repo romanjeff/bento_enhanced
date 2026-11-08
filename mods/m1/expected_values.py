@@ -59,6 +59,9 @@ STOCK_161 = dict(
     AUDIO_BLOCK_WRONG_HALF=0x4, AUDIO_BLOCK_HEAD=0xC, AUDIO_BLOCK_HEAD_WRONG=0x18,
     AUDIO_GAP_MAX=0x8, AUDIO_GAP_UNDER=0xC, AUDIO_GAP_OVER=0x10, AUDIO_GAP_TIMEOUTS=0x14, AUDIO_GAP_POLLS=0x18,
     AUDIO_GAP_WAITS=0x1C,
+    # UI page set (test_notemod_real; v3.65's literals)
+    UI_PAGE_PIANO=0x2ED980, UI_PAGE_DRUM=0x675AF8,
+    MODEL_HEADER_ON=0x14C,         # HEADER_GEN 0x08134808 ldrb.w r6,[r0,#0x14c]; beq.w out
 )
 
 # 1.6.8: only what was measured in the 1.6.8 image by someone other than the generator's mapping.
@@ -90,6 +93,7 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     EV_MIDI_CHAN_AT=0x60,         # MIDI_JT[5] = M4_LOOP (unused by stock)
     EV_MIDI_RT_FIRST=0x61,        # MIDI_JT[6]
     EV_MIDI_RT_LAST=0x63,         # MIDI_JT[8], bound cmp r5,#8 at 0x081053E2
+    MIDI_JT_FIRST=0x5B,           # subs r5,#0x5b at 0x081053E0; cmp r5,#8; ldr.w pc,[r3,r5,lsl #2] at 0x081053E8
     # S2 review: fields of stock objects the black box reads, from the 1.6.8 code that uses them (scratch rc17/s3)
     MIDI_RING_RD=0x2340,          # M4 reader add.w r0,sl,#0x2340 at 0x081053D0 (7 add.w #0x2340 on the M4, as 1.6.1); M7 ctor 0x08082FF6
     MIDI_RING_WR=0x2360,          # M7 writer: add.w ip,r0,#0x2000; ldr [ip,#0x360] at 0x08082F20/24; movw #0x2360 at 0x08082F4E
@@ -111,6 +115,76 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     AUDIO_GAP_TIMEOUTS=0x14,      # [r2,#0x14] 0x0808EDE6/EA
     AUDIO_GAP_POLLS=0x18,         # [r3,#0x18] 0x0808ED60/68
     AUDIO_GAP_WAITS=0x1C,         # [r3,#0x1c] 0x0808ED5A/5E
+    # S4+S5 (step, hold): each typed from the 1.6.8 code the investigators cite (rc19/stepui, rc19/stepdata, rc19/hold)
+    UI_PAGE_PIANO=0x2EF4D0,       # UI_PAGES_CTOR 0x08164F98: page-set member 14 (PIANO_VIEW_VT); test_notemod_real reads the vtable there (stepui g10.py)
+    MODEL_HEADER_ON=0x14C,        # HEADER_GEN 0x08135D7C ldrb.w r6,[r0,#0x14c]; cmp; beq.w 0x08135F46 (implementer)
+    UI_PAGE_DRUM=0x677738,        # page-set member 33 (DRUM_VIEW_VT), same check
+    BTN_INST=0xa,                 # button press table 0x0814477C, cases jtb.py (hold)
+    BTN_LAUNCH=0x3,               # button press table 0x0814477C, cases jtb.py (hold)
+    BTN_MIXER=0x5,                # button press table 0x0814477C, cases jtb.py (hold)
+    BTN_SEQ=0xb,                  # button press table 0x0814477C, cases jtb.py (hold)
+    BTN_TRACKS=0x2,               # button press table 0x0814477C, cases jtb.py (hold)
+    CHILD_LOOP_CLIPS=0x2e,        # vtable +0x1c (obj, 0x2e, 0, &child) 0x08133538..40 (hold)
+    CHILD_SEQUENCES=0x18,         # vtable +0x1c (obj, 0x18, i, &child) 0x08136A68..70 (hold)
+    ENGINE_PROP_CLIP=0x63,        # movs r2,#0x63; bl ENGINE_PROPERTY 0x0813804E / 56 (hold)
+    ENGINE_PROP_RUN=0x64,         # movs r2,#0x64; bl ENGINE_PROPERTY 0x08138030 / 36 (hold)
+    EV_BUTTON=0x73,               # consumer 0xAF case movs r1,#0x73 0x08141028; BUTTON_EVENT cmp #0x73 0x08144762 (hold)
+    EV_ENCODER=0xcf,              # DRUM_EVENT cmp r3,#0xcf 0x0815F42E (stepui)
+    EV_MIXER_PAD_MODE=0x10d,      # MIXER_EVENT case 0x10D: toggle pane+0x9A08, movw r2,#0x10d 0x0814D848 (1.6.1 0x10C) (hold)
+    EV_TAB_AUTOMATION=0x4b,       # DRUM_EVENT tbb 0x47.., templates (stepui)
+    EV_TAB_EVENT=0x49,            # DRUM_EVENT tbb 0x47.., templates (stepui)
+    EV_TAB_SEQUENCE=0x4a,         # DRUM_EVENT tbb 0x47.., templates (stepui)
+    EV_TRACK_PROPERTY=0xd3,       # MIXER_EVENT movs r0,#0xd3 0x0814D792 (hold)
+    HEADER_ACTIONS=0x6,           # HEADER_BUILD record loop root+0xA44..+0xF24 step 0xD0 (stepui)
+    HEADER_ACTION_EMPTY=0x20,     # ldrb [r6,#0x20] 0x08181E5C (stepui)
+    HEADER_ACTION_GROUP=0x22,     # ldrb [r7,#0x22] 0x08181E36 (stepui)
+    HEADER_ACTION_ID=0x2c,        # ldrh [r6,#0x2c] 0x08181E1E (stepui)
+    HEADER_ACTION_LIT=0x21,       # ldrb [r6,#0x21] 0x08181E64 (stepui)
+    HEADER_ACTION_SIZE=0x30,      # adds r7,#0x30 0x08181E2C (stepui)
+    HEADER_APPLIED=0x34,          # memcpy(root+0x34, desc, 0x1DC) 0x08181F48 (stepui)
+    HEADER_ARMED=0x1194,          # ldrb [sl,#0x194], sl = root+0x1000, 0x08181E4E (stepui)
+    HEADER_BUTTONS=0x564,         # HEADER_ROOT_INIT addw r7,r4,#0x564 0x08182576 (stepui)
+    HEADER_BUTTON_COUNT=0xc,      # 6 buttons (+0x564) + 6 tabs (+0xA44) (stepui)
+    HEADER_BUTTON_HIDDEN=0x30,    # button ctor 0x0816C520 = 1.6.1's (stepui)
+    HEADER_BUTTON_LABEL=0x6d,     # same widget code (stepui)
+    HEADER_BUTTON_STRIDE=0xd0,    # adds r7,#0xd0 0x08182584 (stepui)
+    HEADER_DESC_ACTIONS=0x8c,     # HEADER_BUILD add.w r7,r6,#0x8c 0x0818204A; templates +0x8C (stepui)
+    HEADER_TPL_SEQ=0x8,           # template page bytes +0x1DA (stepui)
+    HEADER_TPL_SEQ_ALT=0x14,      # template page bytes +0x1DA (stepui)
+    HEADER_TPL_SEQ_DRUM=0x24,     # template page bytes +0x1DA (stepui)
+    KEY_ENV_A=0x1e,               #  (stepui)
+    KEY_ENV_D=0x1f,               #  (stepui)
+    KEY_ENV_R=0x21,               #  (stepui)
+    KEY_ENV_S=0x20,               #  (stepui)
+    KEY_LFO_DEPTH=0x4c,           # registry init titles (stepui)
+    KEY_LFO_RATE=0x4b,            # registry init titles (stepui)
+    KEY_LFO_SHAPE=0x4a,           # registry init titles (stepui)
+    KEY_LFO_SRATE=0x4f,           # registry init titles (stepui)
+    KEY_LOOP_ROW=0x6f,            # registry 'Group Index' (both) (hold)
+    KEY_SEL_CLIP=0x133,           # registry 'Selected Cell Pos' (both) (hold)
+    KEY_SEQ_ROW=0x73,             # registry 'Disp Pos' (both); GET_PROPERTY(child,0x73) 0x08144846 (hold)
+    MODEL_CTX=0x13c,              # NAVIGATE add.w r2,r4,#0x13c 0x08143FBA; button INST case ldr [r0,#0x13c] 0x081447DE (hold)
+    MODEL_MIXER_MODE=0x45cc,      # MIXER_PAD_MODE strb.w [model+0x4000+0x5cc] 0x0813D426 (1.6.1 +0x3C7C) (hold)
+    MODEL_PAD_LEDS=0x19d0,        # FLUSH_PAD_LIGHTS(r4 + 0x19c0 + 0x10) 0x08140ECA; 14/14 add.w #0x19c0 sites then +0x10 (1.6.1 +4) (hold)
+    MODEL_PAGE=0x12c,             # NAVIGATE strb r5,[r4,#0x12c] 0x08143F1C (stepui)
+    MODEL_PREV_PAGE=0x13a,        # NAVIGATE strb.w r3,[r4,#0x13a] 0x08143F18 (hold)
+    MODEL_SCENE=0x148,            # NAVIGATE add.w r2,r4,#0x148 0x0814417A (1.6.1 0x08142522) (hold)
+    MODEL_SEQ=0x144,              # NAVIGATE ldr.w r3,[r4,#0x144] 0x081442B2; SEQ case [r6,#0x144] 0x081449DA (hold)
+    MODEL_WORK=0x45d0,            # SEQ_COPY dest add.w #0x4580 + #0x50 (7 callers) (stepui)
+    PAGE_INST=0x7,                # INST case 0x081447D4 / D8, navigate(0x14) 0x08144830 (hold)
+    PAGE_INST_ALT1=0x9,           # INST case 0x081447D4 / D8, navigate(0x14) 0x08144830 (hold)
+    PAGE_INST_ALT2=0x14,          # INST case 0x081447D4 / D8, navigate(0x14) 0x08144830 (hold)
+    PAGE_LAUNCH=0x1e,             # LAUNCH case movs r1,#0x1e 0x08144AF8 (hold)
+    PAGE_MIXER=0x1f,              # MIXER case movs r1,#0x1f 0x08144AB4 (hold)
+    PAGE_SEQ=0x17,                # template page bytes (stepui)
+    PAGE_SEQ_ALT=0x1a,            # template page bytes (stepui)
+    PAGE_SEQ_DRUM=0x27,           # template page bytes (stepui)
+    PAGE_TRACKS=0x2,              # TRACKS case movs r1,#2 0x081447C8 (hold)
+    TYPE_LOOP=0x11,               # SEQ case cmp r0,#0x11 0x0814498C (hold)
+    TYPE_ONESHOT=0xe,             # cmp r0,#0xe after vtable[0] 0x08139C4C (5x) (stepui)
+    UI_CODE_ENCODER=0xab,         # consumer table entry 0xAB -> 0x08140FCE (posts 0xAD) (hold)
+    UI_CODE_PRESS=0xaf,           # 0xAF -> 0x08141024 (BUTTON_EVENT 0x73) (hold)
+    UI_CODE_RELEASE=0xb0,         # 0xB0 -> 0x08141042 (BUTTON_EVENT 0x74) (hold)
 )}
 
 EXPECTED = {"stock_161": STOCK_161, "stock_168": STOCK_168}

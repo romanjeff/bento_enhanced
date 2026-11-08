@@ -535,6 +535,18 @@ class LiveInternal(unittest.TestCase):
         self.press(v, 64, 0, 20)                                   # released
         self.assertEqual([p[3:] for p in v.posts[n:]], [(60, 50), (64, 0)])
 
+    def test_channel_keeps_a_high_note_apart(self):
+        """1.6.8: notes 140 and 12 on one key are two notes (as note & 0x7F they shared one entry and 140's
+        release dropped 12's pressure); every post carries the note stock sent."""
+        if not HIGH_NOTES:
+            self.skipTest("stock never produces a note above 127 on this base")
+        v = self.rig(2)
+        self.press(v, 12, 50, 0); self.press(v, 140, 90, 10)
+        self.assertEqual(sorted(p[3:] for p in v.posts[1:]), [(12, 90), (140, 90)])
+        n = len(v.posts)
+        self.press(v, 140, 0, 20)                                  # 140 released: 12 keeps its own 50
+        self.assertEqual([p[3:] for p in v.posts[n:]], [(12, 50), (140, 0)])
+
     def test_stale_live_note_stops_counting(self):
         v = self.rig(2)
         self.press(v, 60, 90, 0)
@@ -572,6 +584,81 @@ class PolyRate(unittest.TestCase):
         self.v.pressure(45, 51)
         self.assertGreaterEqual(len(self.sent()), 6, "refilled tokens flush the held-back notes")
 
+from expected_values import BEHAVIOUR
+HIGH_NOTES = BEHAVIOUR[S.module]["PAD_NOTE_MAX"] > 127      # 1.6.8: stock's notes reach 163
+
+
+@unittest.skipUnless(POLY_AT, S5)
+class M4MidiTask(unittest.TestCase):
+    """Stock's own M4 MIDI-out task (M4_MIDI_TASK) on this base, with M7 events in its ring: its ring read,
+    the type dispatch through MIDI_JT and the message builders are stock's; only the sink calls (SEND,
+    DONE, FLUSH) are stubbed. SEND records (sink, port, bytes). 1.6.8 recompiled this task (other registers,
+    a guard that drops notes above 127), so this is the evidence that our copies of its Note On case fit."""
+    RING = 0x24060000                                         # addr-ok: harness
+
+    def run_task(self, *events):
+        u = emu(IMG)
+        w32(u, S.M4MIDI_RING_PTR, self.RING)
+        u.mem_write(S.M4_MIDI_TASK_ARG, b"\x00\x01")           # byte +1: enabled
+        for k, e in enumerate(events):
+            u.mem_write(self.RING + 0x21C0 + 24 * k, struct.pack("<6I", *e))
+        w32(u, self.RING + S.MIDI_RING_RD, 0); w32(u, self.RING + S.MIDI_RING_WR, len(events))
+        sent = []
+        def send(uc, a, size, _):
+            m = bytes(uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 0x14))
+            sent.append((uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R2), m[:m[0x10]]))
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        def ret(uc, a, size, _): uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        u.hook_add(UC_HOOK_CODE, send, begin=S.M4MIDI_SEND, end=S.M4MIDI_SEND)
+        for a in (S.M4MIDI_DONE, S.M4MIDI_FLUSH):
+            u.hook_add(UC_HOOK_CODE, ret, begin=a, end=a)
+        u.reg_write(UC_ARM_REG_R0, S.M4_MIDI_TASK_ARG); u.reg_write(UC_ARM_REG_SP, STACK); u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        u.emu_start(S.M4_MIDI_TASK | 1, SENT, count=200000)
+        self.assertEqual(r32(u, self.RING + S.MIDI_RING_RD), len(events), "the task drained the ring")
+        self.assertTrue(all(s == S.M4MIDI_SINK for s, _, _ in sent))
+        return [(p, m.hex()) for _, p, m in sent]
+
+    def test_note_on_control(self):
+        self.assertEqual(self.run_task((0x5B, 0, 1, 2, 60, 100)), [(1, "923c64")])
+
+    def test_poly_pressure(self):
+        self.assertEqual(self.run_task((0x5F, 0, 1, 2, 60, 0x55)), [(1, "a23c55")])
+
+    def test_channel_pressure(self):
+        """M2-5b: 0x60 -> status 0xD0, channel (word 3), ONE data byte (word 4)."""
+        self.assertEqual(self.run_task((0x60, 0, 3, 5, 0x40, 0)), [(3, "d540")])
+
+    def test_mixed_stream_in_order(self):
+        evs = [(0x5B, 0, 1, 2, 60, 100), (0x5F, 0, 1, 2, 60, 0x55), (0x60, 0, 1, 2, 0x22, 0), (0x5C, 0, 1, 2, 60, 0)]
+        self.assertEqual(self.run_task(*evs), [(1, "923c64"), (1, "a23c55"), (1, "d222"), (1, "823c64")])
+
+    def test_note_above_127(self):
+        """1.6.8 stock drops a Note On above 127; our poly pressure for one is dropped the same way (as
+        note & 0x7F it would press note 12). 1.6.1 stock masks (no such notes there)."""
+        if not HIGH_NOTES:
+            self.skipTest("stock never produces a note above 127 on this base")
+        self.assertEqual(self.run_task((0x5B, 0, 1, 2, 140, 100), (0x5F, 0, 1, 2, 140, 0x55)), [])
+
+    def test_only_slots_5f_60_changed(self):
+        jt = lambda img: [struct.unpack_from("<I", img, S.MIDI_JT - BASE + 4 * i)[0] for i in range(9)]
+        a, b = jt(CH10), jt(IMG)
+        self.assertEqual((b[4], b[5]), (POLY | 1, CHAN | 1))
+        self.assertEqual(a[:4] + a[6:], b[:4] + b[6:])
+
+
+@unittest.skipUnless(POLY_AT and HIGH_NOTES, "1.6.8 only: notes above 127")
+class PressureAbove127(unittest.TestCase):
+    """1.6.8's pad router sends the pad's Note On note (router +0x34[pad], up to 163) with its pressure."""
+
+    def test_external_no_pressure_for_a_high_note(self):
+        v = Voices(); v.on(12); v.on(140)                      # 140 passes h_note untracked
+        n = len(queued(v.u))
+        v.pressure(140, 50)
+        self.assertEqual([e for e in queued(v.u)[n:] if e[0] == 0x5F], [], "not as note 12")
+        v.pressure(12, 60)
+        self.assertEqual([(e[0], e[4], e[5]) for e in queued(v.u)[n:] if e[0] == 0x5F], [(0x5F, 12, 60)], "control")
+
+
 @unittest.skipUnless(POLY_AT, S5)
 class M4Handler(unittest.TestCase):
     def trace(self, start):
@@ -592,6 +679,10 @@ class M4Handler(unittest.TestCase):
         u.emu_start(start | 1, S.M4_LOOP, count=2000)
         return log
 
+    def setUp(self):
+        if S.module != "stock_161":
+            self.skipTest("register-level trace with 1.6.1's registers (M4MidiTask runs stock's task on every base)")
+
     def test_same_calls_as_native_note_on_except_status(self):
         native, ours = self.trace(S.M4_NOTE_ON_CASE), self.trace(POLY)
         self.assertEqual(len(native), 8)  # init, status, channel, note, value, send, 2 finishing calls
@@ -611,11 +702,6 @@ class M4Handler(unittest.TestCase):
         self.assertEqual(ours, want)
         self.assertEqual([c[2] for c in ours if c[0] == S.M4MIDI_DATA], [0x40], "the value from word 4")
 
-    def test_only_slots_5f_60_changed(self):
-        jt = lambda img: [struct.unpack_from("<I", img, S.MIDI_JT - BASE + 4 * i)[0] for i in range(9)]
-        a, b = jt(CH10), jt(IMG)
-        self.assertEqual((b[4], b[5]), (POLY | 1, CHAN | 1))
-        self.assertEqual(a[:4] + a[6:], b[:4] + b[6:])
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

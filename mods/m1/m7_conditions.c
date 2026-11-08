@@ -70,7 +70,17 @@ static volatile Counter *entry(u32 seq) {
 }
 
 /* Called at each loop boundary of a sequence (seq+0x14 < 0 = launch/restart). */
+#ifdef BE_PLAY_COUNT_WRAP
+/* 1.6.8 count-on mode (S3 took it for Play Count; review: it is most likely open-length recording, see
+ * test_s3_m7 test_count_on_mode_does_not_loop_the_clip): with the track's flag (byte +0x30) set, the player's first boundary call
+ * (COND_LOOP_CALL_1) is made only at a restart (count < 0) or at 1.6.8's new 256-step wrap (0x08060AE6,
+ * after FUN_08061E80). 1.6.1 has no such wrap: it is not a pass, so A:B keeps the 1.6.1 phase. lr: the
+ * boundary function's return address (the loop trampoline passes the caller's lr). */
+__attribute__((used, retain)) void cond_loop(u32 seq, u32 lr) {
+    if ((lr & ~1u) == S_COND_LOOP_CALL_1 + 4u && *(volatile u8 *)(seq + 0x30u) && (int)W(seq, 0x14) >= 0) return;
+#else
 __attribute__((used, retain)) void cond_loop(u32 seq) {
+#endif
     volatile Counter *c = entry(seq);
     if (!c) return;
     if (c->boundaries && (int)W(seq, 0x14) >= 0) c->loop++;

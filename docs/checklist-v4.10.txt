@@ -1,0 +1,184 @@
+bento_enhanced v4.10: v3.72 parity on stock 1.6.8 (sprints S4+S5, milestone M2), minus the deferred Mod Matrix
+================================================================================================================
+
+Kit: flash\bento_enhanced-v4.10   boot label BE4.10
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write)
+
+In this image (everything v3.72 has, except what Jeff deferred):
+  - black box (logs, RAMCHK, M4 alarms, crash record); stall / watchdog hooks NOT patched in (as v3.72)
+  - poly cap (External, 6 voices), retriggers, curve playback (External and internal), trigger conditions,
+    Note Mod (internal melodic, drum, External via the SEQ page button)
+  - step inspection (150 ms hold), per-step Condition / Retrig / Division / Ramp encoders (drum 5-8, piano
+    roll 7), pad defaults and locks, strike velocity ("Strike Vel" button), the probability clamps
+  - be_step_v1 save / load and curves.bnt (the per-step data and curves survive a save on BE4.10)
+  - hold shortcuts (TRACKS / LAUNCH / MIXER / INST + pads)
+  - live poly AT and AT Out (External 0xA0 / 0xD0, internal instruments), AT Rec
+NOT in it (deferred, Jeff): the Mod Matrix page and the External INST rows (Main / LFO 1-2 / Env 1-2 / Note Mod
+  buttons on the External INST page). Without them the External modulation engine is off: routings a v3.72
+  project has (LFO / envelope -> CC, pitch bend, AT) do NOT play on BE4.10, but they are kept in curves.bnt
+  and come back on v3.72. Note Mod on External tracks works through the SEQ page button as on v3.72.
+Dropped (in the official firmware): PLAY+pad mute.
+Jeff skips the v4.00 / v4.01 device runs: this checklist starts from stock 1.6.8.
+
+0. Gate: S0 on stock 1.6.8 (docs\checklist-v4.00-bb168.txt, section "S0")
+[ ] Full card backup (keep it until the end of this checklist: section 7 restores SPACED from it).
+[ ] SPACED itself is never loaded on 1.6.8 (stock or BE4.10) in this checklist: until S0 has shown that a load
+    writes nothing, a load could turn it into a 1.6.8 project. On a computer, before anything else:
+      - hash SPACED's folder (sha256 of project.xml and curves.bnt; write them down);
+      - copy the whole SPACED folder twice on the card: SPACED_S0 (for S0's baseline) and SPACED_COPY (section 2).
+    S0's "Play SPACED on stock 1.6.8 for a baseline by ear" uses SPACED_S0, not SPACED.
+[ ] Every S0 item of docs\checklist-v4.00-bb168.txt, in order. Its GO / NO-GO is binding here too:
+    the first v3.72 boot after a stock-1.6.8 session must show "RAMCHK | axi changed=0" in a valid (armed)
+    reading. If axi changed is not 0: STOP, do not flash 01_TEST_FIRMWARE, bring BENTO_SAVES.log back.
+[ ] From S0, write down: does stock 1.6.8 write a project on load (hashes)? Is curves.bnt copied by Save As /
+    Pack? (Expected from the code: load writes nothing; Save As and Pack copy samples only, no curves.bnt.)
+[ ] A stock 1.6.8 baseline of SPACED_S0 by ear (S0), and v3.72's sound of SPACED fresh in memory (or play SPACED
+    on v3.72 once more now: section 4 compares against v3.72, not against stock).
+[ ] PLAY + pad on stock 1.6.8: hold PLAY, tap a pad. Expected: stock does nothing special (no mute; the
+    official pad mute is the touchscreen one). Note what happens: BE4.10 must do the same.
+[ ] The other hold buttons + pads on stock 1.6.8: hold TRACKS, tap a top-row and a bottom-row pad; the same with
+    LAUNCH, MIXER, and INST (on the drum sequencer). Note what stock does with each (expected: nothing, or a plain
+    note). BE4.10 gives these combinations its hold shortcuts, so anything stock 1.6.8 does with them is hidden
+    on BE4.10: report it.
+
+1. Boot and black box
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.10.
+[ ] Load any project, play a little, save. BENTO_SAVES.log: header "BENTO black box, firmware BE4.10, boot
+    gen N" (once per boot) and a "# saved:" line per save; BENTO_CRASHES.log: "boot fw=BE4.10". Both readable
+    on a computer. (BENTO_DIAG.log is not written by default.)
+[ ] RAMCHK quiet: from the second boot on, "RAMCHK | axi changed=0 | top changed=0". (First boot after stock:
+    axi changed=0, top "not armed"; "slice canary changed=" large once, then 0.)
+[ ] Alarms quiet: no "!!!" lines, no "M4 main-task stall" in the header, "wd worst gap main=../3333
+    pcm=../6249" under the limits, LINK rx counting, AUDIO blocks rising.
+[ ] Manual reset keeps the black box: restart without losing power; the next header says "previous boot: last
+    UI-loop pass at ms ..", gen is +1, "previous boot (from RAM)" shows the last run, RAMCHK "changed=0" (not
+    "not armed").
+[ ] Cold boot: power off about 10 s, power on. Boots BE4.10, loads and saves a project, writes both logs.
+    Expected in that header: gen starts again (usually 1), "slice canary changed=" large, RAMCHK "not armed",
+    "previous boot" figures meaningless. One more manual reset: "changed=0" and gen +1 again.
+
+2. Work on a copy of SPACED (SPACED itself is never loaded or saved on 1.6.8)
+[ ] Load SPACED_COPY (the computer copy from section 0), Save As "SPACED_410". From now on load and save only
+    SPACED_410 (SPACED_COPY can be deleted at the end).
+    Log after the Save As ("SAVE <path> | sidecar status=.. curves=.. bytes=.. | pool used=.."): the path is
+    SPACED_410's project.xml and curves=N matches SPACED's curve count (v3.72's log of SPACED, or the number
+    you expect). Stock's Save As copies samples but not curves.bnt; ours writes a fresh one after the save.
+[ ] Check on a computer: SPACED_410\curves.bnt exists, and SPACED_410\project.xml has be_step_v1="..."
+    attributes on its seqevents (a few hundred in SPACED: every ratchet, per-step condition and curve note).
+
+3. be_step_v1 round trip on the copy
+[ ] Power off, power on, load SPACED_410. Play the passages with ratchets, per-step conditions and recorded AT
+    curves: they play as on v3.72 (section 4 goes through them one by one). The log's "SAVE"/load line shows
+    the same curves=N.
+[ ] On a computer, check SPACED's hashes against section 0: unchanged (if not: section 7, restore SPACED).
+[ ] Edit one step's Condition and Retrig on the drum step page (hold the step, encoders 5 / 6), save, power
+    cycle, load: the step shows the edited values.
+[ ] Pack (1.6.8's new PROJ item) SPACED_410, then play: ratchets, conditions and curves still play. Then make an
+    unsaved edit (a step's Retrig), Pack again, play: note whether the unsaved edit survived (stock's Pack reloads
+    the project from the card; our data follows what is on the card). Bring the log of both.
+[ ] On a computer, hash SPACED_410's project.xml and curves.bnt. Roll to v3.72 (flash\bento_enhanced-v3.72),
+    open SPACED_410: ratchets, conditions, curves and Note Mod settings as saved on BE4.10, plays like SPACED.
+    Save nothing there. Power off, hash the two files again on a computer: unchanged (v3.72 wrote nothing on
+    open; if they changed, note it and bring the files). Flash BE4.10 again.
+
+4. Parity regression on SPACED_410, feature by feature, against v3.72
+[ ] Poly cap (External): more than 6 overlapping notes on one External track (or hold 7+ pads): the oldest is cut,
+    nothing hangs after release or Stop. Log "# saved:" line: "| poly sent=.. budget_drops=.. stolen=S retrig=R
+    swallowed=W": stolen > 0 after the 7-note test; after Stop W = S + R.
+[ ] Curve playback, External track: recorded AT curves send aftertouch as on v3.72 (Poly 0xA0, or 0xD0 with AT Out
+    Channel). Log: "curves started=.. sent=.. late=.. skipped=0" with started > 0.
+[ ] Curve playback, internal melodic track (a patch with pressure routed to something audible): as on v3.72.
+[ ] Retriggers: SPACED's ratcheted steps (internal and External) play their hits, division and ramp as on v3.72;
+    External retrigger hits end (no hanging MIDI notes).
+[ ] Trigger conditions: A:B / !A:B / 1ST / PRE steps play on the passes they play on v3.72 (in normal loops).
+[ ] Play Count clip (1.6.8 feature, so there is no v3.72 to compare with): set a 1-bar clip to play 4 times, with a
+    1:2 step and a 2:2 step in it. Expected: as in a normal loop of the same length, 1:2 plays on repeats 1 and 3,
+    2:2 on repeats 2 and 4. Write down what you hear per repeat. (Offline we found that the "count-on" track mode
+    our 256-step rule is about is not Play Count: in that mode a clip does not repeat at its length, and the
+    track hands its live notes to the recorder, so it is most likely recording a clip of open length; the code
+    behind Play Count was not traced. If 1:2 plays on every repeat and 2:2 never, that is stock's Play Count
+    not counting passes: report it, it is not a BE4.10 regression but it is a decision for Jeff.)
+[ ] Open-length recording past 256 steps (if you record that way): recording keeps going, nothing odd at step 256,
+    and the recorded clip plays back as on stock 1.6.8 (1.6.8 adds a loop boundary there; BE4.10 does not count
+    it as a condition pass, as 1.6.1 never had one).
+[ ] Note Mod, internal melodic track: SEQ page, "Note Mod" header button; the six encoders (Shape, Rate, Beat Sync,
+    Depth, Behavior, Range) show and edit; notes move as on v3.72; Stop mid-phrase, pattern change, mute / unmute:
+    no note keeps sounding.
+[ ] Note Mod, drum track: page 0x27 "Note Mod" button (Step tab), same checks.
+[ ] Note Mod, External track: SEQ page button only (the INST-page Note Mod row is not in this build): notes move,
+    every note ends.
+[ ] Step UI: drum step page, hold a step 150 ms or more and turn an encoder: the step is edited and stays on at
+    release; a quick tap still toggles. Encoders 5-8 show Condition, Retrig, Division, Ramp for the held step;
+    piano roll: encoder 7 Condition for the selected note(s). The titles must be ours, and no stock page may show
+    "Condition", "Retrig", "Division", "Ramp", "AT Rec", "AT Out", "Loop", "Beat Sync", "Behavior", "Dest" or
+    "Range" on a parameter of its own (our 11 claimed registry keys, 1.6.8: 0x1E3 down to 0x1C1).
+[ ] Pad defaults and locks: with no step held, turn Velocity / Probability / Offset: unlocked steps follow; an
+    edited held step stays (locked); set it back to the default: it follows again.
+[ ] Strike velocity: drum track, page 0x27: "Strike Vel" in the bottom bar left of Undo, outlined while on. Tap in
+    steps hard and soft: each new step takes its hit's velocity (Step tab and Sequence tab). Press Strike Vel:
+    outline off, new steps get the default. Melodic track on the SEQ page: no Strike Vel button.
+[ ] Hold shortcuts: TRACKS + top / bottom row (instrument page / sequencer of track 1-8); LAUNCH + bottom / top row
+    (start / stop the selected clip; back to your screen at release if used); MIXER held shows Solo / Mute, top row
+    solo, bottom row mute; INST held on the drum sequencer picks a sound. While a hold button is down, pads play no
+    notes. PLAY + pad: as on stock 1.6.8 (section 0). After an INST hold, the pad lights are the page's own again
+    (1.6.8 shows launch state on the pads: nothing left lit from the hold).
+[ ] Probability clamps: a step with an old-style condition in the probability byte (pre-v3.3 projects only; if
+    none, skip) shows "Always" in the probability editor, not a garbage value; the piano roll's probability edit
+    stays within 1..99 % / Always.
+[ ] Live poly AT (External, AT Out Poly): pad pressure sends 0xA0 per note on the External synth; AT Out Channel:
+    0xD0 (the highest pressure, 0 after the last note ends); AT Out Off: nothing. Notes above 127 (a layout that
+    goes above note 127; 1.6.8 sends no MIDI for them): no aftertouch for them, and none on note N-128.
+[ ] Live AT on an internal instrument (AT Out Poly / Channel): pressure is audible as on v3.72; two pads with notes
+    12 and 140 (if the layout reaches 140) keep their own pressure.
+[ ] AT Rec On: record a melodic phrase with pressure in the piano roll, save, reload: the curve plays back.
+    Then AT Rec Off, record a few notes, save: the log's "INSERTS ... | recw n=N nonzero=0 last=00000000"
+    must show nonzero=0 (n counts recorded notes). Offline the M7 code that makes recorded notes always gives
+    them 0 there (test_step_xml RecordedNotes); this line confirms it on the device. nonzero > 0: bring the log.
+[ ] External mod routings (deferred): if SPACED has v3.72 Mod Matrix routings on an External track (LFO -> CC
+    etc.), they do NOT play on BE4.10 (expected) and the External INST page has stock's bar only.
+[ ] Note Mod on a slicer with more than 16 slices (1.6.8 "Pads Can Trigger all Slices"), if SPACED has one: note
+    what happens (open since S3).
+[ ] Whole song twice, Stop / Start, tempo change, pattern changes: no crash, no restart, no card error, no crackle
+    beyond stock 1.6.8's baseline.
+[ ] Save SPACED_410 once more and bring back BENTO_SAVES.log and BENTO_CRASHES.log.
+
+5. What to look for in the logs
+  - Header: "firmware BE4.10"; "!!!" lines (alarms), "M4 main-task stall", "M7 audio stall record": any of these, bring
+    the log. "wd worst gap" under its limits.
+  - RAMCHK: axi / top changed=0 from the second boot on.
+  - "# saved:" line: poly stolen / retrig / swallowed (section 4), curves started / sent / late / skipped (skipped > 0:
+    more than 64 curve notes at once).
+  - "SAVE <path> | sidecar status=.. curves=.. bytes=..": the path must be the project just saved (SPACED_410), curves
+    = the number of curves; "pool used" and "ext heap free" not near 0.
+  - "INSERTS total=.. by caller: <address>xN ... | recw n=.. nonzero=0": nonzero must stay 0 (section 4).
+  - "PARAM edits=..", "TOGGLE presses=..", "STRIKE-LATE queued=.. applied=..": strike / defaults activity; "HDR pages:"
+    the header pages seen and where our buttons sat ("nm_slot", "out=", "applied=").
+  - "MX mx_ctx=0 ...": always 0 on BE4.10 (the Mod Matrix is not in it).
+
+6. Bisect (if something is wrong): ask for a build with one group off and compare
+  Each of these builds on 1.6.8 (boot label set with BE_LABEL, e.g. "BEnoS"):
+    BE_DISABLE=step       step UI, strike velocity, be_step_v1 save / load, curves, Note Mod UI (and the M4 side of
+                          everything that needs per-step data): first suspect for a crash on the step page or at save
+    BE_DISABLE=hold       hold shortcuts
+    BE_DISABLE=poly_at    live poly AT (External handler, M4 MIDI 0x5F / 0x60)    BE_DISABLE=poly_cap  the 6-voice cap
+    BE_DISABLE=inta_live  live AT on internal instruments                          BE_DISABLE=inta_curve curves on internal
+    BE_DISABLE=retrig     retriggers + curve playback hooks                        BE_DISABLE=nmod      Note Mod engine
+    BE_DISABLE=cond_engine conditions (M7)    BE_DISABLE=cond_ui  probability clamps    BE_DISABLE=trace / bbox  black box parts
+    BE_DISABLE=rmidi      MIDI retrigger hits on External tracks (internal hits stay)
+    Old names still work: poly, cond, inta (both halves), diag, diag7. Everything off: build_m1_off.sh's default list.
+    A misspelt name is refused by the build (it used to build the default image silently): a bisect kit's
+    manifest.json lists the groups it left out ("disabled"); check it before flashing.
+  A disabled group's stock sites stay unpatched (its code stays in the image, unreachable).
+
+7. Rollback, and SPACED
+[ ] Old setup: flash\bento_enhanced-v3.72 (01_TEST_FIRMWARE; its 03_RESTORE_STOCK is stock 1.6.1): boots BE3.72,
+    projects open. Its first RAMCHK reports axi (and d2a / d2b) changed: BE4.10's slice and 1.6.8's D2, expected.
+[ ] Stock 1.6.8: this kit's 03_RESTORE_STOCK.
+[ ] SPACED: compare its hashes with section 0. If they differ (for any reason: a load on 1.6.8, a save anywhere
+    but v3.72), restore its project folder (project.xml and curves.bnt) from the card backup of section 0: stock
+    drops be_step_v1, and a 1.6.8-written project may not open on v3.72. SPACED_410 opens on v3.72 (section 3)
+    and can stay or be deleted; SPACED_S0 and SPACED_COPY can be deleted.
+Bring back the logs from each section, with a note of anything that sounded different from v3.72.

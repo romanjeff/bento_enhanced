@@ -199,6 +199,12 @@ static int ring_busy(void) {
 }
 
 static void mod_block_body(u32 track, const u32 *clock, int start, u32 router) {
+#ifdef BE_OMIT_MX
+    /* mx left out of the image (1.6.8: Mod Matrix and the External rows deferred): no screen edits these
+     * routings, so none plays (a v3.72 project's routings would send CCs nobody can turn off); m4_step.c
+     * still loads and saves them, so they come back with mx. */
+    return;
+#endif
     ModState *st = state();
     if (!st || !router || !*(volatile u8 *)(track + 0x86D1u)) return;   /* MIDI out off */
     u32 idx = *(volatile u32 *)(track + 0x86D4u);

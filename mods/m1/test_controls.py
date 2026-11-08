@@ -28,6 +28,11 @@ MIXER_RENDER = SYMS["controls.mixer_render"]
 LAYOUT = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["layout"].items()}
 CONSUMER, CTRL_STARTUP, STATE = LAYOUT["CTRL_WRAP"], S.CTRL_STARTUP, D2 + 0x8A0
 REGS = [UC_ARM_REG_R0 + i for i in range(13)]
+# How stock's consumer holds the event at CTRL_CONSUMER_SITE (from the disassembly; build.py picks its wrapper the same way):
+# 1.6.1 preloads r5 code / r6 context / r7 index and copies the record to sp+0x220 (0x0813F944..68);
+# 1.6.8 keeps only r6 = sp+0x218 (0x08140DEA) and reads the code with ldrb r3,[r6] at the site.
+REGS_AT_SITE = S.orig('CTRL_CONSUMER_SITE').hex() == 'a5f11103'
+RECORD_SP = 0x220 if REGS_AT_SITE else 0x218
 
 class NativeProperties(dict):
  def __init__(self,f):super().__init__();self.f=f;self.tables={};self.next=0x20035000
@@ -89,8 +94,10 @@ class Fixture:
   elif a==S.ENGINE_PROPERTY:self.log.append(('engine',r[1],r[2],r[3]));self.ret()
  def event(self,code,index,action=0,valid=True):
   sp=0x20030000;vals=[code,0x314d5442 if valid else 0,0xfffffffe,index,action,0x31525442]
-  self.u.mem_write(sp+0x220,struct.pack('<6I',*vals))
-  before=[0x1010+i for i in range(13)];before[4:8]=[self.m,code,0xfffffffe,index]
+  self.u.mem_write(sp+RECORD_SP,struct.pack('<6I',*vals))
+  before=[0x1010+i for i in range(13)]
+  if REGS_AT_SITE:before[4:8]=[self.m,code,0xfffffffe,index]
+  else:before[4]=self.m;before[6]=sp+RECORD_SP
   for reg,v in zip(REGS,before):self.u.reg_write(reg,v)
   self.u.reg_write(UC_ARM_REG_SP,sp);self.u.reg_write(UC_ARM_REG_LR,0x20035001)
   self.u.emu_start(CONSUMER|1,0,count=10000)
@@ -230,7 +237,7 @@ class LabUI(unittest.TestCase):
  def test_mixer_render_enables_existing_controls_and_restores(self):
   f=Fixture();f.event(175,5);f.render();self.assertEqual(f.u.mem_read(0x20021a08,1),b'\1')
   f.pad(5);f.event(176,5);f.render();self.assertEqual(f.u.mem_read(0x20021a08,1),b'\0')
-  self.assertEqual([x for x in f.log if x[0]=='mixer_mode'],[('mixer_mode',0x10c)]*2)
+  self.assertEqual([x for x in f.log if x[0]=='mixer_mode'],[('mixer_mode',S.EV_MIXER_PAD_MODE)]*2)
  def test_mixer_mode_already_on_is_preserved(self):
   f=Fixture();f.u.mem_write(0x20021a08,b'\1');f.event(175,5);f.render();f.event(176,5);f.render()
   self.assertFalse(any(x[0]=='mixer_mode' for x in f.log))
@@ -242,6 +249,104 @@ class LabUI(unittest.TestCase):
   f=Fixture();f.event(254,0,1,False);self.assertEqual(f.page(),23);self.assertEqual(f.log,[])
  def test_ordinary_event_passes_through(self):
   f=Fixture();f.event(180,3);self.assertEqual(f.log,[])
+
+HEAD_FRAME = {"a5f11103": dict(regs=lambda sp: {UC_ARM_REG_SB: S.ENGINE_PTR, UC_ARM_REG_SL: 1}),
+              "3378113b": dict(regs=lambda sp: {UC_ARM_REG_R5: 1, UC_ARM_REG_R6: sp + 0x218,
+                                                                  UC_ARM_REG_R7: S.ENGINE_PTR, UC_ARM_REG_R8: sp + 0x214})}
+class StockFixture(Fixture):
+ """Events go through the UI ring into stock's own dispatch loop (fetch, the patched site, the jump table and
+ the case handlers run as stock code); stops when the loop comes back to its head or finds the ring empty."""
+ ENGINE=0x24040000  # addr-ok: harness
+ def __init__(self):
+  super().__init__();self.frame=HEAD_FRAME[S.orig('CTRL_CONSUMER_SITE').hex()]
+  self.u.mem_map(0,0x1000)   # 1.6.8's encoder case dereferences a UI pointer that is 0 here: page 0 reads zeros
+  self.w(S.ENGINE_PTR,self.ENGINE);self.w(self.ENGINE+0x2180,5);self.w(self.ENGINE+0x21a0,5)
+  self.u.hook_add(UC_HOOK_CODE,self.head,begin=S.CTRL_DISPATCH_NEXT,end=S.CTRL_DISPATCH_NEXT)
+ def hook(self,u,a,size,data):
+  if a in [S.CTRL_DISPATCH_NEXT,S.CTRL_CONSUMER_SITE + 4]:return   # stock's loop goes on through both
+  super().hook(u,a,size,data)
+ def head(self,u,a,size,data):
+  self.visits+=1
+  if self.visits>1:u.emu_stop()
+ def event(self,code,index,action=0,valid=True):
+  rd=self.r(self.ENGINE+0x2180)
+  vals=[code,0x314d5442 if valid else 0,0xfffffffe,index,action,0x31525442]
+  self.u.mem_write(self.ENGINE+0x980+24*(rd&0xff),struct.pack('<6I',*vals));self.w(self.ENGINE+0x21a0,rd+1)
+  sp=0x2002a000;self.u.reg_write(UC_ARM_REG_SP,sp);self.u.reg_write(UC_ARM_REG_R4,self.m)
+  for r,v in self.frame["regs"](sp).items():self.u.reg_write(r,v)
+  self.visits=0;self.u.emu_start(S.CTRL_DISPATCH_NEXT|1,S.CTRL_DISPATCH_NEXT+0x16,count=200000)
+  assert self.r(self.ENGINE+0x2180)==rd+1,"stock's fetch consumed the event"
+  assert self.u.reg_read(UC_ARM_REG_PC) in (S.CTRL_DISPATCH_NEXT,S.CTRL_DISPATCH_NEXT+0x16)
+  assert self.u.reg_read(UC_ARM_REG_SP)==sp and self.u.reg_read(UC_ARM_REG_R4)==self.m
+class StockConsumer(unittest.TestCase):
+ """The hold shortcuts through stock's own consumer loop on this base (1.6.1 or 1.6.8)."""
+ def test_plain_buttons_reach_the_shortcuts(self):
+  for button,page in [(S.BTN_TRACKS,S.PAGE_TRACKS),(S.BTN_LAUNCH,S.PAGE_LAUNCH),(S.BTN_MIXER,S.PAGE_MIXER)]:
+   f=StockFixture();f.event(S.UI_CODE_PRESS,button);self.assertEqual(f.page(),page)
+   self.assertEqual(f.r(STATE+32+4),button,"controls_dispatch saw the press (S->button)")
+   f.event(S.UI_CODE_RELEASE,button);self.assertEqual(f.page(),page);self.assertEqual(f.r(STATE+32+4),0)
+ def test_launch_pad_request_and_return(self):
+  f=StockFixture();f.event(S.UI_CODE_PRESS,S.BTN_LAUNCH);f.event(S.UI_REQUEST,4,4);f.event(S.UI_CODE_RELEASE,S.BTN_LAUNCH)
+  self.assertEqual(f.page(),0x17);self.assertEqual([x for x in f.log if x[0]=='engine'],[('engine',81,S.ENGINE_PROP_RUN,1),('engine',81,S.ENGINE_PROP_CLIP,2)])
+ def test_mixer_pad_toggles_mute_through_stock_loop(self):
+  f=StockFixture();f.event(S.UI_REQUEST,0,6);f.event(S.UI_REQUEST,0,6)
+  self.assertEqual([x for x in f.log if x[0]=='property'],[('property',77,S.KEY_MUTE,1),('property',77,S.KEY_MUTE,0)])
+ def test_encoder_counts_as_use(self):
+  f=StockFixture();f.event(S.UI_CODE_PRESS,S.BTN_LAUNCH);f.event(S.UI_CODE_ENCODER,0);f.event(S.UI_CODE_RELEASE,S.BTN_LAUNCH)
+  self.assertEqual(f.page(),0x17)
+ def test_other_events_reach_stock_handlers(self):
+  f=StockFixture();f.event(S.UI_CODE_PRESS,7);self.assertEqual(f.log,[('button',7)])   # PROJ: stock's press handler posts it
+  f=StockFixture();f.event(180,3);self.assertEqual(f.log,[])
+  f=StockFixture();f.event(S.UI_REQUEST,0,1,False);self.assertEqual(f.log,[])
+ def test_record_layout_seen_by_stock_press_case(self):
+  f=StockFixture();seen=[]
+  f.u.hook_add(UC_HOOK_CODE,lambda u,a,sz,d:seen.append([f.r(u.reg_read(UC_ARM_REG_R1)+4*i) for i in (1,2)]),begin=S.BUTTON_EVENT,end=S.BUTTON_EVENT)
+  f.event(S.UI_CODE_PRESS,7)
+  self.assertEqual(seen,[[0xfffffffe,7]],"stock's 0xAF case passes {context, index} from the record")
+
+class RealCalleeFixture(StockFixture):
+ """Also runs stock's MIXER_EVENT and MIXER_PAD_MODE (the two whose ids / fields changed in 1.6.8); every call
+ they make out of themselves is stubbed (screen refresh, posts), so their own code decides what happens."""
+ def __init__(self):
+  super().__init__();self.real={S.MIXER_EVENT:0x1C8,S.MIXER_PAD_MODE:0x18};self.inside=None;self.callouts=[]
+ def hook(self,u,a,size,data):
+  if self.inside:
+   lo,hi,ret=self.inside
+   if a==ret:self.inside=None
+   elif not lo<=a<hi:
+    if lo<=u.reg_read(UC_ARM_REG_LR)-1<hi:
+     if a==S.NAVIGATE:return super().hook(u,a,size,data)   # the fixture's NAVIGATE: logs and sets the page
+     self.callouts.append(a);self.ret();return
+  if a==S.BUTTON_EVENT and not self.inside and not self.blocked and self.r(u.reg_read(UC_ARM_REG_R1)+8) in (S.BTN_TRACKS,S.BTN_LAUNCH,S.BTN_MIXER):
+   self.log.append(('button',self.r(u.reg_read(UC_ARM_REG_R1)+8)))
+   self.inside=(a,a+0x40C,u.reg_read(UC_ARM_REG_LR)&~1);return   # stock's own press handler (0x40C B on both bases)
+  if a in self.real and not self.inside:
+   if a==S.MIXER_EVENT:self.log.append(('mixer_mode',self.r(u.reg_read(UC_ARM_REG_R1))&0xffff))
+   else:self.log.append(('pad_mode',self.r(u.reg_read(UC_ARM_REG_R1)+8)))
+   self.inside=(a,a+self.real[a],u.reg_read(UC_ARM_REG_LR)&~1);return
+  super().hook(u,a,size,data)
+class StockButtons(unittest.TestCase):
+ """Stock's own button handler maps our BTN_* ids to the PAGE_* ids save() expects (NAVIGATE stubbed)."""
+ def test_tracks_launch_mixer_press_navigate_natively(self):
+  for button,page in [(S.BTN_TRACKS,S.PAGE_TRACKS),(S.BTN_LAUNCH,S.PAGE_LAUNCH),(S.BTN_MIXER,S.PAGE_MIXER)]:
+   f=RealCalleeFixture();f.event(S.UI_CODE_PRESS,button)
+   self.assertIn(('nav',page),f.log,"stock's handler navigated");self.assertEqual(f.page(),page)
+   self.assertEqual(f.r(STATE+32+4),button,"save() accepted the page")
+class StockMixer(unittest.TestCase):
+ """Hold MIXER: stock's own MIXER_EVENT toggles the pane's Solo/Mute mode for our event id, and stock's own
+ MIXER_PAD_MODE writes the model field our snapshot reads (S.EV_MIXER_PAD_MODE, S.MODEL_MIXER_MODE)."""
+ PANE=0x20018000  # addr-ok: harness (Fixture.render's pane)
+ def test_render_while_held_switches_pane_to_solo_mute_and_back(self):
+  f=RealCalleeFixture();f.event(S.UI_CODE_PRESS,S.BTN_MIXER);f.render()
+  self.assertEqual(f.u.mem_read(self.PANE+0x9a08,1),bytes([1]),"stock toggled the pane mode")
+  f.event(S.UI_REQUEST,0,5);f.event(S.UI_CODE_RELEASE,S.BTN_MIXER);f.render()
+  self.assertEqual(f.u.mem_read(self.PANE+0x9a08,1),bytes([0]))
+  self.assertEqual([x for x in f.log if x[0]=='mixer_mode'],[('mixer_mode',S.EV_MIXER_PAD_MODE)]*2)
+ def test_pad_mode_field_set_while_held_and_restored(self):
+  f=RealCalleeFixture();f.event(S.UI_CODE_PRESS,S.BTN_MIXER)
+  self.assertEqual(f.u.mem_read(f.m+S.MODEL_MIXER_MODE,1),bytes([1]),"stock's MIXER_PAD_MODE wrote the field")
+  f.event(S.UI_REQUEST,0,5);f.event(S.UI_CODE_RELEASE,S.BTN_MIXER)
+  self.assertEqual(f.u.mem_read(f.m+S.MODEL_MIXER_MODE,1),bytes([0]),"old mode restored")
 
 class Input(Receiver):
  def __init__(self):

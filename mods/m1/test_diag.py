@@ -1351,7 +1351,7 @@ class NoCardWrites(FatFsRig):
         # Run on a D2 stack like the real UI task (0x30037CF0..0x300390F0), so a buffer
         # on the stack would show up as a D2 address below.
         self.u.reg_write(UC_ARM_REG_R0, self.path(r"\Projects\X\project.xml"))
-        self.u.reg_write(UC_ARM_REG_SP, 0x30039000); self.u.reg_write(UC_ARM_REG_LR, SENT | 1)  # addr-ok: harness
+        self.u.reg_write(UC_ARM_REG_SP, S.M4_STACK_BOTTOM + 0x1310); self.u.reg_write(UC_ARM_REG_LR, SENT | 1)  # addr-ok: harness
         self.u.emu_start(SYM4["dump_after_save"] | 1, SENT, count=2000000)
         blob = self.fs[r"\Projects\X\curves.bnt"]
         ver, curves = self.decode(blob)

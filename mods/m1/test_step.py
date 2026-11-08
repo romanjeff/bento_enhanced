@@ -38,6 +38,12 @@ SLOT_SET, SLOT_TITLE, BAR_TEXT = S.SLOT_SET, S.SLOT_TITLE, S.BAR_TEXT
 PIANO_SELECTED, PIANO_COMMIT = S.PIANO_SELECTED, S.PIANO_COMMIT
 DRUM_HEADER, DRUM_ENCODER, PIANO_HEADER, PIANO_EVENT = S.DRUM_HEADER, S.DRUM_ENCODER, S.PIANO_HEADER, S.PIANO_EVENT
 STOCK_DRUM_HEADER, STOCK_PIANO_HEADER = S.DRUM_HEADER + 4, S.PIANO_HEADER + 4   # our replays continue here
+# registers stock's header generator prologue pushes before lr: push.w {r4-r10,lr} (1.6.1), {r4-r9,lr} (1.6.8)
+GEN_SAVED = {'2de9f047': 7, '2de9f043': 6}[S.orig('HEADER_GEN').hex()]
+# S4+S5: the Mod Matrix page and the External INST rows (group mx) are left out of the 1.6.8 image (deferred);
+# their classes run only on a build that has them, and the rig reads their (unreviewed there) entries only then
+MX = "mx" not in MAN.get("omitted", [])
+NO_MX = "this build leaves out mx (Mod Matrix page, External INST rows: deferred on this base)"
 
 STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]
 DIVS = ["1/8", "1/8T", "1/8.", "1/16", "1/16T", "1/16.", "1/32", "1/32T", "1/32.", "1/64", "1/64T"]
@@ -158,11 +164,11 @@ class Rig:
             keys = list(struct.unpack("<8H", u.mem_read(d + 0x20, 16)))
             vals = list(struct.unpack("<8I", u.mem_read(d + 0x30, 32)))
             self.log.append(("bar", r(0), keys, vals)); self.ret()
-        elif a == S.EXT_BUILD + 4:                                     # stock External builder body
+        elif MX and a == S.EXT_BUILD + 4:                                     # stock External builder body
             self.log.append("stock-build")
             sp = u.reg_read(UC_ARM_REG_SP)
             u.reg_write(UC_ARM_REG_SP, sp + 36); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 32))
-        elif a == S.EXT_EVENT + 4:                                     # rest of stock's External event handler
+        elif MX and a == S.EXT_EVENT + 4:                                     # rest of stock's External event handler
             self.log.append("stock-event"); self.ret(1)
         elif a == S.UI_POST:                                     # UI post (view, event): bubbles up
             self.log.append(("post", r32(u, r(1)) & 0xFFFF, r32(u, r(1) + 4))); self.ret()
@@ -174,13 +180,13 @@ class Rig:
             self.log.append(("range", r(1), r(2), r(3), r32(u, u.reg_read(UC_ARM_REG_SP)))); self.ret()
         elif a == S.MX_ROWS_BUILD:                                     # matrix: redraw rows
             self.log.append("redraw"); self.ret()
-        elif a in (S.MX_BAR + 4, S.MX_BUILD + 4, S.MX_ROUTE + 4, S.MX_EDIT + 4):   # stock bodies after a replayed push.w
+        elif MX and a in (S.MX_BAR + 4, S.MX_BUILD + 4, S.MX_ROUTE + 4, S.MX_EDIT + 4):   # stock bodies after a replayed push.w
             n = 7 if a == S.MX_BAR + 4 else 9
             self.log.append(("stock", a))
             sp = u.reg_read(UC_ARM_REG_SP)
             u.reg_write(UC_ARM_REG_R0, 0)
             u.reg_write(UC_ARM_REG_SP, sp + 4 * n); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 4 * (n - 1)))
-        elif a == S.MX_EVENT + 4:                                     # stock matrix events after push {r4, lr}; sub sp, #0x18
+        elif MX and a == S.MX_EVENT + 4:                                     # stock matrix events after push {r4, lr}; sub sp, #0x18
             self.log.append(("stock", a))
             sp = u.reg_read(UC_ARM_REG_SP) + 0x18
             u.reg_write(UC_ARM_REG_R0, 1)
@@ -239,12 +245,12 @@ class Rig:
             for slot, label, tab, aid in ((1, b"Step", 1, 0x1046), (2, b"Sequence", 1, 0x1047), (5, b"Undo", 0, 0x1032)):
                 rec = out + S.HEADER_DESC_ACTIONS + slot * S.HEADER_ACTION_SIZE
                 u.mem_write(rec, label); u.mem_write(rec + S.HEADER_ACTION_GROUP, bytes([tab])); u.mem_write(rec + S.HEADER_ACTION_ID, struct.pack("<H", aid))
-            sp = u.reg_read(UC_ARM_REG_SP)
+            sp = u.reg_read(UC_ARM_REG_SP)                 # return from the replayed prologue's frame
             for i, reg in enumerate((UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R7,
-                                     UC_ARM_REG_R8, UC_ARM_REG_R9, UC_ARM_REG_R10)):
+                                     UC_ARM_REG_R8, UC_ARM_REG_R9, UC_ARM_REG_R10)[:GEN_SAVED]):
                 u.reg_write(reg, r32(u, sp + 4 * i))
             u.reg_write(UC_ARM_REG_R0, 0)
-            u.reg_write(UC_ARM_REG_SP, sp + 32); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 28))
+            u.reg_write(UC_ARM_REG_SP, sp + 4 * GEN_SAVED + 4); u.reg_write(UC_ARM_REG_PC, r32(u, sp + 4 * GEN_SAVED))
         elif a in (STOCK_DRUM_HEADER, STOCK_PIANO_HEADER):
             # stand-in for stock's header body: return from the replayed prologue's frame
             self.log.append("stock-header")
@@ -270,6 +276,7 @@ class Rig:
     def drum_header(self):
         self.call(DRUM_HEADER, VIEW)
 
+@unittest.skipUnless(MX, NO_MX)
 class ExtRows(unittest.TestCase):
     """F2a: the External INST page's bar cycles Main / LFO 1 / LFO 2 / Env 1 / Env 2
     (header button ROWS_ACTION); our rows use stock's LFO/env keys and our Loop
@@ -393,6 +400,7 @@ class ExtRows(unittest.TestCase):
         self.assertNotIn(0x10F1, recs)
 
 
+@unittest.skipUnless(MX, NO_MX)
 class ModMatrix(unittest.TestCase):
     """F2b: stock's Mod Matrix page for External tracks: the "Mod" button posts what
     the Modulation menu item posts; for that context the rows are 16 MIDI
@@ -1167,6 +1175,20 @@ class StrikeInsert(unittest.TestCase):
     def test_stale_strike_is_ignored(self):
         g = self.rig(); self.press(g, 5, 44, 10000)
         self.assertEqual(self.insert(g, note(2, nid=0), 10600)[4] >> 16, 100)
+
+    def test_recorded_word_log(self):
+        """1.6.8 (BE_REC_WORD_LOG): the black box counts melodic recording inserts (MEL_NOTE_ON) and keeps the
+        last nonzero +0x14 stock handed in, before any of our code; other inserts don't count. 1.6.1: off."""
+        g = self.rig(0x01)                                        # melodic track
+        self.insert(g, note(2, nid=0), 10000, caller=S.SEQ_PAGE_INSERT)
+        magic, n, nz, last = struct.unpack("<4I", g.u.mem_read(D2 + 0x1D50, 16))
+        if S.module == "stock_161":
+            self.assertEqual(magic, 0, "1.6.1 builds have no recorded-word log (byte-identical v3.72)")
+            return
+        self.assertEqual((magic, n, nz), (0x31574352, 0, 0), "a Sequence-page insert is not a recorded note")
+        self.insert(g, note(3, nid=0), 10010, caller=S.MEL_NOTE_ON)
+        self.insert(g, note(4, nid=0, word=0x12345678), 10020, caller=S.MEL_NOTE_ON)
+        self.assertEqual(struct.unpack("<4I", g.u.mem_read(D2 + 0x1D50, 16)), (0x31574352, 2, 1, 0x12345678))
 
     def test_pitched_tracks_and_non_notes_untouched(self):
         g = self.rig(kind=0x10); self.press(g, 5, 44, 10000)

@@ -94,6 +94,9 @@ Release notes (1.6.8, read 2026-11-07) that touch our work:
 - **S5, changed hooks:** HEADER_GEN (strike velocity), CTRL consumer (hold shortcuts), MIDI 0x5F/0x60
   handlers (register remap, note > 127 check), LIVE_SITE (router +0x40, live AT). EXT_BUILD and MX
   (Mod Matrix, External mod rows) are deferred. Device regression on SPACED. **Milestone M2: parity.**
+  S4 and S5 were merged into one sprint (Jeff). Offline part done (2026-11-08, section "S4+S5" below): a plain
+  1.6.8 build is BE4.10, everything but the deferred `mx` group; kit `flashento_enhanced-v4.10`; the device
+  regression on SPACED (checklist-v4.10.txt) is open.
 - **S6, synths:** SDRAM and CPU budget, then the first drum engine. **Milestone M3.**
 
 ## S2: black box on 1.6.8 (2026-11-07, offline; device check open)
@@ -355,6 +358,169 @@ keep its kit, or rebuild from ce228f7; the M7 ModCfg reader still doesn't check 
 test_notemod_real's emulator stack 0x3003F000 lies in 1.6.8's SAI DMA buffers (S4). The M7 code still reads
 stock track fields as bare offsets (0x31, 0x86D1, 0x86D4, ...): all are read by unchanged stock code here;
 naming them waits for a base that moves one.
+## S4+S5: v3.72 parity on 1.6.8 (2026-11-08, offline; device check open)
+Jeff merged S4 and S5 into one offline sprint. Evidence: scratch `rc19/` (investigators `stepui/` header and views,
+`stepdata/` be_step_v1 / Note Mod plumbing, `hold/` CTRL consumer and hold shortcuts, `s5parts/` poly_at / inta_live /
+cond_ui / Play Count; implementer `impl/`: `bdis.py`, `callers.py`, `regscan.py`, `stk.py` disassembly helpers,
+`vmoved0.py` masked compare of every moved entry, `regdump.py` registry builder run, `mut.sh` mutants, `stockcov.py` /
+`cov.sh` coverage, `final.sh` the exit checks). Reviews in `tools/addrmap/facts_161_168/facts.py` REVIEWED (blocks
+"S5", "S4+S5"); where two or three investigators re-derived the same entry independently (21 entries), facts.py
+keeps each one's evidence; they agree on every value.
+
+**Result.** A plain 1.6.8 build is the parity kit: `BENTO_BASE=1.6.8 build_m1.sh` -> BE4.10 (version 4.10), sha
+5785b05e868ca442fa1c1fc32085c1382224f0808cbc4c3fed1d6e2d4d50ffb9, every group except `mx` (and stall / irq30 /
+modtest, off by default as on 1.6.1). Kit `flash\bento_enhanced-v4.10` with `docs/checklist-v4.10.txt`. 1.6.1 still
+builds v3.72 byte for byte (25877c59...), and every old `BE_DISABLE` bisect build is identical to HEAD's.
+Every single-group `BE_DISABLE` build succeeds on 1.6.8 (poly_cap, poly_at, retrig, cond_engine, cond_ui, nmod,
+inta_curve, inta_live, step, hold, trace, bbox, and the aliases poly / cond / inta / diag / diag7).
+Entries the default 1.6.8 build uses: 307, all reviewed (293), facts (13) or absent (1); none only machine-mapped
+(the 35 moved and 5 exact ones were reviewed this sprint: `vmoved0.py`, 0 masked diffs from each entry except
+the UI_TICK_MS literal).
+
+**Group split: `mx` out of `step`.** Jeff deferred the Mod Matrix page and the External INST rows. `mx` holds
+EXT_BUILD, EXT_EVENT, MX_BUILD / ROUTE / EDIT / BAR / EVENT (+ EV_ENCODER for the replay); it is listed before
+`step` in PATCH_GROUPS so the existing descriptions ("Per-step: External ...", "Per-step: Mod Matrix ...",
+"Per-step: modulation routing ...") route to it and manifests keep their text. Its code stays in m4_step.c under
+`#ifndef BE_OMIT_MX` (ext_build / ext_event / row helpers / the matrix code, ROW_NAMES, ext_toolbar becomes an empty
+stub; DEST_TYPE / DEST_NUM in the generated step_tables.h). The define is passed only when the group is *omitted*
+(not ported to the base), never for a bisect (OMIT_DEFINES in build.py), so a base where mx builds keeps its bytes;
+`BE_NO_MX` (the investigators' first idea) would have been passed by `BE_DISABLE=step` and changed 1.6.1's bisect
+images. plan() computes m4_step.c's entries twice: lean (with BE_OMIT_MX) for `step`, whole for `mx`, so step needs
+none of the 19 mx entries. `BE_DISABLE=step` also disables `mx` (mx's hooks call into step's code): the same image
+as before the split. 1.6.8 leaves mx out by default (`BASE_SETTINGS default_off`); `BE_ENABLE=mx` is refused and
+lists its 19 unreviewed entries. Kept in step: mod_cfg / mod_cfg_block, Note Mod (nm_*), the SEQ page Note Mod button,
+mod_defaults, the sidecar's MODS / NMOD records, claim() with all 11 keys (the key layout stays the same).
+Consequence: External tracks keep Note Mod through the SEQ page button; the INST-page Note Mod row goes with mx.
+**Decision (implementer, stepdata leaned the same way; Jeff to confirm):** without mx the F1 External modulation
+engine sends nothing (m7_mod.c `mod_block_body` returns at once under BE_OMIT_MX). A v3.72 project's routings would
+otherwise send CCs / bend / AT that no screen on BE4.10 can change; they still load and save, and play again on
+v3.72 or once mx is ported. test_mod's engine classes need mx; `EngineOffWithoutMx` checks the silence.
+
+**What 1.6.8 changed in our hooks, and what we did**
+- HEADER_GEN (strike velocity, Note Mod button): recompiled prologue push.w {r4-r9,lr}; sub sp,#0xc (1.6.1
+  {r4-r10,lr}; #8: the same 0x28 frame, the same arguments). The replay is chosen by the site's bytes
+  (`2de9f047` / `2de9f043`), anything else refuses. Description and root grew 0x18: actions at +0x8C, armed flag
+  +0x1194, buttons +0x564 (m4_step.c reads every offset from the table: no code change). Free slots on 0x27 are still
+  3 and 4 (Strike Vel left of Undo), on 0x17 slot 0 (Note Mod).
+- CTRL consumer (hold shortcuts): 1.6.8 copies the event record to sp+0x218 and keeps only a pointer in r6
+  (`ldrb r3,[r6]; subs r3,#0x11` at the site); the wrapper is chosen by the site's bytes (`a5f11103` 1.6.1 registers,
+  `3378113b` 1.6.8 record pointer), anything else refuses. Mixer pad-mode event 0x10C -> 0x10D, model fields pad
+  LEDs 0x19C4 -> 0x19D0 and mixer mode 0x3C7C -> 0x45CC, keys Mute / Solo 0x13D/E -> 0x13B/C (all from the table).
+- M4 MIDI task (live poly AT / AT Out): recompiled (channel r9, note r6, value r4, port r7, the sink from a literal,
+  each case sets r5 and branches back; a new guard drops Note On / Off above 127). `note_on_case()` builds our 0x5F /
+  0x60 handlers from BASE_SETTINGS `m4_note_on`; the native form assembled with 0x90 must equal the image's bytes
+  between M4_NOTE_ON_CASE and M4_NOTE_ON_END, the sink literal must be M4MIDI_SINK, JT[0] the case. On 1.6.8 our
+  0x5F handler drops a note above 127 as stock does.
+- LIVE_SITE (internal live AT): same stub; the pad router now posts the pad's Note On note (router +0x34[pad],
+  0..163). Notes above 127 (BE_NOTES_ABOVE_127, 1.6.8 only): h_poly sends no poly AT for them (as note & 0x7F it would
+  press note N-128), h_live / int_post keep the full note (INT_NOTE 0xFF), so 140 and 12 are two entries.
+- Probability clamps (cond_ui): no behaviour change (one stock fix in the timing path, outside what we replace).
+- be_step_v1 save / load, NOTE_INSERT / UPDATE, DOC_READ: the same code (writer, reader, XML library identical);
+  1.6.8's Save As saves into the new folder first (our sidecar hook writes a fresh curves.bnt there) and copies
+  samples only; Pack reloads the project through the same load path (device check: unsaved edits and Pack).
+- Model: MODEL_WORK 0x3C80 -> 0x45D0; the UI page set 0x689A98 -> 0x68B6D8 B (drum / piano views at +0x677738 /
+  +0x2EF4D0, new entries UI_PAGES_SIZE / UI_PAGE_DRUM / UI_PAGE_PIANO for test_notemod_real).
+
+**Play Count rule (Jeff's default).** In a Play Count clip (track byte +0x30) 1.6.8 adds a loop boundary at each
+256-step wrap (player 0x080609C0 / 0x08060AE6, then the first boundary call COND_LOOP_CALL_1 0x0806072C). It must
+not count as a pass: A:B keeps the 1.6.1 phase. `-DBE_PLAY_COUNT_WRAP` (1.6.8 only): the loop trampoline passes the
+caller's lr (`ldr r1,[sp,#0x3c]`, after the 64-byte save) and cond_loop returns early when it is COND_LOOP_CALL_1 + 4
+with +0x30 set and a count >= 0 (a restart, count < 0, still resets). The second boundary caller has no +0x30 test
+(as 1.6.1), hence the lr and not the flag alone. test_s3_m7 `test_play_count_condition_keeps_the_161_phase`: on stock's
+whole player, 2:2 never plays in a Play Count clip (without the fix it plays from step 256), 1:2 is the control; the
+count test now expects 0 passes on both bases. Mutant (`[sp,#0x38]`) fails both.
+**Correction (review round, `rc19/impl2`): track byte +0x30 is not Play Count.** The behaviour reviewer read the
+rig as "2:2 never plays in a Play Count clip" and asked the checklist to expect that. Checking what the rig plays:
+with +0x30 set a 16-step clip does not repeat at its length on either base (the note at tick 10 plays once in 320
+steps; on 1.6.8 again only after the wrap), the mode exists in 1.6.1's player (Play Count is new in 1.6.8), and with
++0x30 set the track's message loop (codes 2 / 3 at 0x080629E0 / 0x0806298A) also posts live notes to the M4's
+recording handler (REC_MSG_5 / REC_MSG_6, the producers above). So +0x30 is most likely open-length recording, and
+the rule (the 256-step wrap is not a pass) is about that mode: unchanged, still 1.6.1's behaviour (1.6.1 never wraps).
+Play Count clips presumably loop through the normal boundary, so A:B advances per repeat as in a normal loop; the
+Play Count code was not traced. `test_count_on_mode_does_not_loop_the_clip` records the finding (with a +0x30-clear
+control that loops); the checklist expects normal-loop behaviour for a Play Count clip and says what the other
+outcome would mean. The tests keep their S3 names.
+
+**The per-step word (+0x14) on 1.6.8.** Load: stock's reader zeroes it for every note (test_step_xml runs the reader:
+stock alone drops the word, value2 of kind 2 survives). UI-created notes: drum Step add and Sequence page pad entry
+both go through event 0xE9 (0x0813CAB0), which builds the record at sp+0x10 with +0x14 = 0 (`str r4,[sp,#0x24]` at
+0x0813CAF0, r4 = 0) and passes it unchanged to NOTE_INSERT at 0x0813CC70 (no later store to that slot: `stk.py`).
+NOTE_INSERT's other callers: automation insert (kind 2), the recording handler, and 0x0813CE5C (copies existing
+records: the word moves with its note, intended). Recording: the handler copies words 0..5 of a 48-byte M7 message
+(kind forced to 1) into the note, so +0x14 = message word 5. The message comes through a second M7 -> M4 ring in the
+shared object (ENGINE_PTR + 0x2FC0, 64 x 48 B, read +0x3BC0 / write +0x3BE0; M7 enqueue 0x08082BA0, two callers:
+the bus-mailbox forwarder 0x08057F60 and the engine-outbox forwarder 0x0808D540); the engine outbox's one writer
+(0x0805A4E8) makes type 6 with word 5 = 0. **Recording shown (review fix, `rc19/impl2`):** the M4 consumer
+dispatches a ring entry on its byte +0x18 (0x08140930: 1 -> the recording handler 0x08138B08, 6 -> 0x08138A04, which
+inserts nothing), so the engine-outbox messages never become notes. The bus forwarder 0x08057F60 reads the M7 bus
+(48-byte entries at +0xE48, count +0x1A48) with BUS_TAKE 0x0809FB40; the bus has one writer, BUS_APPEND 0x0809FCE0
+(bl / b scan of the whole M7, both phases; no pointer to it; the other #0xe48 / #0xa48 stores are parameter-table
+constructors), called only by REC_MSG_5 0x080602A0 and REC_MSG_6 0x080603E0. Both build the message with word 5 = 0
+(`str r7,[sp,#0x1c]`, r7 = 0; and `strd r7,r7,[sp,#0x18]` with only the halfword at +0x18 rewritten) and +0x18 = 1,
+instruction for instruction as 1.6.1 0x0805FF00 / 0x08060040 (so v3.72 always had 0 there too). test_step_xml
+`RecordedNotes` runs both producers and BUS_TAKE on the build's M7 code with a 0xA5-filled stack: word 0 = 5 / 6,
++0x18 = 1, word 5 = 0 (mutant: the type-5 store removed -> 0xA5A5A5A5, caught). New table entries REC_MSG_5 / REC_MSG_6
+/ BUS_APPEND / BUS_TAKE (reviewed, test only). The `-DBE_REC_WORD_LOG` black-box line ("INSERTS ... | recw n=..
+nonzero=.. last=..", SLICE+0x1D50, the free 16 B between INSLOG and BINDS) stays on 1.6.8 as a device confirmation;
+the checklist expects nonzero=0. Behaviour unchanged.
+
+**Tests and rigs that run 1.6.8's own code** (distinct stock basic blocks on the default build, `impl/cov.sh`):
+test_notemod_real 5501 (UI page set, drum / piano views, and new `HeaderThroughStock`: template loader, HEADER_TICK,
+our HEADER_GEN wrapper, the generator body, strike_toolbar, stock's compare and HEADER_BUILD, the button widgets: Note
+Mod slot 3, Strike Vel slot 4 lit, tabs and Undo kept; the step UI investigator's rig, finished by stubbing the RTOS lock
+pair M4_LOCK_PAIR it recursed on), test_slice 1158 (S2), test_step_xml 442 (new: stock's note writer, XML library and
+reader around our save / load sites; word round trip, legacy migration, value2), test_keys 409 (new: stock's registry
+builder; every key we name has its 1.6.1 title / type / choice count on 1.6.8, REG_KEYS = 498, claim() takes 0x1E3,
+0x1D9, 0x1D1..0x1CE, 0x1C8, 0x1C4..0x1C1, all free), test_s3_m7 282, test_notemod_route 171, test_controls 163
+(`StockConsumer`, `StockButtons`, `StockMixer`: stock's consumer loop, button handler, mixer event / pad mode),
+test_holdstep 127, test_step 84 (sites only; its header classes fake the generator), test_polyat 54 (`M4MidiTask`:
+stock's MIDI-out task), test_notemod 22, test_diag 17, test_retrig 8, test_conditions 5, test_mod 1.
+Counts (1.6.1 / 1.6.8): diag 90 s6 / 90 s6, polyat 45 s3 / 45 s2, conditions 18 / 18, holdstep 18 / 18, controls 62 /
+62, retrig 43 / 43, step 95 / 95 s16 (ExtRows, ModMatrix need mx), mod 24 s1 / 24 s20, notemod 16 / 16, notemod_route
+8 / 8, notemod_real 14 / 14, slice 20 s2 / 20, s3_m7 25 s5 / 25, step_xml 11 / 11, keys 4 / 4 (after the review round:
++1 notemod_real HEADER_ARMED, +1 s3_m7 count-on mode, +3 step_xml RecordedNotes; test_step_xml 442 includes 19 M7 blocks
+of the recorder).
+Mutants on 1.6.8 (`impl/mut.sh`), each caught: description actions at 1.6.1's +0x74 (HeaderThroughStock, and test_step's
+NoteModSeq), load wrapper frame #96 (test_step_xml, 3 failures), save wrapper #76 (test_step_xml), consumer context
+from [r6,#4] (test_controls), the 1.6.1 HEADER_GEN replay on 1.6.8 (build refuses), the recorded-word log keeping no
+value (test_step). HEADER_ARMED at 1.6.1's offset survived the first round (in the rig stock re-applies a changed
+description without our arm); the review fix adds `HeaderThroughStock.test_our_arm_is_the_flag_stock_reads_and_clears`:
+every access to root+HEADER_ARMED is logged with its pc, ours must write 1, then stock must read 1 and write 0
+(0x08182014) — the mutant now fails it, an unmutated control passes. The s5parts and hold investigators' mutants (h_poly guard, INT_NOTE, M4 guard,
+channel register, loop lr offset; 1.6.1 consumer registers on 1.6.8, 0x10C on 1.6.8) were caught in their runs.
+Rig memory: the display emulator's stack moved from 0x3003F000 (1.6.8's SAI DMA buffers) to the top of M7 DTCM
+0x20020000: 128 KB no M4 code can address, so a deep call chain can't run into a stock global (I disagreed with
+s5parts' M4 vector SP, a 0x1400 B stack with stock .bss below it, and with stepdata's 0x2003F000, outside the map).
+test_diag's sidecar stack: M4_STACK_BOTTOM + 0x1310 (still 0x30039000 on 1.6.1).
+
+**What remains**
+- The device run (checklist-v4.10.txt; Jeff skips v4.00 / v4.01, so it starts with S0's go / no-go gate).
+- `mx` (Mod Matrix page, External INST rows, F1 engine on): 19 REVIEW entries; the External view grew 0x1B50
+  inside; stepui has evidence for EV_PAGE_CHANGE / EV_MX_TAKE_TRACK / EV_DASHBOARD(_ALT) (REVIEWED_MX_LATER, not
+  merged); MXSRC_* and the matrix view layout are unmeasured.
+- Pack with unsaved edits; PLAY+pad and the other hold buttons + pads
+  on stock 1.6.8 (no button + pad combination found in 1.6.8's code); the claimed keys at runtime (the registry test
+  covers the builder, not keys registered later); Note Mod on slicers above 16 slices (S3); 1.6.8's launch state on
+  pads after an INST hold.
+- M4 black-box block: 24092 of 24576 B used on 1.6.8 (484 B left).
+- Hard-coded layout offsets outside the table (table review note): drum / piano view fields in m4_step.c (0x113DC..
+  0x114C0, 0x11CD00, 0x125DAC, slot +0x2C8, bar +0x38 / stride 0x468), m4_controls.c pane +0x9A08, m7_controls_input.s
+  receiver +0x1338 and the UI ring +0x2180 / +0x21A0. The reviewer scanned them: stock uses each the same way and
+  the same number of times on both bases, so no defect on 1.6.8; the tests use the same constants, so no suite would
+  catch a move. A next base needs that scan again, or these become table entries (not done here: it changes no
+  1.6.8 byte and is a refactor across three sources).
+
+**Review round (S4+S5).** Fixed: unknown `BE_DISABLE` / `BE_ENABLE` names are refused (build.py `KNOWN_NAMES`;
+`inta_lve`, `stal` used to build the default image); the mx refusal says "drop mx from BE_ENABLE" instead of
+suggesting `BE_DISABLE=mx`; test_notemod_real.py back to LF; HEADER_ARMED test; recorded notes' +0x14 shown (above);
+checklist: Play Count expectation (normal-loop phases; the reviewer's "2:2 never" rested on +0x30 being Play
+Count, which it is not), SPACED never loaded on 1.6.8 (computer copies
+SPACED_S0 / SPACED_COPY, hashes before and after, hashes around the v3.72 open), a stock 1.6.8 baseline of every
+hold button + pad, `rmidi` in the bisect list.
+- After parity: S6 synths (SDRAM, CPU budget), then the per-track EQ / comp / clip strip.
+**REVIEW list after S4+S5 (19, all mx):** EV_DASHBOARD, EV_DASHBOARD_ALT, EV_MX_REBUILD, EV_MX_SELECT, EV_MX_TAKE_TRACK,
+EV_PAGE_CHANGE, EXT_BUILD, EXT_EVENT, MXSRC_ENV1, MXSRC_ENV2, MXSRC_KEY, MXSRC_LFO1, MXSRC_LFO2, MXSRC_NONE,
+MXSRC_PRESS, MXSRC_VEL, MX_BUILD, MX_EDIT, MX_EVENT.
 ## Risks
 1. Slice relocation: the M4's Device mapping of AXI faults on unaligned access; cache maintenance on M7.
    (S2: handled offline, see above; the device run confirms.)
@@ -365,4 +531,4 @@ naming them waits for a base that moves one.
 6. 1010music may ship another update during the port; the table approach is the mitigation.
 7. Tests: every rig hard-codes stock addresses; until they read the table, a green suite on 1.6.8 means nothing.
    (S3: they read the table; only suites that execute 1.6.8's own code are evidence, see the S3 list.)
-8. S3 features other than the poly cap stay inactive on the device until their M4 data paths are ported (S4/S5).
+8. S3 features other than the poly cap stay inactive on the device until their M4 data paths are ported (S4/S5). (S4+S5: ported; BE4.10 has them all, mx excepted.)

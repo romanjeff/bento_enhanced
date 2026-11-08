@@ -7,9 +7,11 @@ OMIT=$(python3 -c "import json,sys; print(' '.join(json.load(open(sys.argv[1])).
 declare -A NEEDS=([test_diag.py]="" [test_slice.py]="" [test_polyat.py]="poly_cap" [test_conditions.py]="cond_engine"
   [test_holdstep.py]="step" [test_controls.py]="hold" [test_retrig.py]="retrig" [test_step.py]="step" [test_mod.py]="retrig"
   [test_notemod.py]="nmod retrig" [test_notemod_route.py]="nmod retrig" [test_notemod_real.py]="step nmod"
-  [test_s3_m7.py]="poly_cap retrig cond_engine nmod")
+  [test_s3_m7.py]="poly_cap retrig cond_engine nmod" [test_step_xml.py]="step" [test_keys.py]="")
+# S4+S5: the mx group (Mod Matrix page, External INST rows) is left out on 1.6.8: test_step and test_mod skip their mx
+# classes themselves (manifest "omitted"), so no suite needs mx as a whole.
 cd /mnt/c/Users/rjrom/bento_mods/bento_enhanced/mods/m1
-for t in test_diag.py test_polyat.py test_conditions.py test_holdstep.py test_controls.py test_retrig.py test_step.py test_mod.py test_notemod.py test_notemod_route.py test_notemod_real.py test_slice.py test_s3_m7.py; do
+for t in test_diag.py test_polyat.py test_conditions.py test_holdstep.py test_controls.py test_retrig.py test_step.py test_mod.py test_notemod.py test_notemod_route.py test_notemod_real.py test_slice.py test_s3_m7.py test_step_xml.py test_keys.py; do
   echo "== $t"
   miss=$(for g in ${NEEDS[$t]}; do case " $OMIT " in *" $g "*) echo -n "$g ";; esac; done)
   if [ -n "$miss" ]; then echo "not run: this build leaves out ${miss% } (omitted: $OMIT)"; continue; fi

@@ -31,7 +31,11 @@ class Emu:
             u.mem_map(a,sz)
         u.mem_write(RET,b'\x00\xbf'*16)
         import dma2d; s.dma=dma2d.DMA2D(u)
-        s.sp=0x3003F000  # addr-ok: harness
+        # BE (S4/S5): the emulated stack is the top of M7 DTCM (0x20000000..0x20020000, mapped above), which no M4 code
+        # can address: 128 KB that cannot overlap a stock global of either base. Was 0x3003F000: in 1.6.1's D2 slice,
+        # and 1.6.8's SAI DMA buffers (0x3003C000..0x30040000). Not the M4's own main stack (vector SP, 0x1400 B):
+        # a deeper emulated call chain would run into stock .bss there without any fault.
+        s.sp=0x20020000  # addr-ok: harness
         # enable FPU: emulate by setting CPACR not needed in unicorn? set anyway
         s.fpu()
         s.data_init()

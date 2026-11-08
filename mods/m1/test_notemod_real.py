@@ -23,7 +23,7 @@ D2 = S.D2_SLICE                                                # our shared slic
 OUT = Path(sys.argv[2]); del sys.argv[1:3]
 IMAGE = str(OUT / "bento1.bin")
 B = 0xC6E784C0                       # the device's own allocation (crash record, BE3.64) (addr-ok: harness)
-V_DRUM, V_PIANO = B + 0x675AF8, B + 0x2ED980
+V_DRUM, V_PIANO = B + S.UI_PAGE_DRUM, B + S.UI_PAGE_PIANO   # the views inside the page set (per base)
 EVT = 0x24070000  # addr-ok: harness
 DRUM_EVENT, PIANO_EVENT, PIANO_HEADER, DRUM_HEADER = S.DRUM_EVENT, S.PIANO_EVENT, S.PIANO_HEADER, S.DRUM_HEADER
 WALK = S.UI_TICK_WALK
@@ -41,7 +41,7 @@ class Real:
         self.u = e.u
         self.u.mem_map(0xC4000000, 0x4000000)  # addr-ok: harness
         e.w(S.UI_BUMP_CUR, B); e.w(S.UI_BUMP_END, 0xC8000000)
-        assert e.call(S.UI_BUMP_ALLOC, 0x689A98) == B
+        assert e.call(S.UI_BUMP_ALLOC, S.UI_PAGES_SIZE) == B
         e.call(S.UI_PAGES_CTOR, B, count=400_000_000)
         e.w(S.UI_PAGES_PTR, B)
         e.call(S.UI_PAGES_INIT, B, count=400_000_000)
@@ -67,7 +67,7 @@ class Real:
             self.e.w(obj, obj + 0x40); self.e.w(obj + 0x40, TYPE_FN)
             self.e.w(u.reg_read(UC_ARM_REG_R2), obj); self.ret(1)
         elif a == TYPE_FN & ~1:
-            self.ret(0x0E)
+            self.ret(getattr(self, "kind", 0x0E))     # the selected track's instrument type
         elif a in (S.CONTEXT_GET, S.PIANO_SELECTED, S.SNAPSHOT, S.PROJECT_TOUCH, S.UI_POST, S.GRID):
             self.ret(0)
 
@@ -191,6 +191,128 @@ class NoteModReal(unittest.TestCase):
         self.assertNotEqual(self.r.piano_keys(), stock)
         self.r.event(PIANO_EVENT, V_PIANO, NM)
         self.assertEqual(self.r.piano_keys(), stock)
+
+
+
+class HeaderThroughStock(unittest.TestCase):
+    """The header path on this base's own code (S4+S5; rig from the step UI investigator): stock's template
+    loader for the drum page, stock's per-tick update HEADER_TICK -> our HEADER_GEN wrapper -> stock's generator
+    body -> strike_toolbar -> stock's compare with the applied header and HEADER_BUILD -> the root's buttons.
+    test_step's header classes fake the generator and write records at the table's offsets; this is the
+    check that 1.6.8's description layout (actions at +0x8C, armed flag +0x1194, buttons +0x564) is what
+    stock really uses. Stubbed: the tempo getter and the RTOS lock pair (no RTOS here)."""
+    def setUp(self):
+        from unicorn.arm_const import UC_ARM_REG_S0
+        self.r = Real()
+        u = self.r.u
+        def stub(uc, a, sz, _):
+            if a == S.TEMPO_GET:
+                uc.reg_write(UC_ARM_REG_S0, struct.unpack("<I", struct.pack("<f", 120.0))[0])
+            else:                                         # M4_LOCK_PAIR: taken
+                uc.reg_write(UC_ARM_REG_R0, 1)
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        for a in (S.TEMPO_GET, S.M4_LOCK_PAIR):
+            u.hook_add(UC_HOOK_CODE, stub, begin=a, end=a)
+        self.r.e.call(S.HEADER_TPL_LOAD, S.MODEL, S.PAGE_SEQ_DRUM, count=40_000_000)
+        u.mem_write(S.MODEL + S.MODEL_PAGE, bytes([S.PAGE_SEQ_DRUM]))
+        u.mem_write(S.MODEL + S.MODEL_HEADER_ON, b"\x01")
+        u.mem_write(EVT + 0x100, bytes(24))              # the tick's event (unused by what we check)
+
+    def tick(self, n=2):
+        for _ in range(n):
+            self.r.e.call(S.HEADER_TICK, S.HEADER_ROOT, EVT + 0x100, count=40_000_000)
+
+    def applied(self):
+        """(label, empty, lit, group, id) of each action record in the header stock applied."""
+        d = bytes(self.r.u.mem_read(S.HEADER_ROOT + S.HEADER_APPLIED, S.HEADER_DESC_SIZE))
+        out = []
+        for i in range(S.HEADER_ACTIONS):
+            x = d[S.HEADER_DESC_ACTIONS + i * S.HEADER_ACTION_SIZE:][:S.HEADER_ACTION_SIZE]
+            out.append((x[:S.HEADER_ACTION_EMPTY].split(b"\0")[0].decode(), x[S.HEADER_ACTION_EMPTY], x[S.HEADER_ACTION_LIT],
+                        x[S.HEADER_ACTION_GROUP], struct.unpack_from("<H", x, S.HEADER_ACTION_ID)[0]))
+        return out
+
+    def buttons(self):
+        """(label, hidden) of each header button widget."""
+        b = lambda k: S.HEADER_ROOT + S.HEADER_BUTTONS + k * S.HEADER_BUTTON_STRIDE
+        return [(self.r.e.text(b(k) + S.HEADER_BUTTON_LABEL), self.r.u.mem_read(b(k) + S.HEADER_BUTTON_HIDDEN, 1)[0])
+                for k in range(S.HEADER_BUTTON_COUNT)]
+
+    def test_drum_header_gets_strike_and_note_mod_left_of_undo(self):
+        """One-shot track on page 0x27: Strike Vel (lit: on) in slot 4 left of Undo, Note Mod in slot 3, stock's
+        Step / Sequence tabs and Undo kept, as v3.72 shows it on the device."""
+        self.r.selected = 0
+        self.tick()
+        recs = self.applied()
+        labels = [x[0] for x in recs]
+        self.assertEqual(labels[1:3], ["Step", "Sequence"])
+        self.assertEqual([x[4] for x in recs[1:3]], [S.EV_TAB_EVENT, S.EV_TAB_SEQUENCE], "stock's tab events")
+        self.assertEqual(recs[4][0::4], ("Strike Vel", S.ACT_STRIKE))
+        self.assertEqual(recs[4][2], 1, "lit: strike velocity on")
+        self.assertEqual(recs[3][0::4], ("Note Mod", S.ACT_NM))
+        self.assertEqual(labels[5], "Undo")
+
+    def test_the_widgets_show_them(self):
+        """HEADER_BUILD made the button widgets from that description: ours visible with their labels."""
+        self.tick()
+        shown = [l for l, hidden in self.buttons() if not hidden]
+        for want in ("Note Mod", "Strike Vel", "Undo", "Step", "Sequence"):
+            self.assertIn(want, shown)
+        self.assertEqual(self.buttons()[4], ("Strike Vel", 0))
+
+    def test_toggling_strike_re_applies_the_header(self):
+        """Strike Vel pressed (its action through the drum view's event hook): on the next ticks header_sync sees our
+        button differ from the applied header and arms stock's layout flag (HEADER_ARMED), so stock applies it unlit."""
+        self.tick()
+        self.assertEqual(self.applied()[4][0:3:2], ("Strike Vel", 1))
+        self.r.event(DRUM_EVENT, V_DRUM, S.ACT_STRIKE)
+        self.tick(3)
+        self.assertEqual(self.applied()[4][0:3:2], ("Strike Vel", 0), "stock re-applied the header: unlit")
+
+    def test_strike_button_appears_when_a_drum_track_is_selected(self):
+        """A melodic track on page 0x27 first (no Strike Vel), then a one-shot one: our button differs from the applied
+        header, header_sync arms stock's layout flag (HEADER_ARMED) and stock shows the widget. Without the arm stock
+        keeps the widget hidden (the layout is applied only at a page change)."""
+        self.r.kind = 0x01
+        self.tick()
+        self.assertNotIn("Strike Vel", [l for l, hidden in self.buttons() if not hidden])
+        self.r.kind = S.TYPE_ONESHOT
+        self.tick(3)
+        self.assertEqual(self.buttons()[4], ("Strike Vel", 0))
+
+    def test_our_arm_is_the_flag_stock_reads_and_clears(self):
+        """HEADER_ARMED (S4+S5 review): the byte our header_sync sets to 1 is the one stock's per-tick update reads
+        and its layout step clears. In the other header tests stock re-applies a changed header without our arm, so
+        a wrong offset (1.6.1's 0x117C on 1.6.8) passed them. Here every access to root+HEADER_ARMED is recorded
+        with the instruction that made it: ours (appended M4 code) must write 1, then stock must read it as 1 and
+        write 0 back; finally the byte is 0 again."""
+        from unicorn import UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_MEM_WRITE
+        u, a = self.r.u, S.HEADER_ROOT + S.HEADER_ARMED
+        log, on = [], [False]                             # (who, 'r'/'w', value); recording after the first ticks
+        def acc(uc, kind, addr, size, value, _):
+            if not on[0] or not addr <= a < addr + size:
+                return
+            pc = uc.reg_read(UC_ARM_REG_PC)
+            who = "ours" if S.APPEND_FROM <= pc < 0x08200000 else "stock"  # addr-ok: end of the M4 flash bank
+            v = (value >> 8 * (a - addr)) & 0xFF if kind == UC_MEM_WRITE else uc.mem_read(a, 1)[0]
+            log.append((who, "w" if kind == UC_MEM_WRITE else "r", v))
+        # hooked before any code runs (a hook added later may miss blocks already translated)
+        hooks = [u.hook_add(k, acc) for k in (UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE)]
+        try:
+            self.r.kind = 0x01
+            self.tick()                                   # melodic: the applied header has no Strike Vel
+            on[0] = True
+            self.r.kind = S.TYPE_ONESHOT                  # now our button differs from the applied header
+            self.tick(3)
+        finally:
+            for h in hooks:
+                u.hook_del(h)
+        self.assertIn(("ours", "w", 1), log, "header_sync armed the flag")
+        i = log.index(("ours", "w", 1))
+        self.assertIn(("stock", "r", 1), log[i:], f"stock never read our arm at root+{S.HEADER_ARMED:#x}: {log}")
+        self.assertIn(("stock", "w", 0), log[i:], f"stock never cleared root+{S.HEADER_ARMED:#x}: {log}")
+        self.assertEqual(u.mem_read(a, 1)[0], 0, "stock's layout step cleared the flag")
+        self.assertEqual(self.buttons()[4], ("Strike Vel", 0))
 
 
 if __name__ == "__main__":

@@ -244,7 +244,32 @@ class Engines(unittest.TestCase):
         c = [struct.unpack_from("<8I", g.u.mem_read(SLICE_COUNTERS + 32 * i, 32)) for i in range(16)]
         mine = [x for x in c if x[0] == R.T]
         self.assertEqual(len(mine), 1)
-        self.assertEqual(mine[0][3], B["LOOP_CALLS_COUNT_MODE_320"] - 1, "cond_loop's pass count")
+        self.assertEqual(mine[0][3], 0, "cond_loop's pass count: 1.6.8's 256-step wrap is not a pass (1.6.1 phase)")
+        self.assertEqual(mine[0][4], 1, "the restart was seen")
+
+    def test_play_count_condition_keeps_the_161_phase(self):
+        """(+0x30 count-on mode, which S3 took for Play Count: see test_count_on_mode_does_not_loop_the_clip.)
+        A 2:2 condition word in a Play Count clip never plays on 1.6.1 (no pass after the restart); the same
+        on 1.6.8, whose 256-step wrap would otherwise make it play from step 256 (sample 15370) on.
+        Control: 1:2 on the same note plays."""
+        for cond, want_any in ((2, False), (1, True)):    # cond = value - 99: 1 = 1:2, 2 = 2:2
+            g = Player(step_idx=14, mode=1)
+            g.notes([dict(t=10, len=20, note=60, word=STEP_TAG << 24 | cond << 17)]); g.play(300)
+            with self.subTest(cond=cond):
+                self.assertEqual(bool(g.routes), want_any, g.routes)
+
+    def test_count_on_mode_does_not_loop_the_clip(self):
+        """What track byte +0x30 is (S4+S5 review round): with it set, a 16-step clip (960 ticks) does NOT loop at its
+        length on either base: the note at tick 10 plays once and, on 1.6.8 only, again after the 256-step wrap. A
+        Play Count clip repeats its content, so +0x30 is not 1.6.8's Play Count (which 1.6.1 also lacks, while this
+        mode is in both players); with +0x30 set the track also posts its live notes to the M4's recording handler
+        (REC_MSG_5 / REC_MSG_6), so it is most likely open-length recording. The cond_loop rule (the wrap is not a
+        pass) is about this mode; Play Count clips loop through the normal boundary (not traced: device check)."""
+        g = Player(step_idx=14, mode=1); g.notes([dict(t=10, len=20, note=60)]); g.play(300)
+        self.assertEqual(g.routes[0], 10)
+        self.assertEqual([t for t in g.routes[1:] if t < 256 * 60], [], "no repeat at the clip length (960 ticks)")
+        n = Player(step_idx=14); n.notes([dict(t=10, len=20, note=60)]); n.play(48)
+        self.assertGreater(len(n.routes), 1, "control: the same clip with +0x30 clear loops at its length")
 
 
 class PolyCap(unittest.TestCase):
@@ -355,8 +380,8 @@ class NotesAbove127(unittest.TestCase):
 
 class GroupSplit(unittest.TestCase):
     """S3 split poly / cond / inta into the part S3 ports and the S4/S5 part (build.py)."""
-    S3 = {"poly_cap", "retrig", "cond_engine", "nmod", "inta_curve"}
-    LATER = {"step", "hold", "cond_ui", "poly_at", "inta_live"}
+    S3 = {"poly_cap", "retrig", "cond_engine", "nmod", "inta_curve", "cond_ui", "poly_at", "inta_live", "step", "hold"}   # + S4/S5
+    LATER = {"mx"}                             # deferred (Jeff): left out by default on 1.6.8 (BASE_SETTINGS default_off)
 
     def test_aliases_keep_the_old_names(self):
         self.assertEqual(build.ALIASES, {"poly": ("poly_cap", "poly_at"), "cond": ("cond_engine", "cond_ui"),

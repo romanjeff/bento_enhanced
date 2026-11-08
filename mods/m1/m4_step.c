@@ -969,6 +969,9 @@ static void log_inserter(u32 lr, const u32 *rec) {
     if (g->magic != INSLOG_MAGIC || g->gen != boot_gen()) {
         for (u32 i = 0; i < 8; i++) { g->lr[i] = 0; g->count[i] = 0; }
         g->total = 0; g->gen = boot_gen(); g->magic = INSLOG_MAGIC;
+#ifdef BE_REC_WORD_LOG
+        RECWORD->n = 0; RECWORD->nonzero = 0; RECWORD->last = 0; RECWORD->magic = RECWORD_MAGIC;
+#endif
     }
     g->total++;
     g->last_kind = rec[0];
@@ -1080,7 +1083,15 @@ __attribute__((used, retain)) void strike_insert(u32 *rec, u32 lr, u32 model, u3
     volatile PadState *ps;
     log_inserter(lr, rec);
     if ((ps = pads())) ps->tl.inserts++;
-    if ((lr & ~1u) == MEL_NOTE_ON) bind_pitch(rec);
+    if ((lr & ~1u) == MEL_NOTE_ON) {
+#ifdef BE_REC_WORD_LOG
+        if (RECWORD->magic == RECWORD_MAGIC) {      /* the word as stock made it, before anything of ours */
+            RECWORD->n++;
+            if (rec[5]) { RECWORD->nonzero++; RECWORD->last = rec[5]; }
+        }
+#endif
+        bind_pitch(rec);
+    }
     if ((rec[0] & 0xFFu) != 1u || strike_off() || !(ps = pads()) || !drum_track_selected()) return;
     /* Which pad made this note? The Sequence page's pads are the 16 steps of the
      * shown page (as in the Step view); live entry uses the drum's own pad;
@@ -1360,7 +1371,9 @@ static void mod_cfg(void) {
 #define K_ENV_R S_KEY_ENV_R
 #define ROWS 6u
 #define ROW_NOTE 5u
+#ifndef BE_OMIT_MX
 static const char *const ROW_NAMES[ROWS] = {"Main", "LFO 1", "LFO 2", "Env 1", "Env 2", "Note Mod"};
+#endif
 
 static volatile ModCfg *mod_cfg_block(void) {
     volatile ModHead *h = MODHEAD;
@@ -1369,6 +1382,7 @@ static volatile ModCfg *mod_cfg_block(void) {
     volatile ModCfg *m = (volatile ModCfg *)c;
     return m->magic == MODHEAD_MAGIC ? m : 0;
 }
+#ifndef BE_OMIT_MX   /* mx (External INST rows, Mod Matrix): left out of the image where it is not ported (1.6.8, build.py OMIT_DEFINES) */
 static volatile ModTrack *mod_track(void) {
     volatile ModCfg *m = mod_cfg_block();
     u32 t = sel_track();
@@ -1410,6 +1424,7 @@ __attribute__((used, retain)) int ext_build(void *v) {
     FN(BAR_SET, void (*)(void *, void *))((u8 *)v + EXT_BAR, &d);
     return 1;
 }
+#endif /* BE_OMIT_MX */
 
 static void mod_write_begin(volatile ModCfg *m) { m->seq |= 1u; }
 static void mod_write_end(volatile ModCfg *m) { m->seq = (m->seq | 1u) + 1u; }
@@ -1500,6 +1515,7 @@ static void nm_slots(void *v, void *bar, u32 first, u32 desc) {
     }
 }
 
+#ifndef BE_OMIT_MX   /* mx (External INST rows, Mod Matrix): left out of the image where it is not ported (1.6.8, build.py OMIT_DEFINES) */
 /* Event hook (view, ev): 1 = ours (handled), 0 = stock's. */
 __attribute__((used, retain)) int ext_event(void *v, const u32 *ev) {
     u32 type = ev[0] & 0xFFFFu;
@@ -1725,6 +1741,10 @@ __attribute__((used, retain)) int mx_event(void *v, const u32 *ev) {
     mx_redraw(v);
     return 1;
 }
+#else
+/* Without mx: no External row button, no Mod button (nothing sets MODHEAD->view / inst_pending). */
+static void ext_toolbar(void *out, int *changed) { (void)out; (void)changed; }
+#endif /* BE_OMIT_MX */
 
 /* Project load: a project's own settings, or none (modtest: the test routing). */
 static void mod_defaults(void) {

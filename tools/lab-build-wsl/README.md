@@ -38,8 +38,9 @@ checkout's `/mnt/c/...` path: edit it for yours.
 - `package_m1.sh`: makes a flashing kit under `flash/bento_enhanced-v<version>/`, with the
   stock pair of the build's own base (checked against the manifest's `base_sha256`). It
   contains your stock firmware: keep it private.
+- `build_m1_off.sh`: a bisect build with every feature group off (logging on), label BEoff, tag off.
 
-These are the copies the S1-S3 checks ran (the working copies live in `bento_mods/wsl/`; keep
+These are the copies the S1-S5 checks ran (the working copies live in `bento_mods/wsl/`; keep
 the two the same).
 
 ```

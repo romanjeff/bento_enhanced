@@ -27,7 +27,12 @@ MSG_SEND = S.MSG_SEND
 MS = 480000
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
-SYM7 = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["m7_symbols"].items()}
+MAN = json.loads((OUT / "manifest.json").read_text())
+SYM7 = {k: int(v, 16) for k, v in MAN["m7_symbols"].items()}
+# S4+S5: without the mx group (Mod Matrix page, External rows: deferred on 1.6.8, left out of the image) nothing can
+# edit a routing, so the engine sends nothing (m7_mod.c BE_OMIT_MX); its routings still load and save (m4_step.c)
+F1 = "mx" not in MAN.get("omitted", [])
+NO_F1 = "this build leaves out mx: the F1 engine sends nothing (EngineOffWithoutMx)"
 CC, PB, AT = 1, 2, 3
 LFO1, LFO2, ENV1, ENV2, VEL, PRESS, KEY = 1, 2, 3, 4, 5, 6, 7
 TRACK_SZ = 8 + 8 + 24 + 16 * 12                                     # lfo[2] + ... per ModTrack (232 B)
@@ -102,6 +107,21 @@ class Rig:
         return [(e[3], e[5]) for e in self.sent if e[0] == 0x5D]
 
 
+@unittest.skipIf(F1, "this build has mx: the engine runs (the other classes)")
+class EngineOffWithoutMx(unittest.TestCase):
+    """1.6.8 (mx deferred): routings a v3.72 project brings (LFO -> CC 1, velocity -> CC 20, pitch bend) send
+    nothing, and Note On / Off through h_note still work as without routings."""
+    def test_routings_send_nothing(self):
+        g = Rig()
+        g.track_cfg(lfo=((3, 1, 6, 0, 0, 1000), (4, 0, 0, 0, 400, 1000)), env=((100, 300, 500, 300, 0), (0,) * 5),
+                    dests=[(CC, 1, (LFO1, 0, 0), (1000, 0, 0)), (CC, 20, (VEL, ENV1, 0), (1000, 1000, 0)), (PB, 0, (LFO2, 0, 0), (150, 0, 0))])
+        g.block(0); g.note(60, vel=100)
+        for ms in range(10, 400, 10): g.block(ms)
+        g.note(60, vel=0, on=False); g.block(410)
+        self.assertEqual([e for e in g.sent if e[0] in (0x5D, 0x5E, 0x60)], [])
+        self.assertEqual([e[0] for e in g.sent], [0x5B, 0x5C], "the note itself goes out (h_note)")
+
+
 class Basics(unittest.TestCase):
     def test_nothing_without_routing(self):
         g = Rig(); g.track_cfg()
@@ -127,6 +147,7 @@ class Basics(unittest.TestCase):
             self.assertEqual(g.sent, [], setup)
 
 
+@unittest.skipUnless(F1, NO_F1)
 class Lfo(unittest.TestCase):
     def rig(self, shape=3, sync=1, srate=6, rate=0, depth=1000, amt=1000, dest=(CC, 1), restart=0):
         g = Rig()
@@ -186,6 +207,7 @@ class Lfo(unittest.TestCase):
         self.assertAlmostEqual(g.pb()[-1][0], 8192 - int(32767 * 150 / 4000), delta=4)
 
 
+@unittest.skipUnless(F1, NO_F1)
 class Envelope(unittest.TestCase):
     def rig(self, a=100, d=300, s=500, r=300, loop=0):
         g = Rig()
@@ -235,6 +257,7 @@ class Envelope(unittest.TestCase):
         self.assertEqual(vals[-1], 0, "then settles at sustain (0)")
 
 
+@unittest.skipUnless(F1, NO_F1)
 class Sources(unittest.TestCase):
     def test_velocity_and_key(self):
         g = Rig()
@@ -255,6 +278,7 @@ class Sources(unittest.TestCase):
         self.assertEqual([e[3] for e in g.sent if e[0] == 0x60][-1], 90)
 
 
+@unittest.skipUnless(F1, NO_F1)
 class WireFormat(unittest.TestCase):
     def test_cc_value_is_scaled_for_stocks_14_bit_writer(self):
         g = Rig()
@@ -264,6 +288,7 @@ class WireFormat(unittest.TestCase):
         self.assertEqual((raw >> 7, raw & 0x7F), (100, 0), "data byte = word 5 >> 7 (stock's 14-bit writer)")
 
 
+@unittest.skipUnless(F1, NO_F1)
 class RingGuard(unittest.TestCase):
     """v3.45: modulation waits while the M7->M4 ring (*0x2401BD3C, 16 slots, no
     full check) holds >= 6 unread entries; BE-MT4 peaked at 12 of 16."""
@@ -289,6 +314,7 @@ class RingGuard(unittest.TestCase):
         self.assertEqual(g.cc(20)[-1][0], 90, "the current value goes out")
 
 
+@unittest.skipUnless(F1, NO_F1)
 class Output(unittest.TestCase):
     def test_changed_values_only_and_8_ms_per_destination(self):
         g = Rig()

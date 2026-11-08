@@ -151,6 +151,29 @@ stay green with a wrong 1.6.8 site or frame offset. test_notemod_route is the pr
 routing (sampler, bus_post) on 1.6.8. test_notemod_real (the M4 view objects) needs `step` and
 runs again from S4. Which suites run on a build: `tools/lab-build-wsl/test_m1.sh` (`NEEDS`).
 
+**Parity on 1.6.8 (S4+S5, v4.10).** Everything is ported except `mx`: the Mod Matrix page and the External
+INST rows (EXT_BUILD / EXT_EVENT / MX_* hooks), which Jeff deferred. `mx` was split out of `step` (PATCH_GROUPS:
+its patch descriptions match first; GROUP_NAMES; the code in m4_step.c and DEST_TYPE / DEST_NUM sit under
+`#ifndef BE_OMIT_MX`, passed only when the group is left out of the image, never for a bisect, so 1.6.1 and every
+old `BE_DISABLE` build keep their bytes; `BE_DISABLE=step` also disables `mx`). 1.6.8 leaves `mx` out by default
+(`BASE_SETTINGS default_off`); `BE_ENABLE=mx` is refused with its 19 unreviewed entries. Without `mx` the F1
+External modulation engine (m7_mod.c) sends nothing: no screen could change those routings; they still load and
+save. A plain 1.6.8 build is the parity kit: `BENTO_BASE=1.6.8 build_m1.sh`. What 1.6.8 changed in our hooks:
+the header generator's prologue (HEADER_GEN replay by its bytes), the description and root (+0x18: actions at
++0x8C, armed flag +0x1194, buttons +0x564), the UI consumer (1.6.8 keeps a pointer to the event record in r6; the
+wrapper is chosen by the site's bytes), the M4 MIDI task (other registers, a guard for notes above 127:
+`note_on_case`, BASE_SETTINGS `m4_note_on`), the mixer's pad-mode event (0x10D) and two model fields, the pad
+router's pressure note (now the pad's Note On note, up to 163: h_poly and live AT follow BE_NOTES_ABOVE_127), and
+the 256-step loop boundary of the count-on mode, track +0x30 (`-DBE_PLAY_COUNT_WRAP`: cond_loop ignores it, so A:B
+keeps the 1.6.1 phase; S3 took the mode for Play Count, the review round found it is not: most likely open-length
+recording, docs/plan-168-port.md).
+Suites that run 1.6.8's own code in these paths: test_notemod_real (UI page set, drum / piano views, and
+`HeaderThroughStock`: template loader, header tick, generator, HEADER_BUILD, the button widgets), test_step_xml
+(stock's note writer, XML library and reader around our save / load sites), test_keys (stock's registry
+builder: every key we name carries the same parameter on each base; claim()'s keys are free), test_controls
+(`StockConsumer` / `StockButtons` / `StockMixer`), test_polyat (`M4MidiTask`: stock's MIDI-out task), test_s3_m7
+(the player, incl. the Play Count wrap), test_holdstep.
+
 **Our slice on 1.6.8 (S2).** 1.6.8 owns D2 0x3003C000..0x30040000 (SAI DMA buffers, M7 MPU R14),
 so on 1.6.8 `S_D2_SLICE` is AXI 0x2404D000..0x24050000 (the name stays): RAMCHK `axi`
 0x2404CDC0..0x2404D000 is a guard band above the M7 stack, the slice uses +0..+0x2000, RAMCHK `top`
@@ -191,6 +214,8 @@ Tool gotchas it guards against:
   covers the four diagnostic groups. With `trace` off (`diag7` too) `d0_publish` doesn't run, so
   `region()` cleans the stats the M4 prints instead, at most once per 13 ms; what the last call
   before an idle stretch wrote shows up after the next call.
+  Any other name (a typo) refuses the build with the list of known names (S4+S5 review: it used to build
+  the default image silently).
 - `stall`, `irq30` and `modtest` are off by default; use `BE_ENABLE=` to turn them on.
   `modtest` (v3.41+, External modulation test): LFO 1 → Mod Wheel (Pos Tri, 1/4), Env 1 →
   CC 74, LFO 2 → Pitch Bend (Sine, 1 bar, 15 %) on every External track.
