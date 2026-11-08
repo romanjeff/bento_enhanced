@@ -48,8 +48,12 @@ CH10 = Path(sys.argv[1]).read_bytes()
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
 SYM7 = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["m7_symbols"].items()}
-POLY = int(json.loads((OUT / "manifest.json").read_text())["layout"]["M4_POLY"], 16)
-CHAN = POLY + 0x80                                                   # build.py M4_CHAN
+MAN = json.loads((OUT / "manifest.json").read_text())
+OMITTED = set(MAN.get("omitted", []))      # S3: groups not in this image (1.6.8: poly_at and inta_live are S5)
+POLY_AT, INTA_LIVE = "poly_at" not in OMITTED, "inta_live" not in OMITTED
+POLY = int(MAN["layout"]["M4_POLY"], 16) if POLY_AT else None
+CHAN = POLY + 0x80 if POLY_AT else None                              # build.py M4_CHAN
+S5 = "S5 on this base: the External handler hook (h_poly) and the M4 MIDI handlers are not in this image"
 
 def emu(img, region=True):
     u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
@@ -391,6 +395,7 @@ class PolyCap(unittest.TestCase):
             v.on(n)
         self.assertEqual(v.out(), [(0x5B, n) for n in range(60, 70)])
 
+    @unittest.skipUnless(POLY_AT, S5)
     def test_pressure_only_for_sounding_notes(self):
         v = Voices()
         for n in range(60, 67):                    # 60 gets stolen
@@ -401,6 +406,7 @@ class PolyCap(unittest.TestCase):
         v.pressure(66, 50)                         # sounding: sent
         self.assertEqual(queued(v.u)[-1], (0x5F, 0, 1, 2, 66, 50))
 
+@unittest.skipUnless(POLY_AT, S5)
 class PolyHook(unittest.TestCase):
     def run_branch(self, img, r3, note=60, val=50, midi=1, sounding=True):
         """Enter at the handler's `cmp r3,#3` (0x08062464); stop at stock's loop head."""
@@ -436,6 +442,7 @@ class PolyHook(unittest.TestCase):
     def test_midi_out_off_posts_nothing(self):
         self.assertEqual(self.run_branch(IMG, 0x0E, midi=0)[3], [])
 
+@unittest.skipUnless(POLY_AT, S5)
 class LiveAtOut(unittest.TestCase):
     """M2-5c: live pad pressure follows the track's AT Out (M4 table at 0x3003DF80,
     channel 1-based). Off sends nothing; Channel sends the highest held note's
@@ -471,6 +478,7 @@ class LiveAtOut(unittest.TestCase):
         v.pressure(60, 50)
         self.assertEqual([e[0] for e in queued(v.u) if e[0] in (0x5F, 0x60)], [0x5F])
 
+@unittest.skipUnless(INTA_LIVE, "S5 on this base: LIVE_SITE (h_live) is not hooked in this image")
 class LiveInternal(unittest.TestCase):
     """M2-2b: live pad pressure on an internal track (hook at the pad router's
     post, h_live(bus, ev, router)): Poly passes through untouched; Off drops it;
@@ -534,6 +542,7 @@ class LiveInternal(unittest.TestCase):
         self.assertEqual([p[3:] for p in v.posts[1:]], [(64, 40)])
 
 
+@unittest.skipUnless(POLY_AT, S5)
 class PolyRate(unittest.TestCase):
     def setUp(self):
         self.v = Voices()
@@ -563,10 +572,11 @@ class PolyRate(unittest.TestCase):
         self.v.pressure(45, 51)
         self.assertGreaterEqual(len(self.sent()), 6, "refilled tokens flush the held-back notes")
 
+@unittest.skipUnless(POLY_AT, S5)
 class M4Handler(unittest.TestCase):
-    CALLS = (S.M4MIDI_BEGIN, S.M4MIDI_STATUS, S.M4MIDI_CHANNEL, S.M4MIDI_DATA, S.M4MIDI_SEND, S.M4MIDI_RESULT, S.M4MIDI_DONE)
-
     def trace(self, start):
+        self.CALLS = (S.M4MIDI_BEGIN, S.M4MIDI_STATUS, S.M4MIDI_CHANNEL, S.M4MIDI_DATA, S.M4MIDI_SEND, S.M4MIDI_RESULT,
+                      S.M4MIDI_DONE)                     # read here: unreviewed on a base where poly_at is S5
         u = emu(IMG)
         log = []
         def hook(uc, addr, size, _):

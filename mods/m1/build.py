@@ -50,9 +50,15 @@ FORBIDDEN_FROM = 0x081E0000
 # the matcher mapped with confidence carry no REVIEW, but their hooks' assumptions are only checked
 # when a sprint ports the feature: until then the group is refused when enabled and left out of
 # the image when disabled (S2: only the black box, S3-S5 add the rest).
+# m7_flags (S3): extra compiler flags for the M7 code on that base. BE_NOTES_ABOVE_127: 1.6.8's pad
+# notes reach 0..163 (stock's clamp 0x080A25E0, 1.6.1: usat #7) and its M4 drops MIDI notes above 127;
+# the poly cap, retrigger MIDI hits, curves and Note Mod pass such notes on untouched instead of
+# treating them as note & 0x7F (a per-base flag, so the 1.6.1 build stays byte-identical).
+# S3 ported the M7 parts: poly_cap, retrig (with External curve playback), cond_engine, nmod, inta_curve.
 BASE_SETTINGS = {
-    "stock_161": dict(version="3.72", m4_flags=(), groups=None),
-    "stock_168": dict(version="4.00", m4_flags=("-mstrict-align",), groups=("trace", "stall", "irq30", "bbox")),
+    "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=None),
+    "stock_168": dict(version="4.01", m4_flags=("-mstrict-align",), m7_flags=("-DBE_NOTES_ABOVE_127",),
+                      groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve")),
 }
 VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (display: boot label, max 6 characters)
 # Bisect builds (diagnosis only): BE_DISABLE="step,hold" leaves those groups' stock
@@ -68,16 +74,29 @@ VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (di
 # Code stays in the image, unreachable. BE_ENABLE="stall,irq30" turns them back on.
 DEFAULT_OFF = {"stall", "irq30", "modtest"}   # modtest: F1 fixed routing (test builds only)
 DISABLED = (DEFAULT_OFF - {g for g in os.environ.get("BE_ENABLE", "").split(",") if g})     | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
+# S3 split poly, cond and inta into the part S3 ports (M7 only) and the part a later sprint does, so the
+# S3 part builds on 1.6.8 alone: poly_cap (S3) + poly_at (S5: External handler h_poly and the M4 MIDI
+# 0x5F/0x60 handlers), cond_engine (S3: M7 gate and loop) + cond_ui (S4: the M4 probability clamps),
+# inta_curve (S3: curve playback on internal instruments, -DBE_NO_INTA_CURVE when off) + inta_live (S5:
+# LIVE_SITE, live pad AT). The old names stay as aliases (BE_DISABLE=poly turns off both halves and still
+# passes -DBE_NO_POLY), so scripts and earlier bisects build what they built before.
+ALIASES = {"poly": ("poly_cap", "poly_at"), "cond": ("cond_engine", "cond_ui"), "inta": ("inta_curve", "inta_live")}
+for _a, _parts in ALIASES.items():
+    if _a in DISABLED:
+        DISABLED |= set(_parts)
 PATCH_GROUPS = [("step", ("Per-step", "Step edit", "Strike", "Step inspection", "Curves")),
                 ("hold", ("Hold shortcuts",)),
-                ("cond", ("Conditions", "Probability:")),
+                ("cond_engine", ("Conditions",)),                   # M7 probability gate + loop counter
+                ("cond_ui", ("Probability:",)),                     # M4 probability editor clamps
                 ("retrig", ("Retrigger",)),
-                ("poly", ("M1 poly AT: External", "M1b poly cap", "M1 poly AT: MIDI task")),
+                ("poly_at", ("M1 poly AT: External", "M1 poly AT: MIDI task")),   # h_poly + M4 MIDI handlers
+                ("poly_cap", ("M1b poly cap",)),                    # the five msg_send sites -> h_note
                 ("trace", ("M1 diag: h_",)),                        # M7 event tracing hooks
                 ("stall", ("Stall",)),                              # M7 stall record + SysTick profile
                 ("irq30", ("M4 watchdog profile: IRQ30",)),         # M4 heartbeat-supervisor profile
                 ("bbox", ("M1 diag: defaultTask", "Diag dump")),                # M4 black box (also hands poly AT its region)
-                ("inta", ("Internal AT",)),                         # M2-2b internal instruments (+ -DBE_NO_INTA)
+                ("inta_curve", ()),                                 # M2-2b curves on internal instruments (-DBE_NO_INTA_CURVE)
+                ("inta_live", ("Internal AT",)),                    # M2-2b live pad AT on internal instruments
                 ("nmod", ("Note Mod",))]                            # F5 Note Mod (+ -DBE_NO_NMOD)
 if "diag7" in DISABLED:
     DISABLED |= {"trace", "stall"}
@@ -161,7 +180,7 @@ HOLD_TAP_MS = 150   # Jeff: 400 -> 150 ms, confirmed on device v3.13
 # what the build really read: Tracked) or if a source it compiles names it (found by preprocessing
 # the source with every entry defined as a marker: source_refs). "core" is built whatever is
 # disabled: the black box's M7 and M4 code, the layout, the version label and the base checks.
-M7_FEATURES = ("poly", "inta", "cond", "retrig", "nmod")   # m7_polyat/_conditions/_retrig/_mod call each other
+M7_FEATURES = ("poly_cap", "poly_at", "inta_curve", "inta_live", "cond_engine", "retrig", "nmod")   # m7_polyat/_conditions/_retrig/_mod call each other
 SOURCES = [  # (source, ELF, groups that need it; () = core), in compile order
     ("m7_diag.c", "m7", ()), ("m7_polyat.c", "m7", M7_FEATURES), ("m7_conditions.c", "m7", M7_FEATURES),
     ("m7_stall.c", "m7", ("stall",)), ("m7_retrig.c", "m7", M7_FEATURES), ("m7_mod.c", "m7", M7_FEATURES),
@@ -177,17 +196,19 @@ GROUP_NAMES = {
              "POOL_LEFT_LITS", "POOL_CUR_RAM", "POOL_CUR_LITS", "MPU_SETUP", "MPU_SETUP_END", "MPU_SETUP_SHA",
              "M4_STACK_BOTTOM"),
     "trace": ("H_INPUT_SITE", "H_SEND_SITE", "H_RING_SITE", "H_CONSUME_SITE"),
-    "poly": ("EV_VOICE_PRESSURE", "POLY_RESUME", "POLY_SITE", "MSG_SEND", "POLYCAP_SEQ_ON_SITE", "POLYCAP_PAD_ON_SITE",
-             "POLYCAP_SEQ_OFF_SITE", "POLYCAP_PAD_OFF_SITE", "POLYCAP_ALL_OFF_SITE", "M4MIDI_BEGIN", "M4MIDI_STATUS",
-             "M4MIDI_CHANNEL", "M4MIDI_DATA", "M4MIDI_SEND", "M4MIDI_RESULT", "M4MIDI_DONE", "M4_LOOP",
-             "M4_NOTE_ON_CASE", "MIDI_JT", "EV_MIDI_POLY_AT", "MIDI_JT_FIRST", "EV_MIDI_CHAN_AT"),
-    "inta": ("LIVE_SITE", "BUS_POST"),
+    "poly_cap": ("MSG_SEND", "POLYCAP_SEQ_ON_SITE", "POLYCAP_PAD_ON_SITE", "POLYCAP_SEQ_OFF_SITE", "POLYCAP_PAD_OFF_SITE",
+                 "POLYCAP_ALL_OFF_SITE"),
+    "poly_at": ("EV_VOICE_PRESSURE", "POLY_RESUME", "POLY_SITE", "M4MIDI_BEGIN", "M4MIDI_STATUS",
+                "M4MIDI_CHANNEL", "M4MIDI_DATA", "M4MIDI_SEND", "M4MIDI_RESULT", "M4MIDI_DONE", "M4_LOOP",
+                "M4_NOTE_ON_CASE", "MIDI_JT", "EV_MIDI_POLY_AT", "MIDI_JT_FIRST", "EV_MIDI_CHAN_AT"),
+    "inta_curve": ("BUS_POST",),
+    "inta_live": ("LIVE_SITE", "BUS_POST"),
     "retrig": ("NOTE_ROUTE", "RETRIG_ACCEPT_SITE", "RETRIG_EMIT_SITE"),
     "nmod": ("NM_OFF_SITE_1", "NM_OFF_SITE_2", "NM_NOTE_OFF", "NM_ALL_OFF"),
     "stall": ("STALL_PROGRESS_SITE", "WD_REFRESH", "STALL_CHECK_SITE", "MSG_PUMP", "SYSTICK_HANDLER", "HAL_INCTICK"),
-    "cond": ("COND_GATE_SITE", "COND_SKIP", "COND_LOOP_SITE", "PROB_SHOW_PIANO_SITE", "PROB_SHOW_DRUM_SITE",
-             "PROB_PIANO_REF_SITE", "PROB_PIANO_REF_BACK", "PROB_PIANO_REF_SHA", "PROB_PIANO_EDIT_SITE",
-             "PROB_PIANO_EDIT_BACK", "PROB_PIANO_EDIT_SHA"),
+    "cond_engine": ("COND_GATE_SITE", "COND_SKIP", "COND_LOOP_SITE"),
+    "cond_ui": ("PROB_SHOW_PIANO_SITE", "PROB_SHOW_DRUM_SITE", "PROB_PIANO_REF_SITE", "PROB_PIANO_REF_BACK",
+                "PROB_PIANO_REF_SHA", "PROB_PIANO_EDIT_SITE", "PROB_PIANO_EDIT_BACK", "PROB_PIANO_EDIT_SHA"),
     "irq30": ("M4_WD_SUPERVISOR", "M4_WD_SITE"),
     "bbox": ("FILE_WRITER", "SAVE_WRITE_SITE", "M4_BL_TARGET", "M4_BL_SITE"),
     "hold": ("PRODUCER_GLOBAL", "ENQUEUE", "PAD_NEXT", "PAD_CHANGED", "CTRL_INPUT_SITE", "CTRL_STARTUP_SITE",
@@ -199,9 +220,12 @@ GROUP_NAMES = {
              "MX_ROUTE", "MX_EDIT", "MX_BAR", "MX_EVENT", "NOTE_INSERT", "NOTE_UPDATE", "DOC_READ", "HOLD_TAP_PAD",
              "HOLD_TAP_TOUCH"),
 }
-GROUP_TITLES = {"core": "black box core (always built)", "trace": "M7 event tracing", "poly": "poly AT / poly cap",
-                "inta": "internal AT", "retrig": "retrigger", "nmod": "Note Mod", "stall": "M7 stall record + profile",
-                "cond": "trigger conditions", "irq30": "M4 watchdog profile", "bbox": "black box M4 hooks",
+GROUP_TITLES = {"core": "black box core (always built)", "trace": "M7 event tracing", "poly_cap": "poly cap (M7)",
+                "poly_at": "poly AT: External handler + M4 MIDI 0x5F/0x60 handlers (S5)",
+                "inta_curve": "curve playback on internal instruments (M7)", "inta_live": "internal live AT (LIVE_SITE, S5)",
+                "retrig": "retrigger + curve playback hooks", "nmod": "Note Mod engine (M7)", "stall": "M7 stall record + profile",
+                "cond_engine": "trigger conditions engine (M7)", "cond_ui": "probability editor clamps (M4, S4)",
+                "irq30": "M4 watchdog profile", "bbox": "black box M4 hooks",
                 "hold": "hold shortcuts", "step": "per-step UI / strike / curves / Mod Matrix"}
 assert set(GROUP_NAMES) == {"core"} | {g for g, _ in PATCH_GROUPS}
 
@@ -268,7 +292,8 @@ def plan(base, disabled):
     if base.module not in BASE_SETTINGS:
         raise SystemExit(f"build.py has no BASE_SETTINGS for {base.module} (version line, M4 flags, groups)")
     verified = BASE_SETTINGS[base.module]["groups"]
-    refs = {src: source_refs(base, src, disabled) for src, _, _ in SOURCES}
+    m7_flags = BASE_SETTINGS[base.module]["m7_flags"]                 # the defines the M7 code is compiled with
+    refs = {src: source_refs(base, src, disabled, m7_flags if src.startswith("m7_") else ()) for src, _, _ in SOURCES}
     def needs(g):
         n = set(GROUP_NAMES[g])
         for src, _, gs in SOURCES:
@@ -467,7 +492,7 @@ def compile_elf(srcs, cpu, ld, out, origin, limit):
            "-mfloat-abi=soft", "-Os", "-g", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-nostdlib",
            "-ffunction-sections", "-fdata-sections", "-Wall", "-Werror",
            "-Wl,--gc-sections", "-include", str(syms_h), f"-I{out.parent}", f"-Wl,--script={ld}", "-Wl,--entry=0",
-           *(SETTINGS["m4_flags"] if cpu == "cortex_m4" else ()),
+           *(SETTINGS["m4_flags"] if cpu == "cortex_m4" else SETTINGS["m7_flags"]),
            *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *map(str, srcs), "-o", str(out)]
     subprocess.run(cmd, check=True)
     return out.read_bytes()
@@ -692,8 +717,10 @@ def build(base_img, out):
             patch(site, asm(f"b.w {t:#x}", site), orig, f"M1 diag: {name} entry trampoline")
             if len(asm(f"b.w {t:#x}", site)) != 4:
                 raise SystemExit(f"{name}: branch is not 4 bytes")
-    if inc("poly"):
-        with S.group("poly"):
+    # S3: poly_at's trampoline stays first and the poly cap's five stubs follow, as before the split, so the
+    # 1.6.1 trampoline block is byte-identical; a build without poly_at starts the stubs where it was.
+    if inc("poly_at"):
+        with S.group("poly_at"):
             t = M7_TRAMP + len(tramps)
             head = asm(f"cmp r3, #{S.EV_VOICE_PRESSURE:#x}", t)
             head += bcond_w("ne", t + len(head), S.POLY_RESUME)          # not ours -> stock path
@@ -708,6 +735,8 @@ def build(base_img, out):
             if bcond_w("ne", S.POLY_SITE, S.POLY_RESUME) != S.orig("POLY_SITE"):
                 raise SystemExit("hand encoder does not reproduce the original bne.w")
             patch(S.POLY_SITE, new_branch, S.orig("POLY_SITE"), "M1 poly AT: External handler 0x0E -> h_poly")
+    if inc("poly_cap"):
+        with S.group("poly_cap"):
             for site_name, reg, role in NOTE_SITES:
                 site = getattr(S, site_name)
                 stub = M7_TRAMP + len(tramps)
@@ -717,16 +746,16 @@ def build(base_img, out):
                 if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
                     raise SystemExit(f"{site:#x}: not the expected bl msg_send")
                 patch(site, asm(f"bl {stub:#x}", site), orig, f"M1b poly cap: {role} -> h_note")
-    if inc("inta"):
-        with S.group("inta"):
-            if "inta" not in DISABLED:
+    if inc("inta_live"):
+        with S.group("inta_live"):
+            if "inta_live" not in DISABLED:
                 stub = M7_TRAMP + len(tramps)
                 code = asm(f"mov r2, r5; b.w {s7['h_live']:#x}", stub)    # h_live(bus, ev, router); returns to site+4
                 tramps += code + bytes(-len(code) % 4)
             orig = asm(f"bl {S.BUS_POST:#x}", S.LIVE_SITE)
             if bytes(base_img[S.LIVE_SITE - BASE:S.LIVE_SITE - BASE + 4]) != orig:
                 raise SystemExit(f"{S.LIVE_SITE:#x}: not the expected bl bus_post")
-            patch(S.LIVE_SITE, asm(f"bl {stub:#x}", S.LIVE_SITE) if "inta" not in DISABLED else orig, orig,
+            patch(S.LIVE_SITE, asm(f"bl {stub:#x}", S.LIVE_SITE) if "inta_live" not in DISABLED else orig, orig,
                   "Internal AT: pad router pressure post -> h_live (AT Out on internal tracks)")
     if inc("retrig"):
         with S.group("retrig"):
@@ -793,8 +822,8 @@ def build(base_img, out):
                 if bytes(base_img[site - BASE:site - BASE + 4]) != orig:
                     raise SystemExit(f"{site:#x}: not the expected bl {target:#x}")
                 patch(site, asm(f"bl {stub:#x}", site), orig, why)
-    if inc("cond"):
-        with S.group("cond"):
+    if inc("cond_engine"):
+        with S.group("cond_engine"):
             # Trigger conditions (Lab T2 trampolines): save r0-r12, lr, flags (64 B).
             save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; "
             restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
@@ -884,8 +913,8 @@ def build(base_img, out):
         patch(S.SAVE_WRITE_SITE, asm(f"bl {dstub:#x}", S.SAVE_WRITE_SITE), orig,
               "Diag dump: project save writes the file, then the black box appends its log")
 
-    if inc("cond"):
-        with S.group("cond"):
+    if inc("cond_ui"):
+        with S.group("cond_ui"):
             # --- Probability editor conversions (Lab T2 sites, clamp only since v3.3)
             ui = bytearray(); ui_syms = {}
             for name, src, back in cond_ui_helpers():
@@ -937,8 +966,8 @@ def build(base_img, out):
         raise SystemExit("M4 code + marker overrun")
     if M4_CODE + len(code4) + len(MARKER) > M4_LIMIT:
         raise SystemExit("M4 diag code + marker overruns its slice")
-    if inc("poly"):
-        with S.group("poly"):
+    if inc("poly_at"):
+        with S.group("poly_at"):
             if BASE + len(img) < M4_POLY:                # a build without the per-step block (S2: never on 1.6.1)
                 extend(M4_POLY, "M1 poly AT: extend image with erased (0xFF) flash up to the M4 handler block")
             m4_poly_handlers(base_img, img, patch, extend)
@@ -980,7 +1009,7 @@ def build(base_img, out):
     shown = dict(LAYOUT)
     if omitted:                                  # S2: only the blocks this image has, and where it really ends
         for g, keys in (("hold", ("HOLD_WRAP", "HOLD_CODE", "CTRL_WRAP", "CTRL_CODE")), ("step", ("STEP_WRAP", "STEP_CODE")),
-                        ("poly", ("M4_POLY",))):
+                        ("poly_at", ("M4_POLY",))):
             if g in omitted:
                 for k in keys:
                     shown.pop(k)

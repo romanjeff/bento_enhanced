@@ -429,20 +429,25 @@ class BuildRefusal(unittest.TestCase):
         import build
         cls.b = build
         cls.off = {g for g, _ in build.PATCH_GROUPS} - {"trace", "stall", "irq30", "bbox"}
+        # S3: the M7 parts ported to 1.6.8 (independent list: a change to BASE_SETTINGS must show here)
+        cls.s3 = {"poly_cap", "retrig", "cond_engine", "nmod", "inta_curve"}
+        cls.later = {"step", "hold", "cond_ui", "poly_at", "inta_live"}            # S4 / S5
 
     def test_black_box_alone_builds(self):
         inc, omitted, refused, _ = self.b.plan(S, self.off)
         self.assertEqual(refused, {})
         self.assertTrue({"core", "trace", "stall", "irq30", "bbox"} <= inc)
         if S.module == "stock_168":
-            self.assertEqual(omitted, self.off)
+            self.assertEqual(omitted, self.later, "S3: a ported group is built even when disabled (sites left stock)")
+        self.assertEqual(self.off, self.s3 | self.later)
 
-    def test_any_other_feature_is_refused_with_its_entries(self):
+    def test_any_later_feature_is_refused_with_its_entries(self):
+        """S3: on 1.6.8 each S4/S5 part (step, hold, cond_ui, poly_at, inta_live) is refused alone and named."""
         if S.module == "stock_161":
             self.skipTest("every feature is ported to 1.6.1")
-        for g in sorted(self.off):
+        for g in sorted(self.later):
             with self.subTest(group=g):
-                inc, omitted, refused, _ = self.b.plan(S, self.off - {g})
+                inc, omitted, refused, _ = self.b.plan(S, self.later - {g})
                 self.assertEqual(list(refused), [g])
                 msg = self.b.refuse_message(S, refused, omitted)
                 self.assertIn(f"  {g} (", msg)

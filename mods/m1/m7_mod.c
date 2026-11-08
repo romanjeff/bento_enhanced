@@ -187,15 +187,15 @@ static void env_step(ModRun *r, u32 k, volatile ModEnv *e, u32 dt_us) {
 }
 
 /* Unread entries in the M7->M4 ring (16 slots, no full check: an overwrite can
- * drop a Note Off or a button press). rd (+0x2340) is written only by the M4 and
+ * drop a Note Off or a button press). rd (MIDI_RING_RD, +0x2340) is written only by the M4 and
  * sits alone in its cache line (as the black box's h_ring reads it). BE-MT4
  * peaked at 12 with modulation running: modulation waits while it is busy. */
 static int ring_busy(void) {
     u32 obj = RING_PTR;
     if (!obj || (obj & 3u)) return 0;
-    DCIMVAC = (obj + 0x2340u) & ~31u;
+    DCIMVAC = (obj + S_MIDI_RING_RD) & ~31u;
     __asm volatile("dsb" ::: "memory");
-    return *(volatile u32 *)(obj + 0x2360u) - *(volatile u32 *)(obj + 0x2340u) >= RING_MAX_FILL;
+    return *(volatile u32 *)(obj + S_MIDI_RING_WR) - *(volatile u32 *)(obj + S_MIDI_RING_RD) >= RING_MAX_FILL;
 }
 
 static void mod_block_body(u32 track, const u32 *clock, int start, u32 router) {
@@ -393,6 +393,9 @@ __attribute__((used, retain)) u32 nm_on(u32 track, u32 note, u32 *pad, const u32
     NmState *st = (NmState *)m1_nm_run();
     ModState *ms = state();
     if (!st || !ms) return note;
+#ifdef BE_NOTES_ABOVE_127
+    if (note > 0x7Fu) return note;           /* 1.6.8 (S3): notes 128..163 play unshifted (scale_shift is 0..127) */
+#endif
     u32 p0 = irq_save(), idx;
     volatile ModCfg *cfg = config(ms);
     NmRun *r = cfg ? nm_track(st, track, &idx) : 0;

@@ -248,6 +248,11 @@ SYMS = dict(
     ROUTER_SEL_TRACK=offset(0x2C8, note="pad router: selected track (UI index)"),
     ROUTER_PAD_KEYS=offset(0x2CC, note="pad router: per-track pad key (0xFFFFFF00 = drum track)"),
     TICK_TO_OFFSET=code(0x080A2200, note="(clock, &tick64) -> sample offset from clock[0]"),
+    PAD_NOTE_CLAMP=code(0x080A1E40, note="(&note, delta) -> note + delta clamped (usat #7: 0..127); S3: test_s3_m7 runs it"),
+    SEQ_PLAYER=code(0x08060160, note="sequence player (track, clock, router, ..), once per track per block; test_s3_m7 runs it"),
+    SAMPLE_TO_TICK=code(0x080A25E0, note="(dst, ., &samples) the player's sample -> tick conversion; test_s3_m7 stubs it"),
+    PAD_NOTE_ON=code(0x0805FF00, note="pad Note On (track, ev, router): ev +0xC note, +0x10 velocity, +0x14 pad; contains POLYCAP_PAD_ON_SITE; test_s3_m7 runs it"),
+    PAD_NOTE_OFF=code(0x08060040, note="pad Note Off (track, ev, router): ev +0xC note, +0x14 pad; contains POLYCAP_PAD_OFF_SITE; test_s3_m7 runs it"),
     PROBE_SCRATCH=ours(0xC5FF0000, note="M7 memory price check scratch, 8 x 32 B below the Region"),
 
     # ------------------------------------------------------------------ M4 RAM
@@ -611,6 +616,11 @@ CHECKS = {
     "AUDIO_GAP_STATS": (None, 2),
     "AUDIO_DMA_EVENTS": (None, 0),
     "TICK_TO_OFFSET": ('d870baa6b7868e8e', None),
+    "PAD_NOTE_CLAMP": ('06d3993e64a860f5', None),
+    "SEQ_PLAYER": ('b220edbbf1cd22a9', None),
+    "SAMPLE_TO_TICK": ('e3c093248f072b8b', None),
+    "PAD_NOTE_ON": ('e182baac54cd3a6c', None),
+    "PAD_NOTE_OFF": ('955c1ce14064bd71', None),
     "MODEL": (None, 296),
     "REGISTRY": (None, 12),
     "DRUM_KEYS": (None, 1),

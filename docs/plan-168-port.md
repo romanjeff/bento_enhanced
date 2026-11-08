@@ -86,8 +86,9 @@ Release notes (1.6.8, read 2026-11-07) that touch our work:
   **Milestone M1.** Offline part done (2026-11-07, section "S2" below); kit
   `flash\bento_enhanced-v4.00-bb168` with `DEVICE_CHECKLIST.txt` (optional second kit `-bb168s` with the
   stall hooks); the device run is open.
-- **S3, M7 features (moved only):** poly cap, retriggers, conditions, curve playback, Note Mod engine,
-  Mod Matrix runtime. Suites green on 1.6.8.
+- **S3, M7 features (moved only):** poly cap, retriggers, conditions, curve playback, Note Mod engine
+  (the Mod Matrix runtime is deferred with its screens). Suites green on 1.6.8. Offline part done
+  (2026-11-07, section "S3" below); kit `flash\bento_enhanced-v4.01` (BE4.01); the device run is open.
 - **S4, M4 features (moved only, plus key renumbering):** inspect a step, hold edit, defaults, per-step
   cond/retrig UI, AT Rec/Out keys.
 - **S5, changed hooks:** HEADER_GEN (strike velocity), CTRL consumer (hold shortcuts), MIDI 0x5F/0x60
@@ -203,6 +204,157 @@ the diag code between bases and its tests for a cosmetic gain, so it stays.
 **Exit (offline):** 1.6.1 sha 25877c59... = v3.72 kit, all suites unchanged, bisect builds identical; 1.6.8
 black-box build passes every build check; test_diag (90, 7 skipped: stall/irq30 off, poly code absent) and
 test_slice pass on it, and on the bb168s build. Device checklist in both kits.
+
+## S3: the M7 features on 1.6.8 (2026-11-07, offline; device check open)
+Evidence: scratch `rc18/` (investigators: `s3_table/`, `t/` table checks, `beh/` behaviour: `offtime.py`,
+`fullplay.py`, `fd2.py`, `callmap.txt`, `allocs.txt`; implementer: `impl/fcmp.py` own masked compare of every
+hooked function, `impl/callers.py`, `impl/stockcov.py` stock code each suite executes, `impl/mut.sh` mutants,
+`impl/final.sh` the exit checks). Reviews in `tools/addrmap/facts_161_168/facts.py` REVIEWED (S3 block).
+
+**Group split.** `poly` -> `poly_cap` (S3: the five msg_send sites -> h_note) + `poly_at` (S5: h_poly at
+POLY_SITE and the M4 MIDI 0x5F/0x60 handlers); `cond` -> `cond_engine` (S3: gate + loop hooks) + `cond_ui` (S4:
+the M4 PROB_* clamps); `inta` -> `inta_curve` (S3: curve playback on internal instruments, a code path inside
+retrig's curve start; `-DBE_NO_INTA_CURVE`) + `inta_live` (S5: LIVE_SITE). The old names are aliases (`ALIASES`
+in build.py): disabling one disables both halves and still passes `-DBE_NO_<OLD>`, so every 1.6.1 bisect builds
+the same bytes. The poly_at trampoline is still emitted before the five poly cap stubs (1.6.1 layout unchanged).
+Ported to 1.6.8: black box + `poly_cap retrig cond_engine nmod inta_curve`. Kit build:
+`BENTO_BASE=1.6.8 BE_DISABLE=step,hold,cond_ui,poly_at,inta_live` (version 4.01, BE4.01). A default 1.6.8 build
+is refused and lists the five S4/S5 parts with their unreviewed entries; each S3 part builds alone (the others
+disabled). What each part does alone, on the device:
+- `poly_cap`: complete with no other part and no M4 code (the black box core publishes the Region address).
+- `retrig` (+ External curve playback), `inta_curve`, `nmod`, and conditions stored in the per-step word: in
+  stock's path and harmless, but inactive until S4/S5, because their data comes from m4_step.c: the per-step
+  word (be_step_v1, which stock 1.6.8 drops on load), the curve pool, the ModCfg block / Note Mod settings
+  (published from strike_toolbar, the HEADER_GEN hook, S5). `nmod` and `inta_curve` also need retrig's two hooks.
+- `cond_engine`: conditions still in the probability byte (100..173, pre-v3.3 projects) play.
+**Open scope decision (Jeff; review called it a scope blocker, not a safety one):** no M4 code in S3. The
+task said the M4 code these groups need that is "moved only" comes along, and that Note Mod's ModCfg plumbing is
+ported. That plumbing (`mod_cfg`, `mod_cfg_block`, `strike_toolbar`) and the be_step_v1 load / save sites
+(STEP_LOAD_SITE, STEP_SAVE_SITE, both status "moved") live only in m4_step.c, which is not in the 1.6.8 image. So on
+BE4.01 nothing writes MODHEAD (SLICE+0x1FC0): Note Mod's config() returns 0 and Note Mod / F1 never act;
+retriggers, curves and word conditions never get data. Four of the five S3 parts are dormant on the device and the
+checklist can only check that they change nothing. Choose: (a) accept S3 as poly cap + dormant engines (the
+offline evidence above stands) and do the m4_step.c cut first in S4; or (b) pull a 1.6.8-only M4 sub-part forward
+into S3. The implementer's preference is (a). Option (b), a 1.6.8-only M4 sub-part
+(be_step_v1 load/save, the curve pool, mod_cfg called from M4_BL_SITE), would make retriggers, curves and
+conditions work on the device in S3, but it means cutting m4_step.c into sub-groups (`plan()` collects every `S_`
+name a source uses, so today its S4/S5 entries block all of it) while keeping 1.6.1 byte-identical; that cut is
+S4's first job. Mod Matrix runtime: m7_mod.c's F1 engine is compiled (it shares the file with Note Mod) and
+inactive without the M4's ModCfg.
+
+**Sites re-derived (34 entries reviewed, plus 3 new).** Every function we hook or call is the same code moved
+(own masked compare `impl/fcmp.py`: 0 instruction diffs for note_route, sequencer Note Off, pad Note On / Off,
+the timed-note processor (one flash literal), loop boundary, all-off, msg_send, External handler (word jump
+table moved), track ctor, bus_post, tick helpers, voice start; the sampler's head up to its jump table), each
+site at the same offset in its function, the same caller counts (Note Off 2, note_route 1, processor 1, loop 2,
+all-off 6, player 1). Frame offsets the trampolines read (gate: track r8, byte sp+0x29, word sp+0x3C; accept:
+pad sp+0x2A, length +0x30, tick +0x20, router at entry sp; emit: router 5th argument) are in identical code.
+New entries (stock_161.py by hand + fingerprints, 1.6.8 reviewed): `PAD_NOTE_CLAMP` (the reason for the note
+change below), `SEQ_PLAYER` and `SAMPLE_TO_TICK` (test_s3_m7 runs the player), and after review `PAD_NOTE_ON`
+(0x080602A0, 1.6.1 0x0805FF00) and `PAD_NOTE_OFF` (0x080603E0, 1.6.1 0x08060040), used only by test_s3_m7. Entries the S3 build uses: 138,
+all reviewed (129), hand-checked facts (8) or absent (1); none only machine-mapped.
+
+**The note-off change (release note "sequenced note-offs land at the right time within the audio block").**
+NM_OFF_SITE_1 (0x08060976, 1.6.1 0x080605D2) is in the pending note-off pass of the player. 1.6.1 passed
+timing = (block start + samples per block) - off (`subs r2,r2,r1` at 0x080605C0: mirrored in the block); 1.6.8
+passes max(0, off - block start) (`subs r2,r2,r0` 0x08060960, `bic r2,r2,r2,asr #31` 0x0806096A). The call is
+otherwise the same (track, note entry+4, timing, pad entry+2, router [sp]). Our off stub saves r0-r3, nm_off
+rewrites only the note and pad, so a moved note's off keeps stock's (now right) timing and goes to the moved
+pitch on the right bus key: no code change. Shown on stock code of both bases (test_s3_m7, whole player): a note
+at 10, length 100, 64-sample blocks: off at 82 on 1.6.1, 110 on 1.6.8; with Note Mod the off is at the same
+sample, on note 64, key 0xF4; two overlapping notes keep their own pitches (1.6.1 also swaps their order).
+NM_OFF_SITE_2 and NM_ALL_OFF are unchanged code with unchanged callers; no new Note Off caller exists.
+Our own events (retrigger hits and closes, curve samples) already used "time - block start": they now agree
+with stock's offs.
+
+**Other base differences.**
+- Notes above 127: 1.6.8's note clamp (PAD_NOTE_CLAMP) allows 0..163 (1.6.1: `usat #7`), and its M4 drops MIDI
+  notes above 127 (release note). Tracking one as note & 0x7F would let note 140 steal or swallow a real 12
+  (a hanging note). New per-base flag `BE_NOTES_ABOVE_127` (BASE_SETTINGS `m7_flags`, 1.6.8 only, so 1.6.1 stays
+  byte-identical): h_note passes such a note through untracked, retrigger MIDI hits skip it, curves are not
+  started for it, nm_on leaves it unshifted. Not done: h_poly / live AT (S5 has to do the same).
+- Play count: in the player's count-on mode (track byte +0x30) 1.6.8 wraps the step count after 256 steps and
+  calls the loop boundary: cond_loop counts that as a pass (1.6.1 never did). Normal looping is the same.
+- Sampler, voice start, pad Note On/Off, choke-per-track, all-slices. Evidence, per function: pad Note On / Off
+  identical (whole function); voice start identical over its first 442 instructions; the sampler's message loop
+  (SAMPLER_PROCESS) compared case by case over its message jump table (review, `rc18/rev/jt.py`, rerun as
+  `rc18/fix/rev_copy/sampler_cases.py`): every case body at the same function offset, 0 masked diffs, except cases
+  0x3E and 0x3F (4 and 5 diffs, shorter on 1.6.8). The Note On (0x12) and Note Off (0x13) cases our Note Mod and
+  inta_curve posts reach, and 0x0E (internal AT, curves), are identical; 0x3E / 0x3F are messages we never post,
+  probably where a release-note change lives (not identified). So: the paths we post into are unchanged, not
+  "nothing in the sampler changed". (S3 first said "nothing we hook or call changed" from the head of the sampler
+  only.) Where choke-per-track and the slice changes live was not found; Note Mod on a slicer with more than 16
+  slices (nm_drum treats pad > 15 as melodic, drum wrap mod 16) is a device / S4 check.
+- Ext pool / Region: check_region_assumptions holds on 1.6.8 (allocator, pool start values, counter literals,
+  MPU R8 setup), both images make the same ext-pool allocations from the same sites, 232 bytes less of fixed size
+  on 1.6.8, and the pool is never reset. Not added: a literal count over the counter window
+  (0x24000154..0x2400016C is the table of several pools' counters, with users in both images; it would need its
+  own record of every user) and the pool-left getter's caller count (a read-only getter). The allocator's
+  sha and both counters' literal counts already catch a new writer.
+
+**Tests.** New suite `test_s3_m7.py` (16): the whole stock player SEQ_PLAYER per block (an f64 shim for its
+double instructions, which Unicorn's M7 lacks) at each base's addresses with all our hooks in it: note-off
+timing (stock, Note Mod internal and External, two notes), loop count, a condition word and a legacy byte 1:2,
+a retrigger word, the play-count boundary, the poly cap's steal / swallow; stock's note clamp; notes above 127
+(1.6.8 only); the group split. Per-base expectations in `expected_values.BEHAVIOUR`, from the disassembly. Each of
+four mutants fails it (no BE_NOTES_ABOVE_127, nm_off a no-op, the off stub clobbering r2, cond_loop not counting).
+Changes: test_polyat skips its S5 classes when poly_at / inta_live are left out; test_conditions skips the M4
+clamps when cond_ui is; test_retrig's worst-case tracks moved off the 1.6.8 slice (tracks 6/7 were on CFG /
+CURVES) with an overlap assert; test_slice's refusal tests follow the split; test_diag's "no M7 code" test
+looks for the code itself. 1.6.1 counts unchanged.
+After review, test_s3_m7 has 23 tests (1.6.1: 5 skipped, the notes-above-127 class): added stock's pad Note On /
+Off run whole (new entries PAD_NOTE_ON / PAD_NOTE_OFF: the device checklist's 7-pad test is this path, which no
+suite executed before) with steal + swallow and a double Note On; notes above 127 on the pad path, on a retrigger
+word (no MIDI hit) and a curve word (no player), each with a note-60 control that shows the feature does act.
+Mutants (`rc18/fix/mut.sh`, each fails it): retrig guard removed, curve guard removed, h_note guard removed,
+wrong track register at the pad On / pad Off stub, swallow disabled.
+**Which suite proves what on 1.6.8.** test_s3_m7 is the only proof that the condition and retrigger sites and
+the frame offsets their trampolines read are right on 1.6.8: test_conditions and test_retrig call our hooks with
+frames they build themselves, so a wrong COND_LOOP_SITE (review mutant: the next push.w {r4-r9,lr} function,
+fingerprint recomputed) or a wrong cond word offset (sp+0x3C -> 0x38) leaves test_conditions green. They are
+evidence for our code's logic on both bases, not for the 1.6.8 sites. Likewise test_notemod_route (sampler,
+bus_post, the processor pass) is the proof for Note Mod's pad-key field, and test_s3_m7 + test_notemod_route for
+the Note Mod off stubs.
+**test_notemod_real is deferred to S4** (exit criterion 3 named it; not met in S3, by scope): it is an M4 test
+(the firmware's own drum / piano view objects, the step-UI Note Mod button, header and page gate) and has no M7
+part to run alone. Everything it exercises is in m4_step.c (`step`, S4). The suite selection in test_m1.sh
+(versioned now: `tools/lab-build-wsl/test_m1.sh`, NEEDS table) prints "not run" for it on the S3 image. Its
+stack at 0x3003F000 (in 1.6.8's SAI DMA buffers) has to move when it is ported.
+Stock code each suite executes on the 1.6.8 build (impl/stockcov.py, distinct basic blocks outside our code):
+test_s3_m7 265 (player, processor, pending pass, note_route, Note Off, all-off, loop boundary, msg_send, track
+setup) and test_notemod_route 171 (as test_s3_m7 without the loop function, plus bus_post and the sampler) are
+the evidence; test_slice 1158 (reset handlers, MPU setups) and test_diag 17 are S2's; test_polyat 8 (the five
+sites, msg_send), test_notemod 22, test_retrig 8, test_conditions 2 (the gate and the loop entry) touch stock
+code at the sites only; test_mod 1. test_notemod_real (M4 views, step group) does not run on an S3 build.
+
+**Entries settled in S3:** the 34 in the S3 block (POLYCAP_* x5, MSG_SEND, NOTE_ROUTE, RETRIG_ACCEPT/EMIT_SITE,
+TICK_TO_OFFSET, BUS_POST, NM_NOTE_OFF, NM_OFF_SITE_1/2, NM_ALL_OFF, COND_GATE_SITE, COND_SKIP, COND_LOOP_SITE,
+POLY_SITE, POLY_RESUME, POLY_DISPATCH, TRACK_CTOR, TRACK_MSG_LOOP/_END, SEQ_PLAY_PASS/_END, SAMPLER_PROCESS,
+SAMPLER_NOTE_START, VOICE_START, TICKS_PER_BLOCK, TICK64_ADD/COPY/MAKE, PRODUCER_GLOBAL) and the new
+PAD_NOTE_CLAMP, SEQ_PLAYER, SAMPLE_TO_TICK. REVIEW left: 125 (131 - 6), all for S4/S5:
+- cond_ui (3): PROB_PIANO_EDIT_BACK, PROB_PIANO_EDIT_SITE, PROB_SHOW_PIANO_SITE;
+- poly_at (4): M4_LOOP, M4_NOTE_ON_CASE, MIDI_JT, MIDI_JT_FIRST; inta_live (1): LIVE_SITE;
+- hold (42) and step (61, some shared with hold): the UI walk, header, model, key, page, button, action and
+  Mod Matrix entries (`impl/needs3.py` lists them);
+- used by no group (19, tests / emulator): DRUM_MENU_SITE/TABLE, GFX_CACHE_LDR, HEADER_BUILD, HEADER_BUTTONS and
+  the button layout, HEADER_ROOT_INIT, HEADER_TPL_*, PAGE_SEQ_ALT, T2_LIST_SITE_1/2, UI_PAGES_CTOR/INIT, UI_WALK_CTX.
+
+**Open after S3:** the device run (checklist-v4.01.txt); the M4 decision above; h_poly / live AT notes above
+127 (S5); Note Mod on slicers above 16 slices; h_live and h_poly are compiled into the 1.6.8 image but not
+reached (m7_polyat.c compiles whole; they read only reviewed / fact entries); the per-step word (note record
++0x14): on load, 1.6.8's note reader zeroes it for every item (`str r3,[sp,#0x38]` at 0x08130B3C, record at
+sp+0x24) and writes it only for kind-3 items, never for notes (review), so loaded notes carry 0; notes created
+from the UI or by recording are still unchecked (S4, before be_step_v1 writes words again);
+**Play Count, for Jeff before S4:** should cond_loop count 1.6.8's extra loop boundary at the 256-step wrap of a
+Play Count clip? Today it does, so an A:B condition in such a clip changes phase at each wrap (never on 1.6.1).
+Inert in S3 except for legacy-byte conditions; the condition UI (S4) makes it reachable;
+**SPACED data on 1.6.8:** any save on 1.6.8 drops be_step_v1, so the checklist saves only to a copy and restores
+from the card backup on rollback;
+**v4.00-bb168 is not rebuildable from the S3 tree** (label 4.01, BE_NOTES_ABOVE_127 changes the M7 code):
+keep its kit, or rebuild from ce228f7; the M7 ModCfg reader still doesn't check the boot generation (old, low);
+test_notemod_real's emulator stack 0x3003F000 lies in 1.6.8's SAI DMA buffers (S4). The M7 code still reads
+stock track fields as bare offsets (0x31, 0x86D1, 0x86D4, ...): all are read by unchanged stock code here;
+naming them waits for a base that moves one.
 ## Risks
 1. Slice relocation: the M4's Device mapping of AXI faults on unaligned access; cache maintenance on M7.
    (S2: handled offline, see above; the device run confirms.)
@@ -212,3 +364,5 @@ test_slice pass on it, and on the bb168s build. Device checklist in both kits.
 5. Less flash headroom (32 KB) and no spare D2 for synths: SDRAM only.
 6. 1010music may ship another update during the port; the table approach is the mitigation.
 7. Tests: every rig hard-codes stock addresses; until they read the table, a green suite on 1.6.8 means nothing.
+   (S3: they read the table; only suites that execute 1.6.8's own code are evidence, see the S3 list.)
+8. S3 features other than the poly cap stay inactive on the device until their M4 data paths are ported (S4/S5).

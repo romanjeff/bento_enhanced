@@ -114,3 +114,24 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
 )}
 
 EXPECTED = {"stock_161": STOCK_161, "stock_168": STOCK_168}
+
+# S3: stock behaviour that differs between the bases and that test_s3_m7.py checks by running each base's
+# own code. Written from the disassembly, not from the tables or from a run (scratch rc18/impl).
+BEHAVIOUR = {
+    "stock_161": dict(
+        # pending note-off pass: timing = (block start + samples per block) - off (mirrored in the block):
+        # 0x080605C0 subs r2, r2, r1 with r2 = clock + ticks per block, r1 = the off time
+        NOTE_OFF_TIMING="mirrored",
+        PAD_NOTE_MAX=127,                 # note clamp 0x080A1E40: usat r0, #7, r0
+        # loop-boundary calls in the player's count-on mode (track byte +0x30 set), 320 steps of 60 ticks
+        # from a restart: only the restart's (no wrap of the step count)
+        LOOP_CALLS_COUNT_MODE_320=1,
+    ),
+    "stock_168": dict(
+        # 0x08060960 subs r2, r2, r0 (off - block start); 0x0806096A bic.w r2, r2, r2, asr #31 (>= 0)
+        NOTE_OFF_TIMING="offset",
+        PAD_NOTE_MAX=163,                 # 0x080A25E6 cmp r0, #0xa3; movge r0, #0xa3; bic.w r0, r0, r0, asr #31
+        # the step count wraps after 256 steps (play count), with a loop-boundary call: restart + 1
+        LOOP_CALLS_COUNT_MODE_320=2,
+    ),
+}

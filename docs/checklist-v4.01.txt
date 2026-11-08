@@ -1,0 +1,87 @@
+bento_enhanced v4.01: the M7 features on stock 1.6.8 (sprint S3)
+===============================================================
+
+Kit: flash\bento_enhanced-v4.01   boot label BE4.01
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+
+In this image: the black box (as v4.00-bb168, stall/watchdog hooks not patched in) plus the M7 side of
+  - the poly cap (External tracks, 6 voices),
+  - the retrigger hooks, which also run curve playback (External and internal instruments),
+  - the trigger-conditions engine (probability gate and loop counter),
+  - the Note Mod engine (note on / note off / stop hooks).
+NOT in it (S4/S5): step inspection and the per-step Condition / Retrig UI, strike velocity, hold
+shortcuts, live poly AT and AT Out, the Mod Matrix and External mod rows, the probability clamps.
+
+What can and cannot be heard in S3. Only the poly cap is fully active. The other engines are in the
+audio path but get their data from M4 code that comes in S4/S5: the per-step word (retriggers, curve
+handles, conditions) is loaded by be_step_v1, which stock 1.6.8 drops (S0), the curve pool is loaded by
+the M4, and the Note Mod settings are published by the M4. So on BE4.01 SPACED's retriggers, curves,
+per-step conditions and Note Mod do NOT play: that is expected. What this run checks for them is that
+they are harmless in stock's path: the song plays exactly as on stock 1.6.8, no hanging or missing
+notes, no crash. (Old conditions still stored in the probability byte, values 100..173 from before
+v3.3 and never re-saved, do play their A:B: only if such a project exists.)
+
+0. Before flashing
+[ ] Flash this kit ONLY after every v4.00-bb168 S2 check passed (docs\checklist-v4.00-bb168.txt, S2
+    section: logs readable, RAMCHK quiet, manual reset keeps the black box, cold boot, rollback to v3.72).
+    If any of them failed or was skipped: STOP, do S2 first.
+[ ] Full card backup.
+[ ] Never save SPACED itself on this kit. Saving on 1.6.8 (stock or BE4.01) drops be_step_v1, our
+    per-step data: a SPACED saved here loses its ratchets, per-step conditions and curve handles, also
+    when opened again on v3.72. Every save below goes to a copy: load SPACED, Save As "SPACED_S3" once,
+    and from then on load and save only SPACED_S3.
+[ ] Stock 1.6.8 baseline of SPACED by ear (S0) is fresh in memory, or record it again now on stock 1.6.8.
+
+1. Boot and black box (as S2)
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.01; the logs say "firmware BE4.01".
+[ ] Load SPACED, Save As SPACED_S3 (see 0). Play a little, save (SPACED_S3). BENTO_SAVES.log: header
+    "BENTO black box, firmware BE4.01, boot gen N"
+    and a "# saved:" line per save; BENTO_CRASHES.log: "boot fw=BE4.01".
+[ ] RAMCHK quiet from the second boot on: "RAMCHK | axi changed=0 | top changed=0".
+[ ] No "!!!" lines, no "M4 main-task stall", "wd worst gap main=../3333 pcm=../6249" under the limits,
+    AUDIO blocks rising, LINK rx counting.
+
+2. SPACED regression, one feature at a time (play SPACED_S3 start to end; compare with stock 1.6.8)
+[ ] Poly cap (External tracks). Play a passage with more than 6 overlapping notes on one External
+    track; if SPACED has none, hold 7 or more pads on an External track. The oldest note is cut, the
+    rest keep sounding, nothing hangs after release or after Stop.
+    Log ("# saved:" line, save after playing): "| poly sent=0 budget_drops=0 stolen=S retrig=R swallowed=W".
+      - stolen > 0 after the 7-note test: the cap works. stolen=0 there means the M7 state is off
+        (the Region could not be reserved): bring the log.
+      - after Stop, W should equal S + R (each stolen or retriggered voice owes one native Note Off,
+        which is swallowed when it comes). W < S + R after Stop means an owed Note Off never came.
+      - poly sent=0 and budget_drops=0: live poly AT is not in this build.
+[ ] Curve playback on an External track (a track with recorded AT curves in SPACED). Expected on
+    BE4.01: no aftertouch from the curves (see above). Log: "| curves started=0 sent=0 late=0 skipped=0".
+    started or skipped > 0 means the M7 found a curve handle in a note: bring the log. No stray
+    aftertouch, CC or pitch bend on the External synth.
+[ ] Retriggers (SPACED's ratcheted steps). Expected: each plays as one hit, as on stock 1.6.8; no extra
+    or hanging notes on internal and External tracks.
+[ ] Trigger conditions (steps with A:B / 1ST / PRE). Expected: they play on every pass, as on stock
+    1.6.8. Also play a clip that uses Play Count (1.6.8's new loop count) if SPACED has one: no change
+    from stock.
+[ ] Note Mod on an internal melodic track, a drum track and an External track (SPACED's Note Mod
+    tracks). Expected: notes unshifted, as on stock 1.6.8. Every note ends: hold Stop mid-phrase,
+    switch patterns, mute and unmute; no note keeps sounding. Note lengths sound as on stock 1.6.8
+    (1.6.8 fixed where sequenced note-offs land in the audio block; our note-off hook keeps that).
+[ ] Whole song twice, Stop / Start, tempo change, pattern changes: no crash, no restart, no card
+    error, no crackle beyond the stock 1.6.8 baseline.
+[ ] Save SPACED_S3 once more (not SPACED) and bring back BENTO_SAVES.log and BENTO_CRASHES.log.
+    (BENTO_DIAG.log with the per-event VOIC records "lr 1 = retrigger, 2 = steal, 3 = swallowed" is
+    not written by default.)
+
+3. Rollback (any problem, and at the end)
+[ ] Back to the black box only: flash\bento_enhanced-v4.00-bb168 (01_TEST_FIRMWARE): boots BE4.00.
+    Keep that kit folder: the source after S3 builds only BE4.01 on 1.6.8 (BE4.00 can be rebuilt only
+    from commit ce228f7).
+[ ] Or the old setup: flash\bento_enhanced-v3.72 (01_TEST_FIRMWARE; its 03_RESTORE_STOCK is stock
+    1.6.1): boots BE3.72, projects open. Its first RAMCHK reports axi (and d2a/d2b) changed: that is
+    BE4.01's slice and 1.6.8's D2, expected.
+[ ] Or stock 1.6.8: this kit's 03_RESTORE_STOCK.
+[ ] Before using SPACED on v3.72 again: if SPACED itself (not the copy) was saved on BE4.01 or stock
+    1.6.8, restore its project folder (project.xml and curves.bnt) from the card backup of step 0.
+    Otherwise it plays without its ratchets, per-step conditions and curves. SPACED_S3 is for 1.6.8
+    only and can be deleted.
+Bring back the logs from each step, with a note of what was heard where it differed from stock 1.6.8.

@@ -323,6 +323,11 @@ static void note_body(u32 q, const u32 *ev, u32 track) {
     volatile Region *r = region();
     u32 type = ev[0] & 0xFF, note = ev[4] & 0x7F;
     if (!r || (type != S_EV_MIDI_NOTE_ON && type != S_EV_MIDI_NOTE_OFF)) { MSG_SEND(q, ev); return; }
+#ifdef BE_NOTES_ABOVE_127
+    /* 1.6.8 (S3): pad notes reach 0..163 (stock's clamp, 1.6.1: 0..127) and the M4 drops MIDI notes
+     * above 127. Tracked as note & 0x7F, one would steal or swallow a real note: pass it on, untracked. */
+    if (ev[4] > 0x7Fu) { MSG_SEND(q, ev); return; }
+#endif
     volatile Voices *v = voices(r, track, type == S_EV_MIDI_NOTE_ON);
     if (!v) { MSG_SEND(q, ev); return; }
     if (type == S_EV_MIDI_NOTE_ON) {
@@ -575,6 +580,9 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
     u32 h = step_handle(word), n = 0, data;
     int ext = *(volatile u8 *)(track + 0x86D1u), inst = *(volatile u8 *)(track + 0x86D2u);
     if (!r || !h || (!ext && !inst)) return;        /* no MIDI out, no instrument: nothing to drive */
+#ifdef BE_NOTES_ABOVE_127
+    if (note > 0x7Fu) { r->curve_skipped++; return; }   /* 1.6.8: no curve rather than one on note & 0x7F */
+#endif
     if (!(data = curve_data(h, &n))) { r->curve_skipped++; return; }
     if (ext) {
         u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u), how;
@@ -583,8 +591,8 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
         if (mode == AT_POLY || mode == AT_CHAN) start_player(r, track, note, data, n, tick_lo, tick_hi, 0, port, ch, mode == AT_CHAN, len);
         else r->curve_skipped++;                    /* Off */
     }
-#ifdef BE_NO_INTA
-    inst = 0;                                       /* group inta off: External only */
+#ifdef BE_NO_INTA_CURVE
+    inst = 0;                                       /* group inta_curve off (also BE_DISABLE=inta): External only */
 #endif
     if (inst && bus) {                              /* M2-2b: the track's own instrument */
         u32 key = inst_key(track, pad), idx = *(volatile u32 *)(track + 0x86D4u);

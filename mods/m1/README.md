@@ -129,6 +129,28 @@ stays 3.72, 1.6.8 starts at 4.00: BE4.00) and its M4 flags (1.6.8: `-mstrict-ali
 slice below). On 1.6.1 nothing changes: every group is ported and reviewed, the build is
 byte-identical to v3.72 and so are the `BE_DISABLE` bisect builds.
 
+**The M7 features on 1.6.8 (S3).** `poly`, `cond` and `inta` are split into the part S3 ported and
+the part a later sprint does: `poly_cap` + `poly_at` (S5: h_poly's External handler hook and the M4
+MIDI 0x5F/0x60 handlers), `cond_engine` + `cond_ui` (S4: the M4 probability clamps), `inta_curve`
+(curve playback on internal instruments, `-DBE_NO_INTA_CURVE` when off) + `inta_live` (S5:
+LIVE_SITE). The old names stay as aliases (`ALIASES`: `BE_DISABLE=poly` turns off both halves and
+still passes `-DBE_NO_POLY`), so earlier bisects build what they built. Ported to 1.6.8 now:
+the black box plus `poly_cap`, `retrig`, `cond_engine`, `nmod`, `inta_curve` (version 4.01, BE4.01):
+`BENTO_BASE=1.6.8 BE_DISABLE=step,hold,cond_ui,poly_at,inta_live`. Per-base M7 flags
+(`BASE_SETTINGS m7_flags`): 1.6.8 builds with `-DBE_NOTES_ABOVE_127`, since its note clamp allows
+0..163 and its M4 drops MIDI notes above 127; the poly cap, retrigger MIDI hits, curves and Note Mod
+then pass such a note on untouched instead of treating it as note & 0x7F. On the device the S3 parts
+other than the poly cap stay inactive until S4/S5: the per-step word, the curve pool and the Note
+Mod settings are written by m4_step.c. [`test_s3_m7.py`](test_s3_m7.py) runs the whole stock
+sequence player per block, at each base's own addresses, with our hooks in it (the 1.6.8 note-off
+timing, conditions, retriggers, loop boundaries, poly cap, notes above 127), and stock's pad Note On /
+Off (the live pad path of the poly cap). On 1.6.8 it is the only suite that proves the condition and
+retrigger sites and the stack frame offsets their trampolines read: test_conditions and
+test_retrig build their own frames and call our hooks, so they check our logic on either base but
+stay green with a wrong 1.6.8 site or frame offset. test_notemod_route is the proof for Note Mod's
+routing (sampler, bus_post) on 1.6.8. test_notemod_real (the M4 view objects) needs `step` and
+runs again from S4. Which suites run on a build: `tools/lab-build-wsl/test_m1.sh` (`NEEDS`).
+
 **Our slice on 1.6.8 (S2).** 1.6.8 owns D2 0x3003C000..0x30040000 (SAI DMA buffers, M7 MPU R14),
 so on 1.6.8 `S_D2_SLICE` is AXI 0x2404D000..0x24050000 (the name stays): RAMCHK `axi`
 0x2404CDC0..0x2404D000 is a guard band above the M7 stack, the slice uses +0..+0x2000, RAMCHK `top`
@@ -163,8 +185,9 @@ Tool gotchas it guards against:
 
 **Build switches** (for bisecting on hardware):
 - `BE_DISABLE=<group,...>` leaves a group's stock sites unpatched and passes `-DBE_NO_<GROUP>`
-  to the compiler. Groups: `step`, `hold`, `cond`, `retrig`, `poly`, `inta` (internal
-  aftertouch), `rmidi` (MIDI retriggers), `trace`, `bbox`, `stall`, `irq30`; `diag`
+  to the compiler. Groups: `step`, `hold`, `cond_engine` / `cond_ui` (alias `cond`), `retrig`,
+  `poly_cap` / `poly_at` (alias `poly`), `inta_curve` / `inta_live` (alias `inta`, internal
+  aftertouch), `nmod`, `rmidi` (MIDI retriggers), `trace`, `bbox`, `stall`, `irq30`; `diag`
   covers the four diagnostic groups. With `trace` off (`diag7` too) `d0_publish` doesn't run, so
   `region()` cleans the stats the M4 prints instead, at most once per 13 ms; what the last call
   before an idle stretch wrote shows up after the next call.

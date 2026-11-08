@@ -40,7 +40,7 @@ OFF = set(MAN.get("disabled", []))   # feature groups whose stock sites this bui
 OMITTED = set(MAN.get("omitted", []))   # S2: groups not even built into this image (not ported to its base yet)
 SYM7 = {k: int(v, 16) for k, v in MAN["m7_symbols"].items()}
 SYM4 = {k: int(v, 16) for k, v in MAN["m4_symbols"].items()}
-M7_ONLY = {"poly", "retrig", "nmod", "cond", "inta"} & OMITTED   # m7_polyat & co. not in this image
+M7_ONLY = "curve_emit" not in SYM7   # m7_polyat & co. not in this image (S2: every M7 group left out; S3 builds them)
 # Our RAM on this base (build.py our_ram): the slice and the RAMCHK blocks, (name, lo, hi).
 RAMCHK = ([("axi", S.RAMCHK_AXI, S.RAMCHK_AXI_END), ("d2a", S.RAMCHK_D2A, S.D2_SLICE), ("d2b", S.RAMCHK_D2B, S.D2_SLICE_END)]
           if S.has("RAMCHK_D2A") else

@@ -521,7 +521,11 @@ class CurveWorstCase(unittest.TestCase):
     def test_48_notes_on_one_port(self):
         pb = CurvePlayback()
         g = pb.rig(samples=tuple((i * 7) % 120 for i in range(self.N)))
-        tracks = [0x24010000 + t * 0x9000 for t in range(self.TRACKS)]  # addr-ok: harness
+        # S3: below our RAM on both bases (1.6.8's slice is AXI 0x2404D000..; the old stride 0x9000 from
+        # 0x24010000 put tracks 6 and 7 on it, over CFG and CURVES)
+        tracks = [0x24008000 + t * 0x8800 for t in range(self.TRACKS)]  # addr-ok: harness
+        ours = [(S.D2_SLICE, S.D2_SLICE_END), (S.RAMCHK_AXI, S.RAMCHK_AXI_END)]
+        self.assertFalse([t for t in tracks for lo, hi in ours if t < hi and lo < t + 0x8800], "harness tracks on our RAM")
         for t in tracks:
             g.u.mem_write(t, bytes(0x8800)); g.u.mem_write(t + 0x86D1, b"\x01\x00")   # External only
         for ti, t in enumerate(tracks):

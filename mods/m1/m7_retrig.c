@@ -147,6 +147,9 @@ __attribute__((used, retain)) void retrig_emit(u32 track, u32 clock, int start, 
 #ifdef BE_NO_RMIDI
             keep = 0;                                          /* BE_DISABLE=rmidi: internal hits only */
 #endif
+#ifdef BE_NOTES_ABOVE_127
+            if (x->note > 0x7Fu) keep = 0;                     /* 1.6.8: the M4 drops it; note & 0x7F would be wrong */
+#endif
             if (keep) {                                        /* R4: the MIDI hit */
                 if (m1_note_sounding(track, x->note)) {
                     midi_note(x->router, 0x5C, track, x->note, 0x64, (u32)off);

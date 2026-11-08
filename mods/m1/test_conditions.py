@@ -31,6 +31,9 @@ STOCK = Path(sys.argv[1]).read_bytes()
 OUT = Path(sys.argv[2])
 IMG = (OUT / "bento1.bin").read_bytes()
 SYM7 = {k: int(v, 16) for k, v in json.loads((OUT / "manifest.json").read_text())["m7_symbols"].items()}
+# S3: the M4 probability editor clamps (group cond_ui) are S4 on 1.6.8 and not in that image
+COND_UI = "cond_ui" not in json.loads((OUT / "manifest.json").read_text()).get("omitted", [])
+S4 = "S4 on this base: the M4 probability editor clamps (cond_ui) are not in this image"
 LABELS = [f"{a}:{b}" for b in range(2, 9) for a in range(1, b + 1)]          # stored 100..134
 STORED = [170, 171, 172, 173] + [v for k in range(35) for v in (100 + k, 135 + k)]  # list order
 SHOWN = ["1ST", "!1ST", "PRE", "!PRE"] + [l for x in LABELS for l in (x, "!" + x)]
@@ -173,6 +176,7 @@ class Hooks(unittest.TestCase):
         self.assertEqual(res[0][1], res[1][1], "pushed frame identical to stock")
         self.assertEqual(r32(res[1][2], COUNTERS), SEQ, "pass counted")
 
+@unittest.skipUnless(COND_UI, S4)
 class M4UI(unittest.TestCase):
     """Since v3.3 conditions have their own encoder: the probability list is stock's."""
     def test_probability_list_is_stock(self):
@@ -255,6 +259,7 @@ class Extended(unittest.TestCase):
         u.reg_write(UC_ARM_REG_SP, sp); u.emu_start(S.PROB_PIANO_EDIT_SITE | 1, S.PROB_PIANO_EDIT_BACK, count=1000)
         return bytes(u.mem_read(sp + 0x31, 1))[0]
 
+    @unittest.skipUnless(COND_UI, S4)
     def test_piano_probability_only(self):
         self.assertEqual(self.piano_reference(0), 100)
         self.assertEqual(self.piano_reference(50), 50)

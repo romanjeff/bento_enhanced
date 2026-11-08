@@ -27,11 +27,20 @@ and fail. Build the target that matches `main`.
 Uses the same venv and `~/bento/stock-1.6.1` from step 1. The scripts hard-code this
 checkout's `/mnt/c/...` path: edit it for yours.
 
-- `build_m1.sh`: builds into `~/bento/out/m1-<timestamp>`. Passes `BE_DISABLE`,
+- `build_m1.sh`: builds into `~/bento/out/m1-<timestamp>`. `BENTO_BASE=1.6.1|1.6.8` picks
+  the stock image (`~/bento/stock-<base>`, default 1.6.1). Passes `BE_DISABLE`,
   `BE_ENABLE`, `BE_LABEL`, `BE_TAG` through (see [`mods/m1/README.md`](../../mods/m1/README.md#build-and-test)).
-- `test_m1.sh`: runs every emulated suite against the newest build.
-- `package_m1.sh`: makes a flashing kit under `flash/bento_enhanced-v<version>/`. It
+- `test_m1.sh`: runs the emulated suites against the newest build, on that build's base
+  (manifest `base_label`). A build that leaves feature groups out (manifest `omitted`, e.g. the
+  1.6.8 S3 image) runs only the suites whose groups it contains: the `NEEDS` table in the script
+  says which groups each suite needs, and a skipped suite prints `not run: ...` with the reason.
+  Add a new suite there.
+- `package_m1.sh`: makes a flashing kit under `flash/bento_enhanced-v<version>/`, with the
+  stock pair of the build's own base (checked against the manifest's `base_sha256`). It
   contains your stock firmware: keep it private.
+
+These are the copies the S1-S3 checks ran (the working copies live in `bento_mods/wsl/`; keep
+the two the same).
 
 ```
 tr -d '\r' < build_m1.sh | bash        # e.g. BE_DISABLE=inta,rmidi to bisect

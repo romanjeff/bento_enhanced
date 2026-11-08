@@ -45,6 +45,12 @@ FACTS = {
     "HEADER_DESC_SIZE": (0x1DC, "fact", "template stride and HEADER_GEN's copy: 0x1C4 -> 0x1DC"),
 }
 
+# S3 evidence shared by several entries (scratch rc18/t, rc18/impl/fcmp.py)
+_SEQ = ("sequencer block 1.6.1 0x0805F8E0..0x08060160 = 1.6.8 0x0805FC80..0x08060500 (+0x3A0), all five functions "
+        "identical (offcmp; implementer's own masked compare rc18/impl/fcmp.py: 0 diffs)")
+_PROC = ("timed-note processor 0x08060C40..0x080611C2 (1.6.1 0x08060820, +0x420) identical (offcmp, 0x582 B: 14 moved "
+         "branches, one flash literal 0x080BDBEC -> 0x080BE3AC whose first 15 floats are equal)")
+
 REVIEWED = {
     # ======== S2 (2026-11-07): what the black-box-only 1.6.8 build uses (groups trace, stall, irq30,
     # bbox and the build's own checks). Addresses are 1.6.8 unless marked 1.6.1. Checked in scratch rc17
@@ -297,6 +303,153 @@ REVIEWED = {
     "M4_MPU_SETUP": dict(value=0x081150E0, evidence="1.6.1 0x08114D74: 120 instructions identical (masked); R0 base "
                                                    "literal 0x24040000 size 0x11 (256 KB) TEX0 C0 B1 AP3 (Device); "
                                                    "test_slice M4Mpu runs it"),
+
+    # ======== S3 (2026-11-07): M7 sequencer hooks used by poly cap, retrig (+ curve players), conditions engine,
+    # Note Mod engine, and the stock code the S3 suites run. ========
+    # ---- poly cap: the five bl msg_send sites (h_note stubs) ----
+    "POLYCAP_SEQ_ON_SITE": dict(value=0x0805FCCC, orig="05f028ff",
+        evidence="bl MSG_SEND 0x08065B20 in note_route 0x0805FC80 (+0x4C as 1.6.1); track r4 (mov r4,r0 0x0805FC8C), "
+                 "queue r0 = [sp+0x5c]+0x7c8, event sp+0x20 {0x5b,timing,port [r4+0x31],ch [r4+0x32],note,vel}; " + _SEQ),
+    "POLYCAP_PAD_ON_SITE": dict(value=0x080602F0, orig="05f016fc",
+        evidence="bl MSG_SEND in pad Note On 0x080602A0 (1.6.1 0x0805FF00, +0x50 both): track r4 (mov r4,r0 0x080602AA), "
+                 "note r5 = ev[+0xc]; function identical (offcmp 0x140 B; the matcher's 'changed' was wrong). NOTE: 1.6.8's "
+                 "pad router clamps pad notes to 0..163 (0x080A25E0 cmp #0xa3; 1.6.1 0x080A1E40 usat #7), so this site can "
+                 "post notes > 127, which the M4 now drops; S3: on 1.6.8 h_note passes them through untracked "
+                 "(BE_NOTES_ABOVE_127, build.py BASE_SETTINGS)"),
+    "POLYCAP_SEQ_OFF_SITE": dict(value=0x080601E4, orig="05f09cfc",
+        evidence="bl MSG_SEND in sequencer Note Off 0x080601A0 (+0x44 as 1.6.1): track r4 (mov r4,r0 0x080601AC), "
+                 "event {0x5c,timing r7,...,note r8}; " + _SEQ),
+    "POLYCAP_PAD_OFF_SITE": dict(value=0x08060428, orig="05f07afb",
+        evidence="bl MSG_SEND in pad Note Off 0x080603E0 (1.6.1 0x08060040, +0x48 both): track r4 (mov r4,r0 0x080603E8); "
+                 "identical (offcmp 0x120 B)"),
+    "POLYCAP_ALL_OFF_SITE": dict(value=0x08061D86, orig="03f0cbfe",
+        evidence="bl MSG_SEND in stop / all-off 0x08061D00 (+0x86 as 1.6.1 0x080618E0): track r6 (mov r6,r0 0x08061D0A), "
+                 "queue [sp+4] = router+0x7c8; function identical (offcmp 0x184 B)"),
+    "MSG_SEND": dict(value=0x08065B20,
+        evidence="msg_send (H_SEND_SITE's function, S2): 0x08065AC0..0x08065BC0 identical to 1.6.1 0x080655A0 (offcmp); "
+                 "queue count +0x600, 24-byte entries; 146 callers (1.6.1 137): the movs #0x5b (MIDI Note On) posts are 4 "
+                 "in both images and map 1:1 (0x0805CD9C, 0x0805D6D4, 0x0805FCCC, 0x080602F0)"),
+    # ---- retrig accept / emit (also curve start / emit, nm_on, nm_block, mod_block) ----
+    "NOTE_ROUTE": dict(value=0x0805FC80,
+        evidence="note_route(track r0, note r1, vel r2, timing r3, [sp] pad, [sp+4] router): identical to 1.6.1 0x0805F8E0 "
+                 "(offcmp 0x160 B); single caller RETRIG_ACCEPT_SITE in both images; reads track+0x31/+0x32 (port/ch), "
+                 "+0x10 (inst key), +0x86D1/+0x86D2 ([r5,#0x6d1/2], r5=track+0x8000), +0x86D4 (0x0805FCFC), pad keys "
+                 "+0x86DC+4*pad (movw #0x21b6 0x0805FD40)"),
+    "RETRIG_ACCEPT_SITE": dict(value=0x08060FBA, orig="fef761fe",
+        evidence="bl NOTE_ROUTE 0x0805FC80 in the processor (+0x37A as 1.6.1 0x08060B9A); args r0=r8 track, r1=r4 note, "
+                 "r2=fp vel, r3=sl offset (TICK_TO_OFFSET clamped >=0, 0x08060FA0/A6), [sp]=pad ldrh [sp,#0x2a], [sp+4]="
+                 "router [sp,#0x80]; clock in r6 (mov r6,r1 0x08060C54, mov r0,r6 0x08060F9E): the stub's caller-r6 read; "
+                 "caller frame: note record at sp+0x28 (type +0, prob +0x29, pad +0x2a, length +0x30 read 0x08060FC2, "
+                 "note +0x38, vel +0x3a, word +0x3c), tick64 at sp+0x20 (0x08060D66/6C); " + _PROC),
+    "RETRIG_EMIT_SITE": dict(value=0x08060C40, orig="2de9f04f",
+        evidence="processor entry push.w {r4-r11,lr} (the replayed prologue), sub sp,#0x5c; args r0 track (r8), r1 clock "
+                 "(r6), r2 start (r5), r3 len (r7), 5th = router at entry sp+0 (read [sp,#0x80] 0x08060DF4/E60/FA4: the "
+                 "trampoline's ldr r12,[sp,#32]); one caller 0x08060588 (1.6.1 0x080601E8); " + _PROC),
+    "TICK_TO_OFFSET": dict(value=0x080A29A0,
+        evidence="(clock, &tick64) -> sample offset; tick math block 0x080A2500..0x080A2A20 (1.6.1 0x080A1D60, +0x7A0): "
+                 "TICKS_PER_BLOCK, TICK64_ADD/_TO_OFFSET/_COPY/_MAKE identical (offcmp; the block's only diffs are at "
+                 "+0xE2 (a note clamp, not ours) and +0x3A0 (key immediates 0x163 -> 0x161)); 37 callers in both"),
+    "BUS_POST": dict(value=0x0809F8A0,
+        evidence="bus_post(bus, ev): 0x0809F800..0x0809FE00 identical to 1.6.1 0x0809EC00 (offcmp 0x600 B; one moved "
+                 "literal); ldr.w r2,[r0,#0x508] key count, keys at +8+8i, mailboxes +0x604 apart (as test_notemod_route's "
+                 "rig); internal curve playback posts {0x0E,0,key,note,value} through it; voice engine 0x08094B00.. "
+                 "(incl. its 0x0E case, 1.6.1 0x080945E0) identical"),
+    # ---- Note Mod engine ----
+    "NM_NOTE_OFF": dict(value=0x080601A0,
+        evidence="sequencer Note Off(track r0, note r1, timing r2, pad r3, [sp] router (entry sp+0, read [sp,#0x38] "
+                 "0x080601C6)): identical to 1.6.1 0x0805FE00 (offcmp 0x100 B); exactly two callers in both images, the "
+                 "two NM_OFF sites (no new unhooked Note Off caller in 1.6.8)"),
+    "NM_OFF_SITE_1": dict(value=0x08060976, orig="fff713fc", note="bl sequencer Note Off in the pending note-off pass of FUN_08060500",
+        evidence="bl NM_NOTE_OFF in the pending pass (1.6.1 0x080605D2): r0=r5 track, r1=[r4-4] note, r3=[r4-6] pad, "
+                 "[sp]=[sp+0x14] router, as 1.6.1. Changed (release note 'note-offs land at the right time'): timing r2 = "
+                 "off - clock_lo clamped >= 0 (subs r2,r2,r0 0x08060960; bic r2,r2,r2,asr#31 0x0806096A); 1.6.1 passed "
+                 "(clock + ticks per block) - off. nm_off rewrites only a[1] note and a[3] pad, so a shifted note's off "
+                 "keeps stock's corrected timing and goes to the mapped pad / pitch"),
+    "NM_OFF_SITE_2": dict(value=0x08060E6C, orig="fff798f9",
+        evidence="bl NM_NOTE_OFF in the processor (1.6.1 0x08060A4C): ends a pending note with the same note [sp+0x38] and "
+                 "pad [sp+0x2a] before a new one; r0=r8, r1=r4 note, r2=r5 start, r3=ip pad, [sp]=router; " + _PROC),
+    "NM_ALL_OFF": dict(value=0x08061D00, orig="2de9f04f",
+        evidence="stop / all-notes-off(track r0, timing r1 ([sp]), router r2 (r8)); push.w {r4-r11,lr} replayed; identical "
+                 "to 1.6.1 0x080618E0 (offcmp 0x184 B); 6 callers in both (0x080607F6, 0x08060ACA, 0x0806279E, 0x080627D0, "
+                 "0x08062B86, 0x08062B94); the new 1.6.8 caller of FUN_08061E80 (0x08060AEC, play count wrap) posts only "
+                 "event 0x5A and ends no note"),
+    # ---- conditions engine (M7) ----
+    "COND_GATE_SITE": dict(value=0x08060F84, orig="9df82930",
+        evidence="ldrb.w r3,[sp,#0x29] (the replayed load) in the processor; then subs #1; cmp #0x62; bls roll (as 1.6.1); "
+                 "seq = r8 (track), note word at sp+0x3c (record +0x14), as the trampoline reads them; " + _PROC),
+    "COND_SKIP": dict(value=0x08060E02,
+        evidence="processor's next-note path: ldr.w r0,[sb,#0x6c0]; b 0x08060D82 (index +1); stock's own branches to it "
+                 "at 0x080610A4, 0x080610C2, 0x080610E0, 0x08061160 (as 1.6.1, +0x420); " + _PROC),
+    "COND_LOOP_SITE": dict(value=0x08061B60, orig="2de9f043",
+        evidence="loop boundary function (r0 = track, r1 clock, r2, r3 router): push.w {r4-r9,lr} replayed; identical to "
+                 "1.6.1 0x08061740 (offcmp 0x1A0 B); 2 callers (0x0806072C, 0x0806093A) as 1.6.1. Caller logic in "
+                 "FUN_08060500 equals 1.6.1's (restart: count+1 == 0; wrap at the clip's loop count; +0x30 flag keeps "
+                 "counting) except one new case: with the +0x30 flag, a count past 0xFF now calls FUN_08061E80 and this "
+                 "function (a boundary). cond_loop reads track+0x14 (the counter, str [r5,#0x14]) and +0x0C / +0x86C0"),
+    # ---- poly AT (M7 side; the group needs the M4 handlers, S5) ----
+    "POLY_SITE": dict(value=0x08062986, orig="7ff40bae",
+        evidence="External handler: cmp r3,#2 (0x08062980); cmp r3,#3 (0x08062984); bne.w 0x080625A0 (the replayed "
+                 "branch); type 3 -> pad Note Off(r6 track, sp+0x20 event, r8) 0x08062990; 0x080622E0..0x080629E0 identical "
+                 "to 1.6.1 0x08061DC0 (offcmp 0x700 B: 25 moved branches, 53 jump-table words shifted with the code)"),
+    "POLY_RESUME": dict(value=0x080625A0,
+        evidence="track message loop head: add r2,sp,#0x20; mov r1,sl; ldr r0,[sp,#4]; bl queue read 0x08065AC0 (as 1.6.1 "
+                 "0x08062080); POLY_SITE's target"),
+    "POLY_DISPATCH": dict(value=0x08062984, evidence="cmp r3,#3 right before POLY_SITE (test entry)"),
+    # ---- stock code the S3 suites run (test_notemod_route, test_polyat, test_retrig) ----
+    "TRACK_CTOR": dict(value=0x08062FA0, evidence="identical to 1.6.1 0x08062A80 (offcmp 0x200 B)"),
+    "TRACK_MSG_LOOP": dict(value=0x080625A0, evidence="= POLY_RESUME"),
+    "TRACK_MSG_LOOP_END": dict(value=0x08062700,
+        evidence="queue-empty exit of the loop (beq.w at 0x080625AC): ldrb.w r3,[r6,#0x20], as 1.6.1 0x080621E0"),
+    "SEQ_PLAY_PASS": dict(value=0x08060834,
+        evidence="pending note-off pass in FUN_08060500 (1.6.1 0x08060494): ldr.w r2,[r5,#0x238] (count), entries at "
+                 "track+0x38 stride 0x10 (active +0, pad +2, note +4, off tick +8), clock [sp+0x10] (ldrd [sl]), ticks per "
+                 "block r8, router [sp+0x14]; the same registers as 1.6.1; only the timing (NM_OFF_SITE_1) changed; the "
+                 "function grew 37 instructions (play count) outside this pass"),
+    "SEQ_PLAY_PASS_END": dict(value=0x080608A6,
+        evidence="add sp,#0x64 (the pass's exit; the compaction path at 0x080609E0 returns here), as 1.6.1 0x0806050A"),
+    "SAMPLER_PROCESS": dict(value=0x0808F4A0,
+        evidence="sampler message loop (engine r0, router r1): the matcher's 'changed / 11 tokens' was its 0xA1-entry "
+                 "jump table decoded as code; offcmp of 0x1200 B vs 1.6.1 0x0808E9A0: 0 instruction diffs, the table "
+                 "identical relative to the entry, one moved literal; note-on case 0x12 at 0x08090591 calls VOICE_START "
+                 "with note r3=[sp+0x34]"),
+    "SAMPLER_NOTE_START": dict(value=0x0808F7A0,
+        evidence="the loop's queue-empty exit (beq.w at 0x0808F4EC): ldrb.w r3,[r4,#0x63d], as 1.6.1 0x0808ECA0"),
+    "VOICE_START": dict(value=0x08095260,
+        evidence="voice start: 0x08095260..0x08095F60 identical to 1.6.1 0x08094760..0x08095460 (fdiff 1169 / 1169 "
+                 "masked instructions; the matcher's token count was off); call site 0x080905B8 as 1.6.1 0x0808FAB8"),
+    "TICKS_PER_BLOCK": dict(value=0x080A2500, evidence="tick math block identical (see TICK_TO_OFFSET)"),
+    "TICK64_ADD": dict(value=0x080A2960, evidence="tick math block identical (see TICK_TO_OFFSET)"),
+    "TICK64_COPY": dict(value=0x080A29C0, evidence="tick math block identical (see TICK_TO_OFFSET)"),
+    "TICK64_MAKE": dict(value=0x080A29E0, evidence="tick math block identical (see TICK_TO_OFFSET)"),
+    # ---- RAM ----
+    "PRODUCER_GLOBAL": dict(value=0x2401BD3C,
+        evidence="same address; literal count 22 / 23 (one more reader in 1.6.8); the object it points to is the M7 -> M4 "
+                 "ring whose +0x2340 / +0x2360 indexes (MIDI_RING_RD / _WR) and +0x51BC (LOAD_RING) S2 reviewed; m7_mod.c "
+                 "reads those two indexes (External mod output, deferred)"),
+    # ---- S3 implementer: stock's note clamp, the reason for BE_NOTES_ABOVE_127 (test_s3_m7 runs it on each base) ----
+    "PAD_NOTE_CLAMP": dict(value=0x080A25E0,
+        note="(&note, delta) -> note + delta clamped: 1.6.8 0..163 (1.6.1 0..127); S3: test_s3_m7 runs it",
+        evidence="ldrh r3,[r0]; adds r0,r1,r3; sxth; cmp r0,#0xa3; it ge; movge r0,#0xa3; bic.w r0,r0,r0,asr #31; bx lr "
+                 "(1.6.1 0x080A1E40: ldrh; add; sxth; usat r0,#7,r0; bx lr), at the same offset +0xE0 of the tick-math block "
+                 "(rc18/impl/fcmp.py: the block's only code diff besides key immediates); callers 0x08085624, 0x08097020, "
+                 "0x08097056 (1.6.1: 7 callers, 0x08083A5C .. 0x08096556)"),
+    "SEQ_PLAYER": dict(value=0x08060500,
+        evidence="sequence player: prologue push.w {r4-r11,lr}; mov r5,r0; mov r0,r3; mov r4,r1; vpush {d8}; sub sp,#0x64 "
+                 "identical to 1.6.1 0x08060160; one caller each (0x08062724, 1.6.1 0x08062204); contains SEQ_PLAY_PASS "
+                 "(+0x334 both) and calls the loop boundary (0x0806072C, 0x0806093A), the processor (0x08060588), "
+                 "SAMPLE_TO_TICK (3 calls); changed: the note-off timing (NM_OFF_SITE_1) and the play-count wrap "
+                 "(+37 instructions). Only test_s3_m7 uses it (runs it whole on both bases)"),
+    "SAMPLE_TO_TICK": dict(value=0x080A2D80,
+        evidence="vmov.f32 s15,#0.5; vldr s12,[r1,#0x14c]; push.w {r4-r9,lr} ... same code as 1.6.1 0x080A25E0 for 20 "
+                 "instructions; 3 callers each, all in SEQ_PLAYER (0x080606DE, 0x080607BE, 0x080608F0); test_s3_m7 stubs it"),
+    # ---- S3 review fix: the pad Note On / Off functions around two poly cap sites (test_s3_m7 runs them whole) ----
+    "PAD_NOTE_ON": dict(value=0x080602A0,
+        evidence="push.w {r4-r10,lr}; ldrd r5,r3,[r1,#0xc]; sub sp,#0x50; mov r4,r0 ... bl MSG_SEND at +0x50 "
+                 "(POLYCAP_PAD_ON_SITE 0x080602F0), same code as 1.6.1 0x0805FF00 (only the bl targets differ: msg init "
+                 "0x080A10C0 / 0x080A04A0, MSG_SEND); note 0 maps the pad (<=7: +0x2C, <=15: +0x1C, else 0x34) as 1.6.1"),
+    "PAD_NOTE_OFF": dict(value=0x080603E0,
+        evidence="ldrb.w r3,[r0,#0x30]; push.w {r4-r9,lr}; mov r4,r0; sub sp,#0x54 ... bl MSG_SEND at +0x48 "
+                 "(POLYCAP_PAD_OFF_SITE 0x08060428), same code as 1.6.1 0x08060040 (bl targets only)"),
 }
 
 # Registry keys missing from registry_keys.txt (entries without a title to match by): the measured
