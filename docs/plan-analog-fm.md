@@ -435,3 +435,20 @@ within 2 dB of the prototype, zero-FM shapes tested.
      48000 * [osc+0x108].
   Tests to add: the rig runs the engine init, renders 2N and decimates through 0x0807FCC0; assert 261.63 Hz at
   48 kHz, sync audibly engaged at n = 256, glide time within 5 %.
+
+## Added request: Bit Depth per oscillator (Jeff, 2026-11-09)
+- **What:** OSC1 and OSC2 each get **Bit Depth**: Full / 12 / 8 / 4 (enum, default Full). Not on the sub.
+- **Where in the signal:** on our oscillator output (±1), before stock's level / smoothing / mix, in the 96 kHz
+  domain (stock's 2x decimator FIR follows). Symmetric mid-tread rounding to 2^(N-1) steps per polarity
+  (`q = round(x * s) / s`, s = 2^(N-1) - 1), no dither, no sample-rate reduction (not asked for).
+- **Cost:** Full = nothing (skipped). On: about 3-4 instructions per sample per oscillator (multiply, round
+  `vrintn`, multiply), well under 5 % of an Analog voice.
+- **With FM (recommendation, decision BD1):** OSC1's crushed signal is the FM modulator (what you hear is what
+  modulates: gritty, stepped FM). Alternative: modulate with the clean signal.
+- **Controls / storage:** one more encoder per oscillator row (OSC1 then uses 2 of its 4 free slots, OSC2 3 of
+  4); 2 bits per oscillator in AN4 (fits the second word's spare bits); `bento_analog_bits1/2` in project.xml.
+  Keys are the scarce part: FM needs 3 and Bit Depth 2 more, so use the shared-key approach for Bit Depth (one
+  key, the oscillator told apart by the event's object handle, about 60 B of M4 code) unless the key scan finds
+  enough clean keys.
+- **Tests:** quantiser against an independent host model at each depth; Full bit-identical to today; mutations.
+- Built in the Analog FM sprint (same files), after the drum work.
