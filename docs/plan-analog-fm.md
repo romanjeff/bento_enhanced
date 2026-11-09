@@ -443,7 +443,7 @@ within 2 dB of the prototype, zero-FM shapes tested.
   (`q = round(x * s) / s`, s = 2^(N-1) - 1), no dither, no sample-rate reduction (not asked for).
 - **Cost:** Full = nothing (skipped). On: about 3-4 instructions per sample per oscillator (multiply, round
   `vrintn`, multiply), well under 5 % of an Analog voice.
-- **With FM (recommendation, decision BD1):** OSC1's crushed signal is the FM modulator (what you hear is what
+- **With FM (decided by Jeff 2026-11-09, BD1):** OSC1's crushed signal is the FM modulator (what you hear is what
   modulates: gritty, stepped FM). Alternative: modulate with the clean signal.
 - **Controls / storage:** one more encoder per oscillator row (OSC1 then uses 2 of its 4 free slots, OSC2 3 of
   4); 2 bits per oscillator in AN4 (fits the second word's spare bits); `bento_analog_bits1/2` in project.xml.
