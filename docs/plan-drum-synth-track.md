@@ -420,3 +420,13 @@ On NO-GO:
   - `s*.sh`: disassembly reads (`~/rv31vfy/m7.txt`, `m4.txt`).
   - Builds: BE4.31 `~/rv31vfy/out168` (sha 5d2c6366..., identical to the investigators'); BE4.22
     `~/rv31vfy/out422` (8d66cec).
+
+## Device answers to the gates (Jeff, 2026-11-09, BE4.22 = stock behaviour here)
+- Gate 2: tapping an unloaded One-Shot pad opens the **file browser**; the pad's "Edit" also opens the file
+  browser. So S7-2 must intercept both on drum pads and open the drum page instead (find where stock decides
+  "no file -> browser").
+- Gate 1: Pack and reload of a project with an unloaded pad: no errors seen.
+- Gate 5: an empty pad is a blank square with a "+" in the touchscreen pad grid, and a white pad (not the
+  track's colour) on the hardware pads. For drum pads we want a name/label and the track colour: hook the
+  grid label / pad colour decision (find it in S7-0), else accept blank + white as a first step.
+- Gates 3, 4, 6 remain for S7-0 (offline).
