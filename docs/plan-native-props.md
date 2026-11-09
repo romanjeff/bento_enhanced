@@ -387,3 +387,11 @@ Stock 1.6.1 and 1.6.8 would not load such a track at all, so rollback would brea
 | NP5 | Inert controls | hide them (tick heal) / show "--" in a fixed layout | hide them, if P0's T5 run allows |
 | NP6 | Shape's default | 48 (saw, today's sound) / 0 (sine) | 48 |
 | NP7 | OSC1 / OSC2 titles | always on Wavetable tracks / only when one is Analog | always: one consistent name, which FD8 already approved |
+
+## Decision (Jeff, 2026-11-09)
+- (B) per-oscillator Type: **yes** ("a nice touch"). The separate "Analog" menu entry goes.
+- No migration needed: Jeff has no saved dev-build projects he cares about (skip NP3 conversion; keep the
+  no-crash guarantee on stock 1.6.8 / older BE builds).
+- Proposed (main session): the drums use the same native-property mechanism from the start (track flag on the
+  One-Shot track object, engine + knobs on each pad object) instead of DK4 + H1-H4, see
+  docs/plan-drum-synth-track.md.
