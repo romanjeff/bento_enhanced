@@ -452,3 +452,14 @@ within 2 dB of the prototype, zero-FM shapes tested.
   enough clean keys.
 - **Tests:** quantiser against an independent host model at each depth; Full bit-identical to today; mutations.
 - Built in the Analog FM sprint (same files), after the drum work.
+
+## Added request: "Shape" control and shape view (Jeff, 2026-11-09)
+- On Analog oscillators the control is named **Shape**, not Position, with range **0..127** (not stock's 0..255).
+- Order from 0 to 127: **sine -> triangle -> saw -> square -> pulse narrowing** (replaces the FD5 anchors in 4.5;
+  proposed anchors: 0 sine, 24 triangle, 48 saw, 88 square, then 88..127 square narrowing to an 8 % pulse; each
+  pure shape with a small plateau).
+- A **shape view** in the oscillator pane that shows the current waveform as Shape moves (exact form to be
+  agreed with Jeff: one drawn cycle of the actual wave, or a circular dial with the shapes around it).
+- Implementation note: a separate Shape key with its own descriptor is cleaner than relabelling stock's shared
+  Position key (0xC9, type 1, 0..255); depends on the native-properties / per-oscillator Type decision
+  (docs/plan-native-props.md). Drawing needs a pane paint hook (Wavetable pane paint slot 0x081B6914).
