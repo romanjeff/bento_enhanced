@@ -26,14 +26,12 @@ still sends 44 for a note-0 step: its pad 0 has its own sound, so stock's map is
 
 0. Gate and how this combines with v4.21
 [ ] Flash this kit ONLY after docs\checklist-v4.10.txt has passed on this unit. If v4.10 is not done: stop here.
-[ ] v4.21 was never flashed. Do not flash it to test Analog: BE4.22 has everything v4.21 has plus the fix to its
-    save / load bug. Run checklist-v4.21.txt sections 1-5 on THIS kit in the same session, reading "BE4.21" as
+[ ] v4.21 was never flashed and its kit is deleted (2026-11-08): BE4.22 has everything v4.21 has plus the fix to
+    its save / load bug. Run checklist-v4.21.txt (copied into this kit as V421_ANALOG_CHECKLIST.txt) sections 1-5 on THIS kit in the same session, reading "BE4.21" as
     "BE4.22" (expected values are the same, except the one below; the ANALOG line has new fields, see 6). Its
     section 4 items "Power cycle. Load ANALOG_T: still Analog" and the preset item are the ones BE4.21 would fail:
     they must pass here. Changed on BE4.22: v4.21 section 2 "Pick Analog again on the Analog track: Sync and Glide
     keep their values" is now: Sync goes to Off and Glide to 0 (a new instrument, nothing carried over); see 6.
-    Optional, only to confirm the offline finding: flash v4.21, make an Analog track, save, power cycle, load: on
-    v4.21 it is expected to come back plain. Not needed for the sign-off.
 [ ] Back up the whole SD card on the computer (a folder copy of every file). Section 8 restores it.
 [ ] Work on copies only: on a computer, copy SPACED to SPACED_A (v4.21's section 5) and make four new empty
     projects: NOTE0_T (sections 2-5), ANALOG_T (v4.21's sections, and 6), PLAIN_T (v4.21's section 4b). Never load
@@ -123,9 +121,6 @@ still sends 44 for a note-0 step: its pad 0 has its own sound, so stock's map is
 [ ] v4.10 (flash\bento_enhanced-v4.10\01_TEST_FIRMWARE): load NOTE0_T and ANALOG_T: no crash. External note 0 is 44
     again; the Analog track is a plain Wavetable with no WAV. Do not save there unless you mean to: v4.10 drops the
     bento_analog attributes on its next save.
-[ ] v4.21 (flash\bento_enhanced-v4.21\01_TEST_FIRMWARE) only if you want to see the loss of section 0: ANALOG_T's
-    Analog track is expected to load as a plain Wavetable there (BE4.21 marked the load's scratch copy, not the
-    track), and a save there drops the bento_analog attributes. External note 0 is 44 there too.
 [ ] 03_RESTORE_STOCK (stock 1.6.8): both projects load; note-0 steps play as 44; Analog tracks are plain.
 [ ] Back to BE4.22 if you continue; restore the card backup from section 0 at the end.
 
