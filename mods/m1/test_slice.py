@@ -433,7 +433,7 @@ class BuildRefusal(unittest.TestCase):
         # The parts ported to 1.6.8 (independent list: a change to BASE_SETTINGS must show here).
         # S3: the M7 parts; S4+S5: cond_ui, poly_at, inta_live, step, hold.
         cls.s3 = {"poly_cap", "retrig", "cond_engine", "nmod", "inta_curve", "cond_ui", "poly_at", "inta_live", "step", "hold",
-                  "analog", "note0"}                              # S6a: Analog; BE4.22: note0 (1.6.8 only; left out on 1.6.1)
+                  "analog", "note0", "drums"}                     # S6a: Analog; BE4.22: note0; S6c: drums (1.6.8 only; left out on 1.6.1)
         cls.later = {"mx"}                                         # not ported (deferred, off by default on 1.6.8)
 
     def test_black_box_alone_builds(self):

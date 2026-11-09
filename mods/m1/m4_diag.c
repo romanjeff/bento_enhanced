@@ -992,7 +992,7 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
         puts_(&o, " events="); dec(&o, mh->dbg_n >> 20); puts_(&o, "\r\n");
     }
     d0_lines(&o);
-#if defined(BE_SYNTH_UI) && !defined(BE_NO_ANALOG)
+#if defined(BE_SYNTH_UI) && !(defined(BE_NO_ANALOG) && defined(BE_NO_DRUMS))   /* S6c: either synth */
     {   /* S6a (X6): the synth UI's ANALOG line, from its entry table (slot 1); the block is full here */
         u32 len = o.len;
         ((void (*)(char *, u32 *, u32))((BE_SYNTH_UI + 4u) | 1u))(o.buf, &len, BUF_BYTES - SCRATCH_BYTES - 64u);
@@ -1020,7 +1020,7 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
 __attribute__((used, retain)) void m4_tick(u32 a, u32 b) {
     FN(S_M4_BL_TARGET, orig_fn)(a, b);
     poll();
-#if defined(BE_SYNTH_UI) && !defined(BE_NO_ANALOG)
+#if defined(BE_SYNTH_UI) && !(defined(BE_NO_ANALOG) && defined(BE_NO_DRUMS))   /* S6c: either synth */
     ((void (*)(void))(BE_SYNTH_UI | 1u))();         /* S6a: synth UI tick (entry slot 0): keys, handshake, tables */
 #endif
 }

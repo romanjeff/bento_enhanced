@@ -953,9 +953,10 @@ class ReadinessDiagnostics(FatFsRig):
     def test_the_first_block_after_the_m4_is_up_takes_the_reservation(self):
         """S6a review (B1, build): h_consume takes the Region and the synth area once the M4's config line is up, so the
         M4 can attach right after its first tick instead of waiting for the first note (late, as v4.10, in a BE_DISABLE
-        bisect of analog: that build has no call)."""
-        if "analog" in OMITTED or "analog" in OFF:
-            self.skipTest("no analog group running in this image")
+        bisect of analog: that build has no call). S6c: either synth group running makes the call (a BE_DISABLE=analog
+        bisect keeps the drums, which need the area)."""
+        if all(g in OMITTED or g in OFF for g in ("analog", "drums")):
+            self.skipTest("no synth group running in this image")
         left = lambda: r32(self.u, S.POOL_LEFT_RAM)
         self.tick(1000); self.m7_ready(); self.heap()
         self.assertEqual(left(), 3405824, "nothing before the first block")
@@ -1339,8 +1340,11 @@ class NoCardWrites(FatFsRig):
         call(self.u, SYM4["dump_after_save"])
         self.assertIn("# saved: m7 dropped=", self.fs[SAVES].decode())
         if "analog" not in MAN.get("omitted", []):    # S6a (X6): the synth UI's line, through its entry table
-            self.assertRegex(self.fs[SAVES].decode(), r"\nANALOG area not taken keys=\S+ tracks=0 \|[^\n]*\r\n",
-                             "the M7 has not taken the synth area here")
+            if "analog" not in OFF:
+                self.assertRegex(self.fs[SAVES].decode(), r"\nANALOG area not taken keys=\S+ tracks=0 \|[^\n]*\r\n",
+                                 "the M7 has not taken the synth area here")
+            if "drums" not in OFF and "drums" not in MAN.get("omitted", []):   # S6c: the drums' line, before ANALOG's
+                self.assertIn("\nDRUMS area not taken\r\n", self.fs[SAVES].decode())
         n = len(self.writes)
         self.tick(2000)
         self.assertEqual(len(self.writes), n, "no writes between saves")

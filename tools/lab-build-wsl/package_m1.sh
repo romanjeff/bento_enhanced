@@ -13,4 +13,9 @@ cp "$B/bento1.bin" "$B/bento2.bin" "$K/03_RESTORE_STOCK/"
 echo "base: $L"
 cp "$O/manifest.json" "$K/"
 echo "kit: $K"
-(cd "$K" && find . -type f ! -name SHA256SUMS.txt | sort | xargs sha256sum > SHA256SUMS.txt && cat SHA256SUMS.txt)
+# S6c: the drum synths' carrier WAVs (tools/carriers/gen_carriers.py) for a build with the drums on: the folder
+# "Drum Synths BE" goes to the card as it is; their SHA-256 are in SHA256SUMS.txt with the rest of the kit
+if python3 -c "import json,sys; m=json.load(open(sys.argv[1])); sys.exit(0 if 'dr_render' in m.get('dsp_symbols', {}) and 'drums' not in m.get('omitted', []) + m.get('disabled', []) else 1)" "$O/manifest.json"; then
+  python3 -I /mnt/c/Users/rjrom/bento_mods/bento_enhanced/tools/carriers/gen_carriers.py "$K/Drum Synths BE"
+fi
+(cd "$K" && find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt && cat SHA256SUMS.txt)

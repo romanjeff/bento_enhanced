@@ -1,0 +1,5 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Freestanding stand-in for <random> (S6c): DaisySP's dsp.h includes it for RAND_MAX (a real <random> brings in
+ * <cstdlib>); nothing else of it is used. */
+#pragma once
+#include <stdlib.h>

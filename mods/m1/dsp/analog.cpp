@@ -282,7 +282,9 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     r->oscs++;
     AnOsc *self = state(osc), *slave = state(v + S_VOICE_WT2);
     int master = which == 0 && sync;
-    if ((silent && !master) || n > 1024u) { r->cyc += CYCCNT - c0; return 1; }
+    /* S6c review S3: SCRATCH_SIZE sets the size only when the buffer holds n, and never grows it, so a larger block
+     * than the scratch buffer is rendered as silence rather than written past it (stock's are 128 frames) */
+    if ((silent && !master) || n > 1024u || n > W(scratch, S_BUF_CAPACITY)) { r->cyc += CYCCNT - c0; return 1; }
     float inc = rate * (1.f / 2048.f);                        /* a 2048-sample cycle at the native rate */
 #if AN_E3
     if (silent) {                                             /* a silent master: only the wraps for WT2 */
@@ -303,15 +305,4 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     return 1;
 }
 
-/* Our own memset / memcpy, in case the compiler emits a call to them (no libc in this ELF). */
-extern "C" void *memset(void *d, int c, unsigned n) {
-    u8 *p = (u8 *)d;
-    while (n--) *p++ = (u8)c;
-    return d;
-}
-extern "C" void *memcpy(void *d, const void *s, unsigned n) {
-    u8 *p = (u8 *)d;
-    const u8 *q = (const u8 *)s;
-    while (n--) *p++ = *q++;
-    return d;
-}
+/* memset / memcpy (the compiler may emit calls to them): dsp_lib.cpp, shared with the drums (S6c). */

@@ -58,6 +58,11 @@
  * entry before the counter can reach it (in practice: all of them, at the first of stock's static constructors). */
 #define AN4_MAGIC 0x32344E41u                /* "AN42": BE4.22's layout (a v4.21 table is started again, review rc23 I5) */
 #define AN4_N SA_ANTAB_N
+#ifdef BE_NO_ANALOG                                 /* S6c: a BE_DISABLE=analog bisect keeps the drums (and this ELF): */
+#define ANALOG_ON 0                                 /* the tick and the ANALOG line do nothing, the code stays referenced */
+#else
+#define ANALOG_ON 1
+#endif
 #define HANDLE_CTR (*(volatile u32 *)S_OBJ_HANDLE_CTR)
 typedef struct {
     u32 magic, gen;                          /* gen: the config line's boot generation this table last saw */
@@ -226,7 +231,7 @@ static void publish(volatile An4 *a) {
     volatile SaM4 *h = M4HDR;
     if (h->magic != SA_M4_MAGIC || h->bootgen != boot) {
         h->magic = 0; dsb();
-        h->serial = 2u; h->r4 = h->r5 = h->r6 = h->r7 = 0;
+        h->serial = 2u; h->drum_serial = 0; h->r5 = h->r6 = h->r7 = 0;
     }
     for (u32 i = 0; i < AN4_N; i++) {
         u32 w = a->e[i].word, f = flags_of(w) & AN_ON ? flags_of(w) & (AN_ON | AN_SYNC) : 0u;
@@ -443,6 +448,7 @@ __attribute__((used, retain)) void an_load(void *node, void *object) {
  * dropped, forgot) run from the table's cold start, so H1's work at boot, before this first tick, shows. Entries
  * from an earlier boot are H1's (an_forget, here too: they would only take slots). */
 __attribute__((used, retain)) void an_tick(void) {
+    if (!ANALOG_ON) return;                         /* S6c: a BE_DISABLE=analog bisect (drums on): no Analog keys or table */
     volatile An4 *a = an4();
     u32 now = TICK_MS, g = boot_gen();
     if (g && g != a->gen) {
@@ -458,8 +464,34 @@ __attribute__((used, retain)) void an_tick(void) {
 }
 
 static void field(Out *o, const char *name, u32 v) { puts_(o, name); dec(o, v); }
+#if !defined(BE_OMIT_DRUMS) && !defined(BE_NO_DRUMS)
+/* S6c: the DRUMS line, from the M7's drum stats lines (cleaned after each block with a drum voice): the hook's average
+ * and peak share of the 1,280,000-cycle block, the share histogram, and what the voices did. */
+#define DSTATS ((volatile SaDrumStats *)SA(SA_DSTATS))
+static void drums_line(Out *o) {
+    puts_(o, "DRUMS");
+    if (!ready()) { puts_(o, " area not taken\r\n"); return; }
+    volatile SaDrumStats *s = DSTATS;
+    u32 blocks = s->blocks, avg = blocks ? (s->sum16 / blocks) << 4 : 0u;
+    field(o, " blocks=", blocks);
+    field(o, " avg_cyc=", avg); field(o, " (pm=", avg / 1280u); puts_(o, ")");
+    field(o, " peak_cyc=", s->peak); field(o, " (pm=", s->peak / 1280u); puts_(o, ")");
+    field(o, " share>=5%=", s->hist[0]); field(o, " >=15=", s->hist[1]); field(o, " >=30=", s->hist[2]);
+    field(o, " voices_peak=", s->cells_peak); field(o, " renders=", s->renders);
+    field(o, " | starts=", s->starts); field(o, " retrigs=", s->retrigs); field(o, " quiet_ends=", s->quiet_ends);
+    field(o, " cap_ends=", s->cap_ends);
+    field(o, " | detects=", s->detects); field(o, " carriers=", s->carriers); field(o, " unbuilt=", s->unbuilt);
+    field(o, " knob_reads=", s->knob_reads); field(o, " n_max=", s->n_max);
+    field(o, " unbound=", s->unbound); field(o, " short_bufs=", s->short_bufs);
+    puts_(o, "\r\n");
+}
+#endif
 __attribute__((used, retain)) void an_print(char *buf, u32 *len, u32 max) {
     Out o = {buf, len, max};
+#if !defined(BE_OMIT_DRUMS) && !defined(BE_NO_DRUMS)
+    drums_line(&o);
+#endif
+    if (!ANALOG_ON) return;
     volatile An4 *a = an4();
     volatile SaM7 *m = M7HDR;
     u32 take = SYNTH_TAKE, n = 0;

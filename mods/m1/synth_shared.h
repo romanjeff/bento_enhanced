@@ -54,7 +54,9 @@ typedef struct {
 #define SA_M4_MAGIC 0x34534542u                             /* "BES4" */
 typedef struct {
     unsigned magic, m7gen, bootgen, serial;                 /* serial: +2 on every publish (even) */
-    unsigned r4, r5, r6, r7;
+    unsigned drum_serial;                                   /* S6c: +2 on every publish of the drum knob lines (even);
+                                                               0 until the M4 publishes them (S6c-2): defaults only */
+    unsigned r5, r6, r7;
 } SaM4;
 /* +0x0040 M7 stats, two lines (M7 writes and cleans after each block, M4 reads) */
 #define SA_STATS 0x0040u
@@ -90,7 +92,64 @@ typedef struct {
 #define SA_ANCACHE_N 16u
 /* +0x0800 M4 only: synth UI state (2 KB, unused since the review: the M4's state is in AN4) */
 #define SA_UI 0x0800u
-/* +0x1000.. drums (S6c), +0x6000.. Track FX: reserved, see the plan */
+/* +0x0080 drum stats, four 32 B lines (M7 writes and cleans after each block with a drum voice, M4 reads) */
+#define SA_DSTATS 0x0080u
+typedef struct {
+    unsigned blocks;          /* blocks with a drum voice rendered (halved with sum16) */
+    unsigned sum16;           /* DWT cycles in the drum hook per such block, >> 4, summed */
+    unsigned peak;            /* most cycles in one block */
+    unsigned cells_peak;      /* most drum voices rendered in one block */
+    unsigned renders;         /* drum voice-blocks rendered */
+    unsigned starts;          /* drum synth starts (a carrier start whose engine is built) */
+    unsigned retrigs;         /* of those, starts on a voice whose synth was still ringing (a restart of that voice) */
+    unsigned detects;         /* carrier tests run (a carrier-length sample seen for the first time on a pad) */
+    unsigned carriers;        /* of those, carriers */
+    unsigned unbuilt;         /* starts on a carrier whose engine is not in this build (played natively: near silence) */
+    unsigned quiet_ends;      /* voices ended at -96 dB */
+    unsigned cap_ends;        /* voices ended at the length cap */
+    unsigned knob_reads;      /* knob table reads (a start, or a new M4 drum serial) */
+    unsigned n_max;           /* the largest frame count seen */
+    unsigned unbound;         /* renders with no cell for their voice: more voices than DRUM_CELLS (stock has 32: never) */
+    unsigned short_bufs;      /* renders handed to stock because the block was empty, over 1024 frames or past the scratch */
+    unsigned hist[3];         /* blocks where the drums took >= 5 % / >= 15 % / >= 30 % of the 1,280,000-cycle block */
+    unsigned r19[13];
+} SaDrumStats;                /* 128 B: blocks +0, sum16 +4, peak +8, cells_peak +12, renders +16, starts +20, retrigs +24,
+                                 detects +28, carriers +32, unbuilt +36, quiet_ends +40, cap_ends +44, knob_reads +48,
+                                 n_max +52, unbound +56, short_bufs +60, hist +64 */
+/* +0x1000 drum knob table, 64 lines (M4 writes, M7 reads): the M4's table, published (S6c-2: not written yet; the M7
+ * reads it only once the M4 header's drum_serial is not 0). A line: seqlocked as SaTrack; handle = the pad's object
+ * handle (= its M7 root's +0x0C); word [3:0] engine override (0 = the carrier's), [8] in use; v0 knob values 0..3
+ * (byte i = knob i), v1 knobs 4..7. */
+#define SA_DKTAB 0x1000u
+#define SA_DKTAB_N 64u
+#define DK_USED 0x100u
+typedef struct {
+    unsigned head, handle, word, v0, v1, r5, r6, tail;
+} SaKnobs;
+/* +0x2400 drum cells, DRUM_CELLS x 256 B (M7 private, dsp/drums.h) */
+#define SA_DCELLS 0x2400u
+#define DRUM_CELLS 32u                                      /* one per voice of stock's one-shot pool (S_DRUM_POOL_N) */
+#define DRUM_CELL_BYTES 256u
+/* +0x4400 drum run state (M7 private, 512 B: block counter, the current cell's RNG, powf memo, carrier cache) */
+#define SA_DRUN 0x4400u
+/* +0x4600.. spare, +0x6000.. Track FX: reserved, see the plan */
+/* The drum keys (S6c): ten from the reviewed allow-list, all or nothing (m4_synth.c synth_keys); the Kick uses the first
+ * seven (Tune, Decay, Tone, Accent, Sweep, Sweep Decay, Dirt). */
+#define DRUM_KNOBS 8u
+#define DRUM_KEYS_N 10u
+/* Carrier WAVs (tools/carriers/gen_carriers.py; docs/plan-synths-168.md section 8): mono 48 kHz 16-bit, frames =
+ * CARRIER_FRAMES + engine id; 32 samples of the signature at +-1 LSB, then 32 carrying CARRIER_WORD(id), then
+ * silence. Playground's carriers (PG_CARRIER_FRAMES + id - 1 frames, the signature only) are accepted too. */
+#define CARRIER_SIGNATURE 0xB1E70A5Cu
+#define CARRIER_FRAMES 4800u
+#define CARRIER_VERSION 1u
+#define CARRIER_WORD(id) (0x42450000u | (CARRIER_VERSION << 8) | (id))   /* "BE", version, engine id */
+#define PG_CARRIER_FRAMES 144019u
+#define ENGINE_KICK 1u                                      /* engine ids: Playground's (Kick 1, Snare 3, HiHat 5, */
+#define ENGINE_SNARE 3u                                     /* Clap 7, Tom 9) */
+#define ENGINE_HIHAT 5u
+#define ENGINE_CLAP 7u
+#define ENGINE_TOM 9u
 
 #define SA_DCIMVAC 0xE000EF5Cu
 #define SA_DCCMVAC 0xE000EF68u

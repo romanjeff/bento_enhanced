@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Freestanding stand-in for <cmath> / <math.h> (S6c): only what the vendored DaisySP files (../daisysp) use, single
+ * precision only. The DSP ELF has no libm: sinf / powf / log10f are ours (../dsp_lib.cpp); no double overloads
+ * are declared, so a double can only come from the code itself (and build.py refuses any __aeabi_d* helper). */
+#pragma once
+extern "C" {
+float sinf(float x);
+float powf(float base, float exponent);
+float log10f(float x);
+/* declared only: dsp.h's inline helpers name them, the files we build never call them (a call would be an undefined
+ * symbol, which build.py refuses) */
+float floorf(float x);
+float expf(float x);
+float frexpf(float x, int *e);
+}
+inline float fabsf(float x) { return __builtin_fabsf(x); }
+namespace std {
+/* DaisySP's TestFloat (never called by the Kick) asks for it */
+inline bool isnormal(float x) {
+    union { float f; unsigned u; } v = {x};
+    unsigned e = (v.u >> 23) & 0xFFu;
+    return e != 0u && e != 0xFFu;
+}
+}

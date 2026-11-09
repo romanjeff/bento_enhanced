@@ -207,6 +207,17 @@ instrument change. Ratchet hits, Note Mod and curve playback use the same rule. 
 to the M4 MIDI task's bytes, and the plan's sweep through stock's pad router: every note 0..127). Details:
 docs/plan-ext-low-notes.md.
 
+**Drum synths on One-Shot pads, the Kick (S6c, BE4.30; not yet verified on hardware).** Group `drums` (1.6.8 only;
+`-DBE_OMIT_DRUMS` on 1.6.1). A pad whose sample is our carrier WAV (`tools/carriers/gen_carriers.py`, shipped in the
+kit's "Drum Synths BE" folder) plays DaisySP's SyntheticBassDrum (vendored unmodified in `dsp/daisysp`, MIT) instead.
+One site, D1: stock's per-voice one-shot render entry (`DRUM_RENDER`) branches to `dsp/drums.cpp` `dr_render`, which
+recognises a voice's start by its start serial, tests the voice's open sample for the carrier once per start, renders
+the Kick into the voice's scratch buffer and calls stock's post chain, so the pad's filter, envelope, level, sends and
+routes act as on a sample. One cell per native voice (stock's one-shot pool has 32), no cap. Default sound only: the
+drum page with the Kick's knobs is S6c-2. Black box: the DRUMS line. Suite: test_drums (stock's pool and root
+constructors, VOICE_START, the render entry and post chain; the Kick against a host build of the vendored DaisySP,
+`dsp/host/kick_ref.cpp`). Details: docs/plan-synths-168.md, "S6c: the Kick, M7 part".
+
 **Our slice on 1.6.8 (S2).** 1.6.8 owns D2 0x3003C000..0x30040000 (SAI DMA buffers, M7 MPU R14),
 so on 1.6.8 `S_D2_SLICE` is AXI 0x2404D000..0x24050000 (the name stays): RAMCHK `axi`
 0x2404CDC0..0x2404D000 is a guard band above the M7 stack, the slice uses +0..+0x2000, RAMCHK `top`
@@ -274,6 +285,22 @@ Tool gotchas it guards against:
   M7 ext pool, which the M7 reserves and caches write-back). Bump-allocated once per boot: the External
   modulation settings (v3.41, published at `0x3003DFC0`) and the curve pool
   (1 MB, 16384 handles, plus the save list and a 4 KB sidecar buffer).
+
+### On 1.6.8 (since BE4.30)
+
+`build.py layout()` holds the table (manifest `layout`); 1.6.1 keeps its v3.72 layout byte for byte.
+
+| Block | Range | Size | Use |
+|---|---|---|---|
+| M7 DSP window | `0x080D0000..0x080D9000` | 36 KB | trampolines (first 0x100 B: Analog's two, the drums' D1), then the hard-float DSP ELF (Analog + Kick, 12.9 KB in BE4.30) |
+| M7 code | `0x080DA000..` | | trampolines, then `m7.elf` (soft float) |
+| COND_UI | `0x081B7000..0x081B7200` | 512 B | probability clamp helpers (84 B used). 4 KB before BE4.30 |
+| M4_CODE | `0x081B7200..0x081BE000` | 28,160 B | the black box (`m4_diag.c`, 24,424 B in BE4.30); 24 KB before BE4.30, when it had 152 B left |
+| HOLD, CTRL, STEP, M4_POLY | `0x081BE000..0x081C5500` | | unchanged by BE4.30 (M4_LIMIT and every block after it keep their address) |
+| SYNTH_UI | `0x081C5500..` | sized at link time | `m4_synth.c` (6.8 KB); the image may grow to `0x18D334` (`0x081CD334`): about 25 KB left |
+
+The synth area (32 KB of SDRAM below the Region, `0xC5FF4000`) is described in `synth_shared.h` and in
+`docs/plan-synths-168.md` section 4.
 
 ## Not yet
 

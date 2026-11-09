@@ -1,0 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Freestanding stand-in for <cassert> (S6c): asserts compile to nothing in the DSP ELF. */
+#pragma once
+#define assert(x) ((void)0)

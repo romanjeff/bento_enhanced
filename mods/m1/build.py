@@ -69,11 +69,11 @@ FORBIDDEN_FROM = 0x081E0000
 GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve", "poly_at",
                "inta_live", "cond_ui", "step", "hold", "mx")
 BASE_SETTINGS = {
-    "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0"),
+    "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0", "drums"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.22", m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.30", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
-                              "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0"), default_off=("mx",),
+                              "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
 }
 VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (display: boot label, max 6 characters)
@@ -111,7 +111,14 @@ if "step" in DISABLED:
 # bisect (BE_DISABLE leaves the code in the image), so a base where it builds keeps its bytes.
 # S6a: analog left out (1.6.1) -> BE_OMIT_SYNTH: m7_polyat.c keeps the v3.70 reservation, byte for byte.
 # BE4.22: note0 left out (1.6.1) -> BE_OMIT_NOTE0: the shared M7 / M4 sources keep their v3.72 code.
-OMIT_DEFINES = {"mx": "-DBE_OMIT_MX", "analog": "-DBE_OMIT_SYNTH", "note0": "-DBE_OMIT_NOTE0"}
+# S6c: analog left out -> BE_OMIT_ANALOG, drums -> BE_OMIT_DRUMS, both (1.6.1) -> also BE_OMIT_SYNTH (omit_flags): the
+# shared synth code (the reservation, the black box call-out, the slice tables) goes only when neither synth is built.
+OMIT_DEFINES = {"mx": "-DBE_OMIT_MX", "analog": "-DBE_OMIT_ANALOG", "note0": "-DBE_OMIT_NOTE0", "drums": "-DBE_OMIT_DRUMS"}
+SYNTH_GROUPS = ("analog", "drums")
+def omit_flags(groups):
+    """The defines for these left-out groups (OMIT_DEFINES), with BE_OMIT_SYNTH when every synth group is among them."""
+    f = [OMIT_DEFINES[g] for g in sorted(set(groups) & set(OMIT_DEFINES))]
+    return f + (["-DBE_OMIT_SYNTH"] if set(SYNTH_GROUPS) <= set(groups) else [])
 OMITTED = set()                       # set by build(): the groups this image leaves out
 PATCH_GROUPS = [("mx", ("Per-step: External", "Per-step: Mod Matrix", "Per-step: modulation routing")),   # before step
                 ("step", ("Per-step", "Step edit", "Strike", "Step inspection", "Curves")),
@@ -129,6 +136,7 @@ PATCH_GROUPS = [("mx", ("Per-step: External", "Per-step: Mod Matrix", "Per-step:
                 ("inta_live", ("Internal AT",)),                    # M2-2b live pad AT on internal instruments
                 ("nmod", ("Note Mod",)),                            # F5 Note Mod (+ -DBE_NO_NMOD)
                 ("analog", ("Analog",)),                            # S6a Analog oscillators on Wavetable tracks (1.6.8)
+                ("drums", ("Drums",)),                              # S6c drum synths on one-shot pads (1.6.8)
                 ("note0", ("Literal note 0",))]                     # BE4.22 literal MIDI note 0 at stock's five senders (1.6.8)
 if "diag7" in DISABLED:
     DISABLED |= {"trace", "stall"}
@@ -137,7 +145,7 @@ if "diag" in DISABLED:
 # S6a: the synth area is taken with the Region (poly_cap's region(), m7_polyat.c), and the M4 publishes the config line
 # the M7 needs for it from the black box (bbox): without either the synths have no memory, so they go off too.
 if DISABLED & {"poly_cap", "bbox"}:
-    DISABLED.add("analog")
+    DISABLED |= {"analog", "drums"}
 # S4+S5 review: a misspelt name (BE_DISABLE=inta_lve) used to build the default image silently, so a
 # "bisect" kit would really be the default. Every name must be a group, an alias, or a define-only switch
 # (rmidi: -DBE_NO_RMIDI in m7_retrig.c; modtest: -DBE_NO_MODTEST in m4_step.c).
@@ -246,7 +254,11 @@ SOURCES = [  # (source, ELF, groups that need it; () = core), in compile order
     ("m7_controls_input.s", "asm", ("hold",)), ("m4_controls.c", "m4_controls", ("hold",)),
     ("m4_step.c", "m4_step", ("step", "mx")),
     ("dsp/analog.cpp", "dsp", ("analog",)), ("dsp/analog_kernel.cpp", "dsp", ("analog",)),   # S6a: hard-float DSP ELF
-    ("m4_synth.c", "m4_synth", ("analog",)),
+    ("dsp/dsp_lib.cpp", "dsp", ("analog", "drums")),                                     # S6c: memset / memcpy, math
+    ("dsp/drums.cpp", "dsp", ("drums",)), ("dsp/drum_kick.cpp", "dsp", ("drums",)),      # S6c: the drum synths
+    ("dsp/daisysp/Source/Drums/synthbassdrum.cpp", "dsp", ("drums",)),                   # S6c: DaisySP (MIT, unmodified)
+    ("dsp/daisysp/Source/Filters/svf.cpp", "dsp", ("drums",)),
+    ("m4_synth.c", "m4_synth", ("analog", "drums")),
     ("m7_note0.c", "m7", ("note0",)),                       # BE4.22: after the others, so their code keeps its place
 ]
 GROUP_NAMES = {
@@ -288,6 +300,10 @@ GROUP_NAMES = {
                "KEY_AN_GLIDE", "CTRL_INPUT", "EXT_POOL_END", "PROBE_SCRATCH",
                "SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "VIEW_NOWAV_LABEL", "ACT_INST_FIRST", "M7_DATA_END",   # S6a review
                "OBJ_CTOR", "OBJ_BASE_VT", "OBJ_HANDLE_CTR", "NODE_VT_DESTROY", "NODE_DESTROY", "NODE_VT_CLONE", "NODE_CLONE"),   # BE4.22 handles
+    # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
+    # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
+    # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
+    "drums": ("M7_DSP", "M7_DSP_LIMIT", "DRUM_RENDER", "EXT_POOL_END"),
     "note0": ("NOTE0_SEQ_ON_MAP", "NOTE0_SEQ_ON_BACK", "NOTE0_SEQ_OFF_MAP", "NOTE0_SEQ_OFF_BACK", "NOTE0_PAD_ON_MAP",
               "NOTE0_PAD_ON_BACK", "NOTE0_PAD_OFF_MAP", "NOTE0_PAD_OFF_BACK", "NOTE0_ALL_OFF_MAP", "NOTE0_ALL_OFF_BACK"),
 }
@@ -300,6 +316,7 @@ GROUP_TITLES = {"core": "black box core (always built)", "trace": "M7 event trac
                 "hold": "hold shortcuts", "step": "per-step UI / strike / curves / Note Mod UI",
                 "mx": "Mod Matrix page + External INST rows (deferred on 1.6.8)",
                 "analog": "Analog oscillators on Wavetable tracks (S6a, 1.6.8)",
+                "drums": "drum synths on one-shot pads: the Kick (S6c, 1.6.8)",
                 "note0": "literal MIDI note 0 at stock's M7 note senders (BE4.22, 1.6.8)"}
 assert set(GROUP_NAMES) == {"core"} | {g for g, _ in PATCH_GROUPS}
 
@@ -353,6 +370,7 @@ def source_refs(base, src, disabled, flags=()):
         cpu = "cortex_m7" if src.startswith(("m7_", "dsp/")) else "cortex_m4"
         cmd = [sys.executable, "-m", "ziglang", "cc", "-target", "thumb-freestanding-eabi", f"-mcpu={cpu}", "-E", "-P",
                "-ffreestanding", "-nostdlib", "-include", str(hdr), f"-I{d}",
+               *([f"-I{HERE / x}" for x in DSP_INCLUDES] if src.startswith("dsp/") else []),
                *[f"-DBE_NO_{g.upper()}" for g in sorted(disabled)], *flags, str(path)]
         out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
     return set(re.findall(r"__S_REF_([A-Za-z0-9_]+)", out))
@@ -369,7 +387,7 @@ def plan(base, disabled):
     m7_flags = BASE_SETTINGS[base.module]["m7_flags"]                 # the defines the M7 code is compiled with
     refs = {src: source_refs(base, src, disabled, m7_flags if src.startswith("m7_") else ()) for src, _, _ in SOURCES}
     # a source shared with an OMIT_DEFINES group (m4_step.c: step + mx): what it uses without that group's code
-    lean = {src: source_refs(base, src, disabled, tuple(OMIT_DEFINES[g] for g in gs if g in OMIT_DEFINES))
+    lean = {src: source_refs(base, src, disabled, tuple(omit_flags(gs)))
             for src, _, gs in SOURCES if any(g in OMIT_DEFINES for g in gs)}
     def needs(g):
         n = set(GROUP_NAMES[g])
@@ -419,8 +437,13 @@ def layout(S):
     L = dict(M7_TRAMP=S.M7_TRAMP, M7_CODE=S.M7_CODE, M7_LIMIT=S.M7_LIMIT, CTRL_INPUT=S.CTRL_INPUT,
              CTRL_STARTUP=S.CTRL_STARTUP, APPEND_FROM=S.APPEND_FROM)
     L["COND_UI"] = S.APPEND_FROM                               # probability clamp helpers
-    L["COND_UI_LIMIT"] = L["M4_CODE"] = S.APPEND_FROM + 0x1000  # black box (m4_diag.c)
-    L["M4_LIMIT"] = L["M4_CODE"] + 0x6000   # 24 KB since v3.64 (20 KB since v3.54, 16 KB since v3.26: curve sidecar writer)
+    # S6c (BE4.30, 1.6.8 only: BASE_SETTINGS cond_ui_bytes): the black box had 152 B left in its 24 KB (BE4.22: 24,424 of
+    # 24,576 B), so COND_UI (84 B used of 4 KB) shrinks to 512 B and the black box starts 0xE00 lower (28,160 B);
+    # M4_LIMIT and every block after it keep their address. 1.6.1 keeps 0x1000 (its image stays v3.72's).
+    # Documented in mods/m1/README.md (memory layout) and docs/plan-synths-168.md section 4.
+    cond = BASE_SETTINGS[S.module].get("cond_ui_bytes", 0x1000)
+    L["COND_UI_LIMIT"] = L["M4_CODE"] = S.APPEND_FROM + cond   # black box (m4_diag.c)
+    L["M4_LIMIT"] = S.APPEND_FROM + 0x7000  # = M4_CODE + 24 KB since v3.64 (1.6.8 from BE4.30: 28,160 B); 20 KB since v3.54
     L["HOLD_WRAP"] = L["M4_LIMIT"]; L["HOLD_CODE"] = L["HOLD_WRAP"] + 0x100; L["HOLD_LIMIT"] = L["HOLD_WRAP"] + 0x400
     L["CTRL_WRAP"] = L["HOLD_LIMIT"]; L["CTRL_CODE"] = L["CTRL_WRAP"] + 0x200; L["CTRL_LIMIT"] = L["CTRL_WRAP"] + 0x1000
     L["STEP_WRAP"] = L["CTRL_LIMIT"]; L["STEP_CODE"] = L["STEP_WRAP"] + 0x600   # m4_step.c
@@ -580,7 +603,7 @@ def compile_elf(srcs, cpu, ld, out, origin, limit, extra=()):
            "-ffunction-sections", "-fdata-sections", "-Wall", "-Werror",
            "-Wl,--gc-sections", "-include", str(syms_h), f"-I{out.parent}", f"-Wl,--script={ld}", "-Wl,--entry=0",
            *(SETTINGS["m4_flags"] if cpu == "cortex_m4" else SETTINGS["m7_flags"]),
-           *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *[OMIT_DEFINES[g] for g in sorted(OMITTED & set(OMIT_DEFINES))],
+           *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *omit_flags(OMITTED),
            *extra, *map(str, srcs), "-o", str(out)]
     subprocess.run(cmd, check=True)
     return out.read_bytes()
@@ -592,7 +615,10 @@ def compile_elf(srcs, cpu, ld, out, origin, limit, extra=()):
 # vtables can point at them and our soft-float m7.elf never calls a float function. -O2 for the kernel file, -Os for the
 # rest (clang ignores optimize attributes). `defines`: measurement builds only (test_analog.py's before / after runs).
 DSP_CPU = ("-target", "thumb-freestanding-eabihf", "-mcpu=cortex_m7+fp_armv8d16sp", "-mfloat-abi=hard")
-DSP_OPT = {"analog_kernel.cpp": "-O2"}
+DSP_OPT = {"analog_kernel.cpp": "-O2", "drum_kick.cpp": "-O2", "synthbassdrum.cpp": "-O2", "svf.cpp": "-O2"}
+# S6c: the vendored DaisySP files (dsp/daisysp, unmodified) find their includes here; dsp/shim stands in for the C / C++ library
+# headers they name (searched before the compiler's own), so no libc / libm declaration (and no double overload) reaches them.
+DSP_INCLUDES = ("dsp/shim", "dsp/daisysp/Source", "dsp/daisysp/Source/Utility")
 DSP_REFUSED_SYMBOLS = re.compile(r"^(__aeabi_(f|d|u?i2[fd]|u?l2[fd]|c[fd]|u?ldivmod)"          # soft float / double, 64-bit divide
                                  r"|__(add|sub|mul|div|neg|fix|float|extend|trunc|cmp|eq|ne|lt|le|gt|ge|un)\w*[sdt]f2?$)")
 DSP_REFUSED_SECTIONS = (".data", ".bss", ".init_array", ".ARM.extab")
@@ -612,6 +638,7 @@ def compile_dsp(srcs, ld, out, origin, limit, defines=()):
               "-fno-stack-protector", "-nostdlib", "-nostdlib++", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
               "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections",
               "-Wall", "-Werror", "-Wdouble-promotion", "-include", str(syms_h), f"-I{out.parent}",
+              *[f"-I{HERE / d}" for d in DSP_INCLUDES],
               *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *defines]
     objs = []
     for src in srcs:
@@ -879,9 +906,11 @@ def build(base_img, out):
     bad = literal_check.check(str(HERE.parent.parent))
     if bad:
         raise SystemExit("bare stock addresses outside the base tables (bases/literal_check.py):\n  " + "\n  ".join(bad))
-    check_region_assumptions(base_img, S, synth=inc("analog"))
-    if inc("analog"):
-        with S.group("analog"):
+    synth = inc("analog") or inc("drums")              # S6c: the synth area, DSP window and synth UI serve both
+    synth_g = "analog" if inc("analog") else "drums"
+    check_region_assumptions(base_img, S, synth=synth)
+    if synth:
+        with S.group(synth_g):
             check_dsp_assumptions(base_img, S)
     check_slice_assumptions(base_img, S)
     check_sites(base_img, S)
@@ -1091,13 +1120,13 @@ def build(base_img, out):
     patch(M7_TRAMP, tramps, bytes(len(tramps)), "M1 diag: M7 trampolines")
     patch(M7_CODE, code7, bytes(len(code7)), "M1 diag: M7 capture code")
     sd, dsp_bytes = {}, 0
-    if inc("analog"):
-        with S.group("analog"):
-            sd, dsp_bytes = m7_dsp(base_img, patch, sources, out)
+    if synth:
+        with S.group(synth_g):
+            sd, dsp_bytes = m7_dsp(base_img, patch, sources, out, inc)
 
     # --- M4: compile, append, redirect the defaultTask-loop BL
     m4_elf = compile_elf([HERE / "m4_diag.c"], "cortex_m4", HERE / "m4.ld", out / "m4.elf", M4_CODE, M4_LIMIT,
-                         extra=(f"-DBE_SYNTH_UI={SYNTH_UI:#x}u",) if inc("analog") else ())
+                         extra=(f"-DBE_SYNTH_UI={SYNTH_UI:#x}u",) if synth else ())
     va4, code4, s4 = elf_load(m4_elf, M4_CODE, M4_LIMIT)
     if va4 != M4_CODE or M4_CODE + len(code4) > M4_LIMIT:
         raise SystemExit(f"M4 code placement {va4:#x}+{len(code4)} outside our slice")
@@ -1201,9 +1230,9 @@ def build(base_img, out):
                 extend(M4_POLY, "M1 poly AT: extend image with erased (0xFF) flash up to the M4 handler block")
             m4_poly_handlers(base_img, img, patch, extend)
     synth_bytes_ = 0
-    if inc("analog"):
-        with S.group("analog"):
-            synth_bytes_ = synth_ui(base_img, img, patch, extend, sources, s4, out)
+    if synth:
+        with S.group(synth_g):
+            synth_bytes_ = synth_ui(base_img, img, patch, extend, sources, s4, out, inc)
     with S.group("bbox"):
         bl_check = asm(f"bl {S.M4_BL_TARGET:#x}", S.M4_BL_SITE)
         if bl_check != S.orig("M4_BL_SITE"):
@@ -1241,7 +1270,7 @@ def build(base_img, out):
     (out / "bento1.bin").write_bytes(img)
     shown = dict(LAYOUT)
     if omitted:                                  # S2: only the blocks this image has, and where it really ends
-        if "analog" not in omitted:              # S6a: the DSP window and the synth UI block
+        if not set(SYNTH_GROUPS) <= set(omitted):   # S6a / S6c: the DSP window and the synth UI block
             shown.update(M7_DSP=S.M7_DSP, SYNTH_UI=SYNTH_UI, SYNTH_CODE=SYNTH_CODE)
         for g, keys in (("hold", ("HOLD_WRAP", "HOLD_CODE", "CTRL_WRAP", "CTRL_CODE")), ("step", ("STEP_WRAP", "STEP_CODE")),
                         ("poly_at", ("M4_POLY",))):
@@ -1252,7 +1281,7 @@ def build(base_img, out):
     man = dict(label=f"{DISPLAY} (bento_enhanced v{VERSION} on stock {S.version})", version=VERSION, display=DISPLAY, disabled=sorted(DISABLED), layout={k: hex(v) for k, v in shown.items()}, base=S.module, base_label=S.label, base_sha256=S.sha256, sha256=hashlib.sha256(img).hexdigest(),
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
-    if inc("analog"):                            # S6a
+    if synth:                                    # S6a / S6c
         man.update(dsp_symbols={k: hex(v) for k, v in sd.items()}, dsp_code_bytes=dsp_bytes, synth_code_bytes=synth_bytes_)
     if omitted:                                  # S2: groups left out of the image (not only unpatched)
         man["omitted"] = sorted(omitted)
@@ -1266,7 +1295,7 @@ def build(base_img, out):
         for a, why in skipped:
             print(f"  {a:#x} {why}")
     print(f"  M7 code {len(code7)} B at {M7_CODE:#x}, trampolines {len(tramps)} B; M4 code {len(code4)} B at {M4_CODE:#x}")
-    if inc("analog"):
+    if synth:
         print(f"  DSP code {dsp_bytes} B at {S.M7_DSP + DSP_TRAMP_BYTES:#x} (window to {S.M7_DSP_LIMIT:#x}); "
               f"synth UI {synth_bytes_} B at {SYNTH_CODE:#x}")
     print(f"  image {len(img):#x} bytes (proven max {PROVEN_MAX_SIZE:#x}); {len(writes)} writes, reversal to stock verified")
@@ -1569,39 +1598,68 @@ def per_step(base_img, img, patch, extend, sources, s4, sh, out, inc):
 DSP_TRAMP_BYTES = 0x100                           # M7_DSP: our trampolines, then the DSP ELF
 
 
-def m7_dsp(base_img, patch, sources, out):
-    """S6a A1 / A2: the hard-float DSP ELF in its window, two trampolines below it, two vtable words of stock's
-    Wavetable classes. The trampolines keep r0-r3 and leave the stack arguments alone (slot 18 reads two of them)."""
+def m7_dsp(base_img, patch, sources, out, inc):
+    """S6a A1 / A2 and S6c D1: the hard-float DSP ELF in its window, our trampolines below it (DSP_TRAMP_BYTES), and the
+    sites: two vtable words of stock's Wavetable classes (analog), the one-shot pad engine's render entry (drums).
+    The Analog trampolines keep r0-r3 and leave the stack arguments alone (slot 18 reads two of them)."""
     lo, hi = S.M7_DSP, S.M7_DSP_LIMIT
     at = lo + DSP_TRAMP_BYTES
     e = compile_dsp(sources("dsp"), HERE / "dsp" / "dsp.ld", out / "dsp.elf", at, hi)
     va, code, sd = elf_load(e, at, hi)
     if va != at or at + len(code) > hi:
         raise SystemExit(f"DSP code placement {va:#x}+{len(code)} outside its window")
-    if bytes(base_img[S.WT_VOICE_VT_SLOT - BASE:S.WT_VOICE_VT_SLOT - BASE + 4]) != struct.pack("<I", S.WT_VOICE_RENDER | 1) or \
-            bytes(base_img[S.WT_OSC_VT_SLOT - BASE:S.WT_OSC_VT_SLOT - BASE + 4]) != struct.pack("<I", S.WT_OSC_RENDER | 1):
-        raise SystemExit("Wavetable vtable slots do not hold stock's voice / oscillator render")
-    voice = asm(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_enter']:#x}; pop {{r0, r1, r2, r3, r4, lr}}; "
-                f"b.w {S.WT_VOICE_RENDER:#x}", lo)
-    check_branches(voice, lo, {sd["an_enter"], S.WT_VOICE_RENDER}, "Analog voice trampoline")
-    osc_at = lo + ((len(voice) + 15) & ~15)
-    osc = asm(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_osc']:#x}; cmp r0, #0; pop {{r0, r1, r2, r3, r4, lr}}; "
-              f"beq stock; bx lr; stock: b.w {S.WT_OSC_RENDER:#x}", osc_at)
-    check_branches(osc, osc_at, {sd["an_osc"], S.WT_OSC_RENDER}, "Analog oscillator trampoline")
-    tramps = voice + bytes(osc_at - lo - len(voice)) + osc
+    tramps = bytearray()
+    def tramp(src, exits, what):
+        while len(tramps) % 16:
+            tramps.append(0)
+        a = lo + len(tramps)
+        c = asm(src, a)
+        check_branches(c, a, exits, what)
+        tramps.extend(c)
+        return a
+    if inc("analog"):
+        if bytes(base_img[S.WT_VOICE_VT_SLOT - BASE:S.WT_VOICE_VT_SLOT - BASE + 4]) != struct.pack("<I", S.WT_VOICE_RENDER | 1) or \
+                bytes(base_img[S.WT_OSC_VT_SLOT - BASE:S.WT_OSC_VT_SLOT - BASE + 4]) != struct.pack("<I", S.WT_OSC_RENDER | 1):
+            raise SystemExit("Wavetable vtable slots do not hold stock's voice / oscillator render")
+        voice = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_enter']:#x}; pop {{r0, r1, r2, r3, r4, lr}}; "
+                      f"b.w {S.WT_VOICE_RENDER:#x}", {sd["an_enter"], S.WT_VOICE_RENDER}, "Analog voice trampoline")
+        osc_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_osc']:#x}; cmp r0, #0; pop {{r0, r1, r2, r3, r4, lr}}; "
+                       f"beq stock; bx lr; stock: b.w {S.WT_OSC_RENDER:#x}", {sd["an_osc"], S.WT_OSC_RENDER},
+                       "Analog oscillator trampoline")
+        sd.update(tramp_voice=voice, tramp_osc=osc_at)
+    an_end = len(tramps)
+    if inc("drums"):
+        with S.group("drums"):
+            # D1, the per-voice render entry (root, voice, r2, r3, [sp] temp, [sp + 4] out): dr_render(root, voice, temp, out);
+            # 1 = rendered (stock's render is not run; neither caller uses its result), else stock's prologue and body
+            replays("DRUM_RENDER", PUSH_R4_R11_LR)
+            d1 = tramp(f"push.w {{r0, r1, r2, r3, r12, lr}}; ldr r2, [sp, #24]; ldr r3, [sp, #28]; bl {sd['dr_render']:#x}; "
+                       f"cmp r0, #0; pop.w {{r0, r1, r2, r3, r12, lr}}; beq stock; bx lr; stock: {PUSH_R4_R11_LR}; "
+                       f"b.w {S.DRUM_RENDER + 4:#x}", {sd["dr_render"], S.DRUM_RENDER + 4}, "Drums D1 render trampoline")
+            # (S6c review B1, rc25: no voice-start sites any more. Both voice starts write the voice's start serial after the
+            # sample is open, so D1 recognises a start by it; DRUM_VSTART_A/B_SITE stay reviewed facts, unpatched.)
+            sd.update(tramp_render=d1)
     if len(tramps) > DSP_TRAMP_BYTES:
-        raise SystemExit("Analog trampolines overrun their block")
-    patch(lo, tramps, bytes(len(tramps)), "Analog (S6a): M7 trampolines (voice enter, oscillator render)")
-    patch(at, code, bytes(len(code)), "Analog (S6a): M7 DSP code (hard float, dsp/)")
-    patch(S.WT_VOICE_VT_SLOT, struct.pack("<I", lo | 1), S.orig("WT_VOICE_VT_SLOT"),
-          "Analog: Wavetable root slot 18 (voice render) -> an_enter, then stock's")
-    patch(S.WT_OSC_VT_SLOT, struct.pack("<I", osc_at | 1), S.orig("WT_OSC_VT_SLOT"),
-          "Analog: Wavetable oscillator slot 0 (render) -> an_osc, else stock's")
-    sd.update(tramp_voice=lo, tramp_osc=osc_at)
+        raise SystemExit("DSP trampolines overrun their block")
+    if an_end:
+        patch(lo, bytes(tramps[:an_end]), bytes(an_end), "Analog (S6a): M7 trampolines (voice enter, oscillator render)")
+    if len(tramps) > an_end:
+        patch(lo + an_end, bytes(tramps[an_end:]), bytes(len(tramps) - an_end),
+              "Drums (S6c): M7 trampoline (D1 render entry)")
+    patch(at, code, bytes(len(code)), "Analog (S6a): M7 DSP code (hard float, dsp/; the drums since S6c)")
+    if inc("analog"):
+        patch(S.WT_VOICE_VT_SLOT, struct.pack("<I", sd["tramp_voice"] | 1), S.orig("WT_VOICE_VT_SLOT"),
+              "Analog: Wavetable root slot 18 (voice render) -> an_enter, then stock's")
+        patch(S.WT_OSC_VT_SLOT, struct.pack("<I", sd["tramp_osc"] | 1), S.orig("WT_OSC_VT_SLOT"),
+              "Analog: Wavetable oscillator slot 0 (render) -> an_osc, else stock's")
+    if inc("drums"):
+        with S.group("drums"):
+            patch(S.DRUM_RENDER, asm(f"b.w {sd['tramp_render']:#x}", S.DRUM_RENDER), S.orig("DRUM_RENDER"),
+                  "Drums: per-voice one-shot render entry (D1) -> dr_render, else stock's")
     return sd, len(code)
 
 
-def synth_ui(base_img, img, patch, extend, sources, s4, out):
+def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
     """S6a M4: m4_synth.c after the poly AT handlers, its entry table (m4_diag.c calls it), the menu label and the
     wrappers; then the Analog sites (A3-A7, A9, X1-X3)."""
     if BASE + len(img) != SYNTH_UI:

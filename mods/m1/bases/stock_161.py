@@ -599,6 +599,36 @@ SYMS = dict(
     SCALE_INIT=code(None, note="M7 static initializer: the scale table (Chromatic first) the pad router reads; tests", status='absent'),
     BUS_FIND=code(None, note="(router, key) -> mailbox: binary search of the router's key table; tests", status='absent'),
     BUS_POST_KEY=code(None, note="(router, ev, key): post to the mailbox of a key (binary search of the key table); tests", status='absent'),
+    # S6c (drums, 1.6.8 only; docs/plan-synths-168.md section 3 D1-D3, S6c): stock's one-shot pad engine. The same code
+    # exists on 1.6.1 (Playground's 1.6.1 addresses: D1 0x08091820, D2 0x08093CDA, D3 0x08094ADE, post 0x08092D00, root class
+    # 0x080AC66C), but the group is not built there, so the entries are absent here and reviewed for 1.6.8 in facts.py.
+    DRUM_RENDER=code(None, note="one-shot pad engine: per-voice render entry (root, voice, r2, r3, [sp] temp, [sp+4] out) (D1 site)", status='absent'),
+    DRUM_VSTART_A_SITE=code(None, note="one-shot voice start A: after the voice's setup, r4 voice, r5 root (D2 site)", status='absent'),
+    DRUM_VSTART_B_SITE=code(None, note="VOICE_START: after the voice's setup, r4 voice, r5 root (D3 site)", status='absent'),
+    DRUM_POST=code(None, note="one-shot voice post chain (root, voice, temp, out): filter, amp envelope, level / pan, mix (D4)", status='absent'),
+    DRUM_ROOT_VT=data(None, note="the one-shot pad root class (vtable): one root per pad of a one-shot track", status='absent'),
+    DRUM_ROOT_CTOR=code(None, note="one-shot pad root constructor (root, 0x678 B); tests", status='absent'),
+    LFO_TICK=code(None, note="(lfo, frames): a voice LFO's per-block tick (the render entry ticks voice LFO1)", status='absent'),
+    DESC_FRAMES=code(None, note="(sample descriptor) -> frames", status='absent'),
+    DESC_STEREO=code(None, note="(sample descriptor) -> 1 if stereo (its +0x28, set when the descriptor is opened)", status='absent'),
+    DESC_RATE=code(None, note="(sample descriptor) -> sample rate", status='absent'),
+    DESC_READ=code(None, note="(sample descriptor, float *out, count, position, 0): samples through its provider", status='absent'),
+    DESC_OPEN=code(None, note="(sample descriptor) -> ok: provider info (+0x28 stereo); voice starts call it after D2 / D3; tests", status='absent'),
+    VOICE_DESC=offset(None, note="one-shot voice: its sample descriptor (pointer)", status='absent'),
+    VOICE_CURSOR=offset(None, note="one-shot voice: sample position, 64-bit (+0x44 high word)", status='absent'),
+    VOICE_RATIO=offset(None, note="one-shot voice: base playback ratio (float; the render multiplies it by 2^(pitch))", status='absent'),
+    VOICE_PITCH_PARAM=offset(None, note="one-shot voice: modulated pitch parameter (octaves)", status='absent'),
+    VOICE_LFO1=offset(None, note="one-shot voice: LFO1", status='absent'),
+    ROOT_FINE=offset(None, note="one-shot pad root: fine tune (int, 1/1000 semitone)", status='absent'),
+    ROOT_LOOP=offset(None, note="one-shot pad root: loop mode (0 off)", status='absent'),
+    ROOT_VOICES=offset(None, note="one-shot pad root: its voice pointers (+0x20 + 4 i); tests", status='absent'),
+    ROOT_VOICE_N=offset(None, note="one-shot pad root: number of voices; tests", status='absent'),
+    VOICE_SERIAL=offset(None, note="one-shot voice: start serial (the engine's counter, written by both voice starts after the sample is open)", status='absent'),
+    VOICE_FORWARD=offset(None, note="one-shot voice: playing forward (byte; 0 = a reverse pad)", status='absent'),
+    BUF_CAPACITY=offset(None, note="audio buffer: capacity in frames (SCRATCH_SIZE sets the size only up to it)", status='absent'),
+    DRUM_POOL_N=const(None, note="one-shot engine: voices in its pool", status='absent'),
+    DRUM_POOL_CTOR=code(None, note="one-shot engine: voice pool constructor (pool, 0xC720 B); tests", status='absent'),
+    SAMPLE_FIND=code(None, note="sample bank lookup (bank, sample id, info out) -> found; tests", status='absent'),
 )
 
 # ---------------------------------------------------------------- image checks

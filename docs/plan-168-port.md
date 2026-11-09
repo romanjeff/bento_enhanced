@@ -26,7 +26,9 @@ and `C:\Users\rjrom\bento_mods\bento1.bin`; it is never committed or distributed
   M7 zero gap for our M7 slices, M4 MPU, project XML names and version (still 2), stock save path,
   note writer and reader (be_step_v1 behaves as on 1.6.1), the track-type switch.
 - **Room:** append M4 code from 0x081B7000; current blocks end at image size 0x185500, 32,308 B under the
-  bootloader's proven 0x18D334 (was 44,596 B).
+  bootloader's proven 0x18D334 (was 44,596 B). (Since BE4.30 COND_UI is 512 B on 1.6.8 and the black box
+  M4_CODE starts at 0x081B7200 with 28,160 B; everything from M4_LIMIT 0x081BE000 keeps its place:
+  mods/m1/README.md "On 1.6.8".)
 - **Stock's new features** (strings, I): Pack project, Save As and load hardening, no-card recording
   message, RTC date fix (`lastknowndate`), one Input Gain (in2/in3 removed, in1 range doubled), slicer
   Cut Group, "Play Count". MIDI out drops notes > 127 (our 0x5F/0x60 handlers should match).

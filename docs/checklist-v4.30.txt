@@ -1,0 +1,101 @@
+bento_enhanced v4.30: the Kick drum synth on One-Shot pads (S6c, M7 part), on stock 1.6.8
+=========================================================================================
+
+Kit: flash\bento_enhanced-v4.30   boot label BE4.30
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  Drum Synths BE     BE Kick.wav: the Kick's carrier (a 4801-frame, near-silent marker sample; our own file)
+  SHA256SUMS.txt     hashes of every file in the kit (the carrier's too)
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.30.txt)
+
+In this image: everything BE4.22 has (docs\checklist-v4.22.txt), plus:
+  - drums: a pad of a One-Shot track whose sample is BE Kick.wav plays DaisySP's synthetic bass drum (the Kick)
+    instead of the file. The pad stays an ordinary one-shot pad: its velocity routes, filter, amp envelope, level,
+    pan, sends, choke group, mute, Poly / Mono, tune, fine tune, LFO1, Note Mod, conditions and retriggers act on
+    the Kick exactly as on a sample. Each native voice has its own Kick (a Poly pad rings several).
+  - the black box has a DRUMS line (before the ANALOG line) with the Kick's CPU share and what the voices did.
+NOT in it (S6c-2, the next kit): the drum page with the Kick's knobs (Tune, Decay, Tone, Accent, Sweep, Sweep Decay,
+Dirt), their save / load, and a CPU readout on the page. Every Kick plays the default sound. Start, Length, Reverse
+and Slice don't shape the Kick (row 15 of the plan): they are ignored, the Kick plays to its natural end.
+Measured offline: one ringing Kick voice costs about 4 % of the audio block (a sample voice: 0.15 %). There is no cap
+(decision D1): 8 Kick voices ringing at once on top of SPACED may overrun the block. Section 5 measures it.
+
+0. Gate
+[ ] Flash this kit ONLY after docs\checklist-v4.22.txt has passed on this unit. If BE4.22 is not done: stop here and
+    bring its results first.
+[ ] Back up the whole SD card on the computer (a folder copy of every file). Section 8 restores it.
+[ ] Copy the kit's folder "Drum Synths BE" to the card, next to your other sample folders (anywhere the Bento's file
+    browser reaches). Our firmware never writes this folder or reads the card for it.
+[ ] Work on copies only: copy SPACED to SPACED_K (section 5) and make a new empty project KICK_T (sections 2-4, 6).
+    Never load SPACED itself on this kit.
+
+1. Boot and black box
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.30.
+[ ] Load KICK_T, save (nothing played). BENTO_SAVES.log: header "firmware BE4.30", a "# saved:" line, then
+    "DRUMS blocks=0 ... starts=0 ... unbound=0 short_bufs=0" and the "ANALOG gen=N keys=ok ..." line as on BE4.22.
+    If the DRUMS line says "area not taken": write down the ANALOG line too (it should say the same) and continue.
+[ ] M7MEM "ext left=" = BE4.22's value (the drums use the same synth area). RAMCHK quiet, no "!!!", AUDIO rising.
+
+2. The Kick on a One-Shot pad (KICK_T)
+[ ] Track 1: One-Shot. In the file browser load "Drum Synths BE/BE Kick.wav" onto pad 1. Hit pad 1: a kick drum (a
+    pitched thump with a short click), not silence. Hit it softly and hard. Save: the DRUMS line shows detects=1
+    carriers=1 starts= the number of hits, blocks above 0, quiet_ends close to starts.
+[ ] Load an ordinary sample (any drum hit) onto pad 2: it plays as on BE4.22. Hit pad 1 and pad 2 alternately and
+    fast for 10 s: pad 1 is always the Kick, pad 2 always its sample (the bug the review found would have made the
+    first hit of a voice silent, and could have let one pad's sound end up on the other).
+[ ] Load the ordinary sample onto pad 1 (in place of the carrier): pad 1 now plays that sample. Load BE Kick.wav
+    back onto pad 1: the Kick again.
+[ ] Rename a copy of BE Kick.wav on the computer to "test.wav", load it onto pad 3: the Kick (the M7 recognises the
+    file's content, not its name). (A sample that only has the name "BE Kick.wav" would play as a sample.)
+[ ] Tail: let a Kick ring out at full volume with headphones: it decays smoothly to silence, no click at the end.
+
+3. One-shot parity (each on the Kick pad, then on the sample pad for comparison; the two behave alike)
+[ ] Tune +12 and -12, Fine +50: the Kick's pitch moves as a sample's would. LFO1 -> pitch: wobbles.
+[ ] Filter cutoff down and resonance: audibly filters. Amp envelope decay short: the Kick is cut short (that is the
+    pad's envelope, as on a sample).
+[ ] Level and pan; a reverb / delay send: as on a sample pad.
+[ ] Velocity: hit softly and hard with and without a Velocity -> Level route on the pad. Without the route: write
+    down whether soft and hard hits differ in level (on the sample pad and on the Kick pad: they must behave the
+    same). With the route: soft hits are quieter on both pads.
+[ ] Sequence the Kick: a 1:2 condition and a NOT condition step; a 1/16 x4 retrigger: as on a sample pad.
+[ ] Choke group: Kick pad and sample pad in one choke group: each cuts the other. Pad mute: the Kick is silent.
+[ ] Poly pad, fast roll (8+ hits in a second): each hit is a new Kick ringing over the others. Mono pad: each hit
+    stops the previous one (as a sample does).
+[ ] Loop on (pad loop mode): the Kick plays once and then stays silent while the pad is held / the voice stays; no
+    second Kick. Reverse on: the Kick plays normally (forward) and ends cleanly.
+[ ] Note Mod on the track and recorded aftertouch with a Pressure -> Filter route: as on a sample pad.
+[ ] Save: the DRUMS line's starts / retrigs / quiet_ends / unbound=0 / short_bufs=0. Write it down.
+
+4. Gate: the Kick only on One-Shot tracks (D8)
+[ ] Load BE Kick.wav onto a Multisample track, a Loop track, a Slicer track, a Granular track and a Shredder track,
+    and play each: near silence on every one of them (stock plays the marker file, which is almost silent). No Kick.
+    The DRUMS line's starts do not move (detects may).
+
+5. CPU (SPACED_K)
+[ ] Load SPACED_K, play it, save after 30 s: write down LOAD avg / bins / over-budget and the DRUMS line (the
+    reference: no Kick playing, blocks=0).
+[ ] Add a One-Shot track with the Kick on a Poly pad. Play SPACED_K and hit the Kick pad: 1 hit every 2 s for 30 s,
+    save; then a roll of about 4 hits a second for 30 s, save; then 8 a second, save. After each save write down
+    LOAD (avg, bins, over-budget blocks), AUDIO events - blocks, and the DRUMS line (avg_cyc, peak_cyc, share>=5%,
+    >=15, >=30, voices_peak). Listen for glitches or timing slips while rolling.
+[ ] No reset, no freeze at any point. If the audio glitches, note at which roll rate.
+
+6. Save and load
+[ ] KICK_T with the Kick pad: save, power cycle, load: pad 1 is still the Kick (the pad keeps its carrier sample).
+[ ] project.xml on a computer: pad 1's sample is the carrier file; no bento_drum_* attributes yet (S6c-2).
+
+7. Regression
+[ ] An Analog track (BE4.22's checklist, section 6 items): plays, Sync / Glide act; the ANALOG line as on BE4.22.
+[ ] An External track's note-0 pad still sends note 0 (BE4.22 section 2, first two items).
+[ ] BE4.10 core items: curves, trigger conditions, a retrigger, live poly AT out of an External track, the hold
+    shortcuts, strike velocity.
+
+8. Rollback
+[ ] BE4.22 (flash\bento_enhanced-v4.22\01_TEST_FIRMWARE): load KICK_T: no crash; the Kick pad is near silent (the
+    marker file). Do not save there unless you mean to.
+[ ] 03_RESTORE_STOCK (stock 1.6.8): KICK_T loads; the Kick pad is near silent.
+[ ] Back to BE4.30 if you continue; restore the card backup from section 0 at the end.
+
+Bring back: BENTO_SAVES.log (every save's DRUMS and ANALOG lines, the LOAD / AUDIO lines of section 5),
+BENTO_CRASHES.log if any, and notes for every item that did not match (section 3's velocity item either way).

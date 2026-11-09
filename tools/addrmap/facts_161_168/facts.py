@@ -968,6 +968,114 @@ REVIEWED = {
     'BUS_POST_KEY': dict(value=0x809fc40, evidence="(router r0, ev r1, key r2): ldr.w r3,[r0,#0x508]; subs.w ip,r3,#1; bmi "
                          "(dropped); the same binary search, then the mailbox post; 98 callers, among them the internal note "
                          "path after 0x0805FD40 (the pad.s +0x86DC key, build review rc23)"),
+    # S6c (drums, BE4.30; docs/plan-synths-168.md "S6c"). Re-derived on 1.6.8 by rc25/s6c re/ (dis.py, refs.py, vt.py, the
+    # matcher's ad-hoc lookups of Playground's 1.6.1 addresses); review round rc25/s6cfix (q.sh, tbh.py, menu.py). Since that
+    # round only D1 (DRUM_RENDER) is patched: starts are recognised there by the voice's start serial (VOICE_SERIAL), so
+    # the two voice-start sites below are reviewed but no longer used (review B1: they ran before stock had loaded the
+    # sample). test_drums.py runs stock's own pool and root constructors, VOICE_START, D1 and the post chain.
+    'DRUM_RENDER': dict(value=0x8092320, orig='2de9f04f', evidence="per-voice one-shot render entry: push.w {r4-r11,lr}; vpush "
+                        "{d8-d11}; sub sp,#0x4c; r0 root, r1 voice, args 5 / 6 at [sp+0x90] / [sp+0x94] (temp, out); n = BUF_FRAMES(out) "
+                        "(0x0809233C); LFO_TICK(voice+0x5d8, n) (0x08092348); ratio = [voice+0x48] x EXP2(PARAM_VALUE(voice+0x300) + "
+                        "(int)[root+0x104] / 1000.0 / 12.0) (0x080923E6..0x0809240E; literal 0x447A0000 at 0x080926CC), at most 8 "
+                        "(vcmpe s17, #8; bgt); ratio 0 returns without the post chain (0x08092426); the sample read 0x0808F0E0 takes the "
+                        "64-bit cursor [voice+0x40/+0x44]; the end tail-calls DRUM_POST(root, voice, arg5, arg6) (0x08092610..0x08092622). "
+                        "Two bl callers, 0x080907B0 and 0x08090A74, both in the one-shot engine's render case, both after 'ldrb ip,[voice]; "
+                        "cbz' (inactive voices are skipped) and neither uses r0 afterwards. = Playground's 1.6.1 0x08091820 (matcher: "
+                        "same-code-moved, targets consistent)"),
+    'DRUM_VSTART_A_SITE': dict(value=0x80947da, orig='95f82536', evidence="ldrb.w r3,[r5,#0x625] in voice start A 0x080946A0 "
+                               "(callers 0x0808FAD4, 0x08090B7E): after the voice's reset (cursor +0x40/+0x44 = 0, +0x48 = 1.0, +0x54 = 1, "
+                               "LFO1 reset 0x08064F60) and the setup copy 0x08093A20 (taken when voice+0x5d4 != root+0x58c, which branches "
+                               "here: beq 0x080947DA); r4 voice, r5 root; voice+0xC is the descriptor read right after (0x080947E0) and "
+                               "opened by DESC_OPEN at 0x08094800, after this site; the next flag use is cmp r3,#0 after the replayed "
+                               "load. = Playground's 1.6.1 0x08093CDA (matcher: same-code-moved)"),
+    'DRUM_VSTART_B_SITE': dict(value=0x80955de, orig='d5ed417a', evidence="vldr s15,[r5,#0x104] in VOICE_START 0x08095260: the same "
+                               "voice reset as site A (0x08095560..0x080955D4), then this load of the root's fine tune (also the target of "
+                               "the setup path's 'bl 0x08093A20; b 0x080955DE' at 0x08095960); r4 voice, r5 root; s12-s15 are written "
+                               "before they are read after it, d8 is callee-saved; the descriptor voice+0xC is read at 0x0809564A. Not "
+                               "inside any S3 site's bytes (VOICE_START itself is stubbed only in test_notemod_route). = Playground's "
+                               "1.6.1 0x08094ADE"),
+    'DRUM_POST': dict(value=0x8093800, evidence="push.w {r4-r9,lr} (root r0, voice r1, temp r2, out r3): SCRATCH_SIZE(temp, "
+                      "BUF_FRAMES(out)), the voice's level parameter +0x1C0, DESC_STEREO(voice desc) for the channel layout, ..., pop "
+                      "{..., pc}; DRUM_RENDER's only tail call (b.w at 0x08092622). = Playground's 1.6.1 0x08092D00 (matcher)"),
+    'DRUM_ROOT_VT': dict(value=0x80ace3c, evidence="DRUM_ROOT_CTOR's vtable literal (0x08095F82 ldr r3,[pc,#0x294] = 0x080ACE3C, "
+                         "the only word pointing at it: 0x08096218); slot 7 0x08092C21 (the engine, whose render case calls "
+                         "DRUM_RENDER) is in no other vtable (vt.py), so only these roots reach D1; the M7 makes 128 of them at boot "
+                         "(0x08058C80..0x08058CE6: 0x80 x alloc 0x678, ctor, stored in the engine's +0x758 table: 8 tracks x 16 "
+                         "pads), apart from the 128 roots of class 0x0807A7E0 (0xD30 B) and the Wavetable roots. = Playground's 1.6.1 "
+                         "0x080AC66C (matcher: content16, verify 8/8). D8 (rc25/s6cfix): the M7 gives one of these roots to an object "
+                         "only for the M4's property 0xAC (set_property message 0x3E, key 0xAC: case 0x0E of the tbh at 0x080599FC -> "
+                         "0x08059CE0, the first free root of the +0x758 table; 0xAD -> 0x08059CA0 frees it). The M4 sends 0xAC at two "
+                         "places: the sample load 0x0812C20A, whose tbh on the node type (0x0812C282) sends 0xAC for type 0x0E only "
+                         "(0x10 -> 0xB2, 0x11 -> 0xB0, 0x14 -> 0xB4, 0x0F / 0x12 / 0x13 nothing); and the track pass at 0x0813EB3A, for "
+                         "type-1 children of tracks other than 0x10 / 0x11 / 0x14 (handled before it, 0x0813E7D0..EC) and 0x0F (its "
+                         "children go to 0x08133B54 instead, 0x0813EB0C). Types, from the instrument menu: MENU_HANDLER's tbh at "
+                         "0x08150A3A posts kind 3 / 4 / 2 / 1 / 5 / 8 / 7 / 6 for Multisample / One-Shot / Loop / Granular / Slicer / "
+                         "Shredder / External / Wavetable (0x1025..0x102C), and 0x0813F730 makes kind 1..8 the types 0x13, 0x11, 0x0F, "
+                         "0x0E, 0x10, 0x12, 0x16, 0x14: so 0x0E = One-Shot (as PAGE_SEQ_DRUM's evidence), 0x0F = Multisample, 0x10 = "
+                         "Slicer, 0x11 = Loop, 0x13 = Granular, 0x14 = Shredder. Of the tracks the pass reaches, One-Shot is the one "
+                         "with sample cells (type 1); Wavetable / Granular / External samples go to their own roots. So a one-shot "
+                         "root is a One-Shot track's pad (the device check still puts a carrier on each other track type)"),
+    'DRUM_ROOT_CTOR': dict(value=0x8095f60, evidence="its only bl caller 0x08058CA0, after 'mov.w r0,#0x678; bl 0x080A0540'; stores "
+                           "DRUM_ROOT_VT (0x08095F82)"),
+    'LFO_TICK': dict(value=0x8064fa0, evidence="DRUM_RENDER's 'add.w r0,r4,#0x5d8; mov r1,r6 (frames); bl 0x08064FA0' "
+                     "(0x08092342..48); 3 callers; = 1.6.1 0x08064A80 (matcher: same-code-moved)"),
+    'DESC_FRAMES': dict(value=0x8054e80, evidence="ldr r3,[r0,#0x24]; cbnz (an override); else the provider's vt+0x18 info, its "
+                        "frames word, 0 -> 0x10000000; voice start A calls it on voice+0xC (0x0809480C) to clamp the start; = 1.6.1 "
+                        "0x08054EC0 (matcher: exact)"),
+    'DESC_STEREO': dict(value=0x8054f40, evidence="ldrb.w r0,[r0,#0x28]; bx lr; +0x28 is written by DESC_OPEN (channels > 1) and "
+                        "cleared by the descriptor ctor 0x08054F60; DRUM_POST reads it (0x0809384A); = 1.6.1 0x08054F80 (exact)"),
+    'DESC_RATE': dict(value=0x8054dc0, evidence="ldrd r3,r1,[r0]; provider vt+0x1c(provider, file); voice start A divides it by "
+                      "48000 (0x08094822..36); = 1.6.1 0x08054E00 (exact)"),
+    'DESC_READ': dict(value=0x8054d60, evidence="(desc r0, buf r1, count r2, position r3, mode [sp]): the provider's vt+8 with "
+                      "(provider, -, position as 64 bits, file, buf, mode, count); the floats a sample read gives; = 1.6.1 0x08054DA0 "
+                      "(exact), which Playground's carrier probe called as (desc, probe, 32, 0, 0)"),
+    'DESC_OPEN': dict(value=0x8054de0, evidence="provider vt+0x18 info; fails (0) on a negative count; +0x28 = (vt+0x24 channels > "
+                      "1); called on voice+0xC right after both voice-start sites (0x08094800, VOICE_START later)"),
+    'VOICE_DESC': dict(value=0xc, evidence="DRUM_RENDER ldr r0,[r4,#0xc] (0x0809234C) -> [desc+0x14] / [desc+0x18]; voice start "
+                       "A ldr r0,[r4,#0xc]; bl DESC_OPEN (0x080947FE)"),
+    'VOICE_CURSOR': dict(value=0x40, evidence="DRUM_RENDER ldrd r2,r3,[r4,#0x40] into the sample read (0x08092574), str r0,[r4,#0x40]; "
+                         "str r1,[r4,#0x44] (0x080925C8 / D2); the voice starts strd 0 there (0x08094788, 0x08095590)"),
+    'VOICE_RATIO': dict(value=0x48, evidence="DRUM_RENDER vldr s17,[r4,#0x48]; vmul s17,s17,s0 (0x080923FE, 0x0809240E); the voice "
+                        "starts store 1.0 there (0x08094782, 0x08095588)"),
+    'VOICE_PITCH_PARAM': dict(value=0x300, evidence="DRUM_RENDER add.w r0,r4,#0x300; bl PARAM_VALUE (0x080923EA); the same in "
+                              "VOICE_START right after D3 (0x080955EA)"),
+    'VOICE_LFO1': dict(value=0x5d8, evidence="DRUM_RENDER add.w r0,r4,#0x5d8; bl LFO_TICK (0x08092342); the voice starts reset it "
+                       "(add.w r6,r4,#0x5d8; bl 0x08064F60)"),
+    'ROOT_FINE': dict(value=0x104, evidence="DRUM_RENDER vldr s15,[r8,#0x104]; vcvt.f32.s32; / 1000.0; / 12.0 (0x080923E6..F6); "
+                      "D3's displaced load"),
+    'ROOT_LOOP': dict(value=0xec, evidence="DRUM_RENDER ldr.w fp,[r7,#0xec]; cmp.w fp,#0 picks the loop path (0x08092372..88) and "
+                      "cmp r2,#1 at the sample's end (0x080925E2)"),
+    'ROOT_VOICES': dict(value=0x20, evidence="the render case 0x08090772: add.w fp,r4,#0x1c; ldr r1,[fp,#4]! per voice (root+0x20 + 4 "
+                        "i), up to [root+0x60]"),
+    'ROOT_VOICE_N': dict(value=0x60, evidence="the render case: ldr r3,[r4,#0x60]; cmp sl,r3 (0x080907B4); the voice starts loop to "
+                         "[r0,#0x60] (0x080946BA)"),
+    # S6c review round (rc25/s6cfix): what D1 needs to recognise a start, and the harness's stock code
+    'VOICE_SERIAL': dict(value=0x8, evidence="the start serial: both voice starts take it from the engine's counter after the "
+                         "sample is open: voice start A ldr.w r1,[r3,#0x708] (r3 = [root+0x18] + 0xC000); adds ip,r1,#1; str back; "
+                         "str r1,[r4,#8] (0x08094864..76, after DESC_OPEN 0x08094800 and the strb of voice[0] = 1 at 0x0809485A); "
+                         "VOICE_START the same at 0x080956AA..B6 (after DESC_OPEN 0x08095662); the counter is written elsewhere only "
+                         "by the pool constructor (1, 0x0807369A) and the engine constructors (0x080694E0, 0x0806C310, 0x0806D4BC); "
+                         "both starts' voice choice takes the lowest +8 as the oldest (0x080953B2, 0x08094972)"),
+    'VOICE_FORWARD': dict(value=0x54, evidence="playing forward (byte): DRUM_RENDER ldrb.w r3,[r4,#0x54]; cbz -> the reverse path "
+                          "(0x080923C8 / 0x080929CA); both starts write root+0xF0 ^ 1 there (0x080948A6..B2, 0x08095724..36: root+0xF0 "
+                          "= the pad's Reverse); the reverse path ends at the cursor going below the pad's start (0x08092A40, "
+                          "0x08092F40), the forward one at frames (0x08092A26)"),
+    'BUF_CAPACITY': dict(value=0x0, evidence="an audio buffer's capacity in frames: SCRATCH_SIZE 0x08052FA0 'ldr r3,[r0]; cmp r3,r1; "
+                         "it ge; strge r1,[r0,#4]' (the size +4 is set only when the capacity holds n); BUF_FRAMES 0x080A2500 "
+                         "returns +4, else +0; SCRATCH_PTR 0x080523E0 sets +4 = +0 and returns +8 (the samples)"),
+    'DRUM_POOL_N': dict(value=32, evidence="the one-shot engine's voice pool: DRUM_POOL_CTOR constructs voices at pool + 0x630 i "
+                        "up to pool + 0xC600 (0x08073660..6C: bl 0x080731E0, the voice ctor), lists them at +0xC600 (0x080736A0..AA) "
+                        "and stores movs r2,#0x20 at +0xC700, the free count (0x080736B0..B8); VOICE_START and voice start A take "
+                        "their voices from it (0x08073520 at 0x08095460 / 0x08094BBC: pool = [root+0x18], every one-shot root gets "
+                        "the same pool at boot, 0x08058CC6)"),
+    'DRUM_POOL_CTOR': dict(value=0x8073640, evidence="(pool r0): push {r3-r7,lr}; r6 = r0 + 0xC600; 32 voice ctors at stride 0x630 "
+                           "(0x08073660..6C), memsets of the lists, the free list of all 32, serial counter +0xC708 = 1; its only "
+                           "caller is the one-shot engine's constructor (0x0805B540); test_drums runs it"),
+    'SAMPLE_FIND': dict(value=0x809f5e0, evidence="the sample bank's lookup (bank object r0, sample id r1, info out r2) -> found: a "
+                        "murmur-finalizer hash of the id (0x85EBCA6B, 0xC2B2AE35) into a 1024-slot table; 0x08087D00 (VOICE_START's "
+                        "bl at 0x08095656 with [root+0x14] and [root+0x674]) calls it, then on success copies the provider "
+                        "([bank+4]) and the 0x24-byte info into the voice's descriptor (0x08054EE0, 0x08054E40); test_drums answers "
+                        "it in place of a bank"),
 }
 
 # Registry keys missing from registry_keys.txt (entries without a title to match by): the measured

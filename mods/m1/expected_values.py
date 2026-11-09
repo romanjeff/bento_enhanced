@@ -64,6 +64,8 @@ STOCK_161 = dict(
     MODEL_HEADER_ON=0x14C,         # HEADER_GEN 0x08134808 ldrb.w r6,[r0,#0x14c]; beq.w out
     # S6a (Analog; the group is 1.6.8 only): Playground's 1.6.1 values, checked in this image (rc20/s6a)
     KEY_AN_SYNC=None, KEY_AN_GLIDE=None,   # 1.6.8 only
+    VOICE_DESC=None, VOICE_CURSOR=None, VOICE_RATIO=None, VOICE_PITCH_PARAM=None, VOICE_LFO1=None,   # S6c drums: 1.6.8 only
+    ROOT_FINE=None, ROOT_LOOP=None, ROOT_VOICES=None, ROOT_VOICE_N=None, VOICE_SERIAL=None, VOICE_FORWARD=None, BUF_CAPACITY=None,
     ACT_WAVETABLE=0x102A,          # menu table 0x081981F8 cell 5 {0x102A, 'Wavetable'}
     TYPE_WAVETABLE=0x12,           # Playground's analog_pane / menu checks
     ROOT_HANDLE=0x0C, VOICE_WT1=0x7A4, VOICE_WT2=0x994, VOICE_SUB=0x4C, OSC_KERNEL=0x10C,   # WT root ctor 0x0809BF20
@@ -194,6 +196,18 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     UI_CODE_RELEASE=0xb0,         # 0xB0 -> 0x08141042 (BUTTON_EVENT 0x74) (hold)
     # S6a (rc20/s6a): the allow-list keys (regdump.py: empty after stock's builder), the menu, the type, the M7 layout
     KEY_AN_SYNC=0x1C0, KEY_AN_GLIDE=0x1B7,
+    # S6c drums (rc25/s6c re/d1_168.txt, the one-shot render entry 0x08092320 and its callers, read by hand):
+    VOICE_DESC=0x0C,              # ldr r0,[r4,#0xc] (0x0809234C) then [r0,#0x14] / [r0,#0x18]: the sample's range
+    VOICE_CURSOR=0x40,            # ldrd r2,r3,[r4,#0x40] into the sample read 0x0808F0E0; str r0/r1 back (0x080925C8)
+    VOICE_RATIO=0x48,             # vldr s17,[r4,#0x48]; vmul s17,s17,s0 after bl 0x080518C0 (2^x)
+    VOICE_PITCH_PARAM=0x300,      # add.w r0,r4,#0x300; bl 0x080A09A0 (the parameter evaluator)
+    VOICE_LFO1=0x5D8,             # add.w r0,r4,#0x5d8; mov r1,r6 (frames); bl 0x08064FA0
+    ROOT_FINE=0x104,              # vldr s15,[r8,#0x104]; vcvt.f32.s32; vdiv by 1000.0 then 12.0
+    ROOT_LOOP=0xEC,               # ldr.w fp,[r7,#0xec]; cmp.w fp,#0 (the loop path)
+    ROOT_VOICES=0x20, ROOT_VOICE_N=0x60,   # render case 0x08090772: add.w fp,r4,#0x1c; ldr r1,[fp,#4]! while < [r4,#0x60]
+    VOICE_SERIAL=0x08,            # (rc25/s6cfix) both starts: str r1,[r4,#8] after the counter [[root+0x18]+0xC708] (0x08094876, 0x080956B6)
+    VOICE_FORWARD=0x54,           # ldrb.w r3,[r4,#0x54]; cbz -> reverse (0x080923C8); starts store root+0xF0 ^ 1 (0x080948B2)
+    BUF_CAPACITY=0x00,            # SCRATCH_SIZE 0x08052FA0: ldr r3,[r0]; cmp r3,r1; strge r1,[r0,#4]
     ACT_WAVETABLE=0x102C,         # menu table 0x0819AD30 cell 5 (menu3.py)
     TYPE_WAVETABLE=0x12,          # 'cmp r0,#0x12' after vtable[0]: 10 sites in both images (typ2.py)
     ROOT_HANDLE=0x0C,             # root vtable slot 10 0x08054540: str r1,[r0,#0xc] (q5.py)

@@ -1,0 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Freestanding stand-in for <cstdint> (S6c): the compiler's own freestanding <stdint.h>. */
+#pragma once
+#include <stdint.h>

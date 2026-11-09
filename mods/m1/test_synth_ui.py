@@ -443,6 +443,19 @@ class BlackBox(unittest.TestCase):
             self.assertIn(part, line)
         self.assertTrue(line.endswith("\r\n"))
 
+    def test_drums_line(self):
+        """S6c: the DRUMS line (before ANALOG's), from the M7's drum stats lines at +0x80 (synth_shared.h SaDrumStats)."""
+        if "drums" in MAN.get("omitted", []) or "drums" in MAN.get("disabled", []):
+            self.skipTest("no drums in this image")
+        r = Rig(); r.put(1)
+        r.u.mem_write(SA + 0x80, struct.pack("<19I", 8, 4000, 70000, 3, 40, 5, 1, 2, 2, 0, 4, 0, 0, 128, 0, 0, 1, 0, 0))
+        line = self.line(r)
+        self.assertTrue(line.startswith("DRUMS blocks=8 avg_cyc=8000 (pm=6) peak_cyc=70000 (pm=54)"), line[:120])
+        for part in ("share>=5%=1 >=15=0 >=30=0", "voices_peak=3", "renders=40", "starts=5 retrigs=1", "quiet_ends=4",
+                     "detects=2 carriers=2 unbuilt=0", "n_max=128", "unbound=0 short_bufs=0"):
+            self.assertIn(part, line.split("\r\n")[0])
+        self.assertIn("\r\nANALOG gen=1", line)
+
     def test_why_the_area_is_not_taken(self):
         r = Rig(area=False); r.put(1)
         r.w32(TAKE, 0xA5 << 24 | 2 << 8 | 2)                       # the M7: the Region alone, twice

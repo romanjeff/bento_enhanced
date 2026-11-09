@@ -192,6 +192,10 @@ Stock's zero gap is 0x080CFC5C..0x080E0000, 66,468 B. 0x080CFC5C is the M7 .data
 - The black-box block is full (441 B left), so the synth's black-box print lives in SYNTH_UI, reached
   through X6.
 - If drums plus FX come close to the limit, repacking COND_UI on 1.6.8 only (4 KB slack) is the reserve.
+  **Used in S6c (BE4.30):** COND_UI is 512 B on 1.6.8 (84 B used) and the black box M4_CODE grew to
+  0x081B7200..0x081BE000 (28,160 B; it had 152 B left of 24 KB); M4_LIMIT and every block after it keep their
+  address, SYNTH_UI is still sized at link time (about 25 KB left under 0x18D334). Table: mods/m1/README.md
+  "On 1.6.8".
 
 ### SDRAM: one combined reservation
 - **Why combined (M):** `region_reserve()` treats a pool end that is neither the pool's end nor the Region
@@ -1099,3 +1103,92 @@ few stores. test_handles runs stock's real init array through it; the device's f
 - **facts.py OBJ_CTOR** says 13 instructions (it listed 13 and said 10).
 - Tests: test_synth_ui's N7 test is split into "same object keeps Sync / Glide (menu_same=1)" and "a new object
   starts as a plain Analog (menu_same=0)"; the black box test reads `menu_same=0`.
+
+## S6c: the Kick, M7 part (BE4.30, 2026-11-09, offline; device check open)
+
+### Scope: S6c is split in two (open decision D13 for Jeff)
+- **S6c-1, this kit (BE4.30):** the Kick on one-shot pads at its default sound: the M7 hook, the DaisySP Kick, the
+  carrier WAV and its generator, test_drums, the black box DRUMS line, the M4 layout move. Everything a pad does
+  natively (velocity routes, filter, envelope, level, sends, choke, mute, Poly / Mono) acts on the Kick.
+- **S6c-2 (BE4.31):** the M4 drum page: D5 / D6 (refresh / event wrappers, the hidden byte), the 10 drum keys, the knob
+  table published to the M7, `bento_drum_*` save / load through X1 / X2, the clone / forget / destroy hooks (H1-H3
+  extended; BE4.21's lesson: test through stock's real copy path), the CPU readout (D3), and the RE of the object that
+  holds a pad's parameters and whether paste / duplicate clones it.
+- Why split: the M7 part carries the risks only the device can settle (the render hook inside stock's one-shot
+  engine, the CPU, the carrier detection, the D8 gate), and the M4 part is as large again. The M7 already reads the
+  knob table (`knob_entry`), but only once the M4 header's `drum_serial` is not 0, which nothing writes yet.
+
+### Review round rc25 (behaviour and build reviews of the first S6c tree)
+- **B1, the carrier was tested before stock had loaded the sample.** Both voice starts clear the voice's descriptor
+  (0x08054F20), look the pad's sample up (0x08087D00 / 0x08087D60, then SAMPLE_FIND), open it (DESC_OPEN) and only then
+  write the voice's start serial (VOICE_SERIAL +0x08, from the engine's counter). D2 / D3 ran before all of that.
+  **Fix: no voice-start sites.** D1 alone: each of the 32 native voices (DRUM_POOL_N, the pool constructor's count)
+  has its own cell for good; a render whose serial (or root) differs from its cell's is a new start, tested once, and
+  the answer holds until that voice's next start. DRUM_VSTART_A/B_SITE stay reviewed, unpatched. This also removes the
+  96-byte trampolines inside VOICE_START and their register-saving risk.
+- **D2 (32 cells, steal the oldest with a one-block fade) cannot occur:** stock's one-shot engine has exactly 32 voices
+  for all One-Shot pads, so 32 cells bound per voice never run out. The fade code is gone (it also had the rc25 S2
+  problems: four fade slots, and a ramp of the last sample rather than a fade). If more than 32 voices ever rendered,
+  the extra one would play natively (its near-silent carrier) and be counted (`unbound`). Jeff's D2 is kept in spirit
+  (no cap, no audible limit); the fallback differs only in a case the evidence rules out.
+- **S1:** the knob table is read only when the M4's `drum_serial` is not 0 (it was `| 1`, so SDRAM left-overs could
+  set knobs). **S3:** a block larger than the scratch buffer goes to stock (`short_bufs`); the same check is in Analog's
+  oscillator hook. Stock's own render has no such check (its buffers always hold a block).
+- **S4:** the cell checks the start serial and its root. The root check is belt and braces: a mutant without it
+  survives, because no stock path renders a voice under another root without a new start (an equivalent mutant).
+- **S6, the end of a voice on unusual pads:** when the synth is done the cursor goes to frames (forward) or 0 (a
+  reverse pad, VOICE_FORWARD +0x54 = 0), so stock's render releases the voice at once in both directions; the start /
+  length modulation paths (+0x2B0 / +0x2F0) end the same way. Tested against the forward release time.
+- **Engine state zeroed at each start.** test_drums' golden comparison found it: DaisySP's Init leaves
+  SyntheticBassDrum's `transient_env_lp_` to the object's storage, so a reused cell started from the last hit's value.
+- **`BE_DISABLE=analog` no longer turns the drums off** (build S1): the synth area is taken (m7_diag.c) and the synth
+  UI is ticked and printed (m4_diag.c) when either synth group is on; with analog off the tick does no Analog work.
+  The X1-X3 / H1-H3 sites stay analog-only until S6c-2 gives the drums a client there.
+- **D8 settled offline** (facts.py DRUM_ROOT_VT): the M7 hands out one-shot roots only for the M4's property 0xAC,
+  which the M4 sends for One-Shot tracks' pads only (type 0x0E; Loop 0x11 and Slicer 0x10 get the 0x0807A7E0 class,
+  Shredder 0x14 its own, Multisample 0x0F's zones go elsewhere). The device check still loads a carrier on each of the
+  other track types.
+
+### Deviations from this plan, recorded (build review S3)
+- **1.6.1 entries are `absent`**, not 1.6.1 counterparts with fingerprints as section 3 asks. The drums group is 1.6.8
+  only (`default_off` on 1.6.1, like note0), the 1.6.8 values are REVIEWED with evidence and fingerprinted in
+  stock_168's CHECKS, and absent entries keep 1.6.1 byte-identical by construction. What is lost is the generator's
+  1.6.1 -> 1.6.8 cross-check for these entries; worth adding only if the drums are ever ported back.
+- **Knob table:** 64 lines scanned in order (2 KB at +0x1000), not 127 lines hashed by handle. The scan runs once per
+  drum start (64 x 6 loads, a few hundred instructions), so hashing buys nothing measurable; S6c-2 settles the M4 side
+  (the planned 61-entry slice table against 64 published lines) when it builds the table. No drum publish block at
+  +0x2000 yet: the engine confirmations it would carry are for the S6c-2 page.
+- **Stats:** the drum stats are one 128 B block at +0x80 (inside the M7's stats lines, +0x40..+0x200).
+
+### Measured (test_drums, emulator instructions; 1 instruction ~ 1 cycle at CPI 1)
+- **Kick: 52.6 k instructions per voice-block** (n = 128), 4.1 % of the 1.28 M-cycle block, against the plan's 2.8 %
+  estimate. The first tree measured about 59 k; the powf memo (dsp_lib.cpp: DaisySP computes two envelope coefficients
+  per sample from knob values that are constant within a block) took about 7 k off, bit for bit. A sample voice costs
+  1.8 k, so the extra is about 51 k per Kick voice-block. With no cap (D1), 8 Kick voices ringing together add about a
+  third of the block to SPACED's 59-65 % LOAD; past that the block overruns. S6d's efficiency items (per-block
+  coefficients inside the engine, a cheaper sine) are the remedy; the DRUMS line's avg / peak and its share histogram
+  (>= 5 / 15 / 30 %) show it on the device.
+- **Stack:** 416 B below the render entry on the Kick path (stock's own render of a sample: 280 B).
+- **Accuracy:** what we hand stock's post chain matches the host build of the vendored DaisySP (host compiler and libm,
+  dsp/host/kick_ref.cpp) to 1.2e-7 over 24 blocks; our sinf / powf(2, x) / powf(a, b) are within 1.3e-6 / 1e-7 /
+  7e-7 of double-precision math.
+
+### Tests (test_drums.py, 33; stock's own pool and root constructors, VOICE_START, the render entry, the post chain)
+Starts (B1: first use of a voice, a voice reused by a sample pad and by a carrier pad, a restart after the end, two
+voices on a Poly pad, a sample swapped under a pad, a voice moving between pads), Golden (the default Kick, pitch and
+fine tune, velocity never reaching the DSP while the post chain treats synth and sample pads alike), Parity (the cursor
+ends the voice, reverse pads, the start / length paths, Loop on, LFO1 as in stock's render), Detector (six negatives
+bit-identical to stock, Playground's carrier, an engine not built, one test per pad), Gate (another root class, an
+area not ours), Knobs (garbage before the M4 published, published values, a torn line), Buffers (a short scratch, 64 /
+256-frame blocks), Cost, Math, Carriers (the generator's file plays the Kick), Vendored (the DaisySP hashes). Mutants
+(rc25/s6cfix mut.sh, each on a copy of the tree), all caught but the equivalent root check: D1 reading its stack
+arguments at the wrong offsets, the Kick x2, no engine-state zeroing, the reverse cursor, no serial check, no gate, the
+knob serial `| 1`, no scratch check, no LFO1 tick, fine tune ignored, the synth never done, a stale powf memo, Accent
+fixed.
+
+### Open decisions for Jeff
+| # | Decision | Options | Recommendation |
+|---|---|---|---|
+| D13 | Ship S6c in two kits | (a) BE4.30 = the M7 Kick at its default sound now, BE4.31 = the drum page; (b) hold the kit until the page is built | (a): the device answers the CPU, detection and gate questions while the page is built |
+| D14 | The Kick's CPU (4.1 % per voice-block, D1 = no cap) | accept for BE4.30 and measure on the device; or do S6d's efficiency items first | accept and measure: the DRUMS line shows it, and the decision about a cap stays with the numbers |
+| D15 | D2's fallback in the case that cannot occur (a 33rd voice) | native carrier (near silence), counted; or keep a steal-and-fade path for it | native and counted: no code for a case stock's 32-voice pool rules out |
