@@ -413,3 +413,10 @@ within 2 dB of the prototype, zero-FM shapes tested.
 | FD7 | Phase reset of OSC1 / OSC2 at note start | follow 0xC6 / free-running as today | follow 0xC6, if stock's WT honours it |
 | FD8 | Extra renames | "Sub + Config" / "OSC%d" destinations / neither | Sub yes; destinations deferred |
 | FD9 | Octave fix, if F0 confirms the bug | in BE4.31 / its own kit now | its own small kit only if you want to play Analog before S6c lands; otherwise BE4.31 |
+
+## Decisions (Jeff, 2026-11-08)
+- **FD5:** yes, sine / triangle at the start of Position, remapped now (in BE4.31, before patches matter).
+- **FD1:** Sub FM amplitude is unit, independent of the sub's Level.
+- **FD7:** no phase reset: OSC1 / OSC2 stay free-running (section 4.6 is not built).
+- **FD8:** no extra renames: "Osc + Config" stays as it is; only the WT1 / WT2 titles become OSC1 / OSC2.
+- Open: FD2-FD4 and FD6 follow the recommendations unless Jeff says otherwise; FD9 depends on F0.
