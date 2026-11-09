@@ -538,3 +538,9 @@ Rebuilt kit `flash\bento_enhanced-v4.22` (replaces the unflashed d38244cd... kit
 - **Seen, unchanged (Jeff's decisions 2 and 5):** an internal melodic track with a MIDI Out channel still sends 44
   for a note-0 step (its pad 0 has its own key, so A1 keeps stock's map), and Note Mod treats it as a pad hit there.
   Kits with MIDI out still get no live pressure on drum pads (stock).
+
+## Backlog (Jeff, 2026-11-08: low priority)
+- N3: Step Note field down to 0 on External tracks (needs the M4 code-region move first; 152 B left in M4_CODE).
+- Internal melodic tracks with MIDI Out send note 0 literally (decide by the router's per-track pad mode, +0x4D0);
+  internal drum-kit tracks keep stock's 36..51 per-pad map.
+- Decided: a new Analog instrument starts with fresh init parameters (BE4.22 behaviour).
