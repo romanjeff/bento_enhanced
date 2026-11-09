@@ -420,3 +420,18 @@ within 2 dB of the prototype, zero-FM shapes tested.
 - **FD7:** no phase reset: OSC1 / OSC2 stay free-running (section 4.6 is not built).
 - **FD8:** no extra renames: "Osc + Config" stays as it is; only the WT1 / WT2 titles become OSC1 / OSC2.
 - Open: FD2-FD4 and FD6 follow the recommendations unless Jeff says otherwise; FD9 depends on F0.
+
+## F0 verdict (2026-11-09, checked and independently verified in the emulator, rc27/f0check + rc27/f0verify)
+- **No octave bug.** Wavetable oscillators run at 96 kHz: stock sizes WT1 / WT2 / sub buffers to 2N (root vt[19]
+  0x080A3420 returns 2), renders, then decimates by 2 through the 11-tap FIR 0x0807FCC0. The divider of 2 at
+  osc+0x108 compensates exactly. Stock WT, BE4.22 an_osc and stock's sub all play 130.81 / 261.62 / 523.25 Hz at
+  notes 48 / 60 / 72. The false 130.79 Hz read a 2N buffer as 48 kHz.
+- **Two real BE4.22 bugs from the same fact** (static + device-shaped rig, depend on the device block N = 128,
+  to confirm with the black box `n_max=`):
+  1. **Hard sync never engages on the device:** an_osc gets n = 2N = 256 > AN_EVENTS = 128, and
+     `sync && n > AN_EVENTS` renders free-running (analog.cpp, analog.h AN_EVENTS). Fix: AN_EVENTS = 256 (state
+     size check: AnOsc lives at osc+0x10C..+0x1CC) or a per-block event cursor.
+  2. **Glide runs at half the set time:** glide_coef uses s * 48000 while n counts 96 kHz samples. Fix: use
+     48000 * [osc+0x108].
+  Tests to add: the rig runs the engine init, renders 2N and decimates through 0x0807FCC0; assert 261.63 Hz at
+  48 kHz, sync audibly engaged at n = 256, glide time within 5 %.
