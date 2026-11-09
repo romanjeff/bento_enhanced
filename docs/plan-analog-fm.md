@@ -458,8 +458,9 @@ within 2 dB of the prototype, zero-FM shapes tested.
 - Order from 0 to 127: **sine -> triangle -> saw -> square -> pulse narrowing** (replaces the FD5 anchors in 4.5;
   proposed anchors: 0 sine, 24 triangle, 48 saw, 88 square, then 88..127 square narrowing to an 8 % pulse; each
   pure shape with a small plateau).
-- A **shape view** in the oscillator pane that shows the current waveform as Shape moves (exact form to be
-  agreed with Jeff: one drawn cycle of the actual wave, or a circular dial with the shapes around it).
+- A **shape dial** in the oscillator pane (Jeff, 2026-11-09): a ring with the five shapes marked around it
+  (sine, triangle, saw, square, pulse; small glyphs or names at their anchor angles) and a pointer at the current
+  Shape value, redrawn when Shape changes. Not a drawn waveform.
 - Implementation note: a separate Shape key with its own descriptor is cleaner than relabelling stock's shared
   Position key (0xC9, type 1, 0..255); depends on the native-properties / per-oscillator Type decision
   (docs/plan-native-props.md). Drawing needs a pane paint hook (Wavetable pane paint slot 0x081B6914).
