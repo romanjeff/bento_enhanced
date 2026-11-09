@@ -58,9 +58,17 @@ static void midi_note(u32 router, u32 type, u32 track, u32 note, u32 vel, u32 ti
     u32 ev[6] = {type, timing, *(volatile u8 *)(track + 0x31u), *(volatile u8 *)(track + 0x32u), note & 0x7Fu, vel};
     FN(MSG_SEND, void (*)(u32, const u32 *))(router + 0x7C8u, ev);
 }
+/* The MIDI note of a hit. BE4.22 (note0): what the step's own Note On sent (m7_note0.c remembers it per slot and pad):
+ * stock's drum note where the pad had an internal sound, else 0 (BE4.21: 0 after a 44). */
+#if defined(BE_OMIT_NOTE0) || defined(BE_NO_NOTE0)
+#define MSENT(x) ((x)->note)
+#else
+u32 m1_note0_sent(u32 track, u32 pad, u32 router);
+#define MSENT(x) ((x)->note ? (u32)(x)->note : m1_note0_sent((x)->track, (x)->pad, (x)->router))
+#endif
 static void close_open(volatile Burst *x, u32 timing) {
     if (!x->open) return;
-    midi_note(x->router, 0x5C, x->track, x->note, 0x64, timing);
+    midi_note(x->router, 0x5C, x->track, MSENT(x), 0x64, timing);
     x->open = 0;
 }
 typedef int (*offset_fn)(u32 clock, const u32 *tick64);
@@ -151,11 +159,11 @@ __attribute__((used, retain)) void retrig_emit(u32 track, u32 clock, int start, 
             if (x->note > 0x7Fu) keep = 0;                     /* 1.6.8: the M4 drops it; note & 0x7F would be wrong */
 #endif
             if (keep) {                                        /* R4: the MIDI hit */
-                if (m1_note_sounding(track, x->note)) {
-                    midi_note(x->router, 0x5C, track, x->note, 0x64, (u32)off);
-                    midi_note(x->router, 0x5B, track, x->note, vel, (u32)off);
+                if (m1_note_sounding(track, MSENT(x))) {
+                    midi_note(x->router, 0x5C, track, MSENT(x), 0x64, (u32)off);
+                    midi_note(x->router, 0x5B, track, MSENT(x), vel, (u32)off);
                 } else {
-                    midi_note(x->router, 0x5B, track, x->note, vel, (u32)off);
+                    midi_note(x->router, 0x5B, track, MSENT(x), vel, (u32)off);
                     x->open = 1;
                 }
             }

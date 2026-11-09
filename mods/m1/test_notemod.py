@@ -49,6 +49,10 @@ class Rig:
         u.mem_write(self.t, bytes(0x8800)); u.mem_write(self.t + 0x86D1, b"\x01\x01")   # MIDI out + internal
         for p in range(16):
             w32(u, self.t + 0x86DC + 4 * p, 0x1000 + p)                                   # every pad has a sound
+        # ... that the router delivers to (its sorted bus key table, count +0x508: BE4.22 note0 asks it on MIDI-out tracks)
+        w32(u, ROUTER + 0x508, 16)
+        for p in range(16):
+            u.mem_write(ROUTER + 8 + 8 * p, struct.pack("<II", 0x1000 + p, p))
         u.mem_write(MODCFG, struct.pack("<3I", MOD_MAGIC, 1, 2))
         u.mem_write(MODHEAD, struct.pack("<4I", MOD_MAGIC, 1, MODCFG, ~MODCFG & 0xFFFFFFFF))
         self.key(MAJOR, C)

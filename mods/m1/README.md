@@ -187,10 +187,25 @@ the M4's own table in our slice (AN4, `AN4_SLICE`, taken from the canary's end),
 M7 is up; the M7 reads a published copy in the synth area (`synth_shared.h`): 32 KB below the Region, taken in the
 same reservation (48 KB, m7_polyat.c; the Region alone when the pool keeps less than 1 MB) from the first audio block
 after the M4's config line (h_consume), with a handshake (the M4 writes nothing there before the M7 header is stamped
-for its boot). Any stock instrument action on an Analog track ends it; a sweep retires entries whose handle is gone.
+for its boot). Any stock instrument action on an Analog track ends it. BE4.22 follows stock's object lifecycle
+instead of BE4.21's sweep and swap watch: the M4's one object constructor drops every entry from an earlier boot before
+the handle counter reaches it (H1: nothing new inherits Analog), a copy (load commit, save snapshot, preset, paste)
+gets its source's Analog state under its new handle (H2: BE4.21 lost it across a load and a save), and a destroyed
+object's entry goes (H3); test_handles runs stock's object store for all three.
 The black box prints an `ANALOG` line at every save (CPU cycles per block, LOAD while Analog plays, keys, tracks,
 why the area is not taken). No voice cap (Jeff). Suites: test_analog (stock's oscillator and voice code, golden kernel model, cost), test_inst_xml (stock's
-instrument writer / reader), test_synth_ui, test_keys (the allow-list). Details: docs/plan-synths-168.md, "S6a".
+instrument writer / reader), test_synth_ui, test_keys (the allow-list), test_handles (stock's object store: create,
+copy, clone by handle, remove; the writer / reader on real nodes). Details: docs/plan-synths-168.md, "S6a" and
+"Instrument handles (BE4.22)".
+
+**Literal MIDI note 0 on 1.6.8 (BE4.22).** Group `note0` (1.6.8 only; `-DBE_OMIT_NOTE0` on 1.6.1): stock's five
+out-of-line note-0 blocks (sequencer On / Off, pad On / Off, all-off) start with a b.w to `m7_note0.c`, which keeps
+stock's drum note (pad 0..7 -> +0x2C, 8..15 -> +0x1C) only for a pad whose key is set and still routed (an internal
+drum track with a MIDI Out channel) and otherwise sends note 0 itself (External tracks). The On sites remember their
+decision per track slot and pad, so an Off (and a ratchet hit) is always the note its On sent, also across an
+instrument change. Ratchet hits, Note Mod and curve playback use the same rule. Suite: test_note0 (stock's code down
+to the M4 MIDI task's bytes, and the plan's sweep through stock's pad router: every note 0..127). Details:
+docs/plan-ext-low-notes.md.
 
 **Our slice on 1.6.8 (S2).** 1.6.8 owns D2 0x3003C000..0x30040000 (SAI DMA buffers, M7 MPU R14),
 so on 1.6.8 `S_D2_SLICE` is AXI 0x2404D000..0x24050000 (the name stays): RAMCHK `axi`

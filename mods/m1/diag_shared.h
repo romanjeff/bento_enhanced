@@ -99,7 +99,8 @@ typedef struct {
  * write-back mapping (MPU R8, no write-allocate) rather than as Device memory in the M4 pool.
  * Stock's allocator (0x0809FB40) only bumps: left falls and cursor rises, so cursor + left stays
  * EXT_POOL_END. Taking the reservation is lowering left; m7_polyat.c region() does it, once per M7
- * boot. The M4 only reads it, and only the stats below REGION_STATS_BYTES, which d0_publish cleans. */
+ * boot. The M4 only reads it: the stats below REGION_STATS_BYTES, which d0_publish cleans, and (BE4.22, 1.6.8)
+ * the note-0 line at REGION_NOTE0, which the M7 cleans on every change and after zeroing the region. */
 #define M1_REGION_ADDR S_REGION
 #define M1_REGION_RESERVE 0x4000u
 #define EXT_POOL_LEFT (*(volatile u32 *)S_POOL_LEFT_RAM)
@@ -114,6 +115,9 @@ _Static_assert(M1_REGION_BYTES <= M1_REGION_RESERVE, "region larger than its res
 #define REGION_INTERNAL 64u        /* int_dest, live_int, int_sent (M2-2b internal instruments) */
 _Static_assert(REGION_INTERNAL + 12u <= REGION_STATS_BYTES, "M4-read stats outside the cleaned lines");
 #define RETRIG_BYTES 512u          /* 16 bursts x 32 B, inside the M1 region */
+/* BE4.22 (note0, 1.6.8): the note-0 decisions line (m7_note0.c), the Region struct.s last line; the M7 cleans it on every
+ * change and the M4 prints it with the stats. Not on 1.6.1 (BE_OMIT_NOTE0: the Region keeps its v3.72 layout). */
+#define REGION_NOTE0 0x2400u
 
 /* Per-step word: the native note record's +20 word (notes, kind 1, only;
  * stock uses +20 for automation/XY/scene items). Saved as XML attribute

@@ -363,11 +363,24 @@ __attribute__((unused)) static u32 scale_shift(u32 note, int steps, u32 sc, u32 
     return (u32)out;
 }
 
+#if defined(BE_OMIT_NOTE0) || defined(BE_NO_NOTE0)
 __attribute__((unused)) static int nm_drum(u32 track, u32 note, u32 pad) {
     if (pad > 15u) return 0;
     (void)track;
     return !note;                              /* a pad's own sound. A melodic note also carries pad 0 (no chan) */
 }
+#define NM_DRUM(track, note, pad, router) nm_drum(track, note, pad)
+#else
+/* BE4.22 (note0): a note 0 is a pad's own sound (moved by pad) on a track without MIDI out, and on a MIDI-out track
+ * only where stock keeps its drum note (the pad has an internal sound, m7_note0.c). Elsewhere (External) it is MIDI
+ * note 0 and moves by pitch like any note. A melodic note also carries pad 0 (no chan). */
+u32 m1_note0_map(u32 track, u32 pad, u32 router);
+__attribute__((unused)) static int nm_drum(u32 track, u32 note, u32 pad, u32 router) {
+    if (pad > 15u || note) return 0;
+    return !*(volatile u8 *)(track + 0x86D1u) || m1_note0_map(track, pad, router) != 0u;
+}
+#define NM_DRUM(track, note, pad, router) nm_drum(track, note, pad, router)
+#endif
 
 static NmRun *nm_track(NmState *st, u32 track, u32 *idx) {
     *idx = *(volatile u32 *)(track + 0x86D4u);
@@ -408,7 +421,7 @@ __attribute__((used, retain)) u32 nm_on(u32 track, u32 note, u32 *pad, const u32
     volatile ModNote *nm = r ? &cfg->nm[idx] : 0;
     u32 sent = note, opad = *pad & 0xFFFFu, spad = opad;
     if (!nm || !nm->amount) { irq_restore(p0); return note; }
-    int drum = nm_drum(track, note, opad), steps;
+    int drum = NM_DRUM(track, note, opad, csp[1]), steps;   /* csp[1]: the router (note_route's 6th argument) */
     u32 key = cfg->key, sc = (key >> 16) & 1u && (key & 0xFFu) < 23u ? key & 0xFFu : 0u;
     u32 root = (key >> 16) & 1u ? (((key >> 8) & 0xFFu) + 9u) % 12u : 0u;   /* stock's Root list starts at A */
     if (r->has_tick && r->tick_lo == csp[8] && r->tick_hi == csp[9]) steps = r->steps;   /* a chord */
@@ -431,9 +444,16 @@ __attribute__((used, retain)) u32 nm_on(u32 track, u32 note, u32 *pad, const u32
     if (steps) {
         if (drum) {
             spad = (u32)(((int)opad + steps) % 16 + 16) % 16u;
+#if defined(BE_OMIT_NOTE0) || defined(BE_NO_NOTE0)
             if (!*(volatile u8 *)(track + 0x86D1u) && *(volatile u32 *)(track + 0x86DCu + 4u * spad) == 0xFFFFFF00u)
                 spad = opad;                       /* internal: no sound on that pad, keep the hit */
             if (note) { int x = (int)note + steps; sent = (u32)(x < 0 ? 0 : x > 127 ? 127 : x); }
+#else       /* no sound on that pad (with MIDI out: stock would send it as note 0, not a drum note): keep the hit.
+             * A drum hit is note 0 (nm_drum), so the note itself never moves here. */
+            if (*(volatile u8 *)(track + 0x86D1u) ? !m1_note0_map(track, spad, csp[1])
+                                                  : *(volatile u32 *)(track + 0x86DCu + 4u * spad) == 0xFFFFFF00u)
+                spad = opad;
+#endif
         } else sent = scale_shift(note & 0x7Fu, steps, sc, root);
     }
     if (sent != note || spad != opad) {

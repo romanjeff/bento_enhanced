@@ -35,9 +35,12 @@ QUEUE = ENGINE + 0x7C8
 CFG = D2 + 0x1E0
 REGION = S.REGION
 LEFT, CURSOR, POOL_END, LEFT0 = S.POOL_LEFT_RAM, S.POOL_CUR_RAM, S.EXT_POOL_END, 3405824   # stock's ext pool
-REGION_SIZE = 9208               # sizeof(Region)
 DCCMVAC = 0xE000EF68
 OFF = set(json.loads((Path(sys.argv[2]) / "manifest.json").read_text()).get("disabled", []))
+# sizeof(Region): BE4.22 (note0 in the image, 1.6.8) adds the note-0 line, 32-aligned (diag_shared.h REGION_NOTE0), and the
+# remembered Ons (8 words) at its end
+NOTE0 = "note0" not in json.loads((Path(sys.argv[2]) / "manifest.json").read_text()).get("omitted", [])
+REGION_SIZE = 0x2400 + 64 if NOTE0 else 9208
 # S6a: with the synth groups in the image (1.6.8; also in a BE_DISABLE=analog bisect) the one reservation takes the synth
 # area below the Region too: 32 KB more, and only while the pool keeps 1 MB (typed here, not read from synth_shared.h).
 SYNTH = "analog" not in json.loads((Path(sys.argv[2]) / "manifest.json").read_text()).get("omitted", [])
@@ -161,6 +164,19 @@ class RegionReservation(unittest.TestCase):
         self.trash(); self.new_gen(); self.touch()
         self.assertEqual(self.state(), self.reserved())
         self.assert_fresh()
+
+    def test_zeroing_cleans_the_note0_line(self):
+        """BE4.22 (review rc23 I4): the M4 prints the note-0 line (REGION + 0x2400, typed here); after zeroing the region
+        the M7 cleans it, so a save before any note-0 note reads zeros, not what a reset left in SDRAM."""
+        lines = []
+        def w(uc, k, a, n, v, _):
+            if a == DCCMVAC: lines.append(v & 0xFFFFFFFF)
+        self.v.on(60)
+        h = self.u.hook_add(UC_HOOK_MEM_WRITE, w); self.u.ctl_flush_tb()
+        self.trash(); self.new_gen(); self.touch()
+        self.u.hook_del(h)
+        self.assert_fresh()
+        self.assertEqual(REGION + 0x2400 in lines, NOTE0, lines)
 
     def test_both_cores_reset_reserves_again(self):
         self.touch()

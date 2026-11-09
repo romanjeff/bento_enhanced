@@ -994,8 +994,20 @@ class ReadinessDiagnostics(FatFsRig):
         self.u.hook_del(h)
         self.assertEqual(writes, [])
         self.assertTrue(reads, "the save line reads them")
+        note0 = self.REGION + 0x2400                            # BE4.22: diag_shared.h REGION_NOTE0, 6 words (typed here)
+        if "note0" not in OMITTED:
+            self.assertEqual(sorted({a for a in reads if a >= note0}), [note0 + 4 * i for i in range(6)], "the note-0 line")
+            reads = [a for a in reads if a < note0]
         self.assertGreaterEqual(min(reads), self.REGION + 32)
         self.assertLessEqual(max(reads), self.REGION + 75)
+
+    def test_m4_prints_the_note0_line(self):
+        """BE4.22: the M7's note-0 decisions (m7_note0.c) in the save line: zero, stale, drum, last, key, held."""
+        if "note0" in OMITTED:
+            self.skipTest("note0 is not in this image")
+        self.ready()
+        self.u.mem_write(self.REGION + 0x2400, struct.pack("<6I", 3, 1, 2, 0x00090214, 0x209, 4))
+        self.assertIn(" | note0 zero=3 stale=1 drum=2 last=00090214 key=00000209 held=4", self.save_text())
 
     def test_m4_pool_holds_only_its_own_allocations(self):
         self.tick(1000)

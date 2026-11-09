@@ -875,6 +875,99 @@ REVIEWED = {
                       "matched to the object's descriptors by token (0x0812F11A); unknown ones skipped"),
     'XML_CHILD': dict(value=0x8109538, evidence="1.6.1 0x08109268's prologue and loop (ldr r4,[r0,#0x18]; child list +0x24)"),
     'BUS_TAKE': dict(value=0x809fb40, evidence="byte-identical to 1.6.1 0x0809EF40 (0x60 B): i < [bus+0x1A48] -> copies entry i, returns 1; the bus forwarder's loop 0x08057F60..78 (BUS_TAKE, then the ring enqueue 0x08082BA0)"),
+    # BE4.22 note0 (rc23 implN: dis.py, preds.py; docs/plan-ext-low-notes.md, sites re-derived). Each sentinel test sits after the
+    # track's MIDI-out check (+0x86D1) and branches, on note 0 only, to an out-of-line block that writes stock's drum note into
+    # the note register (pad <= 7: pad + 0x2C, <= 15: pad + 0x1C, else 0x34) and goes back to BACK, where the MIDI event is
+    # built. Each block has exactly one predecessor, the sentinel branch (preds.py: a branch decode at every halfword of
+    # 0x08040000..0x080D0000), so a b.w at the block's entry runs only for note 0 on a MIDI-out track and leaves every other
+    # note on stock's own path. 'orig' = the block's first 4 bytes (cmp pad, #7 [; bls]).
+    'NOTE0_SEQ_ON_MAP': dict(value=0x805fd60, orig='072e0dd9', evidence="note_route 0x0805FC80 (track r4, r5 = track+0x8000, note r1 = "
+                             "sb, pad r6 = ldrh [sp,#0x58], router [sp,#0x5c]): ldrb r3,[r5,#0x6d1]; cbz r3 0x0805FCD0; cmp r1,#0; beq "
+                             "0x0805FD60 (the sentinel 0x0805FC9C) / fall-through mov sl,r1. Block: cmp r6,#7; bls 0x0805FD80 (add.w "
+                             "sl,r6,#0x2c; b BACK); cmp r6,#0xf; ite ls; addls.w sl,r6,#0x1c; movhi.w sl,#0x34; b BACK. Note register sl"),
+    'NOTE0_SEQ_ON_BACK': dict(value=0x805fca2, evidence="add r0,sp,#0x20; bl msg init 0x080A10C0; ... str.w sl,[sp,#0x30] (the note); "
+                              "bl MSG_SEND at POLYCAP_SEQ_ON_SITE 0x0805FCCC. Branches here: 0x0805FD70, 0x0805FD84 (the block) and the "
+                              "fall-through; r0-r3, r12 and the flags are written before they are read"),
+    'NOTE0_SEQ_OFF_MAP': dict(value=0x8060260, orig='072b0dd9', evidence="sequencer Note Off 0x080601A0 (track r4, note r1, pad r3 "
+                              "(16-bit: both callers ldrh, NM_OFF_SITE_1/2), router [sp,#0x38]): ldrb r2,[r5,#0x6d1]; cbz r2; cmp r1,#0; "
+                              "beq 0x08060260 (the sentinel 0x080601B6) / mov r8,r1. Block: cmp r3,#7; bls 0x08060280 (add.w r8,r3,#0x2c; "
+                              "b BACK); cmp r3,#0xf; ite ls; addls.w r8,r3,#0x1c; movhi.w r8,#0x34; b BACK. Note register r8; r3 (pad) is "
+                              "stored at BACK + 2 (str r3,[sp]) and used again after MSG_SEND: a hook must keep it"),
+    'NOTE0_SEQ_OFF_BACK': dict(value=0x80601bc, evidence="add r0,sp,#8; str r3,[sp]; bl 0x080A10C0; ... str.w r8,[sp,#0x18]; bl MSG_SEND "
+                               "at POLYCAP_SEQ_OFF_SITE 0x080601E4. Branches here: 0x08060270, 0x08060284 and the fall-through"),
+    'NOTE0_PAD_ON_MAP': dict(value=0x8060300, orig='b8f1070f', evidence="PAD_NOTE_ON 0x080602A0 (track r4, r6 = track+0x8000, note r5 = "
+                             "ev+0xC, pad r8 = ldrh ev+0x14, router sl): ldrb r3,[r6,#0x6d1]; cbz r3; cbz r5,0x08060300 (the sentinel "
+                             "0x080602C6). Block: cmp.w r8,#7; bls 0x080603A0 (add r5,r8,#0x2c; b BACK); cmp.w r8,#0xf; ite ls; addls.w "
+                             "r5,r8,#0x1c; movhi r5,#0x34; b BACK. Note register r5"),
+    'NOTE0_PAD_ON_BACK': dict(value=0x80602c8, evidence="add r0,sp,#0x20; bl 0x080A10C0; ... str r5,[sp,#0x30]; bl MSG_SEND at "
+                              "POLYCAP_PAD_ON_SITE 0x080602F0. Branches here: 0x08060312, 0x080603A4 and the fall-through"),
+    'NOTE0_PAD_OFF_MAP': dict(value=0x8060440, orig='b8f1070f', evidence="PAD_NOTE_OFF 0x080603E0 (track r4, note r5, pad r8, router "
+                              "sb): cbz r5,0x08060440 (the sentinel 0x08060402). Block: cmp.w r8,#7; bls 0x080604E0 (add r5,r8,#0x2c; b "
+                              "BACK); cmp.w r8,#0xf; ite ls; addls.w r5,r8,#0x1c; movhi r5,#0x34; b BACK. Note register r5"),
+    'NOTE0_PAD_OFF_BACK': dict(value=0x8060404, evidence="add r0,sp,#0x20; bl 0x080A10C0; ... str r5,[sp,#0x30]; bl MSG_SEND at "
+                               "POLYCAP_PAD_OFF_SITE 0x08060428. Branches here: 0x08060452, 0x080604E4 and the fall-through"),
+    'NOTE0_ALL_OFF_MAP': dict(value=0x8061d40, orig='072f7dd9', evidence="NM_ALL_OFF 0x08061D00 (track r6, fp = track+0x8000, router "
+                              "r8, per held note: pad r7 = ldrh [r4,#0x3a], note sb = [r4,#0x3c]): ldrb r1,[fp,#0x6d1]; ...; cmp.w sb,#0; "
+                              "beq 0x08061D40 (the sentinel 0x08061DEC) / mov sl,sb; b BACK. Block: cmp r7,#7; bls 0x08061E40 (add.w "
+                              "sl,r7,#0x2c; b BACK); cmp r7,#0xf; bhi.w 0x08061E60 (mov.w sl,#0x34; b BACK); add.w sl,r7,#0x1c, then nops "
+                              "into BACK. Note register sl"),
+    'NOTE0_ALL_OFF_BACK': dict(value=0x8061d60, evidence="add r0,sp,#8; bl 0x080A10C0; ... str.w sl,[sp,#0x18]; bl MSG_SEND at "
+                               "POLYCAP_ALL_OFF_SITE 0x08061D86. Branches here: 0x08061DF4 (the non-zero path), 0x08061E44, 0x08061E64, "
+                               "and the block's fall-through"),
+    # BE4.22 analog: instrument handles (rc23 handles investigation: ctr.py, scan10.py, uses.py, lits.py, probe1/2.py; re-run by
+    # rc23 implH: dis8.py, probe2.py; docs/plan-synths-168.md "Instrument handles"). Every M4 object gets its handle from
+    # OBJ_CTOR (7 bl sites: 0x081260B6, 0x081260D0, 0x0812E800 (STORE_CREATE), 0x0812F2E0 (child clone), 0x0812F348 (NODE_CLONE),
+    # 0x0812F8A8, 0x08131A92); the counter only goes up, so a handle is never reused within a boot (probe2: REMOVE + CREATE
+    # hands the same address back with a new handle). Every top-level object leaves through NODE_DESTROY (slot 2) and every
+    # copy is made by NODE_CLONE (slot 3); neither has a bl caller or another word pointing at it.
+    'OBJ_CTOR': dict(value=0x812e79c, orig='074a0260', evidence="13 instructions, no frame: ldr r2,=OBJ_BASE_VT (pc+0x1c, the "
+                     "literal at 0x0812E7BC); str r2,[r0]; movs r2,#0; strb r2,[r0,#4]; str r2,[r0,#8]; str r2,[r0,#0xc]; str r2,"
+                     "[r0,#0x14]; ldr r1,=OBJ_HANDLE_CTR; ldr r2,[r1]; add.w ip,r2,#1; str.w ip,[r1]; str r2,[r0,#0x10]; bx lr. "
+                     "Writes r1, r2, ip and the flags only (callers may keep r3 across it: a wrapper must keep every other "
+                     "register); 'orig' = the vtable load and store, which a wrapper replays"),
+    'OBJ_BASE_VT': dict(value=0x819917c, evidence="the word at 0x0812E7BC, OBJ_CTOR's first literal (ldr r2,[pc,#0x1c])"),
+    'OBJ_HANDLE_CTR': dict(value=0x30000088, evidence="OBJ_CTOR's ldr r1 literal; its only literal in the image (lits.py) and "
+                           "0x0812E7B2 its only store (uses.py); M4 .data (M4_DATA_INIT + 0x88) = 1, the M4 static constructors "
+                           "take 1..3 (probe2 reads 4 after them)"),
+    'NODE_VT_DESTROY': dict(value=0x8199190, orig='cbe81208', evidence="generic node vtable 0x08199188 (the 0x92C-byte track "
+                            "instrument node, type byte +4, slot 0 0x08125FBC ldrb r0,[r0,#4]) slot 2 = NODE_DESTROY | 1; called "
+                            "by the store clear 0x0812E542, STORE_REMOVE 0x0812E4C0 and a failed STORE_CREATE 0x0812E82A"),
+    'NODE_DESTROY': dict(value=0x812e8ca, evidence="(obj r0, pool r1): push.w {r4-r8,lr}; frees its properties (0x0812E868) "
+                         "and its children directly (0x0812E868 + pool free 0x08101E9C), never through slot 2"),
+    'NODE_VT_CLONE': dict(value=0x8199194, orig='11f31208', evidence="the same vtable, slot 3 = NODE_CLONE | 1; called by "
+                          "STORE_COPY_ALL 0x0812E5EA and STORE_CLONE_H 0x0812E650 (blx through [vt+0xC])"),
+    'NODE_CLONE': dict(value=0x812f310, evidence="(src r0, pool r1, &out r2) -> ok: alloc 0x92C (0x08101FB4), memset, OBJ_CTOR "
+                       "(new handle), node vtable, properties 0x0812F164 (never writes +0x10), type byte, children by the direct "
+                       "child clone 0x0812F2B4; *out only on success (0x0812F372)"),
+    'STORE_INIT': dict(value=0x812e3a6, evidence="PresetMgr init 0x081261D4 makes its two stores with it (probe2 runs it)"),
+    'STORE_POOL_INIT': dict(value=0x812e55c, evidence="(store, bytes): the DyMemPool at store+0x58 (probe2 runs it)"),
+    'STORE_CREATE': dict(value=0x812e7c4, evidence="(store r0, type r1, &obj r2) -> ok: alloc 0x92C from store+0x58, OBJ_CTOR "
+                         "(0x0812E800), node vtable, slot 1 init (type, pool), list +0..+0x2C (count +0x30, at most 12) and the "
+                         "track list +0x34 (count +0x54, type 0x15 left out); a 13th is destroyed (slot 2)"),
+    'STORE_REMOVE': dict(value=0x812e43e, evidence="(store r0, handle r1): finds the top-level object by +0x10 (else slot 8 into "
+                         "its children), takes it out of both lists, slot 2 (0x0812E4C0), pool free"),
+    'STORE_COPY_ALL': dict(value=0x812e57e, evidence="(dst r0, src r1): the store clear 0x0812E510 (slot 2 per object), then "
+                           "slot 3 per src object into dst+0x58 and both lists; load commit 0x08126768 (live <- PresetMgr+0x330), "
+                           "save snapshot 0x08126450 (PresetMgr+0x334 <- live)"),
+    'STORE_CLONE_H': dict(value=0x812e600, evidence="(dst r0, handle r1, src r2, &out r3): the src object with that handle, "
+                          "slot 3 into dst+0x58, both lists; preset apply 0x081267D6, clipboard copy / paste 0x08124F68, 0x08124F8E, "
+                          "0x08125130"),
+    # BE4.22 test_note0's end-to-end pad sweep (review rc23 B2; the plan's N1 exit test, run as rc21/ui/r2/chain.py did on
+    # stock 1.6.8: 128 distinct notes with literal note 0, 127 on stock). Re-checked by rc23 integ2 padr_dis.py / padr_lit.py.
+    'PADR_CTOR': dict(value=0x8087620, evidence="push.w {r4-r8,lr}; mov r5,r0; ... str r1(0xFFFFFF00),[r5,#0xc]; str r2(vtable "
+                      "literal),[r5]; its only bl caller 0x08058768; no word points at it"),
+    'PADR_LOOP': dict(value=0x8085fc0, evidence="(router r0, bus r1): push.w {r4-sl,lr}; ldr r1,[r0,#0xc] (its key); bl BUS_FIND "
+                      "0x0809F920; then the queue read 0x08065AC0 loop; no bl caller, the word 0x08085FC1 at 0x080ACC50 is the only "
+                      "one pointing at it; LIVE_SITE 0x080865EA is inside it"),
+    'PADR_RELEASE': dict(value=0x80844c0, evidence="push.w {r4-fp,lr}; 6 bl callers, all in the pad router "
+                         "(0x0808708C .. 0x08087616); chain.py stubs it as the held-pad release on mode / offset changes"),
+    'SCALE_INIT': dict(value=0x80a54c0, evidence="push.w {r3-fp,lr}; ldr r4,=0x2401DA18 (the scale table) and fills it; no bl "
+                       "caller, the word 0x080A54C1 at 0x080A679C is the only one pointing at it"),
+    'BUS_FIND': dict(value=0x809f920, evidence="(router r0, key r1) -> mailbox: ldr.w r2,[r0,#0x508]; subs r2,#1; bmi (none); "
+                     "binary search (ite hi; addhi.w ip,r3,#1; addls.w r2,r3,#-1) of {key, mailbox} from +8; 38 bl callers"),
+    'BUS_POST_KEY': dict(value=0x809fc40, evidence="(router r0, ev r1, key r2): ldr.w r3,[r0,#0x508]; subs.w ip,r3,#1; bmi "
+                         "(dropped); the same binary search, then the mailbox post; 98 callers, among them the internal note "
+                         "path after 0x0805FD40 (the pad.s +0x86DC key, build review rc23)"),
 }
 
 # Registry keys missing from registry_keys.txt (entries without a title to match by): the measured

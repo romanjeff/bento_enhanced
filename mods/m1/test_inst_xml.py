@@ -6,7 +6,7 @@
 An instrument object (type Wavetable, its handle at +0x10, no properties of its own) goes through stock's
 instrument writer (the function around INST_SAVE_SITE) into a document built by stock's XML code; our save hook
 adds bento_analog / _sync / _glide to the params element for a track the M4's Analog table (AN4, our slice + 0xE20,
-typed here: a 128 B header, then 16 x {handle, flags | glide << 4 | seconds << 16}) names. Then the table is
+typed here: a 128 B header, then 16 x {handle, flags | glide << 4}) names. Then the table is
 cleared and stock's instrument reader (INST_LOAD) reads the element back: our load hook restores the entry, with or
 without the M7 (review 2026-11-08: a load before the M7 has taken the synth area is kept and published at the
 handshake, by the UI tick).
@@ -53,6 +53,8 @@ class Rig:
         u.hook_add(UC_HOOK_BLOCK, lambda uc, a, sz, _: self.blocks.add(a) if 0x08100000 <= a < S.APPEND_FROM else None)
         self.w32(S.D2_SLICE + 0x1E0, 0x31474144); self.w32(S.D2_SLICE + 0x1E0 + 12, 1)   # CFG: our boot generation 1
         self.take()                                                                        # the M7 took the area (gen 1)
+        if HAVE:                                  # stock's handle counter: HANDLE is an object of this boot (BE4.22, H1)
+            self.w32(S.OBJ_HANDLE_CTR, HANDLE + 1)
         u.mem_write(STRS, b"instrument\0")
         # the object: vtable[0] = type getter (movs r0, #0x12; bx lr), no properties, its handle at +0x10
         u.mem_write(STRS + 0x40, bytes([S.TYPE_WAVETABLE, 0x20, 0x70, 0x47]))

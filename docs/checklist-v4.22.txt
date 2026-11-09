@@ -1,0 +1,134 @@
+bento_enhanced v4.22: literal MIDI note 0 (N1) + Analog instrument handles, on stock 1.6.8
+=========================================================================================
+
+Kit: flash\bento_enhanced-v4.22   boot label BE4.22
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.22.txt)
+
+In this image: everything BE4.21 has (docs\checklist-v4.21.txt: Analog oscillators on Wavetable tracks), plus:
+  - note0: an External track sends MIDI note 0 as note 0 (stock and v4.10/v4.21 send 44 or 36..51 instead). Pads,
+    sequenced steps, recording, retrigger hits, Note Mod and stop / all notes off all use one rule: stock's drum
+    note (pads 0..7 -> 44..51, 8..15 -> 36..43) is kept only for an internal track with a MIDI Out channel whose pad
+    has an internal sound; everything else sends 0. A note's Off is always the note its On sent, also if the
+    track's instrument changes while the note sounds.
+  - Analog instrument handles: a copy of an Analog track (project load, save, preset, copy / paste) stays Analog
+    with its Sync / Glide, and a new instrument never inherits Analog: picking Analog makes a new instrument, so it
+    starts with Sync Off and Glide 0, also on a track that was Analog already (v4.21 kept its Sync / Glide there).
+    BE4.21 lost Analog across a save and a load (found offline, never seen on the device): its 30 s sweep and 10 s
+    menu watch are gone.
+NOT in it: the Step Note field going down to 0 (sprint N3, not built): in this build the Step Note field stops at its
+old lowest value; a note-0 step comes from recording (section 2). Notes above 127 are still dropped (as stock). Note
+Mod still wraps an octave at the edges. An internal melodic track (Sampler, Wavetable, ...) with a MIDI Out channel
+still sends 44 for a note-0 step: its pad 0 has its own sound, so stock's map is kept there (as v4.10).
+
+0. Gate and how this combines with v4.21
+[ ] Flash this kit ONLY after docs\checklist-v4.10.txt has passed on this unit. If v4.10 is not done: stop here.
+[ ] v4.21 was never flashed. Do not flash it to test Analog: BE4.22 has everything v4.21 has plus the fix to its
+    save / load bug. Run checklist-v4.21.txt sections 1-5 on THIS kit in the same session, reading "BE4.21" as
+    "BE4.22" (expected values are the same, except the one below; the ANALOG line has new fields, see 6). Its
+    section 4 items "Power cycle. Load ANALOG_T: still Analog" and the preset item are the ones BE4.21 would fail:
+    they must pass here. Changed on BE4.22: v4.21 section 2 "Pick Analog again on the Analog track: Sync and Glide
+    keep their values" is now: Sync goes to Off and Glide to 0 (a new instrument, nothing carried over); see 6.
+    Optional, only to confirm the offline finding: flash v4.21, make an Analog track, save, power cycle, load: on
+    v4.21 it is expected to come back plain. Not needed for the sign-off.
+[ ] Back up the whole SD card on the computer (a folder copy of every file). Section 8 restores it.
+[ ] Work on copies only: on a computer, copy SPACED to SPACED_A (v4.21's section 5) and make four new empty
+    projects: NOTE0_T (sections 2-5), ANALOG_T (v4.21's sections, and 6), PLAIN_T (v4.21's section 4b). Never load
+    SPACED itself on this kit: v4.21's section 5 saves Analog tracks into the project it plays. Hash the
+    project.xml files of SPACED and SPACED_A (sha256) and write the hashes down.
+[ ] Have a MIDI monitor on the computer (MIDI-OX, MIDI Monitor, Pocket MIDI, ...) on the Bento's MIDI out, and
+    the Syntakt for section 5.
+
+1. Boot and black box
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.22. (The first boot runs our code inside stock's startup for
+    the first time: if it does not boot, flash 03_RESTORE_STOCK and bring the card back.)
+[ ] Load NOTE0_T, save (nothing played). BENTO_SAVES.log: header "firmware BE4.22", a "# saved:" line, the save line
+    with "note0 zero=0 stale=0 drum=0 ... held=0", and "ANALOG gen=N keys=ok tracks=0 ... | handles ctr=...
+    carried=.. dropped=.. forgot=..". Write both lines down.
+[ ] M7MEM "ext left=" = the v4.10 value - 32768 (as v4.21). RAMCHK quiet, no "!!!" lines, AUDIO blocks rising.
+
+2. External track to a MIDI monitor (NOTE0_T)
+[ ] Set up track 1 as External, MIDI Out channel 1 (any port the monitor sees). Pads: Chromatic, Root C, Pad Row
+    Offset -5.
+[ ] Press the bottom-left pad: the monitor shows 90 00 vv (Note On, note 0), release: 80 00 .. (or 90 00 00).
+    The next pad to the right: note 1 (90 01 vv / 80 01 ..). On v4.10 the bottom-left pad sent note 44.
+    (That the bottom-left pad is the lowest note at offset -5 is the plan's assumption about the pad order. If
+    another pad sends note 0, write down which one and use it as "the note-0 pad" below: not a failure.)
+[ ] Sweep all 16 pads at offsets -5, 0 and +5 (and any others you like): every On has its Off with the same note;
+    the lowest is 0, nothing above 127 is sent. Fast press / release on the note-0 pad 20 times: no stuck note.
+[ ] Step Note field (N3 not built): on a step of track 1 turn Step Note down as far as it goes. Write down the
+    lowest value it shows. Expected: it does NOT reach 0 in this build. Not a failure.
+[ ] Recording: record the note-0 pad (and note 1, 11, 12, 60) into steps of track 1. Play back: the monitor shows
+    90 00 vv for the note-0 step, the others exactly as recorded. Save, power cycle, load: the same.
+    Do NOT edit the recorded note-0 step's Step Note field: it shows "None" (stock's list starts at note 1), and any
+    turn of that field makes the step note 1 for good (then this and the next items fail for a reason that is not
+    note0). You may look at it: write down what it shows (expected "None"). If it was changed, record the step again.
+[ ] Retrigger on the note-0 step (a 2- or 4-hit ratchet): every hit is note 0 (never 44), each with its Off.
+[ ] Note Mod on the note-0 step (if you use it): note 0 and the shifted notes; at the bottom edge it wraps an
+    octave as before.
+[ ] Stop while holding the note-0 pad (sequencer playing, pad held, press Stop): the monitor shows the Off for
+    note 0 (80 00 ..). No note left hanging (the monitor's "notes on" count back to zero, if it has one).
+
+3. Internal drum track with a MIDI Out channel (stock's map kept)
+[ ] On another track load a drum kit (16 sounds), set its MIDI Out channel (channel 2). Press the 16 pads: the
+    monitor shows stock's drum notes, the same as v4.10 sent: pads 0..7 -> 44..51, pads 8..15 -> 36..43 (36..51
+    in all), and the kit plays its sounds.
+[ ] Change that track from the kit to External on the same track, same channel. Pad Row Offset is per track: set it
+    to -5 (Chromatic, Root C) if it is not. Pads now send the chromatic notes of section 2 (note 0 at offset -5),
+    not 36..51. Save: the save line's "note0 ... stale=" may be above 0 (a stale kit key was seen and ignored):
+    write it down.
+[ ] Change while a note sounds (no hanging note): put the kit back on that track (MIDI Out channel 2), record a
+    long step (several beats) on a kit pad that sends 36..51, play, and while the step sounds change the track to
+    External. The monitor shows the Off for the note that went on (e.g. 91 2C vv, then 81 2C .. on channel 2),
+    never a stuck note. If you can reach the menu while holding a pad: hold a kit pad, change to External,
+    release: the Off has the held pad's note. The other way: External with a long note-0 step sounding, change
+    to a kit: the Off is 81 00 ... Stop the sequencer after each and check the monitor's "notes on" count (if it
+    has one) is back to zero. The next save line's "held=" counts these Offs (1 or more).
+
+4. Save line after sections 2-3
+[ ] Save NOTE0_T. Write down "note0 zero= stale= drum= last= key= held=". Expected: zero > 0 (External), drum > 0
+    (the kit with MIDI out), held > 0 after section 3's last item, and no crash or reset at any point.
+
+5. Syntakt (auto channel)
+[ ] Bento track External, MIDI Out on the Syntakt's auto channel, pads Chromatic, Root C, offset -5: the 12 pads from
+    the bottom-left (notes 0..11) play the Syntakt's 12 tracks, one pad each.
+[ ] Record a 12-track pattern from the pads, play it back: all 12 Syntakt tracks play from the Bento's steps.
+    Save, power cycle, load, play: the same.
+[ ] Open the saved NOTE0_T on stock 1.6.8 (section 8): it loads; its note-0 steps play as 44 there (expected).
+
+6. Analog handles (ANALOG_T; v4.21's sections done first)
+[ ] An Analog track with Sync On and Glide about 300: save, power cycle, load ANALOG_T: still Analog, Sync and Glide
+    as saved. The ANALOG line after the next save: tracks=1, "saves=1" (or more), "loads=1", "carried=" above 0.
+[ ] Open project.xml on a computer: bento_analog="1" bento_analog_sync="1" bento_analog_glide="300" (or your value)
+    on that track's params element.
+[ ] Copy the Analog track and paste it onto an empty track: the pasted track is Analog with the same Sync / Glide.
+[ ] Change the pasted track to Sampler, then pick Wavetable on it: a plain Wavetable ("No WAV", no Glide / Sync).
+[ ] Right after a power cycle or any reset (before loading ANALOG_T, if the Bento does not autoload it), pick Wavetable
+    from the menu on an empty track: it is plain. The ANALOG line at the next save: "forgot=" counts the entries a
+    reset left in RAM (0 after a power cycle, which clears that RAM), "menu_miss=0".
+[ ] Pick Analog on an Analog track with Sync On and Glide about 300: it stays Analog, and Sync goes to Off and Glide
+    to 0 (stock makes a new instrument for the choice; v4.21 kept the values). The ANALOG line at the next save:
+    "menu_same=0". If instead Sync / Glide keep their values and menu_same is above 0, stock kept the old object:
+    write it down (not a failure, but bring the log back).
+
+7. Regression (BE4.10 core items)
+[ ] Curves on an External and an internal track, trigger conditions (1:2, NOT), a retrigger on a drum pad, live
+    poly AT out of an External track, the hold shortcuts (TRACKS / LAUNCH / MIXER / INST + pads), strike velocity:
+    as on v4.10.
+
+8. Rollback
+[ ] v4.10 (flash\bento_enhanced-v4.10\01_TEST_FIRMWARE): load NOTE0_T and ANALOG_T: no crash. External note 0 is 44
+    again; the Analog track is a plain Wavetable with no WAV. Do not save there unless you mean to: v4.10 drops the
+    bento_analog attributes on its next save.
+[ ] v4.21 (flash\bento_enhanced-v4.21\01_TEST_FIRMWARE) only if you want to see the loss of section 0: ANALOG_T's
+    Analog track is expected to load as a plain Wavetable there (BE4.21 marked the load's scratch copy, not the
+    track), and a save there drops the bento_analog attributes. External note 0 is 44 there too.
+[ ] 03_RESTORE_STOCK (stock 1.6.8): both projects load; note-0 steps play as 44; Analog tracks are plain.
+[ ] Back to BE4.22 if you continue; restore the card backup from section 0 at the end.
+
+Bring back: BENTO_SAVES.log (every save line: "note0 ..." and "ANALOG ... | handles ..."), BENTO_CRASHES.log if any,
+the monitor's capture (or the notes you read) for sections 2, 3 and 5, the lowest Step Note value shown, and notes for
+every item that did not match.

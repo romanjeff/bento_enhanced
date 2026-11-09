@@ -987,3 +987,115 @@ flashed; its kit stays as it was (the rule: existing kits are not modified) and 
   fixes cost 19 per voice-block). T2 whole voice: native 6,472, Analog saw 12,808, **extra 6,336** (BE4.20: 6,331).
 - Budgets: DSP 6,840 B of the window (29,768 B left); m7.elf 14,680 B of 19 KB; synth UI 5,513 B code; SDRAM as
   BE4.20 (48 KB). Stock basic blocks run: test_analog 548 (M7), test_inst_xml 720, test_keys 409, test_synth_ui 67.
+
+## Instrument handles (BE4.22, 2026-11-08, offline; device check open)
+
+*Supersedes, in the review round above: Retirement (S3) beyond the menu clear, the deferred-swap watch (S5), the boot
+re-timing of kept entries, and the open risk "a handle stock reuses for a new instrument ... within 30 s".* Jeff's
+decision 7: Analog state is fully overwritten when stock creates a new instrument, so nothing can inherit it.
+Investigation `rc23/handles/` (ctr.py, scan10.py, uses.py, lits.py, probe1/2.py); implementation `rc23/implH/`
+(dis8.py, probe2.py re-run, mut.sh, final.sh).
+
+**What stock does (1.6.8, static + emulator; test_handles re-runs it on every build).**
+- One base constructor, `OBJ_CTOR` 0x0812E79C (10 instructions, no frame), gives every M4 object its handle (+0x10)
+  from `OBJ_HANDLE_CTR` 0x30000088 (its only store and only literal; .data sets it to 1, the static constructors take
+  1..3). It only goes up: **a handle is never reused within a boot**. Pool addresses are reused (a second load commit
+  gets the same addresses with new handles); handles are not.
+- Every copy is made by the generic node's clone (`NODE_CLONE` 0x0812F310, vtable word `NODE_VT_CLONE` 0x08199194),
+  which runs `OBJ_CTOR`: **a copy always has a new handle**. Loads go into a scratch store (PresetMgr 0x30020760 +0x330)
+  and are committed by `STORE_COPY_ALL` into the live store; a save writes a snapshot copy (+0x334); a preset apply and
+  the clipboard use `STORE_CLONE_H`.
+- Every top-level object leaves through `NODE_DESTROY` 0x0812E8CA (`NODE_VT_DESTROY` 0x08199190): the store clear
+  before a commit, `STORE_REMOVE` (the instrument menu's replace 0x0813F730), a failed `STORE_CREATE`.
+- The instrument menu's swap is synchronous: UI_POST -> the root view's slot 0x30 (0x081702F4) -> the model command
+  handler 0x08141EA4 -> case 0x42 -> 0x0813F730 (REMOVE, then CREATE), all before UI_POST returns.
+
+**What that meant for BE4.21 (a bug, not only the named risk).** `an_load` marked the *scratch* object's handle, but
+the live track is a clone with a new handle, so a loaded project or preset came up without Analog. `an_save` looked up
+the *snapshot* clone's handle: no entry, so `bento_analog` was never written. Copy / paste lost it too (the cause of
+D9). test_inst_xml could not see this (it saves and loads the same object). test_handles reproduces it: with the clone
+word put back to stock's, the live copy has no entry and the save writes nothing. BE4.21 was never flashed. The named
+risk (a reused handle inheriting the flag) is nil within a boot, but real across an M4 reset (the table survives in the
+slice, the counter starts again).
+
+**The hooks (group `analog`, 1.6.8 only; `BE_DISABLE=analog` leaves all three sites stock).**
+- **H1, `OBJ_CTOR`** (4 bytes `074a0260` -> `b.w` to a wrapper in the synth UI block): push r0-r3, r12, lr (stock's
+  constructor writes only r1, r2, ip and the flags, so a caller may keep r3 across it; the wrapper keeps everything),
+  `an_forget()`, pop, replay `ldr r2,=OBJ_BASE_VT; str r2,[r0]` (build.py checks the literal), `b.w` back.
+  `an_forget` drops every entry whose handle is at or above the counter: such a handle names no object of this boot.
+  In practice the first of stock's static constructors at M4 boot (counter 1) drops the whole table the previous boot
+  left; a new object of this boot can never find an entry. Before the table exists (no magic: a cold start) it only
+  reads. Cost: a 16-entry scan per object (unlocked; the lock only when there is something to drop).
+- **H2, `NODE_VT_CLONE`** -> `an_clone`: stock's clone, then, if the source has an entry, the copy gets the same flags
+  and Glide. The load commit, preset apply / save, the save snapshot and paste all keep Analog, and `an_load` /
+  `an_save` work as written.
+- **H3, `NODE_VT_DESTROY`** -> `an_destroy`: the object's entry goes, then stock's destroy. Children are freed by
+  stock directly (never through slot 2) and never carry an entry.
+- **Gone:** the 30 s sweep, `AN4_FAIL`, `AN4_RETIRE_S`, the boot re-timing, the 10 s watch (`pend_*`) and the entry
+  word's seconds. **Kept:** the menu's clear of the current track for any stock instrument action (stock may keep the
+  object when Wavetable is picked on a Wavetable track: 0x081376C4 not traced); the immediate mark after UI_POST, now
+  with `menu_miss` counted when the track is not a Wavetable then (the device evidence that the swap is synchronous);
+  N7 (picking Analog on an Analog track keeps Sync / Glide), now also when stock makes a new object [changed in the
+  review round below: only when the track keeps its object]. `an_save` writes
+  our attributes only for an object whose own type is Wavetable (in place of the sweep's type check).
+- **Capacity (AN4_N = 16, unchanged; the M7's 16 lines unchanged).** Entries now also exist for copies: a load's
+  scratch, a save's snapshot, the clipboard. At most 8 live tracks plus the 8 copies of one commit or snapshot in
+  progress are needed at once, so a full table gives up its *oldest copy*: the lowest handle that does not resolve in
+  the live store ([MODEL], RESOLVE_OBJECT). Handles only go up, so that is the scratch before the snapshot before a
+  paste. A live track is never given up; with no copy to give up, the mark is lost and counted (`full`). Roads not
+  taken: moving the entry on the load commit and dropping it after `an_save` (fewer entries, but it depends on which
+  store a copy comes from and on a save writing each object once: not proven); 4 more AN4 entries in the freed header
+  words (needs a live-only publish to keep the M7's 16 lines). Eviction needs neither.
+- **AN4 header:** words 7-8 spare, 9 `carried`, 10 `dropped`, 11 `forgot` (counted from the table's cold start, so
+  H1's work at boot shows), 25 `evicted` (was `retired`), 28 `menu_miss`. Black box: `... full= evicted= menu_miss= |
+  handles ctr= carried= dropped= forgot=`.
+- **New reviewed facts (1.6.8 only, absent on 1.6.1):** OBJ_CTOR, OBJ_BASE_VT, OBJ_HANDLE_CTR, NODE_VT_DESTROY,
+  NODE_DESTROY, NODE_VT_CLONE, NODE_CLONE (build), STORE_INIT, STORE_POOL_INIT, STORE_CREATE, STORE_REMOVE,
+  STORE_COPY_ALL, STORE_CLONE_H (tests). PresetMgr and the menu replace are documented here, not table entries (no code
+  or test uses them).
+
+**Tests.** test_handles (new: 16, 1 of them only on a bisect). It runs stock's .data copy and static constructors, its
+store, node constructor, clone and destroy through the patched sites, its instrument writer / reader on real nodes and
+its registry; nothing of stock's is stubbed:
+- handles only go up and copies get new ones (address reuse included);
+- the real round trip: writer -> reader into a scratch object -> commit copy -> the live track is Analog -> snapshot
+  copy -> the writer writes it;
+- paste carries, a plain source makes no entry; 8 Analog tracks survive a load and two saves (scratch copies given up,
+  no live entry lost, full=0); only a Wavetable saves our attributes;
+- entries of an earlier boot are gone after the static constructors (forgot=4); a cold boot writes nothing into the
+  slice; a stale entry for the next handle is not inherited by a create, a commit copy or a clone by handle; the
+  constructor wrapper keeps r0, r3-r11 and does stock's stores;
+- remove and a commit free the entries; a 13th object, which stock refuses, is destroyed through H3;
+- each H-site put back to stock's bytes in the emulator makes its test fail (BE4.21's behaviour); the bisect class
+  checks the three sites are stock's on `BE_DISABLE=analog`.
+
+test_synth_ui: the deferred-swap and sweep tests are replaced (the swap inside UI_POST is marked; no watch afterwards;
+menu_miss; N7 with a new object; a full table gives up the oldest copy; a table of live tracks counts `full`; entries
+of an earlier boot dropped by the tick; a dead handle is not swept). test_inst_xml: the rig's counter is set above its
+handle. Mutants (`rc23/implH/mut.sh`, each on a copy of the tree), all caught: H1 dropping only `== counter`, H2 not
+carrying, H3 not dropping, eviction ignoring liveness, no type check in an_save, the wrapper not keeping r3, the menu
+not keeping Sync / Glide, the tick not dropping stale entries, the H1 patch left out, menu_miss not counted.
+
+**Device items (checklist-v4.22.txt).** Save an Analog project, power-cycle, load it: still Analog with its Sync /
+Glide (if v4.21's checklist is run first, its save / load item should fail exactly so); copy / paste an Analog track;
+a new Wavetable from the menu after a warm reset is plain; the ANALOG line's `forgot`, `carried`, `dropped`,
+`menu_miss`.
+
+**Risk left.** H1 runs inside stock's static constructors at M4 boot, the earliest code of ours on the M4: it reads the
+slice (AXI SRAM, which stock's own M4 code also uses) and, after a warm reset, writes it with interrupts masked for a
+few stores. test_handles runs stock's real init array through it; the device's first boot of BE4.22 is the check.
+
+### BE4.22 review round (rc23, 2026-11-08)
+
+- **Picking Analog again (behaviour S5, build S1).** As first built, the menu copied Sync and Glide from the
+  destroyed object onto the new one stock's case 0x42 creates, while stock's own Wavetable settings on it start from
+  defaults: half old, half new, and against Jeff's decision 7 (a new instrument inherits nothing). Now Sync / Glide
+  are kept only if the track still has the same handle after UI_POST (stock kept its object); a new handle starts as
+  AN_ON with Sync Off and Glide 0. The same-handle case is counted as `menu_same` (AN4 word 29, was r29; black box
+  `menu_same=`): it is also what a deferred swap would look like, which `menu_miss` could not see on a plain
+  Wavetable track (behaviour I3). Open for Jeff: if he wants N7 back for this case, it is one line.
+- **AN4 magic "AN42" (build I5).** The table's layout changed in BE4.22, so a table left by v4.21 in the slice is
+  started again instead of being read with v4.21's `pend_*` words as `carried / dropped / forgot`.
+- **facts.py OBJ_CTOR** says 13 instructions (it listed 13 and said 10).
+- Tests: test_synth_ui's N7 test is split into "same object keeps Sync / Glide (menu_same=1)" and "a new object
+  starts as a plain Analog (menu_same=0)"; the black box test reads `menu_same=0`.

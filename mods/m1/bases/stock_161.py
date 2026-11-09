@@ -563,6 +563,42 @@ SYMS = dict(
     INST_SAVE_SITE=code(0x0812F5EA, "80460024", note="instrument XML writer: params element appended (r0), object r6"),
     INST_LOAD=code(0x0812FAAC, "f0b585b0", note="instrument XML reader entry (node, object)"),
     XML_CHILD=code(0x08109268, note="(node, name) -> child element"),
+    # BE4.22 (note0, 1.6.8 only; docs/plan-ext-low-notes.md): stock's note-0 drum-note blocks. The same code exists on 1.6.1,
+    # but the group is not built there, so the entries are absent here and reviewed for 1.6.8 in facts.py.
+    NOTE0_SEQ_ON_MAP=code(None, note="sequencer Note On (note_route): stock's note-0 drum-note block (pad -> note)", status='absent'),
+    NOTE0_SEQ_ON_BACK=code(None, note="sequencer Note On: where the drum-note block goes back to (the MIDI event build)", status='absent'),
+    NOTE0_SEQ_OFF_MAP=code(None, note="sequencer Note Off: stock's note-0 drum-note block", status='absent'),
+    NOTE0_SEQ_OFF_BACK=code(None, note="sequencer Note Off: where the drum-note block goes back to", status='absent'),
+    NOTE0_PAD_ON_MAP=code(None, note="pad Note On: stock's note-0 drum-note block", status='absent'),
+    NOTE0_PAD_ON_BACK=code(None, note="pad Note On: where the drum-note block goes back to", status='absent'),
+    NOTE0_PAD_OFF_MAP=code(None, note="pad Note Off: stock's note-0 drum-note block", status='absent'),
+    NOTE0_PAD_OFF_BACK=code(None, note="pad Note Off: where the drum-note block goes back to", status='absent'),
+    NOTE0_ALL_OFF_MAP=code(None, note="stop / all notes off: stock's note-0 drum-note block", status='absent'),
+    NOTE0_ALL_OFF_BACK=code(None, note="stop / all notes off: where the drum-note block goes back to", status='absent'),
+    # BE4.22 (analog, 1.6.8 only; docs/plan-synths-168.md "Instrument handles"): the M4 object store's one base constructor
+    # and its handle counter (H1), the generic node's destroy / clone vtable slots (H3 / H2), and the store functions the
+    # tests run. Absent here (no analog group on 1.6.1), reviewed for 1.6.8 in facts.py.
+    OBJ_CTOR=code(None, note="the base object constructor (obj): vtable, cleared fields, +0x10 = handle counter++ (H1 site)", status='absent'),
+    OBJ_BASE_VT=data(None, note="the base object vtable: OBJ_CTOR's first literal", status='absent'),
+    OBJ_HANDLE_CTR=ram(None, note="the M4's object handle counter: OBJ_CTOR's only store, never reset after boot", status='absent'),
+    NODE_VT_DESTROY=data(None, note="generic node vtable slot 2: destroy (obj, pool) (H3 site)", status='absent'),
+    NODE_DESTROY=code(None, note="generic node destroy (obj, pool): every top-level object's way out", status='absent'),
+    NODE_VT_CLONE=data(None, note="generic node vtable slot 3: clone (obj, pool, &out) -> ok (H2 site)", status='absent'),
+    NODE_CLONE=code(None, note="generic node clone (obj, pool, &out) -> ok: a new object (new handle), type, properties, children", status='absent'),
+    STORE_INIT=code(None, note="object store init (store); tests", status='absent'),
+    STORE_POOL_INIT=code(None, note="object store pool init (store, bytes): its DyMemPool at +0x58; tests", status='absent'),
+    STORE_CREATE=code(None, note="(store, type, &obj) -> ok: a new top-level object; tests", status='absent'),
+    STORE_REMOVE=code(None, note="(store, handle): destroy one top-level object; tests", status='absent'),
+    STORE_COPY_ALL=code(None, note="(dst, src): clear dst, then clone every top-level object of src into it (load commit, save snapshot); tests", status='absent'),
+    STORE_CLONE_H=code(None, note="(dst, handle, src, &out): clone one object of src by handle into dst (preset apply, paste); tests", status='absent'),
+    # BE4.22 test_note0 (1.6.8 only): stock's M7 pad router and bus lookups, for the plan's end-to-end pad sweep. The same
+    # code exists on 1.6.1; the sweep is a 1.6.8 exit test (note0 is not built there), so absent here, reviewed in facts.py.
+    PADR_CTOR=code(None, note="M7 pad router constructor (router); tests", status='absent'),
+    PADR_LOOP=code(None, note="M7 pad router message handler (router, bus): params, pad presses -> bus posts; tests", status='absent'),
+    PADR_RELEASE=code(None, note="M7 pad router: release held pads (on pad mode / offset changes); tests", status='absent'),
+    SCALE_INIT=code(None, note="M7 static initializer: the scale table (Chromatic first) the pad router reads; tests", status='absent'),
+    BUS_FIND=code(None, note="(router, key) -> mailbox: binary search of the router's key table; tests", status='absent'),
+    BUS_POST_KEY=code(None, note="(router, ev, key): post to the mailbox of a key (binary search of the key table); tests", status='absent'),
 )
 
 # ---------------------------------------------------------------- image checks

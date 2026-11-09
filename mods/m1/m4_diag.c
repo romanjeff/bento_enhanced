@@ -475,6 +475,14 @@ static void counters(Out *o) {
         puts_(o, " | internal dest="); hex(o, ci[0], 8);   /* key | 0x86D4 idx << 16 | mode << 24 */
         puts_(o, " live="); hex(o, ci[1], 8);              /* router idx | key << 8 | mode << 24 */
         puts_(o, " posts="); dec(o, ci[2]);
+#ifndef BE_OMIT_NOTE0
+        /* BE4.22: stock's note-0 senders (m7_note0.c): sent as 0 (no key / a stale key), stock's drum note kept */
+        volatile u32 *n0 = (volatile u32 *)(rg + REGION_NOTE0);
+        puts_(o, " | note0 zero="); dec(o, n0[0]); puts_(o, " stale="); dec(o, n0[1]);
+        puts_(o, " drum="); dec(o, n0[2]);
+        puts_(o, " last="); hex(o, n0[3], 8); puts_(o, " key="); hex(o, n0[4], 8);   /* site | sound<<4 | slot<<8 | pad<<16 */
+        puts_(o, " held="); dec(o, n0[5]);                 /* Offs that kept their On's note (the rule changed since) */
+#endif
         if (AT_DEST->magic == AT_DEST_MAGIC) {
             puts_(o, " | AT tracks port/ch/mode:");
             for (u32 i = 0; i < 8; i++) {

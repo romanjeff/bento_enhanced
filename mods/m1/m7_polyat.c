@@ -27,7 +27,8 @@
  * State lives in a fixed region at the top of the M7's own ext pool, cached
  * write-back (v3.70; see M1_REGION_ADDR). The M4 publishes the address in the
  * config line once it is up. The M7 reserves, initialises and owns the region;
- * the M4 only reads its first three lines (stats), which d0_publish cleans. Until
+ * the M4 only reads its first three lines (stats), which d0_publish cleans, and
+ * (BE4.22, 1.6.8) the note-0 line, which m7_note0.c and region() clean. Until
  * the region is usable, notes pass through and pressure is not sent.
  */
 #include "diag_shared.h"
@@ -120,6 +121,10 @@ typedef struct {
     Chan ic[CHANS];                  /* M2-2b: internal channel aggregates (port|ch<<8 = key) */
     u32 mod[MOD_RUN_BYTES / 4u];     /* F1: m7_mod.c runtime (zeroed with the region) */
     u32 nmod[NM_RUN_BYTES / 4u];     /* F5: Note Mod runtime (zeroed with the region) */
+#ifndef BE_OMIT_NOTE0
+    u32 note0[8] __attribute__((aligned(32)));   /* BE4.22: note-0 decisions (m7_note0.c), its own line; the M4 prints it */
+    u32 note0_on[8];                 /* BE4.22: the remembered note-0 Ons per track slot (m7_note0.c; M7 only) */
+#endif
 } Region;
 _Static_assert(__builtin_offsetof(Region, curve_starts) == REGION_CURVE_STATS, "curve stats offset");
 _Static_assert(__builtin_offsetof(Region, curve_peak) == REGION_CURVE_PEAK, "curve peak offset");
@@ -160,6 +165,18 @@ void *m1_nm_run(void) {
     volatile Region *r = region();
     return r ? (void *)r->nmod : 0;
 }
+#ifndef BE_OMIT_NOTE0
+/* m7_note0.c (BE4.22): the black box's note-0 line. */
+_Static_assert(__builtin_offsetof(Region, note0) == REGION_NOTE0, "note-0 line offset (diag_shared.h REGION_NOTE0)");
+volatile u32 *m1_note0_line(void) {
+    volatile Region *r = region();
+    return r ? r->note0 : 0;
+}
+volatile u32 *m1_note0_ons(void) {
+    volatile Region *r = region();
+    return r ? r->note0_on : 0;
+}
+#endif
 int m1_token(u32 port, u32 now) {
     volatile Region *r = region();
     return r && take_token(r, port, now);
@@ -332,6 +349,10 @@ static volatile Region *region(void) {
     volatile Region *r = (volatile Region *)M1_REGION_ADDR;
     volatile u8 *b = (volatile u8 *)r;
     for (u32 i = 0; i < sizeof(Region); i++) b[i] = 0;
+#ifndef BE_OMIT_NOTE0
+    __asm volatile("dsb" ::: "memory");
+    *(volatile u32 *)0xE000EF68u = (u32)r->note0;    /* DCCMVAC: the M4 prints this line (review rc23 I4) */
+#endif
     SCAN_HI[0] = 0; SCAN_HI[1] = 0;
     for (u32 i = 0; i < PORTS; i++) { r->b[i].refill = CYCCNT; r->b[i].tokens = TOKEN_MAX; }
     r->magic = REGION_MAGIC;
@@ -677,6 +698,9 @@ static u32 inst_key(u32 track, u32 pad) {
     return key & 0xFFFFu;
 }
 
+#if !defined(BE_OMIT_NOTE0) && !defined(BE_NO_NOTE0)
+u32 m1_note0_map(u32 track, u32 pad, u32 router);   /* m7_note0.c */
+#endif
 static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tick_hi, u32 bus, u32 pad, u32 len) {
     volatile Region *r = region();
     u32 h = step_handle(word), n = 0, data;
@@ -690,7 +714,12 @@ static void curve_start_body(u32 track, u32 note, u32 word, u32 tick_lo, u32 tic
         u32 port = *(volatile u8 *)(track + 0x31u), ch = *(volatile u8 *)(track + 0x32u), how;
         u32 mode = at_mode(port, ch, &how);
         r->curve_dest = port | (ch << 8) | (mode << 16) | (how << 24);
+#if defined(BE_OMIT_NOTE0) || defined(BE_NO_NOTE0)
         if (mode == AT_POLY || mode == AT_CHAN) start_player(r, track, note, data, n, tick_lo, tick_hi, 0, port, ch, mode == AT_CHAN, len);
+#else   /* BE4.22: the MIDI player presses the note the Note On sent (a note 0: stock's drum note or 0, m7_note0.c) */
+        if (mode == AT_POLY || mode == AT_CHAN)
+            start_player(r, track, note ? note : m1_note0_map(track, pad, bus), data, n, tick_lo, tick_hi, 0, port, ch, mode == AT_CHAN, len);
+#endif
         else r->curve_skipped++;                    /* Off */
     }
 #ifdef BE_NO_INTA_CURVE

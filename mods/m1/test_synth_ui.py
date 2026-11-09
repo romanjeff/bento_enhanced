@@ -12,8 +12,11 @@ this proves our logic and that each site goes to it; stock's page builder and me
 (docs/plan-synths-168.md T4 / T5: see the S6a section). Skipped on a build without the analog group (1.6.1).
 
 The M4's own table (AN4, typed here independently: our slice + 0xE20, 256 B: a 128 B header, then 16 entries of
-{handle, flags | glide << 4 | seconds << 16}) holds the truth; the synth area's table is its published copy, written
-only once the M7 header there is stamped for this M4 boot (review 2026-11-08).
+{handle, flags | glide << 4}) holds the truth; the synth area's table is its published copy, written only once the M7
+header there is stamped for this M4 boot (review 2026-11-08). Stock's object handle counter (OBJ_HANDLE_CTR) is set
+above every handle a test uses (they are objects of this boot); BE4.22's handle hooks themselves (H1-H3) run on stock's
+own object store in test_handles.py. The UI_POST stub does stock's instrument swap itself when a test gives it one
+(`swap`): stock's swap is done before UI_POST returns (rc23 handles investigation).
 """
 import json, struct, sys, unittest
 from pathlib import Path
@@ -39,8 +42,9 @@ AN4 = S.D2_SLICE + 0xE20 if HAVE else 0
 CFG = S.D2_SLICE + 0x1E0 if HAVE else 0
 D0L = S.D2_SLICE + 0xFE0 if HAVE else 0
 TAKE = S.D2_SLICE + 0x1D8 if HAVE else 0
-M7_MAGIC, M4_MAGIC, AN4_MAGIC = 0x37534542, 0x34534542, 0x31344E41
+M7_MAGIC, M4_MAGIC, AN4_MAGIC = 0x37534542, 0x34534542, 0x32344E41
 TRACK, HANDLE = 3, 0x7A11
+CTR = 0x10000                # stock's handle counter in the rig: above every handle used here
 VIEW = 0x20014000            # harness synth view (only its WT1 label is touched)  # addr-ok: harness
 MD = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
 
@@ -72,6 +76,8 @@ class Rig:
             self.take()
         self.w32(S.REGISTRY, 0xC1000000)          # an empty registry (stock's builder fills it on the device; test_keys runs it)  # addr-ok: harness
         self.ms(1000)
+        self.w32(S.OBJ_HANDLE_CTR, CTR)
+        self.swap = None                                      # (handle, type): what stock's instrument swap makes
 
     def take(self, gen=1, boot=1):
         """The M7 took the area: its header, stamped for M4 boot `boot`."""
@@ -106,6 +112,8 @@ class Rig:
             args = [self.reg(i) for i in range(nargs)]
             if name == "post":
                 args.append(struct.unpack("<5I", u.mem_read(args[1], 20)))
+                if args[-1][0] == 0x42 and self.swap:         # stock's instrument replace, inside UI_POST
+                    h, kind = self.swap; self.obj(h, kind); self.handle = h
             if name == "title":
                 args.append(bytes(u.mem_read(args[1], 32)).split(b"\0")[0].decode())
             self.log.append((name, *args)); self.ret(ret)
@@ -176,38 +184,47 @@ class Menu(unittest.TestCase):
         self.assertEqual(r.line()[1:3], (HANDLE, 1), "published at once (the UI task)")
         self.assertFalse([x for x in r.log if x[0] == "menu_stock"], "our action is not stock's")
 
-    def test_a_deferred_instrument_swap_is_followed(self):
-        """Review S5: if stock swaps the instrument only after UI_POST returns, the new Wavetable handle is marked on a
-        later tick; the old object (a one-shot track here) is not."""
+    def test_the_swap_inside_ui_post_is_marked(self):
+        """Stock's instrument replace runs inside UI_POST (STORE_REMOVE, then STORE_CREATE: a new handle); the new
+        Wavetable handle is marked right after it, the old object (a one-shot track here) is not."""
+        r = Rig(kind=S.TYPE_ONESHOT); r.tick()
+        r.swap = (0x7A12, S.TYPE_WAVETABLE)
+        r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_ANALOG))
+        self.assertEqual(r.entry()[:2], (0x7A12, 1))
+        self.assertEqual(r.line()[1:3], (0x7A12, 1), "published at once")
+        self.assertEqual((r.hdr(20), r.hdr(28)), (1, 0), "menus=1 menu_miss=0")
+
+    def test_no_watch_after_the_action(self):
+        """BE4.21's 10 s watch is gone: a Wavetable that appears on the track later (not made by this action) stays plain."""
         r = Rig(kind=S.TYPE_ONESHOT); r.tick()
         r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_ANALOG))
-        self.assertEqual(r.entries(), [(0, 0, 0)] * 16, "nothing marked yet: the track is still a one-shot track")
-        r.obj(0x7A12, S.TYPE_WAVETABLE); r.handle = 0x7A12      # stock's swap, later
-        r.ms(1500); r.tick()
-        self.assertEqual(r.entry()[:2], (0x7A12, 1))
-        self.assertEqual(r.line()[1:3], (0x7A12, 1))
-
-    def test_the_wait_ends_after_ten_seconds_or_another_instrument_action(self):
-        for how in ("timeout", "sampler"):
-            with self.subTest(how):
-                r = Rig(kind=S.TYPE_ONESHOT); r.tick()
-                r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_ANALOG))
-                if how == "timeout": r.ms(1000 + 10001); r.tick()
-                else: r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_INST_FIRST))
-                r.obj(0x7A13, S.TYPE_WAVETABLE); r.handle = 0x7A13
-                r.ms(12000 if how == "timeout" else 1200); r.tick()
-                self.assertEqual(r.entries(), [(0, 0, 0)] * 16, "a Wavetable made afterwards is plain")
+        r.obj(0x7A13, S.TYPE_WAVETABLE); r.handle = 0x7A13
+        r.ms(1500); r.tick(); r.ms(5000); r.tick()
+        self.assertEqual(r.entries(), [(0, 0, 0)] * 16)
 
     def test_menu_action_on_a_non_wavetable_result_marks_nothing(self):
         r = Rig(kind=S.TYPE_ONESHOT); r.tick()
         r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_ANALOG))
         r.ms(5000); r.tick()
         self.assertEqual(r.entries(), [(0, 0, 0)] * 16)
+        self.assertEqual((r.hdr(20), r.hdr(28)), (0, 1), "menus=0 menu_miss=1 (the black box's device evidence)")
 
-    def test_picking_analog_again_keeps_sync_and_glide(self):
+    def test_picking_analog_again_on_the_same_object_keeps_sync_and_glide(self):
+        """Review N7: the track keeps its object (same handle after UI_POST): Sync and Glide stay; menu_same counts it."""
         r = Rig(); r.put(3, 400)
         r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_ANALOG))
         self.assertEqual(r.entry(), (HANDLE, 3, 400), "review N7")
+        self.assertEqual((r.hdr(20), r.hdr(28), r.hdr(29)), (1, 0, 1), "menus=1 menu_miss=0 menu_same=1")
+
+    def test_a_new_object_starts_as_a_plain_analog(self):
+        """Jeff's decision 7: stock makes a new object for the choice (case 0x42: REMOVE, CREATE): a new instrument,
+        so it is Analog with Sync Off and Glide 0, nothing from the old one (whose entry goes with stock's destroy,
+        H3: test_handles)."""
+        r = Rig(); r.put(3, 400)
+        r.swap = (0x7A14, S.TYPE_WAVETABLE)
+        r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_ANALOG))
+        self.assertEqual(r.entry(1), (0x7A14, 1, 0), "AN_ON only, glide 0")
+        self.assertEqual((r.hdr(20), r.hdr(28), r.hdr(29)), (1, 0, 0), "menus=1 menu_miss=0 menu_same=0")
 
     def test_any_stock_instrument_action_clears_analog(self):
         for code in (S.ACT_WAVETABLE, S.ACT_INST_FIRST, S.ACT_INST_FIRST + 3):
@@ -253,34 +270,46 @@ class Handshake(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
-class Retire(unittest.TestCase):
-    def test_dead_handles_are_retired_after_two_checks_and_thirty_seconds(self):
-        r = Rig(); r.obj(0x5555, S.TYPE_WAVETABLE)
-        r.put(1, handle=HANDLE, i=0); r.put(1, handle=0x5555, i=1); r.put(1, handle=0x6666, i=2)   # 0x6666: no object
-        t = 1000
-        for _ in range(16 * 3):                                  # three sweeps at 250 ms, all within 30 s
-            t += 260; r.ms(t); r.tick()
-        self.assertEqual([e[0] for e in r.entries()[:3]], [HANDLE, 0x5555, 0x6666], "too young to retire")
-        self.assertTrue(r.entry(2)[1] & 8, "but marked as failed once")
-        self.assertFalse(r.entry(1)[1] & 8)
-        t += 31000
-        for _ in range(16):
-            t += 260; r.ms(t); r.tick()
-        self.assertEqual([e[0] for e in r.entries()[:3]], [HANDLE, 0x5555, 0], "the dead one is gone, the live ones stay")
-        self.assertEqual(r.line(2)[2], 0, "and the M7's copy")
-        self.assertEqual(r.hdr(25), 1, "retired=1")
-
-    def test_a_full_table_takes_the_slot_of_a_dead_handle(self):
+class Table(unittest.TestCase):
+    """BE4.22: no sweep. A full table gives up its oldest copy (the lowest handle not in the live project); entries
+    from an earlier boot (a handle not below stock's counter) are dropped."""
+    def test_a_full_table_gives_up_the_oldest_copy(self):
         r = Rig()
         for i in range(16):
             r.obj(0x100 + i, S.TYPE_WAVETABLE); r.put(1, handle=0x100 + i, i=i)
-        r.objects.pop(0x105)                                     # its track went away
+        r.objects.pop(0x109); r.objects.pop(0x105)              # copies: not in the live project (RESOLVE_OBJECT fails)
+        r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_ANALOG))   # HANDLE: a 17th Analog object
+        self.assertEqual(r.entry(5), (HANDLE, 1, 0), "the lowest copy's slot")
+        self.assertEqual(r.entry(9)[0], 0x109, "the other copy stays")
+        self.assertEqual([r.entry(i)[0] for i in range(16) if i not in (5, 9)], [0x100 + i for i in range(16) if i not in (5, 9)],
+                         "live tracks are never given up")
+        self.assertEqual((r.hdr(24), r.hdr(25)), (0, 1), "full=0 evicted=1")
+
+    def test_a_table_of_live_tracks_loses_the_mark_and_counts_it(self):
+        r = Rig()
+        for i in range(16):
+            r.obj(0x100 + i, S.TYPE_WAVETABLE); r.put(1, handle=0x100 + i, i=i)
+        r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_ANALOG))
+        self.assertEqual([e[0] for e in r.entries()], [0x100 + i for i in range(16)])
+        self.assertEqual((r.hdr(24), r.hdr(25)), (1, 0), "full=1 evicted=0")
+
+    def test_entries_from_an_earlier_boot_are_dropped(self):
+        """A handle not below stock's counter names no object of this boot (the counter starts again at reset, the
+        table survives it): the tick drops it (H1 does it at the next object anyway: test_handles) and its slot is free."""
+        r = Rig(); r.put(1, handle=HANDLE, i=0); r.put(3, 7, handle=CTR, i=1); r.put(1, handle=CTR + 0x500, i=2)
+        self.assertEqual([e[0] for e in r.entries()[:3]], [HANDLE, 0, 0])
+        self.assertEqual(r.hdr(11), 2, "forgot=2")
+        self.assertEqual(r.line(1)[2], 0, "and the M7's copy")
+
+    def test_a_dead_handle_is_not_swept(self):
+        """BE4.21 retired an entry whose handle no longer resolved; stock's destroy (H3) does that now, so the tick
+        leaves entries alone however long they wait."""
+        r = Rig(); r.put(1, handle=0x6666, i=0)                 # no object for it in this rig
         t = 1000
-        for _ in range(16):
+        for _ in range(16 * 10):
             t += 260; r.ms(t); r.tick()
-        r.call(SYM["an_menu_event"], SCR + 0x300, r.ev(S.ACT_ANALOG))   # HANDLE: a 17th Analog track
-        self.assertEqual(r.entry(5)[0], HANDLE)
-        self.assertEqual(r.hdr(24), 0, "full=0")
+        r.ms(t + 60000); r.tick()
+        self.assertEqual(r.entry(0), (0x6666, 1, 0))
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
@@ -409,7 +438,8 @@ class BlackBox(unittest.TestCase):
         r.u.mem_write(SA + 0x40, struct.pack("<16I", 10, 1000, 30000, 2, 0, 128, 0, 9, 1, 0, 0, 10, 20, 3, 0, 0))
         line = self.line(r)
         for part in ("ANALOG gen=1", "keys=ok", "tracks=1", "blocks=10", "avg_cyc=1600", "peak_cyc=30000", "osc_peak=2",
-                     "n_max=128", "misses=3", "over_with_analog=0", "retired=0"):
+                     "n_max=128", "misses=3", "over_with_analog=0", "evicted=0", "menu_miss=0", "menu_same=0",
+                     f"handles ctr={CTR} carried=0 dropped=0 forgot=0"):
             self.assertIn(part, line)
         self.assertTrue(line.endswith("\r\n"))
 

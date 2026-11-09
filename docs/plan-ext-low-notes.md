@@ -448,3 +448,93 @@ Feature groups for build.py (1.6.8 only):
 - Stock velocity: light pad hits can give velocity 0 (`90 nn 00`), which receivers read as Note Off. This
   is stock behaviour, not in scope, but it can look like a lost note 0 on the monitor.
 - 1.6.1 byte-identity: guarded by `default_off` + omit define and checked by the 1.6.1 SHA test in N1.
+
+## N1 built: BE4.22 (2026-11-08, offline; device check N2 open)
+Option **A1**, group `note0` (1.6.8 only: `default_off` + `-DBE_OMIT_NOTE0` on 1.6.1, which stays byte-identical to v3.72).
+Jeff settled the A0/A1 question on the device: internal tracks can have a MIDI Out channel, so stock's map stays for them.
+Scratch: `rc23/implN/` (`final.sh`, `mut.sh`, `preds.py`, `ctor.py`, `scan.py`).
+
+- **Where.** Not the five sentinel branches but the five out-of-line drum-note blocks they jump to (`NOTE0_<site>_MAP`,
+  re-derived: seq On `0x0805FD60`, seq Off `0x08060260`, pad On `0x08060300`, pad Off `0x08060440`, all-off `0x08061D40`;
+  sentinels at `0x0805FC9E`, `0x080601B8`, `0x080602C6`, `0x08060402`, `0x08061DF0` as above). Each block has exactly one
+  predecessor, the sentinel (branch decode at every halfword of the M7 image), so a `b.w` at its entry runs only for note 0
+  on a MIDI-out track and every other note stays on stock's own path, byte for byte. The trampoline calls
+  `note0_site(track, pad, router, site)` (`m7_note0.c`), puts the answer in the sender's note register and goes back to
+  `NOTE0_<site>_BACK` (the event build). Five 4-byte sites, 160 B of trampolines.
+- **The rule** (one function for On, Off, all-off, retrigger hits, Note Mod and curves): stock's drum note iff pad <= 15,
+  the per-pad key `+0x86DC + 4*pad` is not 0xFFFFFF00 **and the router still has that key** (its bus table, count
+  `+0x508`, the table bus_post searches); otherwise MIDI note 0. The last test is an addition to the review's predicate:
+  the M4 sends 0xA1 (the only writer besides the constructor) only for an instrument's own pads (`0x081329E8`, nothing for
+  External), and the M7 makes its eight track objects once (`0x08058A60` loop, the only constructor call), so a slot that
+  held a kit and became External can keep the kit's old keys (R). Such a stale key is not on the bus, counts as "no
+  sound", and is counted apart in the black box.
+- **External's real keys (M + R):** the constructor sets all 16 to 0xFFFFFF00 (`ctor.py`), the MIDI channel setting does
+  not touch them, and no M4 path sends 0xA1 for External. The +0x10 fallback is not used (as the review asked).
+- **Our hooks:** retrigger hits use the same rule (BE4.21 sent 44, then 0); Note Mod's drum test is "note 0 and (no MIDI
+  out, or the rule maps)", the dead `x < 0` clamp is gone, a kit hit is not moved onto a pad without a sound; the External
+  curve player presses the note the Note On sent. Poly cap needed no change (0 and 44 are two voices now).
+- **Black box:** the Region's last line (`REGION_NOTE0` 0x2400): `note0 zero= stale= drum= last= key=` in the save line
+  (last = site | sound << 4 | slot << 8 | pad << 16). The device run should show `drum` only on kits and `zero` on External.
+- **Tests:** `test_note0.py` (20 tests, real stock code incl. the ring post and the M4 MIDI task to bytes; 326 stock basic
+  blocks): notes 0, 1, 11, 12, 60, 126, 127, 128 on External, a kit with MIDI out and a stale key, for pad press, step,
+  recording, stop / all-off and a 2-hit ratchet. With note0 out of the image (1.6.1, `BE_DISABLE=note0`) the same suite
+  expects and gets stock's 44. 9 mutants all caught (`mut.sh`).
+- **Behaviour changes:** a note-0 step / pad on a MIDI track without an internal sound for that pad now sends 0 (was 44,
+  Jeff's decision 5); a pad index above 15 (not reachable from a 16-pad kit) sends 0, not 52.
+- **Open (device, N2):** the plan's N2 list, plus: kit -> External on the same slot (the stale-key path: expect `stale`
+  counts and note 0 out), and a kit with MIDI out (expect 36..51, `drum` counts).
+- **N3 (`note0_ui`) not built.** Found so far: the clamp `cmp r0,#1; it lt; movlt r0,#1` at `0x0815A99C` (after the top
+  clamp at `0x0815A996`, store `strh r0,[sp,#0x40]`, back to `0x0815A82C`); the Step Note list is indexed `note - 1`
+  (`0x0815BBDC`, key 0x183; key 0x184 when the view's `+0x1DAE` drum flag is set), so note 0 reads list[-1] = "None"; the
+  scale-folded label path (`+0x52AE` and `+0x54B0` > 0) is `0x0815BC9C` (a 128-entry text table, index checked <= 127).
+  "External only" can follow m4_step.c's `drum_track_selected()` (selected track -> object -> `vt[0]()`) with a reviewed
+  `TYPE_EXTERNAL` = 0x16. Still to trace: the piano roll's lowest insertable row and a new step's default note.
+
+## N1 / N3 at integration: the BE4.22 kit (2026-11-08, offline; device check N2 open)
+
+- **N1 (`note0`)** is in the kit as built above, together with the Analog instrument-handle fix (docs/plan-synths-168.md,
+  "Instrument handles (BE4.22)"). The two touch different code (M7 note senders; M4 object store hooks). Kit
+  `flash\bento_enhanced-v4.22`, BE4.22 = d38244cd... before the review round below (which replaces it; see there),
+  checklist `docs/checklist-v4.22.txt` (= the kit's DEVICE_CHECKLIST.txt): N2's MIDI monitor and Syntakt items, the
+  internal drum track with a MIDI Out channel (A1: 36..51 as stock), the handle items, the black box lines, rollback.
+  `BE_DISABLE=note0` on 1.6.8 = ed24b802... (the five blocks stock; test_note0 expects and gets 44 there). 1.6.1 is
+  still v3.72 (25877c59...), with every old bisect name.
+- **N3 (`note0_ui`) is not built**, as this plan orders it (after N2's device check). The name is refused by build.py
+  (an unknown group). Consequence for requirement 1 until N3: a note-0 *step* comes from recording a note-0 pad (or a
+  project made that way); the Step Note field still stops at its lowest stock value (the clamp at `0x0815A99C`). The
+  checklist asks for the value it shows, not for 0. What N3 needs is in "N1 built" above (clamp, list index, label
+  path, `TYPE_EXTERNAL`), plus the piano roll's lowest row and a new step's default note.
+
+## BE4.22 review round (rc23: behaviour + build review, 2026-11-08)
+
+Rebuilt kit `flash\bento_enhanced-v4.22` (replaces the unflashed d38244cd... kit): BE4.22 =
+724ddd70a2efc79ead56431373624ecd34b1110fdf40b9f2e353b04afff36f8d; `BE_DISABLE=note0` 6fc36b9e...; `BE_DISABLE=analog`
+5c5d12ba...; 1.6.1 still v3.72 (25877c59...).
+
+- **On / Off pairing (behaviour S2, build I6).** BE4.22 as first built worked the rule out again at every Off, so an
+  instrument change while a note-0 note sounded could send the On as 44 and the Off as 0 (or the reverse) and leave
+  a note hanging on the receiver; stock's fixed map could not. Now the two On sites (1 sequencer, 3 pad) remember
+  their decision per (track slot `+0x86D4`, pad) in the Region (`note0_on[8]`: [15:0] pads with an On, [31:16] the
+  mapped ones; zeroed with the Region), and the Off sites (2, 4, 5) and ratchet hits (`m1_note0_sent`) send that.
+  Curves keep `m1_note0_map` (they start at the On, where both agree). The black box line has a sixth word,
+  `held=`: Offs that kept their On's note where the rule now gives the other one (the device evidence for the
+  checklist's switch item). Left open: two overlapping note-0 Ons on one (slot, pad) whose rule changed between them
+  (the first Off follows the second On); a Region re-zero between On and Off (the rule is worked out again).
+  Road not taken: per-voice tracking (exact, but a table per sounding note for a corner of a corner).
+- **Router lookup at both ends (behaviour S4).** test_note0 `Router`: kit keys first and last in the table, a one-key
+  table, an empty table; the `i + 1 < n` mutant now fails.
+- **The plan's exit sweep (build S2).** test_note0 `Sweep` runs stock's M7 pad router (`PADR_CTOR`, `PADR_LOOP`,
+  `SCALE_INIT`; `BUS_FIND`, `BUS_POST_KEY`, `PADR_RELEASE` stubbed as chain.py did; six new 1.6.8-only reviewed
+  entries, absent on 1.6.1, so the class skips there): 176 presses, Chromatic, root C, offsets -5..+5, through
+  stock's External pad Note On / Off, the ring post and the M4 MIDI task: exactly 0..127, each On followed by its
+  Off. On `BE_DISABLE=note0` the same test expects and gets 1..127 (0 goes out as 44). Also new: the stale key on
+  pad 0 (where a melodic press arrives), pad press and step; and Note Mod with a stale key on the destination pad
+  of a kit with MIDI out (behaviour note 2, mutant A: the hit stays where it is).
+- **Black box line clean (build I4).** `region()` cleans the note-0 line after zeroing the Region, so a save before
+  any note prints zeros, not what the cache line held.
+- **Checklist.** v4.21's section 0 (SPACED_A, PLAIN_T, never load SPACED) is now in v4.22's section 0; the recorded
+  note-0 step's Step Note field shows "None" and must not be edited (an edit makes it note 1); the bottom-left pad
+  assumption says what to do if another pad sends 0; Pad Row Offset is per track; a switch-while-sounding item.
+- **Seen, unchanged (Jeff's decisions 2 and 5):** an internal melodic track with a MIDI Out channel still sends 44
+  for a note-0 step (its pad 0 has its own key, so A1 keeps stock's map), and Note Mod treats it as a pad hit there.
+  Kits with MIDI out still get no live pressure on drum pads (stock).

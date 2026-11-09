@@ -383,7 +383,7 @@ class GroupSplit(unittest.TestCase):
     S3 = {"poly_cap", "retrig", "cond_engine", "nmod", "inta_curve", "cond_ui", "poly_at", "inta_live", "step", "hold"}   # + S4/S5
     LATER = {"mx"}                             # deferred (Jeff): left out by default on 1.6.8 (BASE_SETTINGS default_off)
     # S6a: what each base leaves out by default (1.6.1: analog, which exists on 1.6.8 only; 1.6.8: mx), typed here
-    OFF_BY_DEFAULT = {"stock_161": {"analog"}, "stock_168": {"mx"}}
+    OFF_BY_DEFAULT = {"stock_161": {"analog", "note0"}, "stock_168": {"mx"}}   # BE4.22: note0 is 1.6.8 only
 
     def test_aliases_keep_the_old_names(self):
         self.assertEqual(build.ALIASES, {"poly": ("poly_cap", "poly_at"), "cond": ("cond_engine", "cond_ui"),

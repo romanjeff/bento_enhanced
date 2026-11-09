@@ -64,14 +64,16 @@ FORBIDDEN_FROM = 0x081E0000
 # counts the +0x14 words stock gives recorded melodic notes (their producer is not traced; expected all 0).
 # S6a: the synth groups exist on 1.6.8 only, so 1.6.1 lists its groups (every group up to v3.72) and leaves analog out
 # (default_off, then omitted: plan() would otherwise build any group whose entries resolve). 1.6.8 adds analog (BE4.20; BE4.21 after its review: the v4.20 kit, never flashed, stays as it was).
+# BE4.22 (docs/plan-ext-low-notes.md): note0 (literal MIDI note 0 at stock's five M7 note senders), 1.6.8 only, the same
+# way: default_off and omitted on 1.6.1. (note0_ui, the Step Note field down to 0, is not built yet: plan sprint N3.)
 GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve", "poly_at",
                "inta_live", "cond_ui", "step", "hold", "mx")
 BASE_SETTINGS = {
-    "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog",),
+    "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.21", m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.22", m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
-                              "poly_at", "inta_live", "cond_ui", "step", "hold", "analog"), default_off=("mx",),
+                              "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0"), default_off=("mx",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
 }
 VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (display: boot label, max 6 characters)
@@ -108,7 +110,8 @@ if "step" in DISABLED:
 # group: the define that compiles it out of that source. Passed only when the group is omitted, never for a
 # bisect (BE_DISABLE leaves the code in the image), so a base where it builds keeps its bytes.
 # S6a: analog left out (1.6.1) -> BE_OMIT_SYNTH: m7_polyat.c keeps the v3.70 reservation, byte for byte.
-OMIT_DEFINES = {"mx": "-DBE_OMIT_MX", "analog": "-DBE_OMIT_SYNTH"}
+# BE4.22: note0 left out (1.6.1) -> BE_OMIT_NOTE0: the shared M7 / M4 sources keep their v3.72 code.
+OMIT_DEFINES = {"mx": "-DBE_OMIT_MX", "analog": "-DBE_OMIT_SYNTH", "note0": "-DBE_OMIT_NOTE0"}
 OMITTED = set()                       # set by build(): the groups this image leaves out
 PATCH_GROUPS = [("mx", ("Per-step: External", "Per-step: Mod Matrix", "Per-step: modulation routing")),   # before step
                 ("step", ("Per-step", "Step edit", "Strike", "Step inspection", "Curves")),
@@ -125,7 +128,8 @@ PATCH_GROUPS = [("mx", ("Per-step: External", "Per-step: Mod Matrix", "Per-step:
                 ("inta_curve", ()),                                 # M2-2b curves on internal instruments (-DBE_NO_INTA_CURVE)
                 ("inta_live", ("Internal AT",)),                    # M2-2b live pad AT on internal instruments
                 ("nmod", ("Note Mod",)),                            # F5 Note Mod (+ -DBE_NO_NMOD)
-                ("analog", ("Analog",))]                            # S6a Analog oscillators on Wavetable tracks (1.6.8)
+                ("analog", ("Analog",)),                            # S6a Analog oscillators on Wavetable tracks (1.6.8)
+                ("note0", ("Literal note 0",))]                     # BE4.22 literal MIDI note 0 at stock's five senders (1.6.8)
 if "diag7" in DISABLED:
     DISABLED |= {"trace", "stall"}
 if "diag" in DISABLED:
@@ -171,6 +175,20 @@ NOTE_SITES = [  # (site, track register, role)
     ("POLYCAP_PAD_OFF_SITE", "r4", "pad Note Off (1.6.1 FUN_08060040)"),
     ("POLYCAP_ALL_OFF_SITE", "r6", "Note Off, stop/all-off (1.6.1 FUN_080618E0)"),
 ]
+
+# BE4.22 note0 (m7_note0.c): stock's five note-0 drum-note blocks (NOTE0_<name>_MAP, entered only from the sentinel
+# test, for note 0 on a MIDI-out track) and where each goes back (NOTE0_<name>_BACK, the MIDI event build). (name, black
+# box site id, track register, pad register, router operand, note register): the block's entry becomes a b.w to a
+# trampoline that calls note0_site(track, pad, router, id) and puts the answer in the note register, keeping r0-r3, r12
+# and lr (the Off sender's pad r3 is used again after MSG_SEND).
+NOTE0_SITES = [
+    ("SEQ_ON", 1, "r4", "r6", "[sp, #0x5c]", "r10"),   # note_route: router = its 6th argument
+    ("SEQ_OFF", 2, "r4", "r3", "[sp, #0x38]", "r8"),   # sequencer Note Off: router = its 5th argument
+    ("PAD_ON", 3, "r4", "r8", "r10", "r5"),
+    ("PAD_OFF", 4, "r4", "r8", "r9", "r5"),
+    ("ALL_OFF", 5, "r6", "r7", "r8", "r10"),
+]
+TRAMP_SAVE = 32                                         # push.w {r0-r3, r12, lr} + sub sp, #8 (keeps sp 8-aligned)
 
 # M2-2b: the pad router's pressure post (melodic and drum paths join here, S.LIVE_SITE):
 # bl bus_post(bus r0, event r1) with the router object in r5.
@@ -229,6 +247,7 @@ SOURCES = [  # (source, ELF, groups that need it; () = core), in compile order
     ("m4_step.c", "m4_step", ("step", "mx")),
     ("dsp/analog.cpp", "dsp", ("analog",)), ("dsp/analog_kernel.cpp", "dsp", ("analog",)),   # S6a: hard-float DSP ELF
     ("m4_synth.c", "m4_synth", ("analog",)),
+    ("m7_note0.c", "m7", ("note0",)),                       # BE4.22: after the others, so their code keeps its place
 ]
 GROUP_NAMES = {
     "core": ("M7_TRAMP", "M7_CODE", "M7_LIMIT", "CTRL_INPUT", "CTRL_STARTUP", "APPEND_FROM", "D2_SLICE", "D2_SLICE_END",
@@ -267,7 +286,10 @@ GROUP_NAMES = {
                "PANE_TEXT_1", "PANE_TEXT_2", "PANE_TEXT_3", "PANE_TEXT_4", "PANE_TEXT_5", "PANE_TEXT_6", "SLOT_TITLE",
                "SYNTH_VIEW_EV_SLOT", "SYNTH_VIEW_EVENT", "INST_SAVE_SITE", "INST_LOAD", "CONTEXT_GET", "KEY_AN_SYNC",
                "KEY_AN_GLIDE", "CTRL_INPUT", "EXT_POOL_END", "PROBE_SCRATCH",
-               "SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "VIEW_NOWAV_LABEL", "ACT_INST_FIRST", "M7_DATA_END"),   # S6a review
+               "SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "VIEW_NOWAV_LABEL", "ACT_INST_FIRST", "M7_DATA_END",   # S6a review
+               "OBJ_CTOR", "OBJ_BASE_VT", "OBJ_HANDLE_CTR", "NODE_VT_DESTROY", "NODE_DESTROY", "NODE_VT_CLONE", "NODE_CLONE"),   # BE4.22 handles
+    "note0": ("NOTE0_SEQ_ON_MAP", "NOTE0_SEQ_ON_BACK", "NOTE0_SEQ_OFF_MAP", "NOTE0_SEQ_OFF_BACK", "NOTE0_PAD_ON_MAP",
+              "NOTE0_PAD_ON_BACK", "NOTE0_PAD_OFF_MAP", "NOTE0_PAD_OFF_BACK", "NOTE0_ALL_OFF_MAP", "NOTE0_ALL_OFF_BACK"),
 }
 GROUP_TITLES = {"core": "black box core (always built)", "trace": "M7 event tracing", "poly_cap": "poly cap (M7)",
                 "poly_at": "poly AT: External handler + M4 MIDI 0x5F/0x60 handlers (S5)",
@@ -277,7 +299,8 @@ GROUP_TITLES = {"core": "black box core (always built)", "trace": "M7 event trac
                 "irq30": "M4 watchdog profile", "bbox": "black box M4 hooks",
                 "hold": "hold shortcuts", "step": "per-step UI / strike / curves / Note Mod UI",
                 "mx": "Mod Matrix page + External INST rows (deferred on 1.6.8)",
-                "analog": "Analog oscillators on Wavetable tracks (S6a, 1.6.8)"}
+                "analog": "Analog oscillators on Wavetable tracks (S6a, 1.6.8)",
+                "note0": "literal MIDI note 0 at stock's M7 note senders (BE4.22, 1.6.8)"}
 assert set(GROUP_NAMES) == {"core"} | {g for g, _ in PATCH_GROUPS}
 
 
@@ -1060,6 +1083,9 @@ def build(base_img, out):
                 raise SystemExit("SysTick handler is not the expected b.w HAL_IncTick")
             patch(S.SYSTICK_HANDLER, asm(f"b.w {t:#x}", S.SYSTICK_HANDLER), orig,
                   "Stall profile: M7 SysTick samples the interrupted PC/LR while audio is stalled")
+    if inc("note0"):
+        with S.group("note0"):
+            tramps += note0_trampolines(base_img, patch, s7, M7_TRAMP + len(tramps))
     if M7_TRAMP + len(tramps) > M7_CODE:
         raise SystemExit("trampolines overrun into M7 code")
     patch(M7_TRAMP, tramps, bytes(len(tramps)), "M1 diag: M7 trampolines")
@@ -1245,6 +1271,36 @@ def build(base_img, out):
               f"synth UI {synth_bytes_} B at {SYNTH_CODE:#x}")
     print(f"  image {len(img):#x} bytes (proven max {PROVEN_MAX_SIZE:#x}); {len(writes)} writes, reversal to stock verified")
     return img, man
+
+
+def note0_trampolines(base_img, patch, s7, t):
+    """BE4.22 note0: each of stock's note-0 drum-note blocks starts with a b.w to a trampoline (appended after the others,
+    so their addresses keep their places). The block's first instruction must be stock's pad test and BACK must start the
+    event build (add r0, sp, ...: r0-r3, r12 and the flags are written before they are read there)."""
+    from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB as CT, CS_MODE_MCLASS
+    md = Cs(CS_ARCH_ARM, CT | CS_MODE_MCLASS)
+    name, out = {"r9": "sb", "r10": "sl"}, b""
+    for site_name, sid, track, pad, router, reg in NOTE0_SITES:
+        site, back = getattr(S, f"NOTE0_{site_name}_MAP"), getattr(S, f"NOTE0_{site_name}_BACK")
+        first = next(md.disasm(S.orig(f"NOTE0_{site_name}_MAP"), site, 1))
+        if first.mnemonic not in ("cmp", "cmp.w") or first.op_str != f"{name.get(pad, pad)}, #7":
+            raise SystemExit(f"NOTE0_{site_name}_MAP: stock's block starts with {first.mnemonic} {first.op_str}, not cmp {pad}, #7")
+        b0 = next(md.disasm(bytes(base_img[back - BASE:back - BASE + 4]), back, 1))
+        if not (b0.mnemonic == "add" and b0.op_str.startswith("r0, sp, #")):
+            raise SystemExit(f"NOTE0_{site_name}_BACK: {b0.mnemonic} {b0.op_str} is not the event build (add r0, sp, #...)")
+        if router.startswith("[sp, #"):
+            r_arg = f"ldr r2, [sp, #{int(router[6:-1], 16) + TRAMP_SAVE:#x}]"
+        else:
+            r_arg = f"mov r2, {router}"
+        code = asm(f"push.w {{r0, r1, r2, r3, r12, lr}}; sub sp, #8; mov r0, {track}; mov r1, {pad}; {r_arg}; movs r3, #{sid}; "
+                   f"bl {s7['note0_site']:#x}; mov {reg}, r0; add sp, #8; pop.w {{r0, r1, r2, r3, r12, lr}}; b.w {back:#x}", t)
+        check_branches(code, t, {s7["note0_site"], back}, f"note-0 trampoline {site_name}")
+        code += bytes(-len(code) % 4)
+        out += code
+        patch(site, asm(f"b.w {t:#x}", site), S.orig(f"NOTE0_{site_name}_MAP"),
+              f"Literal note 0: {site_name.lower().replace('_', ' ')} drum-note block -> note0_site")
+        t += len(code)
+    return out
 
 
 def hold_shortcuts(base_img, img, patch, extend, sources, s4, out):
@@ -1588,6 +1644,15 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out):
     x3 = block(f"movw r12, #{S.KEY_AN_SYNC:#x}; cmp r2, r12; beq ours; movw r12, #{S.KEY_AN_GLIDE:#x}; cmp r2, r12; beq ours; "
                f"push {{r4, r5, r6, r7, lr}}; sub sp, #0xc; b.w {S.CONTEXT_GET + 4:#x}; ours: b.w {ss['an_context']:#x}",
                {S.CONTEXT_GET + 4, ss["an_context"]}, "Analog value reads")
+    # H1 (BE4.22): OBJ_CTOR's entry (obj r0): an_forget first with every register kept (the constructor itself writes
+    # only r1, r2, ip and the flags, so its callers may keep r3 across it), then stock's vtable store, back after it
+    replays("OBJ_CTOR", "ldr r2, [pc, #0x1c]; str r2, [r0]")
+    lit = ((S.OBJ_CTOR + 4) & ~3) + 0x1C
+    if struct.unpack_from("<I", base_img, lit - BASE)[0] != S.OBJ_BASE_VT:
+        raise SystemExit(f"OBJ_CTOR: its literal at {lit:#x} is not OBJ_BASE_VT")
+    h1 = block(f"push.w {{r0, r1, r2, r3, r12, lr}}; bl {ss['an_forget']:#x}; pop.w {{r0, r1, r2, r3, r12, lr}}; "
+               f"movw r2, #{S.OBJ_BASE_VT & 0xFFFF:#x}; movt r2, #{S.OBJ_BASE_VT >> 16:#x}; str r2, [r0]; b.w {S.OBJ_CTOR + 4:#x}",
+               {ss["an_forget"], S.OBJ_CTOR + 4}, "Analog handles: object constructor")
     if SYNTH_UI + len(wrap) > SYNTH_CODE:
         raise SystemExit("synth UI wrappers overrun into its code")
     patch(SYNTH_UI, bytes(wrap), b"\xff" * len(wrap), "Analog (S6a): synth UI entry table, menu label, wrappers")
@@ -1603,7 +1668,9 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out):
     # A5 / A9: two view event slots; A6 / A7: bl sites
     for slot, target, fn, why in (("MENU_VT_SLOT", "MENU_HANDLER", "an_menu_event", "instrument menu events -> Analog action"),
                                   ("SYNTH_VIEW_EV_SLOT", "SYNTH_VIEW_EVENT", "an_view_event", "synth page encoder edits of Sync / Glide"),
-                                  ("SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "an_view_tick", "synth page tick: the Analog CPU indicator")):
+                                  ("SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "an_view_tick", "synth page tick: the Analog CPU indicator"),
+                                  ("NODE_VT_DESTROY", "NODE_DESTROY", "an_destroy", "handles (H3): node destroy drops its Analog entry"),
+                                  ("NODE_VT_CLONE", "NODE_CLONE", "an_clone", "handles (H2): node clone carries Analog to the copy")):
         if S.orig(slot) != struct.pack("<I", getattr(S, target) | 1):
             raise SystemExit(f"{slot} does not hold stock's {target}")
         patch(getattr(S, slot), struct.pack("<I", ss[fn] | 1), S.orig(slot), f"Analog: {why}")
@@ -1617,8 +1684,9 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out):
     patch(S.INST_SAVE_SITE, asm(f"b.w {x1:#x}", S.INST_SAVE_SITE), S.orig("INST_SAVE_SITE"), "Analog: instrument XML save -> bento_analog*")
     patch(S.INST_LOAD, asm(f"b.w {x2:#x}", S.INST_LOAD), S.orig("INST_LOAD"), "Analog: instrument XML load -> bento_analog*")
     patch(S.CONTEXT_GET, asm(f"b.w {x3:#x}", S.CONTEXT_GET), S.orig("CONTEXT_GET"), "Analog: CONTEXT_GET answers Sync / Glide")
+    patch(S.OBJ_CTOR, asm(f"b.w {h1:#x}", S.OBJ_CTOR), S.orig("OBJ_CTOR"), "Analog handles (H1): object constructor -> an_forget first")
     s4.update({f"synth.{k}": v for k, v in ss.items()})
-    s4.update({"synth.wrap_save": x1, "synth.wrap_load": x2, "synth.wrap_context": x3})
+    s4.update({"synth.wrap_save": x1, "synth.wrap_load": x2, "synth.wrap_context": x3, "synth.wrap_ctor": h1})
     return len(code)
 
 
