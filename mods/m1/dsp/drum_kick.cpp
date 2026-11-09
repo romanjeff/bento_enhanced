@@ -10,9 +10,9 @@
 #include "Drums/synthbassdrum.h"
 
 namespace {
-const u8 DEFAULTS[DRUM_KNOBS] = {55, 65, 45, 65, 55, 25, 25, 0};    /* upstream K7's Kick (Dirt 25) */
-const u8 LO[DRUM_KNOBS] = {25, 0, 0, 0, 0, 0, 0, 0};
-const u8 HI[DRUM_KNOBS] = {180, 100, 100, 100, 100, 100, 100, 0};
+const u8 DEFAULTS[DRUM_KNOBS] = KICK_DEFAULTS;    /* upstream K7's Kick (Dirt 25); synth_shared.h, shared with the M4 page */
+const u8 LO[DRUM_KNOBS] = KICK_LO;
+const u8 HI[DRUM_KNOBS] = KICK_HI;
 static_assert(sizeof(daisysp::SyntheticBassDrum) <= sizeof(((DrumCell *)0)->engine_state), "the Kick fits a cell");
 
 inline daisysp::SyntheticBassDrum *kick(DrumCell *c) { return (daisysp::SyntheticBassDrum *)c->engine_state; }

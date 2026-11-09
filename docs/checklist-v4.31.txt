@@ -1,0 +1,145 @@
+bento_enhanced v4.31: the Kick's drum page (S6c-2, M4 part), on stock 1.6.8
+==========================================================================
+
+Kit: flash\bento_enhanced-v4.31   boot label BE4.31
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  Drum Synths BE     BE Kick.wav: the Kick's carrier (a 4801-frame, near-silent marker sample; our own file)
+  SHA256SUMS.txt     hashes of every file in the kit (the carrier's too)
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.31.txt)
+
+In this image: everything BE4.30 has (docs\checklist-v4.30.txt: the Kick on One-Shot pads, its default sound), plus:
+  - the drum page: on a One-Shot pad whose file is "BE Kick.wav", the pad's page shows the Kick's seven knobs in its
+    middle row (the one stock calls Config): Tune (25..180 Hz, before the pad's own Pitch / Fine), Kick Dec (the
+    Kick's own decay; the bottom row's Decay is the pad's envelope, as on a sample pad), Tone, Accent, Sweep (the pitch
+    drop's depth), Sweep Dec (how fast it drops), Dirt (0..100 each), then Poly Mode. The top row (Level .. Resonance)
+    and the bottom row (envelope, Velocity, LFO) are the pad's own, as on a sample pad.
+    Defaults: Tune 55, Kick Dec 65, Tone 45, Accent 65, Sweep 55, Sweep Dec 25, Dirt 25.
+  - not on the Kick page: Reverse, Interp and Loop Fade (they do nothing to a synth), and LaunchMode, Choke Grp and
+    Loop Mode (they still act: set them while the pad holds an ordinary sample, then load BE Kick.wav; or set them on
+    v4.30). Every other pad's page is stock's.
+  - a CPU readout in the waveform pane's label (where the file name is): "Kick CPU 63% drums 4%" = the audio core's
+    load and the drums' share of the blocks they played in, over the last half second; " !" for 2 s after a block went
+    over budget; "Kick (DSP off)" if the audio core has not taken the synth memory.
+  - the knobs are saved with the project and presets (bento_drum_engine, bento_drum_k1..k7 on the pad), and follow the
+    pad when stock copies it (load, save, preset, track copy / paste, and stock's pad copy if it is one).
+  - the DRUMS line in BENTO_SAVES.log gains knob_hits= and "| ui keys= pages= heals= edits= saves= loads= pads= full=
+    evicted= | handles carried= dups= dropped= forgot= clone_skips=". heals= counts the times the page put the Kick's
+    row back after stock rewrote it without a refresh (offline, stock does that when a pad is selected).
+NOT in it: the other engines (Snare, HiHat, Clap, Tom: S6d), an Engine knob, a menu entry for drum synths (decision D6:
+load BE Kick.wav from the browser), synth knobs as Mod Matrix destinations, knob units on the display (Tune shows "55",
+not "55 Hz"). A renamed carrier ("test.wav") plays the Kick but shows the sample page (the page goes by the file name;
+the audio core goes by the file's content). Measured offline (emulator, not the device): one ringing Kick voice ~4 % of
+the audio block, as in v4.30; the page code adds no audio-core work.
+
+0. Gate
+[ ] Flash this kit ONLY after docs\checklist-v4.22.txt has passed on this unit. If BE4.22 is not done: stop and bring
+    its results first.
+[ ] Back up the whole SD card on the computer (a folder copy of every file). Section 7 restores it.
+[ ] Copy the kit's folder "Drum Synths BE" to the card (if v4.30's copy is already there: replace it, same file).
+[ ] Work on copies only. ON THE COMPUTER (card in the card reader), copy the project folder SPACED twice, next to it,
+    to two NEW folders SPACED_31A and SPACED_31B. Do not reuse SPACED_COPY (v4.10's) or SPACED_K (v4.30's) if they
+    exist. On the Bento, make two new empty projects KICK_T (for v4.30's items) and KICK_P (sections 1-5 below).
+    From here on load only SPACED_31A / SPACED_31B, never SPACED itself: if you are about to load "SPACED", stop.
+[ ] BE4.30 (v4.30) has not been run on the device. You do not need to: this kit contains all of it. Run
+    docs\checklist-v4.30.txt sections 1-5 and 7 ON THIS KIT (BE4.31) in place of v4.30, with these changes:
+      - skip v4.30's section 0 (this section replaces it);
+      - wherever v4.30 says SPACED_K, use SPACED_31A; KICK_T is the KICK_T you just made;
+      - the boot label reads BE4.31, and the DRUMS line is longer (it ends with the "| ui ..." and "| handles ..."
+        parts).
+    Do v4.30's section 6 (save and load) and section 8 (rollback) as sections 4 and 7 below. Write "run on v4.31" next
+    to each v4.30 item you tick. Do that first (it is the Kick at its default sound: the page comes after).
+
+1. Boot and black box
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.31.
+[ ] Load KICK_P, save. BENTO_SAVES.log: "firmware BE4.31"; the DRUMS line says "| ui keys=ok pages=0 heals=0 edits=0 ...
+    pads=0 full=0 ..." and "| handles carried=0 dups=0 dropped=0 forgot=0 clone_skips=0" (forgot may be above 0 after
+    a warm reset); the ANALOG line as on BE4.22. If keys= is not "ok" (TAKEN:n): stop and bring the log.
+[ ] RAMCHK quiet ("top changed=0"), no "!!!", AUDIO rising. (This is the first time RAMCHK "top" runs on 1.6.8 with
+    the drum table in its first 1152 B: write down its whole line, quiet or not.)
+
+2. The Kick page (KICK_P)
+[ ] Track 1: One-Shot. Load "Drum Synths BE/BE Kick.wav" onto pad 1, select pad 1 and open its page (the pad page you
+    use for a sample's Level / Pitch / envelope). The middle row reads Tune 55, Kick Dec 65, Tone 45, Accent 65,
+    Sweep 55, Sweep Dec 25, Dirt 25, Poly Mode. The top and bottom rows are as on a sample pad. Photo of the page, please.
+[ ] How a pad gets selected matters (offline: stock rewrites the middle row when a pad is selected, and the page puts
+    it back on its next pass). Each of these, then look at the middle row and turn its first knob: it must read Tune
+    and change Tune (never Reverse):
+    [ ] with pad 1's page open, press pad 1 on the pads;
+    [ ] select pad 2 (a sample), then back to pad 1, by browsing on the page (encoder / arrows);
+    [ ] go to another view (the track's sequence or the mixer), select pad 1 there by pressing it, then back to its page;
+    [ ] with pad 1's page open, press pad 2, then pad 1 again quickly and turn the first knob at once.
+    If the row ever stays Reverse / LaunchMode / ... on the Kick pad for more than a moment, or a turn of the first knob
+    changes Reverse: write down how you got there and bring the DRUMS line (heals=).
+[ ] The waveform pane's label reads "Kick CPU nn% drums n%" and changes while you play. Write down what it shows
+    idle and while hitting pad 1.
+[ ] Each knob, one at a time (hit pad 1 after each change; put it back to its default before the next):
+    [ ] Tune 25 / 180: the Kick's pitch low / high (the pad's Pitch still shifts it on top).
+    [ ] Kick Dec 0 / 100: short thump / long boom.
+    [ ] Tone 0 / 100: duller / brighter click.
+    [ ] Accent 0 / 100: softer / harder, more punch.
+    [ ] Sweep 0 / 100: no pitch drop / a deep drop.
+    [ ] Sweep Dec 0 / 100: fast / slow drop.
+    [ ] Dirt 0 / 100: clean / distorted.
+    [ ] Turn a knob while a long Kick (Kick Dec 100) rings: the sound follows within a block (no click, no restart).
+    [ ] Poly Mode Mono / Poly: as on BE4.30 (each hit cuts the last / rings over it).
+[ ] Range ends: turning Tune below 25 stays 25, above 180 stays 180; the others stop at 0 and 100.
+[ ] Load an ordinary sample onto pad 2 and open its page: stock's page (Reverse, LaunchMode, ... in the middle row),
+    title shows the file name. Back to pad 1: the Kick page. Load an ordinary sample onto pad 1 while its page is open:
+    the middle row goes back to stock's (within a moment); load BE Kick.wav again: the Kick's knobs come back with the
+    values you set (the knobs stay with the pad, not the file; a save in between writes them onto the sample pad, which
+    stock ignores).
+[ ] A Loop / Slicer / Multisample track's pad with BE Kick.wav: stock's page (and near silence, as on BE4.30).
+[ ] Save. The DRUMS line: pages= above 0, edits= the number of knob turns (roughly), pads=1, knob_hits above 0 (the
+    audio core found the pad's knobs: this is the check that the page and the audio core name the pad the same way;
+    if knob_hits=0 while the knobs audibly do nothing, stop and bring the log).
+
+3. Knob values survive
+[ ] Set pad 1 to Tune 70, Kick Dec 90, Dirt 60. Save KICK_P, power cycle, load KICK_P: the page shows 70 / 90 / 60 and
+    the Kick sounds as before the power cycle. DRUMS line after a save: loads=1 (or more), pads=1.
+[ ] project.xml of KICK_P on a computer: pad 1's params element has bento_drum_engine="1" and bento_drum_k1="70",
+    bento_drum_k2="90", bento_drum_k7="60" (k3..k6 the defaults).
+[ ] Presets: save track 1 as a preset; make a new One-Shot track 2 and load that preset: its pad 1 is the Kick with
+    70 / 90 / 60.
+[ ] Track copy / paste: copy track 1 and paste it to track 3: track 3's pad 1 shows 70 / 90 / 60. Change track 3's
+    Tune: track 1's stays 70.
+[ ] Pad copy / paste (the pad copy stock offers on a One-Shot track, if any; write down how you did it): copy pad 1
+    to pad 4. Pad 4's page shows 70 / 90 / 60 -> the knobs followed (H4). If pad 4 shows the defaults instead, stock's
+    pad copy copies the settings without copying the pad object: a known gap (decision D9), write it down. Either
+    way: no crash, and pad 1 keeps its values.
+[ ] Undo after a knob turn, if stock offers undo on this page: write down what the knob shows after undo.
+[ ] Save; the DRUMS line's carried= / dups= moved with the copies above; clone_skips=0, full=0.
+
+4. Save and load (v4.30's section 6)
+[ ] KICK_P with the Kick pad: save, power cycle, load: pad 1 is still the Kick with its knobs.
+
+5. Regression
+[ ] An Analog track (BE4.22's checklist, section 6 items): plays, Sync / Glide act; the ANALOG line as on BE4.22.
+    Save and reload: still Analog with its Sync / Glide (the save / load sites are shared with the drums now).
+[ ] An External track's note-0 pad still sends note 0 (BE4.22 section 2, first two items).
+[ ] BE4.10 core items: curves, trigger conditions, a retrigger, live poly AT out of an External track, the hold
+    shortcuts, strike velocity.
+
+6. CPU (SPACED_31B: the second copy, untouched by v4.30's section 5)
+[ ] Load SPACED_31B (never SPACED). Roughly how long did the load take, compared with what you remember from earlier
+    firmware (the same, or seconds longer)? Play it 30 s, save: write down LOAD avg / bins / over-budget and the DRUMS line
+    (reference). Did the save take noticeably longer than before?
+[ ] Add a One-Shot track with the Kick on a Poly pad (Kick Dec 65), open the Kick page so the readout is visible. Play
+    SPACED_31B and hit the pad: 1 hit every 2 s for 30 s, save; then about 4 hits a second, save; then 8 a second,
+    save. For each: the readout's two numbers (roughly, while playing), LOAD avg / bins / over-budget, AUDIO events -
+    blocks, and the DRUMS line's avg_cyc, peak_cyc, share>=5%, >=15, >=30, voices_peak. Listen for glitches or timing
+    slips. Then the same at Kick Dec 100 (longer tails, more voices ringing at once).
+[ ] No reset, no freeze at any point. If the audio glitches, note at which roll rate and Kick Dec.
+
+7. Rollback
+[ ] v4.30 (flash\bento_enhanced-v4.30\01_TEST_FIRMWARE, if you keep it) or v4.22: load KICK_P: no crash. On v4.30
+    the Kick pad plays the Kick at its DEFAULT sound (v4.30 ignores bento_drum_*), the page is stock's. On v4.22 the
+    pad is near silent (the marker file). Do not save there unless you mean to: a save on v4.30 / v4.22 / stock drops
+    the bento_drum_* attributes (the knobs are back to defaults when you return to v4.31).
+[ ] 03_RESTORE_STOCK (stock 1.6.8): KICK_P loads; the Kick pad is near silent.
+[ ] Back to BE4.31 if you continue; restore the card backup from section 0 at the end.
+
+Bring back: BENTO_SAVES.log (every save's DRUMS and ANALOG lines, the LOAD / AUDIO lines of section 6), BENTO_CRASHES.log
+if any, the photo of the Kick page (section 2), the readout's numbers, KICK_P's project.xml (section 3), and notes for
+every item that did not match (section 3's pad copy and undo items either way).

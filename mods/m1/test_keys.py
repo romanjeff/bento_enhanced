@@ -26,7 +26,9 @@ del sys.argv[1:3]
 # image when the group is), the drums' ten (S6c) and Track FX's nineteen (later) must be clean too.
 ANALOG = "analog" not in MAN.get("omitted", []) and "synth.an_tick" in MAN.get("m4_symbols", {})
 # (Track FX's 19 are picked and reviewed in its own sprint; 0x19A, for one, is stock's Freeze.)
-ALLOW = {"analog": (0x1C0, 0x1B7), "drums": (0x1B4, 0x1B3, 0x1B2, 0x1B1, 0x1B0, 0x1AF, 0x1AE, 0x1AB, 0x1A7, 0x1A4)}
+# S6c-2: the drums claim seven contiguous keys of the plan's ten (0x1AE..0x1B4, one range test in the X3 wrapper); outside
+# 0x18C..0x1B6 no clean key is left but Track FX's 0x132 / 0x18B, which the Analog FM plan takes.
+ALLOW = {"analog": (0x1C0, 0x1B7), "drums": (0x1AE, 0x1AF, 0x1B0, 0x1B1, 0x1B2, 0x1B3, 0x1B4)}
 
 BASE = 0x08040000
 SENT = 0x20000100            # harness return pad  # addr-ok: harness
@@ -183,10 +185,11 @@ class SynthKeys(unittest.TestCase):
 
     def test_the_table_names_the_allow_list(self):
         self.assertEqual((S.KEY_AN_SYNC, S.KEY_AN_GLIDE), ALLOW["analog"])
+        self.assertEqual(tuple(range(S.KEY_DR_FIRST, S.KEY_DR_FIRST + 7)), ALLOW["drums"])
 
     def test_every_listed_key_is_empty_and_not_claimed(self):
         keys = [k for g in ALLOW.values() for k in g]
-        self.assertEqual(len(set(keys)), 12)
+        self.assertEqual(len(set(keys)), 9)
         for k in keys:
             with self.subTest(key=hex(k)):
                 self.assertNotIn(k, self.reg, "empty after stock's builder")
@@ -221,9 +224,17 @@ class SynthKeys(unittest.TestCase):
                         self.assertEqual(struct.unpack_from("<I", STOCK, table + 4 * (k - lo) - BASE)[0] & ~1, default,
                                          "the key's case is the default one")
         drums = sorted({a for a, _ in cover(ALLOW["drums"])})
-        self.assertEqual(len(drums), 1, f"S6c: re-review the drum keys here {[hex(a) for a in drums]}")   # M7 0x08059990
+        self.assertEqual(len(drums), 1, f"S6c-2: one range test covers the drum keys, {[hex(a) for a in drums]}")   # M7 0x08059990
         self.assertTrue(all(d is None for a, _, _, d, _ in found if a in drums), "it is no table dispatch: a native store")
         self.assertGreaterEqual(len(found), 4, "control: the scan finds stock's range tests")
+        # S6c-2 review (facts.py KEY_DR_FIRST): that store is reached only for set_property messages to the object
+        # 0xFFFFFFF1 (the M4's reverb object): 'cmn.w r3, #0xf; bne' just before the key is reloaded and tested.
+        a = drums[0]
+        pre = STOCK[a - 8 - BASE:a - BASE]
+        self.assertEqual(pre[:4], bytes.fromhex("13f10f0f"), f"cmn.w r3, #0xf at {a - 8:#x}")
+        self.assertEqual(pre[4:6][1] & 0xF0, 0xD0, "a conditional branch (bne) away from the store")
+        self.assertEqual(pre[4:6][1] & 0x0F, 0x1, "ne")
+        self.assertEqual(pre[6:8], bytes.fromhex("e368"), "ldr r3, [r4, #0xc]: the message's key, then the range test")
 
     @unittest.skipUnless(ANALOG, "no analog group in this image")
     def test_synth_keys_writes_both_descriptors(self):

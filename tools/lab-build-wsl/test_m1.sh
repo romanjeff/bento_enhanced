@@ -10,11 +10,11 @@ declare -A NEEDS=([test_diag.py]="" [test_slice.py]="" [test_polyat.py]="poly_ca
   [test_s3_m7.py]="poly_cap retrig cond_engine nmod" [test_step_xml.py]="step" [test_keys.py]=""
   [test_analog.py]="analog" [test_inst_xml.py]="analog" [test_synth_ui.py]="analog" [test_handles.py]="analog"   # S6a, BE4.22: 1.6.8 only
   [test_note0.py]="poly_cap retrig cond_engine nmod"   # BE4.22: also runs where note0 is left out (expects stock there)
-  [test_drums.py]="drums")   # S6c: 1.6.8 only
+  [test_drums.py]="drums" [test_drum_ui.py]="drums")   # S6c, S6c-2: 1.6.8 only
 # S4+S5: the mx group (Mod Matrix page, External INST rows) is left out on 1.6.8: test_step and test_mod skip their mx
 # classes themselves (manifest "omitted"), so no suite needs mx as a whole.
 cd /mnt/c/Users/rjrom/bento_mods/bento_enhanced/mods/m1
-for t in test_diag.py test_polyat.py test_conditions.py test_holdstep.py test_controls.py test_retrig.py test_step.py test_mod.py test_notemod.py test_notemod_route.py test_notemod_real.py test_slice.py test_s3_m7.py test_step_xml.py test_keys.py test_analog.py test_inst_xml.py test_synth_ui.py test_handles.py test_note0.py test_drums.py; do
+for t in test_diag.py test_polyat.py test_conditions.py test_holdstep.py test_controls.py test_retrig.py test_step.py test_mod.py test_notemod.py test_notemod_route.py test_notemod_real.py test_slice.py test_s3_m7.py test_step_xml.py test_keys.py test_analog.py test_inst_xml.py test_synth_ui.py test_handles.py test_note0.py test_drums.py test_drum_ui.py; do
   echo "== $t"
   miss=$(for g in ${NEEDS[$t]}; do case " $OMIT " in *" $g "*) echo -n "$g ";; esac; done)
   if [ -n "$miss" ]; then echo "not run: this build leaves out ${miss% } (omitted: $OMIT)"; continue; fi

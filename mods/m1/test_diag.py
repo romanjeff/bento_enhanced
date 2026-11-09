@@ -42,10 +42,15 @@ SYM7 = {k: int(v, 16) for k, v in MAN["m7_symbols"].items()}
 SYM4 = {k: int(v, 16) for k, v in MAN["m4_symbols"].items()}
 M7_ONLY = "curve_emit" not in SYM7   # m7_polyat & co. not in this image (S2: every M7 group left out; S3 builds them)
 # Our RAM on this base (build.py our_ram): the slice and the RAMCHK blocks, (name, lo, hi).
+# S6c-2: with the drums in the image (1.6.8), RAMCHK top starts after the drum knob table (DK4, slice + 0x2000 .. + 0x2480,
+# typed here: diag_shared.h DK4_SLICE / DK4_SLICE_END), which m4_synth.c owns.
+DK4_BYTES = 0x480 if "drums" not in OMITTED and not S.has("RAMCHK_D2A") else 0
 RAMCHK = ([("axi", S.RAMCHK_AXI, S.RAMCHK_AXI_END), ("d2a", S.RAMCHK_D2A, S.D2_SLICE), ("d2b", S.RAMCHK_D2B, S.D2_SLICE_END)]
           if S.has("RAMCHK_D2A") else
-          [("axi", S.RAMCHK_AXI, S.RAMCHK_AXI_END), ("top", S.RAMCHK_D2B, S.D2_SLICE_END)])
-OUR_RAM = [(D2, S.D2_SLICE_END)] + [(lo, hi) for _, lo, hi in RAMCHK]
+          [("axi", S.RAMCHK_AXI, S.RAMCHK_AXI_END), ("top", S.RAMCHK_D2B + DK4_BYTES, S.D2_SLICE_END)])
+# our RAM is the table's blocks (build.py our_ram): DK4 is ours either way, inside the slice's range
+OUR_RAM = [(D2, S.D2_SLICE_END)] + [(lo, hi) for _, lo, hi in RAMCHK[:-1]] + [(S.RAMCHK_D2B, S.D2_SLICE_END)
+                                                                              if not S.has("RAMCHK_D2A") else RAMCHK[-1][1:]]
 M4_FROM = 0x08100000            # the M4 half of the main image: code there runs on the M4
 SLICE_IN_AXI = 0x24000000 <= D2 < 0x24080000   # 1.6.8: the M4's MPU maps AXI as Device
 
@@ -1344,7 +1349,9 @@ class NoCardWrites(FatFsRig):
                 self.assertRegex(self.fs[SAVES].decode(), r"\nANALOG area not taken keys=\S+ tracks=0 \|[^\n]*\r\n",
                                  "the M7 has not taken the synth area here")
             if "drums" not in OFF and "drums" not in MAN.get("omitted", []):   # S6c: the drums' line, before ANALOG's
-                self.assertIn("\nDRUMS area not taken\r\n", self.fs[SAVES].decode())
+                self.assertRegex(self.fs[SAVES].decode(), r"\nDRUMS area not taken \| ui keys=\S+ pages=0 heals=0 edits=0 [^\n]*"
+                                 r"\| handles carried=0 dups=0 dropped=0 forgot=0 clone_skips=0\r\n",
+                                 "S6c-2: the page's counters follow")
         n = len(self.writes)
         self.tick(2000)
         self.assertEqual(len(self.writes), n, "no writes between saves")

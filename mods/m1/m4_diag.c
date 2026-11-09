@@ -362,8 +362,15 @@ static const RamBlock RAM_BLOCKS[3] = {
 #else                                                 /* 1.6.8 (S2): D2 is stock's, our slice is in AXI */
 static const RamBlock RAM_BLOCKS[2] = {
     {"axi", S_RAMCHK_AXI, S_RAMCHK_AXI_END},          /* above the M7 stack, below our slice (guard band) */
+#ifdef BE_OMIT_DRUMS
     {"top", S_RAMCHK_D2B, S_D2_SLICE_END},            /* above the used part of our slice */
+#else
+    {"top", SLICE(DK4_SLICE_END), S_D2_SLICE_END},    /* S6c-2: its first 1152 B are the drum knob table (DK4, m4_synth.c) */
+#endif
 };
+#ifndef BE_OMIT_DRUMS
+_Static_assert(SLICE(DK4_SLICE) == S_RAMCHK_D2B, "DK4 takes the start of RAMCHK top");
+#endif
 _Static_assert(S_RAMCHK_AXI_END == S_D2_SLICE && S_RAMCHK_D2B == S_D2_SLICE + 0x2000u, "RAMCHK blocks around the slice");
 #endif
 #define RAMCHK_N (sizeof(RAM_BLOCKS) / sizeof(RAM_BLOCKS[0]))

@@ -213,10 +213,21 @@ kit's "Drum Synths BE" folder) plays DaisySP's SyntheticBassDrum (vendored unmod
 One site, D1: stock's per-voice one-shot render entry (`DRUM_RENDER`) branches to `dsp/drums.cpp` `dr_render`, which
 recognises a voice's start by its start serial, tests the voice's open sample for the carrier once per start, renders
 the Kick into the voice's scratch buffer and calls stock's post chain, so the pad's filter, envelope, level, sends and
-routes act as on a sample. One cell per native voice (stock's one-shot pool has 32), no cap. Default sound only: the
-drum page with the Kick's knobs is S6c-2. Black box: the DRUMS line. Suite: test_drums (stock's pool and root
-constructors, VOICE_START, the render entry and post chain; the Kick against a host build of the vendored DaisySP,
-`dsp/host/kick_ref.cpp`). Details: docs/plan-synths-168.md, "S6c: the Kick, M7 part".
+routes act as on a sample. One cell per native voice (stock's one-shot pool has 32), no cap. Black box: the DRUMS line.
+Suite: test_drums (stock's pool and root constructors, VOICE_START, the render entry and post chain; the Kick against a
+host build of the vendored DaisySP, `dsp/host/kick_ref.cpp`). Details: docs/plan-synths-168.md, "S6c: the Kick, M7 part".
+
+**The drum page (S6c-2, BE4.31; not yet verified on hardware).** On a One-Shot pad whose file is "BE Kick.wav", stock's
+instrument page shows the Kick's knobs (Tune, Kick Dec, Tone, Accent, Sweep, Sweep Dec, Dirt) and Poly Mode in its
+Config row (`m4_synth.c` D5 `dr_refresh`, D6 `dr_page_event`, the tick `dr_view_tick`: "Kick CPU nn% drums n%" in the
+page's title label; the tick also puts the row back when stock's cell set (notification 0xA8) or a file change (0xC5)
+rewrote it without a refresh, `dr_heal`). The values live in the M4's table DK4 (slice + 0x2000, `diag_shared.h DK4_SLICE`, 1152 B taken
+from RAMCHK top), keyed by the pad's handle, published to the synth area's knob lines for the M7, saved as
+`bento_drum_engine` / `bento_drum_k1..k7` on the pad's params element (X1 / X2), carried by stock's copies (H2 walks a
+cloned track's pads, H4 `CHILD_DUP` a copied pad) and dropped with them (H1 / H3). Seven registry keys 0x1AE..0x1B4
+(the reviewed allow-list). X1-X3 and H1-H3 are shared with Analog: a bisect leaves them stock only when both groups
+are off. Suite: test_drum_ui (stock's page constructor, its notifications (cell set, file select), D5 / D6 / tick, XML
+writer / reader and object copies). Details: docs/plan-synths-168.md, "S6c-2".
 
 **Our slice on 1.6.8 (S2).** 1.6.8 owns D2 0x3003C000..0x30040000 (SAI DMA buffers, M7 MPU R14),
 so on 1.6.8 `S_D2_SLICE` is AXI 0x2404D000..0x24050000 (the name stays): RAMCHK `axi`
@@ -297,7 +308,7 @@ Tool gotchas it guards against:
 | COND_UI | `0x081B7000..0x081B7200` | 512 B | probability clamp helpers (84 B used). 4 KB before BE4.30 |
 | M4_CODE | `0x081B7200..0x081BE000` | 28,160 B | the black box (`m4_diag.c`, 24,424 B in BE4.30); 24 KB before BE4.30, when it had 152 B left |
 | HOLD, CTRL, STEP, M4_POLY | `0x081BE000..0x081C5500` | | unchanged by BE4.30 (M4_LIMIT and every block after it keep their address) |
-| SYNTH_UI | `0x081C5500..` | sized at link time | `m4_synth.c` (6.8 KB); the image may grow to `0x18D334` (`0x081CD334`): about 25 KB left |
+| SYNTH_UI | `0x081C5500..` | sized at link time | entry table and wrappers (158 B of 0x100), then `m4_synth.c` (11,824 B in BE4.31, 6,761 B in BE4.30: the drum page added 5,063 B); the image may grow to `0x18D334` (`0x081CD334`): 20,156 B left in BE4.31 (image end `0x081C8478`) |
 
 The synth area (32 KB of SDRAM below the Region, `0xC5FF4000`) is described in `synth_shared.h` and in
 `docs/plan-synths-168.md` section 4.

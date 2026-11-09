@@ -1192,3 +1192,227 @@ fixed.
 | D13 | Ship S6c in two kits | (a) BE4.30 = the M7 Kick at its default sound now, BE4.31 = the drum page; (b) hold the kit until the page is built | (a): the device answers the CPU, detection and gate questions while the page is built |
 | D14 | The Kick's CPU (4.1 % per voice-block, D1 = no cap) | accept for BE4.30 and measure on the device; or do S6d's efficiency items first | accept and measure: the DRUMS line shows it, and the decision about a cap stays with the numbers |
 | D15 | D2's fallback in the case that cannot occur (a 33rd voice) | native carrier (near silence), counted; or keep a steal-and-fade path for it | native and counted: no code for a case stock's 32-voice pool rules out |
+
+## S6c-2: the drum page, M4 part (BE4.31, 2026-11-09, offline; device check open)
+
+Kit `flash\bento_enhanced-v4.31`, checklist `docs/checklist-v4.31.txt` (flash only after v4.22 passed; v4.30's items run on
+this kit). Scratch `rc29/s6c2/` (re/: `sdis.py`, `refs.py`, `words.py`, `rows.py`, `desc.py`, `keyscan.py`, `globalkeys.py`,
+`probe1.py`, `probe2.py`; `mut.py`, `render_kick.py`, `final.sh`). Upstream read: bento-playground 9fc7787
+`eu4_work/integration/kick_ui.c` (the shipped K7 drum UI), rewritten in `m4_synth.c`, credited there.
+
+### What it does
+- **The page (D5, D6, the tick).** On a One-Shot track's pad whose file's base name is `BE Kick.wav` (any case, any
+  folder), stock's instrument page shows, in its middle row ("Config"), the Kick's seven knobs (Tune, Kick Dec, Tone,
+  Accent, Sweep, Sweep Dec, Dirt: the S6c-1 knob map in `drum_kick.cpp`, now one table in `synth_shared.h` `KICK_DEFAULTS / LO /
+  HI` for both cores) and Poly Mode. The titles come from the registry descriptors we write (type 2, an integer in
+  [lo, hi], as stock's Shift 0x1AD), the values from CONTEXT_GET (X3) for the row's handle. Main (Level .. Resonance) and the
+  envelope / LFO row stay stock's: they act on the Kick through the post chain. The page's title label (where the file
+  name is, in the waveform pane) reads `Kick CPU 63% drums 4%` (" !" for 2 s after a block over budget; `Kick (DSP off)`
+  before the handshake): the M7's LOAD over 500 ms (as Analog's indicator, D3) and the drums' share of the blocks they
+  rendered in (the DRUMS stats differenced).
+- **Row repair (review rc29).** Stock rewrites the rows without D5 on two paths: slot 13's notification 0xA8 runs the
+  cell set alone (0x0815514A -> 0x0815443C: the page table's keys copied into the rows at 0x081545BC, no refresh), and
+  stock's page select 0x081547EA posts 0xA8 after its own cell set and file select, so on the device this likely
+  follows every pad selection; 0xC5 (a file loaded onto the pad) only reloads the wave and sets the title (0x08155122).
+  The page's tick (`dr_view_tick`, every pass) compares the row with the pad (`dr_heal`): a Kick page showing stock's
+  keys, or another page still showing ours, gets D5 again (`heals`, DRUMS line). The pad's engine is kept for the page's
+  (view, cell, file) and asked again after 250 ms (a file renamed under the same node), so the per-pass cost is a
+  compare. An encoder turn that arrives before the tick on the rewritten row (one of its first seven slots, on a Kick
+  page) is dropped and the row repaired (`dr_stale_turn`): the player turned a Kick knob he saw, not Reverse. A drum key
+  turned on a page that is no longer a Kick's is dropped and stock's row put back at once. Not taken: a hook on the cell
+  set itself (a new site in a 0x2C0-byte function for what the tick repairs within one pass).
+- **Edits (D6).** An encoder edit (EV_ENCODER: key ev+8, the slot's new value ev+12) of a drum key on a Kick page sets the
+  pad's knob (clamped to the engine's range), publishes it, touches the project and refreshes the page; it is never
+  forwarded (stock's D6 would post it up the view tree to the model as a property of the pad, 0x08154AB2). A drum key
+  on any other page is dropped too. While DK4's keys word is not 1 (a key taken by stock: never on 1.6.8), D6 and X3
+  leave those keys to stock (review rc29 note P5).
+- **The table (DK4).** The truth is the M4's own table in our slice (`DK4_SLICE` = slice + 0x2000 .. + 0x2480: a 128 B
+  header, 64 entries {handle, engine | used, knobs 0..3, knobs 4..7}), keyed by the pad's object handle (the page's
+  cell). It needs no M7, so a project load before the handshake is kept. The UI task publishes it to the synth area's 64
+  knob lines (+0x1000, one line per entry, seqlocked; `drum_serial` += 2), from where the M7 (S6c-1's `knob_entry`)
+  reads it; the M7 now counts the reads that found the pad's line (`knob_hits`, DRUMS line), the device evidence that the
+  M4's cell handle is the M7 root's +0x0C. A pad with no entry plays and shows the defaults; the first edit or a load with
+  attributes makes one. The M4 has no data cache: its stores reach SDRAM in order (dsb between the seqlock steps); the
+  M7 invalidates the lines before it reads them.
+- **XML (X1 / X2, D5 decision).** `bento_drum_engine` (1 = Kick) and `bento_drum_k1` .. `bento_drum_k7` on the pad's params
+  element, for pads with an entry. The project writer and loader call stock's instrument writer / reader once per child
+  (0x081312BA / 0x081313BC; 0x08131528 / 0x081317D8, each child made by CHILD_CREATE first), so X1 / X2 see pads as well as
+  tracks. A pad read without the attributes (or with an engine this build lacks) loses a stale entry; values are clamped,
+  a missing knob is its default. Generic names: the knob map belongs to the engine (S6d reuses them).
+- **Handles (D9).** A pad is a child of its track node (0x18 B, its own handle), not a top-level object: stock's node clone
+  copies the children directly (0x0812F2B4, each with a new handle from OBJ_CTOR), and its destroy frees them directly.
+  So H2 (`an_clone`) walks the source's and the copy's children pairwise (same count, same type byte) and carries their
+  entries (`carried`); a count mismatch is skipped and counted (`clone_skips`). H3 (`an_destroy`) drops the entries of a
+  destroyed track's children; H1 (`an_forget`) drops DK4 entries at or above the handle counter, as AN4's. New site **H4**:
+  stock's one-child copy `CHILD_DUP` 0x0812F91E (store, type, parent, src, &out: a new child with src's properties, 9
+  callers: the clipboard 0x08124E50 / 0x08124F46 / 0x08125060 / 0x0812507C, 0x08128816, 0x0813BFD0 / 0x0813C096, the
+  instrument replace 0x0813F6A2 / F6F2) gets src's entry (`dups`). So loads, saves, preset apply / save, undo by copy and
+  track copy / paste carry the knobs, and a pad copy does if stock copies the pad object (CHILD_DUP); if stock's pad copy
+  instead copies settings onto an existing pad, the knobs stay behind (the device item says which). Capacity: 64 entries;
+  a full table gives up the lowest handle that is not a pad of the live project (`dk_live`: [MODEL]'s top-level objects'
+  children), never a live pad (`evicted`, `full`).
+- **Shared sites.** X1-X3 and H1-H3 serve both groups: their writes start "Synth:" and a bisect leaves them stock only when
+  both `analog` and `drums` are off (build.py `site_disabled`). With Analog off the page, XML and handles keep working
+  (test_drum_ui on `BE_DISABLE=analog`); the Analog XML parts are skipped then (as BE4.30's bisect dropped them).
+
+### Sites (1.6.8; 1.6.1 entries `absent`, as S6c's: the group is 1.6.8 only)
+| Entry | 1.6.8 | Kind | Evidence (facts.py) |
+|---|---|---|---|
+| INST_REFRESH (D5) | 0x08153DF4, `2de9f04f` | entry -> `dr_refresh`, which calls stock through its own replay (`stock_refresh`, naked) | = 1.6.1 0x08152144 instruction for instruction (287), same view offsets; 3 bl callers |
+| INST_EV_SLOT (D6) / INST_EVENT | 0x081A151C (0x08154971) / 0x08154970 | class 0x081A14EC slot 12 -> `dr_page_event` | event codes +2 / +3 against 1.6.1 0x08152C50, as the census said |
+| INST_TICK_SLOT / INST_TICK | 0x081A14EC (0x08155685) / 0x08155684 | slot 0 -> `dr_view_tick` | the class's tick |
+| CHILD_DUP (H4) | 0x0812F91E, `70b582b0` | entry -> `dr_dup`, stock through `stock_dup` (replay) | 9 callers; child create + property copy |
+| OBJ_TYPE, GET_STRING | 0x08135490, 0x08134D6A | calls | a child's type (emulated: a pad is 1); the Filename, at most 255 + 0 |
+| INST_CELL / FILE / TRACK_TYPE / KEYS / NATIVE_KEYS / ROW_STRIDE / TITLE | 0x87BC / 0x87C4 / 0x87CC / 0x703C / 0x6FDC / 0x50 / 0x80B4 | offsets | D5, the cell set 0x0815443C, set-file 0x0815403C |
+| NODE_CHILDREN / NODE_CHILD_N / STORE_COUNT | 0x18 / 0x928 / 0x30 | offsets | NODE_CLONE, RESOLVE_OBJECT |
+| KEY_DR_FIRST, KEY_FILENAME, KEY_POLY_MODE | 0x1AE, 0x81, 0x2E | keys | below |
+| INST_CTOR, PAGE_TABLE, CHILD_CREATE, SET_STRING | 0x08155240, 0x081360D0, 0x0812F878, 0x0812F48C | tests only | the page constructor, its key table (One-Shot: 0x081A0740), the loader's child create and Filename setter |
+| INST_NOTIFY (review rc29) | 0x081550B4 (slot 13, 0x081A1520) | tests only | the page's notifications: 0xA8 cell set alone, 0xA9 / 0xC2 file select (ends in D5), 0xC0 / 0xC3 / 0xC4 D5, 0xC5 title only |
+
+### Keys (claimed: 0x1AE..0x1B4, seven, contiguous)
+- `keyscan.py` re-ran test_keys' method over every empty key below claim()'s 0x1C1 (56) and added a scan of every
+  tbb / tbh / word-table switch over values >= 0x100 in both cores (26 found): **no clean key is left outside
+  0x18C..0x1B6 but Track FX's 0x132 / 0x18B**, which the Analog FM plan takes (0x12B..0x12D, like 0x128..0x12A, have real
+  cases in the M7 switch 0x08071CE2; 0x101 / 0x102 in 0x080764F6; 0x1BA..0x1BF in 0x0805D500). So the drums had to use the
+  range class S6c was to re-review.
+- **That class, reviewed.** The M7's one test over 0x18C..0x1B6 (0x08059990, `sub.w r2,r3,#0x18c; cmp r2,#0x2a`) follows
+  `cmn.w r3,#0xf; bne` (0x08059988): it stores set_property values (message 0x3E) only for the object 0xFFFFFFF1, which the
+  M4 assigns to its reverb object (0x08132890, 0x0813B3B8, 0x0813F144; the registry's 0x18C..0x1B6 are Pre Delay, Freeze,
+  Style, Low / Hi Cutoff, Time, Level, Shim Fbk, Shift, Reverb). Such a message carries a key only when that model object
+  has it as a property; nothing gives our keys to the model (D6 drops every edit of them; X3 answers reads without stock's
+  body). test_drum_ui logs UI_POST and ENGINE_PROPERTY (set_property) through every edit: none carries a drum key (the T6
+  item S6a left open, for the drum keys). test_keys pins the guard's bytes and the allow-list (7 keys).
+- 0x1AE..0x1B4 are empty after stock's builder, have no movw / mov.w / cmp.w immediate in either core, and are below
+  claim()'s keys. Seven, not the plan's ten: contiguous keys make X3's test one compare (the neighbours 0x1AD Shift and
+  0x1B5 are stock's, and test_drum_ui checks they reach stock's body). An engine with an eighth knob needs one more key
+  and its own review. The plan's other three (0x1AB, 0x1A7, 0x1A4) stay unclaimed.
+- Written all or nothing by `drum_keys()` (DK4's keys word says which key was taken), independent of Analog's two.
+
+### Decisions and roads not taken (implementer)
+- **Which row.** The Kick needs 7 slots; the One-Shot page has three full rows and no fourth. Main and the envelope /
+  LFO row act on the Kick (parity items 6, 8, 14); Config holds three sample-only parameters (Reverse, Interp, Loop
+  Fade), an empty slot, and four that still act (LaunchMode, Poly Mode, Choke Grp, Loop Mode). The Config row became the
+  Kick's, keeping Poly Mode (the one a Kick needs most: a roll ringing or cutting). LaunchMode, Choke Grp and Loop Mode
+  are set on the pad with a sample loaded (they are the pad's, the carrier load keeps them) or on v4.30. Not taken:
+  upstream's layout (the Kick in Main, Main's parameters moved into Config, the envelope row hidden: it loses the pad's
+  envelope and LFO); hiding the waveform pane (upstream did; the hidden byte needs restore logic and the pane is where
+  the readout goes). **Jeff to confirm**; moving the knobs is one table.
+- **Detection by name.** The page goes by the file's base name (model data only, no FatFS); the M7 goes by the content.
+  A renamed carrier plays the Kick behind a sample page (plan section 8). Not taken: an M7 "confirmed engine per handle"
+  publish block (+0x2000) the page could read: an M7 change, and it only knows after the pad has played once.
+- **Display text.** Integers ("55"), as stock's type 2; no "Hz" / "%": stock's own value text would need a per-slot text
+  setter after each refresh (upstream's 0x08170656). Nice-to-have.
+- **No Engine knob, no menu entry** (D6), **no Mod Matrix** (deferred with mx). Velocity reaches the Kick by routes only
+  (D7, unchanged from S6c-1).
+- **DK4's home.** The slice's canary (0xA00..0xE20) keeps its size (the Analog FM sprint takes 64 B of it for AN4); DK4
+  takes the first 1152 B of RAMCHK `top` (slice + 0x2000), which now starts at + 0x2480 (2944 B checked). Not taken: the
+  synth area's unused SA_UI (lost before the handshake, and the FM plan wants it), the canary (too small for 64 entries).
+- **Publish under the lock.** Every change rewrites all 64 knob lines with interrupts masked: per line 8 stores, one
+  load and 3 dsb to SDRAM through the FMC. Not measured; estimated 20 to 60 µs (the first text said "a few µs": review
+  rc29 note 3, about ten times low). It runs on the UI task, on a knob edit (human rate) and on table changes; the audio
+  is the M7's and does not wait for it. On the M4 the masked stretch is shorter than one MIDI byte (320 µs). Not taken
+  (yet): publishing only the changed line (a dirty mask in DK4's header; a new M7 generation or M4 boot needs the full
+  rewrite anyway). Measure on the device if the readout or MIDI ever shows a hiccup on knob turns.
+- **The entry is the pad's, not the file's** (review rc29 note 6). A Kick pad that gets an ordinary sample keeps its
+  DK4 entry, and a save writes `bento_drum_*` onto that sample pad; stock ignores them, and loading BE Kick.wav onto the
+  pad again brings the knobs back (checklist section 2 relies on it). A new carrier on a pad that never had one starts at
+  the defaults.
+- **Capacity** (review rc29 notes). Stock keeps copies alive after use (the load scratch +0x330, the save snapshot
+  +0x334, the clipboard, undo copies), each with its own handle and entry, so 64 entries hold about 21 Kick pads before
+  copies are given up; with more than about 32 live Kick pads a save's snapshot can evict its own earlier pads (their
+  knobs are then missing from the saved file; counted as `evicted`). A Bento project with that many Kick pads is not
+  expected; growing the table means more SDRAM lines and a longer M7 scan per start. Open item, not a fix.
+- **Load / save cost** (review rc29 note 8, not measured): H1 scans DK4's 64 entries (uncached AXI) on every OBJ_CTOR,
+  and H2 looks up each child of a cloned track (up to 0x244) whenever the table is not empty: estimated milliseconds per
+  project load or save. The checklist asks for the load and save time of SPACED_31B.
+- **`dk_live` on a store being rebuilt.** Only when the table is full, eviction walks [MODEL] without stock's lock (the
+  storage task may be copying into it: stale pointers, in theory a fault). Same condition as above (a full table);
+  documented, not guarded.
+- **After an M4-only reset** (review rc29 note). The M7 accepts the M4 header by `m7gen`, not by the M4's boot, so the
+  previous boot's knob lines stay readable until the new boot's first publish (its first UI tick after the handshake),
+  and the serial restarts at 2. A Kick started in that window could play an old line whose handle the new boot reuses.
+  Analog's table has the same rule (BE4.22); fixing both on the M7 side (compare the M4 header's bootgen with the
+  config line's) is a separate, shared change. Open.
+- **RAMCHK top on 1.6.8** has not run on the device yet with DK4 in its first 1152 B; checklist item 1.3 ("top
+  changed=0") is the first evidence that the slice's upper part is quiet on hardware.
+
+### Tests
+- **test_drum_ui.py (new, 45; 1 skips outside a bisect).** Stock's code through the built image: the M4 reset's .data and
+  static constructors, the registry builder, the store, track and child constructors, Filename set / read, the page
+  constructor, its notifications (review rc29: a page is selected through stock's cell set and file select, slot 13, as
+  stock's page select does; nothing of the page is typed any more), PAGE_TABLE (the real One-Shot rows), D5 / D6 / the
+  tick through the patched sites, CONTEXT_GET through X3,
+  SLOT_TITLE, the instrument writer / reader per child, STORE_COPY_ALL, STORE_REMOVE, CHILD_DUP. Classes: Sites (and the
+  `BE_DISABLE=drums` bisect), Keys (descriptors; one key taken: none written, the page stays stock's), Page (Kick rows and
+  default values; sample pads, case and path forms, other track types; Kick pads after sample pads on one track),
+  Notify (0xA8 alone writes stock's row and the tick repairs it; a turn on the rewritten row is dropped; 0xC3 / 0xA9
+  refresh; 0xC5 under the page: the tick restores stock's row, and the Kick's again; the tick slot left stock: the row
+  stays stock's), Edits (stored, published with a closed seqlock, drum_serial even and moved, refreshed, no UI_POST /
+  set_property with a drum key; clamping; other keys and the neighbours go to stock; a drum key on a sample page is
+  dropped; an edit before the handshake is published by the tick), Context, Xml (writer; a project round trip through
+  stock's reader, commit copy and save snapshot; a track copy / paste through STORE_CLONE_H (also preset apply); clamping and defaults; stale entries; an unbuilt engine), Handles
+  (remove, earlier boot, CHILD_DUP, a full table, a track of four pads carried and dropped pad by pad), Tick (the
+  readout; its numbers against typed D0L / drum stats; before the handshake; a sample page keeps stock's title). Each site put back to stock's bytes in the emulator fails its test (D5, D6, H2, H3, H4). Goldens typed in the
+  test: the keys, the knob names / defaults / ranges, the One-Shot rows, DK4's and the lines' layouts, the attribute
+  names.
+- **Mutants (`rc29/s6c2/fix/mut2.py`, each on a copy of the tree): 30 of 30 caught**: review rc29's D / F / E / H (H2 or
+  H3 only at a track's first child, the drum share 16x small, the drum share shown as the CPU), no repair in the tick,
+  a turn on the rewritten row given to stock, the page's engine never asked again, a drum turn on a sample page leaving
+  the Kick row, X3 / D6 using taken keys, "Decay" as the title again, repair only toward the Kick; and BE4.31's first 18: X3 ignoring the entry, H2 not carrying
+  pads, no drum lines published, a stale Kick row left on a sample page, no clamp, the edit also forwarded, any pad saving
+  attributes, a stale entry surviving a load, H1 / H3 / H4 not dropping / carrying, a case-sensitive name, eviction
+  ignoring liveness, no Poly Mode, the readout without the drum share, X3 taking a stock neighbour (0x1B5), type-10
+  descriptors, knobs keyed by the file node instead of the cell.
+- **Changed:** test_keys (the 7 drum keys, the 0xFFFFFFF1 guard pinned), test_handles (a `BE_DISABLE=analog` bisect keeps
+  the three handle sites for the drums), test_diag (RAMCHK top starts after DK4; the DRUMS line's page counters),
+  test_m1.sh (NEEDS: test_drum_ui needs drums; both copies identical).
+- Screenshots (display emulator, stock's widgets and paint; the pages selected through stock's own notifications):
+  `rc29/s6c2/shots_v431r/` `kick_page_defaults.png`, `kick_page_edited.png`, `kick_page_after_cell_set_before_tick.png`,
+  `kick_page_after_cell_set_and_tick.png`, `sample_page_other_pad.png`, `sample_loaded_onto_the_kick_pad.png` (the
+  first round's `rc29/s6c2/shots/sample_page_same_pad.png` showed the Kick title on a sample page: a harness artifact,
+  replaced).
+
+### Budgets
+- M4: synth UI code 12,200 B (BE4.30: 6,761 B; the drum page +5,439 B, of which the review round +376 B); wrappers 158 B
+  of 0x100. Image end 0x081C85F0: **19,780 B left** below 0x18D334 (the FM sprint's M4 code comes out of this). M4 black box code unchanged (24,424 B).
+- Slice: AN4 256 B unchanged; the canary 0xA00..0xE20 unchanged (1056 B, of which FM takes 64: AN4 can grow down to
+  start at 0xDE0); DK4 1152 B at +0x2000 (its header has 2 spare words left); RAMCHK top 2944 B (was 4096).
+- M7: DSP 12,884 B (+8: `knob_hits`); m7.elf unchanged (15,368 B). SDRAM: as BE4.30 (the knob lines were reserved).
+
+### Exit (offline), 2026-11-09
+- 1.6.1: 25877c59526fc95e4ae5122e7f41128f36815aac950ff8713a372461142cec3f = the v3.72 kit and the 9 S1 reference bisects (c161);
+  every suite with BE4.30's counts (the new suite not run: drums omitted).
+- 1.6.8: **BE4.31 = 5d2c636688c788f9440231f958635ed5e9160e408d5c512415249b73fe70b7ce** (after review rc29; the first round's
+  8426bbec... is gone); 22 suites green, the 21 old ones with BE4.30's counts, test_drum_ui 45 (s1). `BE_DISABLE=drums` (D1, D5, D6, the tick, H4 stock; H1-H3 / X1-X3 kept for
+  Analog), `analog` (the shared sites kept for the drums; test_drum_ui green), `analog,drums` (every synth site stock),
+  `note0`, and every group alone build; unknown names refused; regenerating stock_168.py is identical; literal check
+  clean; all LF; only the 19 mx entries open.
+
+### Open
+- Device: the checklist (the page, each knob audible, save / power cycle, preset, track and pad copy, CPU, rollback).
+  The two device facts that could change the design: `knob_hits` (the cell handle = the root's +0x0C) and what stock's
+  pad copy does (CHILD_DUP or a settings copy).
+- Jeff: the row choice (Config) and the dropped LaunchMode / Choke Grp / Loop Mode on the Kick page; the name "Kick Dec".
+- Capacity (64 entries, copies included) and the M4-only-reset window (shared with Analog): open, see the decisions.
+- Not built: knob units, an Engine knob (S6d), Mod Matrix destinations (mx), the M7 confirmation block.
+
+### Review round rc29 (2026-11-09: behaviour review rc29/rev2, build review rc29/rvbuild)
+| Finding | What was done |
+|---|---|
+| S1 (both): stock's cell set (0xA8) and a file change (0xC5) rewrite the rows without D5; the test typed the copy and always refreshed | `dr_heal` in the tick, `dr_stale_turn` in D6, a drum turn on a non-Kick page repairs at once; the tests select pages through slot 13 (cell set + file select) and drive 0xA8 / 0xA9 / 0xC3 / 0xC5; checklist items for pressing / browsing / other views |
+| S2: the checklist's project copies (SPACED_K / KICK_T made in v4.30's section 0, "on the card") | section 0 now makes SPACED_31A / SPACED_31B on the computer and KICK_T / KICK_P, maps v4.30's names |
+| S3: no multi-pad track, the readout's numbers unchecked (mutants D, F, E, H survived) | a four-pad track (Kick pads at children 4 and 6) through H2 / H3 and the page; the readout against typed D0L / drum stats; all four mutants caught |
+| S4: two knobs titled "Decay" | the Kick's is "Kick Dec" |
+| Build S2: INST_REFRESH's evidence called 0x08154404 the cell set | corrected (it is the file select's end), INST_NOTIFY added, stock_168.py regenerated |
+| Notes: publish cost, entry stays with the pad, capacity, dk_live, M4-only reset, RAMCHK top, load / save cost | text above; checklist asks for load / save time and the RAMCHK line; D6 / X3 honour the keys word |
+| Note: sample_page_same_pad.png misleading | re-rendered through stock's paths (shots_v431r) |
+| Note: no newline at the end of this file | added |
+
+## Decision: synth drum pads are monophonic (Jeff, 2026-11-09)
+- One engine instance per pad. A new hit on a ringing pad **re-strikes** that instance: envelopes and click
+  restart, the body's state carries on (a real drum re-excited, not killed; no click). Applies whatever the pad's
+  native Poly/Mono setting is, and to retriggers / ratchets.
+- Engine state is zeroed only when a pad's instance is first created (changes S6c-1's zero-per-start fix).
+- Also bounds CPU: at most one Kick voice per pad however fast it is played.
+- Built in the next sprint, together with the Kick efficiency pass. The drum page's Poly Mode knob then has no
+  effect on synth pads: replace it on the Kick row (candidate: an eighth Kick knob, or leave stock's).

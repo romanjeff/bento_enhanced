@@ -167,9 +167,14 @@ class Sites(unittest.TestCase):
 
     @unittest.skipUnless(DISABLED, "only a BE_DISABLE=analog bisect")
     def test_a_bisect_leaves_the_three_sites_stock(self):
+        """S6c-2: the three sites are shared with the drums (their pads' knobs): stock's only when both groups are off."""
+        drums_on = "drums" not in MAN.get("omitted", []) and "drums" not in MAN.get("disabled", [])
         for n in SITES:
             a = getattr(S, n)
-            self.assertEqual(IMG[a - BASE:a - BASE + 4], STOCK[a - BASE:a - BASE + 4], n)
+            if drums_on:
+                self.assertNotEqual(IMG[a - BASE:a - BASE + 4], STOCK[a - BASE:a - BASE + 4], f"{n}: kept for the drums")
+            else:
+                self.assertEqual(IMG[a - BASE:a - BASE + 4], STOCK[a - BASE:a - BASE + 4], n)
 
 
 def emu_asm_bw(at, to):

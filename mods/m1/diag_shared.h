@@ -410,6 +410,11 @@ typedef struct { u32 blocks, events, waited, timeouts, max_polls, gap_under, mis
  * probe line, also from the end of the canary (m4_diag.c CANARY_WORDS stops there). The M7 never reads it. */
 #define AN4_SLICE 0xE20u
 #define AN4_SLICE_END 0xF20u
+/* S6c-2 (1.6.8 with the drums): the M4's drum knob table (m4_synth.c DK4), M4-only, 1152 B at the start of the slice's
+ * upper part (RAMCHK top, slice + 0x2000, which m4_diag.c then checks from DK4_SLICE_END), so the canary keeps its size
+ * (the Analog FM sprint takes 64 B of it for AN4). The M7 never reads it. */
+#define DK4_SLICE 0x2000u
+#define DK4_SLICE_END 0x2480u
 #define D0L ((volatile D0Load *)SLICE(0xFE0u))
 #define D0_MAGIC 0x3137304Du /* "M071" */
 /* The panel Controller link (v3.65), M7 copies (stock 0x080550C0, 0x08080E60, 0x0808D080).

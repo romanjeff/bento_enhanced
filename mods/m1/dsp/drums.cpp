@@ -159,6 +159,7 @@ static u32 knob_entry(DrumRun *r, u32 handle, u8 *raw) {
         u32 head = k->head, h = k->handle, w = k->word, v0 = k->v0, v1 = k->v1, tail = k->tail;
         if ((head & 1u) || head != tail || h != handle || !(w & DK_USED)) continue;
         for (u32 j = 0; j < DRUM_KNOBS; j++) raw[j] = (u8)(((j < 4u ? v0 : v1) >> (8u * (j & 3u))) & 0xFFu);
+        DSTATS->knob_hits++;                                  /* S6c-2: the M4's handle is this root's +0x0C */
         return w & 15u;
     }
     return 0;

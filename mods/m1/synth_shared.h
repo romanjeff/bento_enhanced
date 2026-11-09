@@ -112,14 +112,15 @@ typedef struct {
     unsigned unbound;         /* renders with no cell for their voice: more voices than DRUM_CELLS (stock has 32: never) */
     unsigned short_bufs;      /* renders handed to stock because the block was empty, over 1024 frames or past the scratch */
     unsigned hist[3];         /* blocks where the drums took >= 5 % / >= 15 % / >= 30 % of the 1,280,000-cycle block */
-    unsigned r19[13];
+    unsigned knob_hits;       /* S6c-2: knob table reads that found the pad's line (its handle = root +0x0C: device evidence) */
+    unsigned r20[12];
 } SaDrumStats;                /* 128 B: blocks +0, sum16 +4, peak +8, cells_peak +12, renders +16, starts +20, retrigs +24,
                                  detects +28, carriers +32, unbuilt +36, quiet_ends +40, cap_ends +44, knob_reads +48,
-                                 n_max +52, unbound +56, short_bufs +60, hist +64 */
-/* +0x1000 drum knob table, 64 lines (M4 writes, M7 reads): the M4's table, published (S6c-2: not written yet; the M7
- * reads it only once the M4 header's drum_serial is not 0). A line: seqlocked as SaTrack; handle = the pad's object
- * handle (= its M7 root's +0x0C); word [3:0] engine override (0 = the carrier's), [8] in use; v0 knob values 0..3
- * (byte i = knob i), v1 knobs 4..7. */
+                                 n_max +52, unbound +56, short_bufs +60, hist +64, knob_hits +76 */
+/* +0x1000 drum knob table, 64 lines (M4 writes, M7 reads): the M4's table (DK4, m4_synth.c), published once the handshake
+ * holds (S6c-2; the M7 reads it only once the M4 header's drum_serial is not 0). A line: seqlocked as SaTrack; handle =
+ * the pad's object handle (the instrument page's cell, = its M7 root's +0x0C); word [3:0] engine override (0 = the
+ * carrier's; S6c-2 has no engine knob and publishes 0), [8] in use; v0 knob values 0..3 (byte i = knob i), v1 knobs 4..7. */
 #define SA_DKTAB 0x1000u
 #define SA_DKTAB_N 64u
 #define DK_USED 0x100u
@@ -133,10 +134,15 @@ typedef struct {
 /* +0x4400 drum run state (M7 private, 512 B: block counter, the current cell's RNG, powf memo, carrier cache) */
 #define SA_DRUN 0x4400u
 /* +0x4600.. spare, +0x6000.. Track FX: reserved, see the plan */
-/* The drum keys (S6c): ten from the reviewed allow-list, all or nothing (m4_synth.c synth_keys); the Kick uses the first
- * seven (Tune, Decay, Tone, Accent, Sweep, Sweep Decay, Dirt). */
+/* The drum keys (S6c-2): seven contiguous keys of the reviewed allow-list, S_KEY_DR_FIRST + i for knob i, all or nothing
+ * (m4_synth.c synth_keys). The Kick uses all seven. */
 #define DRUM_KNOBS 8u
-#define DRUM_KEYS_N 10u
+#define DRUM_KEYS_N 7u
+/* The Kick's knobs (S6c-2: one place for both cores; dsp/drum_kick.cpp plays them, m4_synth.c shows and stores them):
+ * Tune in Hz before the pad's pitch, the rest 0..100 % of DaisySP's own 0..1 parameters. Defaults after upstream K7. */
+#define KICK_DEFAULTS {55, 65, 45, 65, 55, 25, 25, 0}
+#define KICK_LO {25, 0, 0, 0, 0, 0, 0, 0}
+#define KICK_HI {180, 100, 100, 100, 100, 100, 100, 0}
 /* Carrier WAVs (tools/carriers/gen_carriers.py; docs/plan-synths-168.md section 8): mono 48 kHz 16-bit, frames =
  * CARRIER_FRAMES + engine id; 32 samples of the signature at +-1 LSB, then 32 carrying CARRIER_WORD(id), then
  * silence. Playground's carriers (PG_CARRIER_FRAMES + id - 1 frames, the signature only) are accepted too. */

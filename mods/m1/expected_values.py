@@ -66,6 +66,8 @@ STOCK_161 = dict(
     KEY_AN_SYNC=None, KEY_AN_GLIDE=None,   # 1.6.8 only
     VOICE_DESC=None, VOICE_CURSOR=None, VOICE_RATIO=None, VOICE_PITCH_PARAM=None, VOICE_LFO1=None,   # S6c drums: 1.6.8 only
     ROOT_FINE=None, ROOT_LOOP=None, ROOT_VOICES=None, ROOT_VOICE_N=None, VOICE_SERIAL=None, VOICE_FORWARD=None, BUF_CAPACITY=None,
+    INST_CELL=None, INST_FILE=None, INST_TRACK_TYPE=None, INST_KEYS=None, INST_NATIVE_KEYS=None, INST_ROW_STRIDE=None,   # S6c-2: 1.6.8 only
+    INST_TITLE=None, NODE_CHILDREN=None, NODE_CHILD_N=None, STORE_COUNT=None, KEY_DR_FIRST=None, KEY_FILENAME=None, KEY_POLY_MODE=None,
     ACT_WAVETABLE=0x102A,          # menu table 0x081981F8 cell 5 {0x102A, 'Wavetable'}
     TYPE_WAVETABLE=0x12,           # Playground's analog_pane / menu checks
     ROOT_HANDLE=0x0C, VOICE_WT1=0x7A4, VOICE_WT2=0x994, VOICE_SUB=0x4C, OSC_KERNEL=0x10C,   # WT root ctor 0x0809BF20
@@ -215,6 +217,19 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     OSC_KERNEL=0x10C,             # osc render 0x08081D52 add.w r0,r4,#0x10c before the kernel read
     ACT_INST_FIRST=0x1025,        # menu table 0x0819AD30 cells 0..7 = 0x1025..0x102C (rc20/s6a2 words.py)
     VIEW_NOWAV_LABEL=0x3114,      # page builder 0x0815FED4: add.w r6,r0,#0x3100; adds r6,#0x14; "No WAV" at 0x0815FF5E
+    # S6c-2 drum page (rc29/s6c2 re/: d5_168.txt, r2_168.txt, rows.py, desc.py, keyscan.py, read by hand):
+    INST_CELL=0x87BC,             # cell set: str r2,[view+0x8000+0x7bc] (0x0815457A); D5 add.w r4,r5,#0x8700; adds #0xbc (0x08153E6A)
+    INST_FILE=0x87C4,             # set file 0x0815403C: str.w r1,[r7,#0x7c4], r7 = view+0x8000
+    INST_TRACK_TYPE=0x87CC,       # 0x08154488 strb.w r0,[r3,#0x7cc] after OBJ_TYPE(MODEL, view+0x87C8)
+    INST_KEYS=0x703C,             # D5: r6 = view+0x704A, keys ldrh [r6-0x10+2]! (0x08153E16..24)
+    INST_NATIVE_KEYS=0x6FDC,      # 0x081360D0(MODEL, &cell, view+0x6FC8): keys at buf+0x14 (copied out at 0x081545C2..D2)
+    INST_ROW_STRIDE=0x50,         # adds r6,#0x50 per row (0x08153E48)
+    INST_TITLE=0x80B4,            # add.w r0,r4,#0x8000; adds r0,#0xb4; bl SLOT_TITLE (0x081540E2)
+    NODE_CHILDREN=0x18, NODE_CHILD_N=0x928,   # NODE_CLONE: str r0,[r1,#0x18] (r1 = node + 4 i); [r2,#0x928] the count (0x0812F376..8C)
+    STORE_COUNT=0x30,             # RESOLVE_OBJECT ldr.w ip,[r0,#0x30] (0x0812E6FE)
+    KEY_DR_FIRST=0x1AE,           # keyscan.py: 0x1AE..0x1B4 empty, no immediates; range 0x08059990 only for the 0xFFFFFFF1 object
+    KEY_FILENAME=0x81,            # desc.py: 'Filename' type 19; movs r2,#0x81 before GET_STRING (0x081540A8)
+    KEY_POLY_MODE=0x2E,           # desc.py: 'Poly Mode' type 7 (6 choices); the One-Shot Config row (rows.py)
 )}
 
 EXPECTED = {"stock_161": STOCK_161, "stock_168": STOCK_168}

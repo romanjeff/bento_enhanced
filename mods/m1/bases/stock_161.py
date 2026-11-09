@@ -629,6 +629,35 @@ SYMS = dict(
     DRUM_POOL_N=const(None, note="one-shot engine: voices in its pool", status='absent'),
     DRUM_POOL_CTOR=code(None, note="one-shot engine: voice pool constructor (pool, 0xC720 B); tests", status='absent'),
     SAMPLE_FIND=code(None, note="sample bank lookup (bank, sample id, info out) -> found; tests", status='absent'),
+    # S6c-2 (the drum page, 1.6.8 only, docs/plan-synths-168.md "S6c-2"): stock's instrument (pad) page. The same code is on
+    # 1.6.1 (D5 0x08152144 is instruction for instruction 1.6.8's, with the same view offsets; D6 0x08152C50 differs in the
+    # event codes), but the group is not built there: absent here, reviewed for 1.6.8 in facts.py (as S6c's entries).
+    INST_REFRESH=code(None, note="instrument page: refresh (view): each row key's value by CONTEXT_GET, then the bars (D5 site)", status='absent'),
+    INST_EV_SLOT=data(None, note="instrument page view class slot 12: event handler (D6 site)", status='absent'),
+    INST_EVENT=code(None, note="instrument page event handler (view, event); an encoder edit (0xCF) goes up the view tree to the model", status='absent'),
+    INST_TICK_SLOT=data(None, note="instrument page view class slot 0: tick (view, flags)", status='absent'),
+    INST_TICK=code(None, note="instrument page tick (view, flags)", status='absent'),
+    CHILD_DUP=code(None, note="(store, type, parent, src, &out) -> ok: a new child (new handle) with src's properties (H4 site)", status='absent'),
+    OBJ_TYPE=code(None, note="(model, &handle) -> the object's type (top-level or child)", status='absent'),
+    GET_STRING=code(None, note="(model, &handle, key, buf) -> ok: a string property, at most 255 characters + 0", status='absent'),
+    INST_CELL=offset(None, note="instrument page view: the pad (cell) it shows (handle)", status='absent'),
+    INST_FILE=offset(None, note="instrument page view: the pad's file node (handle)", status='absent'),
+    INST_TRACK_TYPE=offset(None, note="instrument page view: its track's type (byte)", status='absent'),
+    INST_KEYS=offset(None, note="instrument page view: the three rows' keys (u16 x 8 per row)", status='absent'),
+    INST_NATIVE_KEYS=offset(None, note="instrument page view: the page table's keys for the cell (u16 x 8 per row, 16 B a row)", status='absent'),
+    INST_ROW_STRIDE=offset(None, note="instrument page view: row stride of the keys (and handles, values)", status='absent'),
+    INST_TITLE=offset(None, note="instrument page view: the title label (SLOT_TITLE target: the file's name)", status='absent'),
+    NODE_CHILDREN=offset(None, note="generic node: its children (pointers, 4 B each)", status='absent'),
+    NODE_CHILD_N=offset(None, note="generic node: number of children", status='absent'),
+    STORE_COUNT=offset(None, note="object store: number of top-level objects (their pointers from +0)", status='absent'),
+    INST_CTOR=code(None, note="instrument page view constructor (view); tests", status='absent'),
+    INST_NOTIFY=code(None, note="instrument page view class slot 13: notifications (view, event): 0xA8 cell set, 0xA9 file select, 0xC3 refresh, 0xC5 file changed; tests", status='absent'),
+    PAGE_TABLE=code(None, note="(model, &cell, buf): the page table for an object: rows, titles, keys (buf + 0x14); tests", status='absent'),
+    CHILD_CREATE=code(None, note="(store, type, parent, &out) -> ok: a new child object (new handle) of the parent; tests", status='absent'),
+    SET_STRING=code(None, note="(object, key, text): set a string property the object has; tests", status='absent'),
+    KEY_DR_FIRST=key(None, note="the first of the seven drum knob keys, from the reviewed allow-list (1.6.8 only)"),
+    KEY_FILENAME=key(None, note="a file node's Filename (string property)"),
+    KEY_POLY_MODE=key(None, note="a pad's Poly Mode"),
 )
 
 # ---------------------------------------------------------------- image checks
