@@ -5,7 +5,8 @@ This plan supersedes the 1.6.1-era parts of [`plan-playground-integration.md`](p
 its section 1 (image size, M7 window, RAM), every address in section 2, R1/R2/R4, the E1/E2 checklists
 (Mod Matrix destinations are now deferred) and the sprint order. Its audit table (2026-11-03) still holds
 where this plan doesn't restate it. Background: [`playground-review.md`](playground-review.md),
-[`plan-168-port.md`](plan-168-port.md).
+[`plan-168-port.md`](plan-168-port.md). Lab's 2026-11-10 research (Playground's own 1.6.8 port
+notes) cross-checked against our tables, with device-test items added: [`lab-research-2026-11-10.md`](lab-research-2026-11-10.md).
 
 Evidence: three offline investigations (static analysis, emulation, compiles with our toolchain; nothing
 has run on the device), scratch `rc20/analog/`, `rc20/drums/`, `rc20/infra/`. Values marked (M) are
