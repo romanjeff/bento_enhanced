@@ -1330,6 +1330,35 @@ REVIEWED = {
                       "M: test_synth_ui runs it: 'OSC1: Position' / 'OSC2: Level' (stock: 'WT1: ..')"),
     'SLOT_VALUE': dict(value=0xa8, evidence="the encoder widget's value text: add.w r0,r4,#0xa8; bl SLOT_TITLE (0x08173820, "
                        "0x08173ADE, 0x08173CF8); its title label is +0x3C8 (0x08173310)"),
+    # BE4.40 identity review fixes (wf/fix_m4: dis via impl_m4/st.py, blscan.py; M = test_synth_ui on stock's page)
+    'VALUE_TEXT_1': dict(value=0x8173824, orig='0df0dbf8', evidence="bl SLOT_TITLE(widget + SLOT_VALUE, the number text): "
+                         "0x081685E8(sp+0x608, key +0x9C, value +0xA0, +0x458) formats it (0x08173808..18), add.w r0,r4,#0xa8 "
+                         "(0x08173820); r4 the encoder slot widget (+0x9C key, +0xA0 value). M: on a row bind (SYNTH_ROW_SHOW) a "
+                         "Shape widget gets '64' through here"),
+    'VALUE_TEXT_2': dict(value=0x8173ae2, orig='0cf07cff', evidence="bl SLOT_TITLE(widget + SLOT_VALUE, sp+0x608): the number "
+                         "formats' shared tail ('%ld' of +0xA0 at 0x08173AB4..C0, '%d.%01dkHz' at 0x08173CCA..D6, ...: snprintf to "
+                         "sp+0x508, 16 bytes copied to sp+0x608, 0x08173AC4..DE). M: a bind's Shape '64' comes through here"),
+    'VALUE_TEXT_3': dict(value=0x8173cfc, orig='0cf06ffe', evidence="bl SLOT_TITLE(widget + SLOT_VALUE, sp+0x608: 16 bytes of "
+                         "the widget's label at +0x2C8, 0x08173CD8..F8); M: the Type widget's 'Analog' / 'Wavetable' on a bind"),
+    'ENC_POS_SET': dict(value=0x8174298, evidence="(step position, index): index clamped to [0, count +0x10 - 1], acc (s64 +0) = index "
+                     "* step (+8) + step / 2, index stored at +0xC (0x08174298..D6); the encoder widget's bind calls it with "
+                     "widget+0x80 and the value's list index (0x08173E16..1C), then copies +0x8C to +0x98 (0x08173E26..2A)"),
+    'SLOT_STEP': dict(value=0x80, evidence="ENC_TURN: add.w r0,r4,#0x80; bl 0x081742EC (the step by the turn, 0x08173FD8..DC); the "
+                      "bind: add.w r0,r4,#0x80; bl ENC_POS_SET (0x08173E18..1C). M: Type 7 at index 1, Type 0 at index 0"),
+    'SLOT_STEP_LAST': dict(value=0x98, evidence="ENC_TURN: ldr [r4,#0x8c] (the index) vs ldr [r4,#0x98]: equal -> no post "
+                           "(0x08173FE0..EA); a value equal to +0xA0 copies +0x8C to +0x98 without a post (0x08173FF4..FC)"),
+    'SLOT_CUR': dict(value=0xa0, evidence="ENC_TURN: the new entry's value (0x081735F0) vs ldr [r4,#0xa0]: equal -> no post "
+                     "(0x08173FEE..FA); the bind stores the value there (str.w r5,[r4,#0xa0], 0x08173E2E); VALUE_TEXT_1 formats it. "
+                     "M: Type 7 bound with +0xA0 = 1"),
+    'SYNTH_VIEW_SHOWN': dict(value=0x2434, evidence="SYNTH_ROW_BIND: add.w r3,r7,#0x2000; ldr.w r3,[r3,#0x434] (0x08160A50..54): "
+                             "the offset from the view of the shown-row byte's base; M: test_synth_ui SHOWN since rc33 implA"),
+    'SYNTH_SHOWN_ROW': dict(value=0x11d88, evidence="SYNTH_ROW_BIND: add r3,r7; add.w r3,r3,#0x11c00; ldrb.w sb,[r3,#0x188] "
+                            "(0x08160A58..5E): the shown row = byte view + [view + SYNTH_VIEW_SHOWN] + 0x11D88"),
+    'WT_PANE_FRAMES_DIRTY': dict(value=0x818497a, evidence="(pane): strb 1 at +0x51 (frame +0x19) for the 16 frames at +0x38 stride "
+                                 "0x1C, then +0x22C = -1 (0x0818497A..94); callers 0x081849CA (the pane's data change) and "
+                                 "the wrapper 0x081849FC, which the row refresh calls for a row with a WAV (0x0815F6F8) and "
+                                 "0x08161614 calls. M: after it "
+                                 "stock's paint draws the frames again (test_synth_ui Dial)"),
 }
 
 # Registry keys missing from registry_keys.txt (entries without a title to match by): the measured

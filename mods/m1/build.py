@@ -313,9 +313,11 @@ GROUP_NAMES = {
                "PROP_TEMPLATE_LAST", "REG_BUILD_SITE", "REG_BUILD", "WT_OSC_PROP_SLOT", "WT_OSC_PROPERTY",
                "KEY_OSC_TYPE", "KEY_OSC_SHAPE", "KEY_OSC_SYNC", "KEY_OSC_GLIDE",
                # BE4.40 identity (docs/plan-be440-sync-identity.md track I): T0 the strings and their one literal each, T1 the
-               # title site, D1 the pane paint slot, B1' the 0x3F post
+               # title site, D1 the pane paint slot, B1' the 0x3F post; the review fixes: V1 / Y1 the value-text sites and the
+               # step position, D2 the frames' redraw
                "STR_PREFIX_OSC1", "STR_PREFIX_OSC2", "STR_DEST_OSC_FMT", "PREFIX_LIT_OSC1", "PREFIX_LIT_OSC2", "DEST_FMT_LIT",
-               "PANE_TITLE_SITE", "WT_PANE_PAINT_SLOT", "WT_PANE_PAINT", "BROWSE_POST_SITE", "UI_POST"),
+               "PANE_TITLE_SITE", "WT_PANE_PAINT_SLOT", "WT_PANE_PAINT", "BROWSE_POST_SITE", "UI_POST",
+               "VALUE_TEXT_1", "VALUE_TEXT_2", "VALUE_TEXT_3", "ENC_POS_SET", "WT_PANE_FRAMES_DIRTY"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -1725,6 +1727,28 @@ def np_template(base_img, stock_n):
     return b"".join(new), n
 
 
+def one_reference(img, addrs):
+    """{addr: the aligned words of img holding addr}; fails if a movw / movt pair (movt within 4 instructions of the movw,
+    same register) builds one of the addresses (T0's 'one literal reference')."""
+    refs = {a: [] for a in addrs}
+    for k in range(0, len(img) - 3, 4):
+        w = struct.unpack_from("<I", img, k)[0]
+        if w in refs:
+            refs[w].append(BASE + k)
+    imm16 = lambda h1, h2: (h1 & 15) << 12 | (h1 >> 10 & 1) << 11 | (h2 >> 12 & 7) << 8 | h2 & 255
+    lows = {a & 0xFFFF: a for a in addrs}
+    for k in range(0, len(img) - 3, 2):
+        h1, h2 = struct.unpack_from("<HH", img, k)
+        if (h1 & 0xFBF0) != 0xF240 or h2 & 0x8000 or imm16(h1, h2) not in lows:
+            continue
+        a, rd = lows[imm16(h1, h2)], h2 >> 8 & 15
+        for j in range(k + 4, min(k + 20, len(img) - 3), 2):
+            g1, g2 = struct.unpack_from("<HH", img, j)
+            if (g1 & 0xFBF0) == 0xF2C0 and not g2 & 0x8000 and g2 >> 8 & 15 == rd and imm16(g1, g2) == a >> 16:
+                raise SystemExit(f"T0: a movw / movt pair at {BASE + k:#x} builds {a:#x}")
+    return refs
+
+
 def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
     """M4: m4_synth.c after the poly AT handlers, its entry table (m4_diag.c calls it) and the wrappers; the Analog sites
     (BE4.40: N1 the template copy after the code, N2 the registry build, A6, A7, A10; identity: T0 strings, T1 the pane
@@ -1832,7 +1856,8 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
             for site_name, target, fn, why in [("PAGE_KEYS_COPY", "M4_MEMCPY", "an_page_keys", "Wavetable page keys: Type, the Analog rows")] + \
                     [(f"PANE_TEXT_{i}", "SLOT_TITLE", "an_pane_text", f"Wavetable pane hint {i}") for i in (1, 3, 5, 6)] + \
                     [("PANE_TITLE_SITE", "SLOT_TITLE", None, "identity T1: an Analog pane's title (shim: the row's handle)"),
-                     ("BROWSE_POST_SITE", "UI_POST", None, "identity B1': no WAV browser from a double-tap on an Analog pane")]:
+                     ("BROWSE_POST_SITE", "UI_POST", None, "identity B1': no WAV browser from a double-tap on an Analog pane")] + \
+                    [(f"VALUE_TEXT_{i}", "SLOT_TITLE", "an_value_text", f"identity V1 / Y1: encoder value text {i}") for i in (1, 2, 3)]:
                 site = getattr(S, site_name)
                 orig = asm(f"bl {getattr(S, target):#x}", site)
                 if S.orig(site_name) != orig:
@@ -1841,12 +1866,17 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                 patch(site, asm(f"bl {to:#x}", site), orig, f"Analog: {why}")
             # T0 (BE4.40 identity, J2): "WT1: " / "WT2: " -> "OSC1: " / "OSC2: " (the page's row prefixes: the pane titles) and
             # the mod destination format "WT%d: %s" -> "OSC%d: %s", in their own zero-padded slots; each string has one
-            # literal reference (checked), so nothing else of stock's is renamed
-            for site, lit, text in (("STR_PREFIX_OSC1", "PREFIX_LIT_OSC1", b"OSC1: "), ("STR_PREFIX_OSC2", "PREFIX_LIT_OSC2", b"OSC2: "),
-                                    ("STR_DEST_OSC_FMT", "DEST_FMT_LIT", b"OSC%d: %s")):
+            # literal reference (checked here on the base image: the named literal is the only aligned word holding the
+            # string's address, and no movw / movt pair builds it), so nothing else of stock's is renamed
+            t0 = (("STR_PREFIX_OSC1", "PREFIX_LIT_OSC1", b"OSC1: "), ("STR_PREFIX_OSC2", "PREFIX_LIT_OSC2", b"OSC2: "),
+                  ("STR_DEST_OSC_FMT", "DEST_FMT_LIT", b"OSC%d: %s"))
+            t0_refs = one_reference(base_img, {getattr(S, site) for site, _, _ in t0})
+            for site, lit, text in t0:
                 orig = S.orig(site)
                 if S.orig(lit) != struct.pack("<I", getattr(S, site)):
                     raise SystemExit(f"T0: {lit} does not hold {site}")
+                if t0_refs[getattr(S, site)] != [getattr(S, lit)]:
+                    raise SystemExit(f"T0: {site} is referenced at {[hex(a) for a in t0_refs[getattr(S, site)]]}, not only by {lit}")
                 if len(text) + 1 > len(orig) or orig[orig.index(b"\0"):] != bytes(len(orig) - orig.index(b"\0")):
                     raise SystemExit(f"T0: '{text.decode()}' does not fit {site}'s zero-padded slot")
                 was = orig.split(b"\0")[0].decode()

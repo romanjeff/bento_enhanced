@@ -21,12 +21,13 @@
  *   A10    the synth view's tick slot -> an_view_tick: puts each oscillator row's keys right for its Type (stock's own row
  *          bind rereads them, SYNTH_ROW_SHOW), sends an oscillator that just became Analog its other settings again (the M7
  *          keeps them only while it is Analog), re-titles the Analog panes (T1: the DSP load), marks a dial for a redraw
- *          (D2); after stock's tick, the value texts of the shown row (Y1 Type, V1 Shape)
+ *          (D2); before and after stock's tick, the value texts of the shown row (Y1 Type, V1 Shape)
  *   BE4.40 identity (docs/plan-be440-sync-identity.md track I): T0 the prefixes "WT1: " / "WT2: " and the mod destination
  *          format "WT%d: %s" become "OSC..." (data, build.py); T1 the Wavetable pane title (bl SLOT_TITLE at PANE_TITLE_SITE,
  *          an asm shim hands over the row's handle from stock's frame) -> an_pane_title; D1 the pane class's paint slot ->
  *          an_wave_paint (the Shape dial); B1' the 0x3F post of a double-tap on a Wavetable pane (BROWSE_POST_SITE, a shim
- *          with the oscillator's handle) -> an_browse: none for an Analog oscillator
+ *          with the oscillator's handle) -> an_browse: none for an Analog oscillator; V1 / Y1 the encoder widget's three
+ *          value-text writes (bl SLOT_TITLE, VALUE_TEXT_1..3) -> an_value_text
  *   X6     m4_diag.c calls the entry table: slot 0 an_tick (every UI loop pass), slot 1 an_print (save time: the ANALOG and
  *          DRUMS lines of the black box)
  * The drum page (S6c-2, BE4.31; group drums, default-off on 1.6.8 since BE4.40, built only with BE_ENABLE=drums), after
@@ -526,17 +527,22 @@ static int fix_rows(void *view, const u16 *stock) {
     }
     return fix_reset_row(view, stock, a0 && a1) | changed;
 }
+static void full_repaint(void *view);
 /* A6: the page builder's bl memcpy(view + SYNTH_VIEW_KEYS, the Wavetable page's key table, 0xB0). The row handles may still
- * name the previous page's objects here: the tick puts the rows right on its next pass (fix_rows) either way. */
+ * name the previous page's objects here: the tick puts the rows right on its next pass (fix_rows) either way. A dial this
+ * view shows is cleared by a full repaint (a track change from an Analog OSC1 to a Wavetable one: stock's pane draws no
+ * background and the 0xA8 build asks for no full repaint, M); the dials are drawn afresh (D2). */
 __attribute__((used, retain)) void *an_page_keys(void *dst, const void *src, u32 n) {
     void *r = FN(S_M4_MEMCPY, void *(*)(void *, const void *, u32))(dst, src, n);
     if (np_ok() && n >= 3u * ROW_BYTES) {
         volatile An4 *a = an4();
+        void *view = (u8 *)dst - S_SYNTH_VIEW_KEYS;
         a->src = (u32)src;
         a->page_rows++;
         a->last_h[0] = a->last_h[1] = 0;     /* a new page: its pane texts were set before its rows had objects (page_tick) */
-        a->dial[0].view = a->dial[1].view = 0;   /* D2: the dials are drawn afresh */
-        fix_rows((u8 *)dst - S_SYNTH_VIEW_KEYS, (const u16 *)src);
+        if (a->dial[0].view == (u32)view || a->dial[1].view == (u32)view) full_repaint(view);
+        a->dial[0].view = a->dial[1].view = 0;
+        fix_rows(view, (const u16 *)src);
     }
     return r;
 }
@@ -577,21 +583,23 @@ __attribute__((used, retain)) void an_pane_text(void *slot, const char *text) {
  * "OSC1: Analog", " (WAV kept)" while the oscillator still has a WAV (stock keeps it, and plays it again as Wavetable), and
  * on the first Analog oscillator "  DSP 63%": the M7's total LOAD (D0L, cpu_update; not this oscillator's share, hence
  * not "CPU"), " OVER" for 2 s after a block over budget, "DSP off" before the M7 has taken the synth area. SLOT_TITLE
- * compares and keeps 31 characters (0x081809E6, S): the longest form that fits is used. One composer for the title hook
+ * compares and keeps 31 characters (0x081809E6, S): " +WAV" next to the load (below). One composer for the title hook
  * (on stock's refreshes) and the tick (every 250 ms: the hook is not called while nothing changes, M). */
 #define TITLE_MAX 31u
-static u32 slen(const char *s) { u32 n = 0; while (s[n]) n++; return n; }
 static int has_wav(u32 h) {
     char path[256];                            /* GET_STRING copies at most 255 characters and a 0 (0x0812EDC2, S) */
     path[0] = 0;
     FN(S_GET_STRING, u32 (*)(void *, u32 *, u32, char *))(MODEL, &h, S_KEY_FILENAME, path);
     return path[0] != 0;
 }
-static void title_text(void *view, u32 o, u32 h, char *buf) {
+/* One form per state (W1, review rev_m4_1): the marker does not change with the load. Where the load is shown the WAV
+ * marker is " +WAV" and the separator one space, so the longest ("OSC1: Analog +WAV DSP 100% OVER") is 31; elsewhere
+ * " (WAV kept)" and two spaces (at most 12 + 11 or 12 + 2 + 8 + 5). osc1: OSC1 is Analog (OSC2 then shows no load). */
+static void title_text(u32 o, u32 h, int osc1, char *buf) {
     volatile An4 *a = an4();
     char dsp[16]; u32 dl = 0;
     Out d = {dsp, &dl, sizeof(dsp) - 1u};
-    if (o == 0 || !analog_osc(row_handle(view, 0))) {
+    if (o == 0 || !osc1) {
         if (!ready()) puts_(&d, "DSP off");
         else {
             puts_(&d, "DSP "); dec(&d, (a->cpu_pm + 5u) / 10u); puts_(&d, "%");
@@ -599,25 +607,37 @@ static void title_text(void *view, u32 o, u32 h, char *buf) {
         }
     }
     dsp[dl] = 0;
-    static const char *const WAV[3] = {" (WAV kept)", " (WAV)", ""};
-    const char *name = o ? "OSC2: Analog" : "OSC1: Analog";
-    for (u32 v = has_wav(h) ? 0u : 4u; v < 6u; v++) {          /* (marker, separator): the first that fits */
-        const char *m = WAV[v >> 1], *sep = dl ? (v & 1u ? " " : "  ") : "";
-        if (slen(name) + slen(m) + slen(sep) + dl > TITLE_MAX && v < 5u) continue;
-        u32 len = 0; Out out = {buf, &len, TITLE_MAX};
-        puts_(&out, name); puts_(&out, m); puts_(&out, sep); puts_(&out, dsp);
-        buf[len] = 0;
-        return;
+    int wav = has_wav(h);
+    u32 len = 0; Out out = {buf, &len, TITLE_MAX};
+    puts_(&out, o ? "OSC2: Analog" : "OSC1: Analog");
+    if (wav) puts_(&out, dl ? " +WAV" : " (WAV kept)");
+    if (dl) { puts_(&out, wav ? " " : "  "); puts_(&out, dsp); }
+    buf[len] = 0;
+}
+/* The handle of the track's oscillator k (its k-th type-6 child), 0 if none. */
+static u32 nth_osc(void *track, u32 k) {
+    u32 n = W(track, S_NODE_CHILD_N);
+    for (u32 c = 0; c < n && c < 0x244u; c++) {
+        void *ch = (void *)W(track, S_NODE_CHILDREN + 4u * c);
+        if (ch && obj_type(ch) == TYPE_WT_OSC && !k--) return W(ch, 0x10);
     }
+    return 0;
 }
 /* T1: the Wavetable branch's bl SLOT_TITLE (PANE_TITLE_SITE: slot = view + VIEW_PANE_TITLE + 0x70 row, the "%s%.20s" text),
  * through build.py's shim, which hands over the row's object handle from stock's frame ([sp, #0x32C]: the handle stock
- * reads key 0xC9 with right after, 0x0815F97E, S). The view's row handle is not written yet there (M, verifier e1). */
+ * reads key 0xC9 with right after, 0x0815F97E, S). The view's row handles are not written yet there (0 or the previous
+ * page's: M, verifier e1), so OSC2's title takes OSC1's Type from the selected track's first oscillator when h is that
+ * track's second (review rev_m4_2: no load figure on OSC2 from a stale row handle until the tick). */
 __attribute__((used, retain)) void an_pane_title(void *slot, const char *text, u32 h) {
     char buf[TITLE_MAX + 1u];
     void *view = 0;
     int o = np_ok() ? view_of(slot, S_VIEW_PANE_TITLE, S_PANE_TITLE_STRIDE, &view) : -1;
-    if (o >= 0 && analog_osc(h)) { title_text(view, (u32)o, h, buf); text = buf; }
+    if (o >= 0 && analog_osc(h)) {
+        void *t = o ? resolve(track_handle(sel_track())) : 0;
+        u32 h1 = t && nth_osc(t, 1) == h ? nth_osc(t, 0) : row_handle(view, 0);
+        title_text((u32)o, h, analog_osc(h1), buf);
+        text = buf;
+    }
     slot_title(slot, text);
 }
 
@@ -655,18 +675,21 @@ static int angle(u32 shape) { return 160 - (int)(shape * 192u / AN_SHAPE_MAX); }
 #define C_SECTOR 0xF5u
 #define C_LIT 0xF2u
 #define C_POINTER 0xF6u
-/* one cycle of glyph k (0 saw, 1 square, 2 pulse) over 18 columns, amplitude 6, centred on (cx, cy) */
+/* Two cycles of glyph k (0 saw, 1 square, 2 pulse) over 24 columns, amplitude 9, centred on (cx, cy), y up: the saw rises
+ * and falls back at each cycle's end as the kernel's 2p - 1 (analog_kernel.cpp), the square and the pulse show both edges;
+ * the pulse is high for 3 of a cycle's 12 columns (8 % would be one: too thin to read), review rev_m4_1. Each column joins
+ * the last one's level, which draws the vertical edges. */
+#define GLYPH_N 24
+#define GLYPH_AMP 9
 static void glyph(u32 k, int cx, int cy, u32 c, u32 surf) {
-    const int n = 18, amp = 6;
     int prev = 0;
-    for (int i = 0; i <= n; i++) {
-        int p = i * 64 / n;
-        int y = cy + (k == 0u ? (32 - p) * amp / 32 : p < (k == 1u ? 32 : 6) ? amp : -amp);
+    for (int i = 0; i <= GLYPH_N; i++) {
+        int p = i * 128 / GLYPH_N & 63;
+        int y = cy + (k == 0u ? (p - 32) * GLYPH_AMP / 32 : p < (k == 1u ? 32 : 16) ? GLYPH_AMP : -GLYPH_AMP);
         int lo = i && prev < y ? prev : y, hi = i && prev > y ? prev : y;
-        fill(cx - n / 2 + i, lo, 2, hi - lo + 2, c, surf);
+        fill(cx - GLYPH_N / 2 + i, lo, 2, hi - lo + 2, c, surf);
         prev = y;
     }
-    if (k == 0u) fill(cx - n / 2 + n, cy - amp, 2, 2 * amp + 2, c, surf);   /* the saw's vertical edge */
 }
 /* lit glyphs for Shape s: bit k when glyph k has at least 3/4 of the blend (saw 0..58, square 78..97, pulse 118..127) */
 #define MORPH (AN_SHAPE_SQUARE - AN_SHAPE_SAW_END)
@@ -745,10 +768,20 @@ static int shown(void *w) {                                /* no hidden widget u
     for (u32 i = 0; w && i < 16u; i++, w = (void *)W(w, S_WIDGET_PARENT)) if (B(w, S_WIDGET_HIDDEN)) return 0;
     return 1;
 }
+/* A full repaint of the page (both request bytes: ctx+0 makes the root clear the screen, 0x081701F8; the frames are drawn
+ * only with ctx+1, 0x0818455E): every
+ * widget of the synth view draws again on it (M: fix_m4/pfull.py, the view painted twice from a cleared screen: the same
+ * 140,413 px) except stock's Wavetable frames, each drawn only while its dirty byte (+0x19) is set and cleared once drawn
+ * (0x081845AE..0x08184672), so both panes' frames are marked first (WT_PANE_FRAMES_DIRTY, as stock's row refresh does for a
+ * row with a WAV, 0x0815F6F8). Review rev_m4_2: without that, the other pane's wavetable stayed blank. */
+static void full_repaint(void *view) {
+    for (u32 o = 0; o < 2u; o++) FN(S_WT_PANE_FRAMES_DIRTY, void (*)(void *))(pane_w(view, o));
+    B(pane_w(view, 0), S_WT_PANE_REDRAW) = 1;
+    B(pane_w(view, 0), S_WT_PANE_REDRAW + 1u) = 1;
+}
 /* D2 (the tick): a pane whose dial is out of date is marked for a partial repaint (its dirty byte, which stock's pane tick
  * 0x081844E0 ORs into the page's flags: then the paint walk calls an_wave_paint); a pane that leaves Analog gets a full
- * repaint (its other byte: the root clears the screen), so stock's pane is not drawn over our fill; a hidden pane is drawn
- * afresh when it shows again. */
+ * repaint (full_repaint), so stock's pane is not drawn over our fill; a hidden pane is drawn afresh when it shows again. */
 static void dial_tick(volatile An4 *a, void *view, u32 now) {
     for (u32 o = 0; o < 2u; o++) {
         void *w = pane_w(view, o);
@@ -756,7 +789,7 @@ static void dial_tick(volatile An4 *a, void *view, u32 now) {
         u32 h = 0, key = dial_key(view, o, &h);
         if (!shown(w)) { c->view = 0; continue; }
         if (!key) {
-            if (c->view == (u32)view) { B(w, S_WT_PANE_REDRAW) = 1; c->view = 0; }
+            if (c->view == (u32)view) { full_repaint(view); c->view = 0; }
             continue;
         }
         if ((c->view != (u32)view || c->h != h || c->key != key) && now - c->t >= DIAL_MS) B(w, S_WT_PANE_REDRAW + 1u) = 1;
@@ -764,7 +797,7 @@ static void dial_tick(volatile An4 *a, void *view, u32 now) {
 }
 
 /* ---- Y1 / V1: the shown row's value texts ------------------------------------------------------------------------------
- * After stock's tick (a value its widget has just written is replaced before the paint). Y1: a Type value stock's two-label
+ * At the widget's own text writes (an_value_text) and in the tick, before and after stock's. Y1: a Type value stock's two-label
  * list cannot name (not 0 / 1: the oscillator plays Wavetable) reads "Wavetable"; nothing is written to the model, so a
  * later version's value survives a save. V1: an Analog oscillator's Shape reads what the kernel plays (dsp/analog.cpp an_shape,
  * analog_kernel.cpp: blend = 2 shape, pulse width 0.5 - 0.84 (shape - 0.5)). Only widgets bound to our keys: Type and Shape
@@ -778,14 +811,72 @@ static void shape_text(u32 s, char *t) {
     else { puts_(&o, "Pulse "); dec(&o, (100u * NARROW - 84u * (s - AN_SHAPE_SQUARE) + NARROW) / (2u * NARROW)); puts_(&o, "%"); }
     t[len] = 0;
 }
+/* The text slot widget wd (key, object h) shows instead of stock's, 0 for stock's: an out-of-range Type (Y1), an Analog
+ * oscillator's Shape (V1). */
+static const char *value_text(u8 *wd, u32 h, char *t) {
+    u32 key = H(wd, S_SLOT_KEY), v = 0;
+    if (key == S_KEY_OSC_TYPE && prop(h, key, &v) && v > 1u) return TYPE_LABELS[0];
+    if (key == S_KEY_OSC_SHAPE && analog_osc(h)) { shape_text(shape_of(h), t); return t; }
+    return 0;
+}
+/* Y1, the encoder: stock's two-label widget keeps an out-of-range Type at its last entry (step position SLOT_STEP: index
+ * 1, value SLOT_CUR 1, "Analog"), so a right turn did nothing and a left one wrote 0 (M, review rev_m4_1). The widget is
+ * put at entry 0, what it now reads: index 0, its last-posted index (SLOT_STEP_LAST) and value 0. ENC_TURN posts when the
+ * index moves off the last one and the new entry's value differs from SLOT_CUR (0x08173FE0..FFA), so right writes 1
+ * (Analog), left nothing (already "Wavetable"); the model keeps its value until then. */
+#define STEP_INDEX 0xCu                       /* the step position's index (ENC_POS_SET: str r1, [r0, #0xc], 0x081742D4, S) */
+static void type_entry(u8 *wd) {
+    u32 v = 0;
+    if (H(wd, S_SLOT_KEY) != S_KEY_OSC_TYPE || !prop(W(wd, S_SLOT_HANDLE), S_KEY_OSC_TYPE, &v) || v <= 1u) return;
+    if (!W(wd, S_SLOT_STEP + STEP_INDEX) && !W(wd, S_SLOT_STEP_LAST) && !W(wd, S_SLOT_CUR)) return;
+    FN(S_ENC_POS_SET, void (*)(void *, u32))(wd + S_SLOT_STEP, 0);
+    W(wd, S_SLOT_STEP_LAST) = 0;
+    W(wd, S_SLOT_CUR) = 0;
+}
 static void value_texts(void *view) {
     for (u32 i = 2; i < 4u; i++) {
         u8 *wd = (u8 *)view + S_SYNTH_SLOT0 + S_SYNTH_SLOT_STRIDE * i;
-        u32 key = H(wd, S_SLOT_KEY), h = W(wd, S_SLOT_HANDLE), v = 0;
         char t[16];
-        if (key == S_KEY_OSC_TYPE && prop(h, key, &v) && v > 1u) slot_title(wd + S_SLOT_VALUE, TYPE_LABELS[0]);
-        else if (key == S_KEY_OSC_SHAPE && analog_osc(h)) { shape_text(shape_of(h), t); slot_title(wd + S_SLOT_VALUE, t); }
+        const char *s = value_text(wd, W(wd, S_SLOT_HANDLE), t);
+        if (s) slot_title(wd + S_SLOT_VALUE, s);
+        type_entry(wd);
     }
+}
+/* The synth view whose encoder slot widget is wd (view + SYNTH_SLOT0 + SYNTH_SLOT_STRIDE i, i < 8), 0 if none. */
+static void *slot_view(u8 *wd) {
+    for (u32 i = 0; i < 8u; i++) {
+        u32 off = S_SYNTH_SLOT0 + S_SYNTH_SLOT_STRIDE * i;
+        u8 *v = wd - off;
+        /* every encoder widget of every page comes here: a word read below its RAM block's base (each block starts on a
+         * 16 MB boundary: DTCM, AXI, D2, D3, SDRAM) could fault, so v stays in wd's 16 MB */
+        if (((u32)v >> 24) == ((u32)wd >> 24) && (u32)wd > off && W(v, 0) == S_SYNTH_VIEW_TICK_SLOT) return v;
+    }
+    return 0;
+}
+/* V1 / Y1 at the source: the encoder widget's own value-text writes (VALUE_TEXT_1..3: bl SLOT_TITLE(widget + SLOT_VALUE,
+ * text) in its value updates, 0x08173824 / 0x08173AE2 / 0x08173CFC, S), on a row bind (SYNTH_ROW_SHOW), stock's 0xC3 / 0xC4
+ * refreshes and a turn: stock's number or label never reaches the screen between two ticks (review rev_m4_1 / rev_m4_2,
+ * M: "64" and "Analog" after a row switch). Every widget of this class on every page comes through here: only a synth
+ * view's, on the Wavetable page, is touched. The tick (value_texts) still covers an oscillator whose Type changed under a
+ * row that stock did not rewrite. On a bind the widget's text is written with its new key but still the old row's object
+ * (M: Shape with OSC2's handle on a switch to row 0), so the object is the shown row's (SYNTH_VIEW_SHOWN: the byte
+ * view + [view + SYNTH_VIEW_SHOWN] + SYNTH_SHOWN_ROW, SYNTH_ROW_BIND 0x08160A50..5E; Type and Shape are on rows 0 / 1 only:
+ * our keys above 0xDA are bound to the row's own handle there, 0x08160D8C). */
+__attribute__((used, retain)) void an_value_text(void *label, const char *text) {
+    char t[16];
+    /* slot_view first: stock's static constructors write encoder texts too (M: test_handles cold boot), before the model
+     * and np_keys; np_ok() there would make the AN4 table (an4()) or trust a previous boot's keys word. No synth view
+     * exists then, so AN4 is not touched. */
+    u8 *wd = (u8 *)label - S_SLOT_VALUE;
+    void *view = slot_view(wd);
+    if (view && np_ok()) {
+        if (wt_page(view)) {
+            u32 row = B((u8 *)view + W(view, S_SYNTH_VIEW_SHOWN), S_SYNTH_SHOWN_ROW);
+            const char *s = row < 2u ? value_text(wd, row_handle(view, row), t) : 0;
+            if (s) text = s;
+        }
+    }
+    slot_title(label, text);
 }
 
 /* ---- an oscillator that just became Analog gets its other settings again ------------------------------------------------
@@ -866,7 +957,7 @@ static void cpu_update(volatile An4 *a, u32 now) {
 }
 /* A10: the synth view's tick (view, flags). The rows and the resend (page_tick); at most 4 times a second the Analog panes'
  * titles (T1: the same composer as the title hook, so the DSP figure moves while nothing refreshes the page; SLOT_TITLE
- * marks a label only when its text changed, 0x081809EA, S); the dials (D2); stock's tick; then the value texts (Y1, V1).
+ * marks a label only when its text changed, 0x081809EA, S); the dials (D2); the value texts (Y1, V1) around stock's tick.
  * T2: nothing goes to the hidden "No WAV" labels any more. */
 __attribute__((used, retain)) void an_view_tick(void *view, void *flags) {
     volatile An4 *a = an4();
@@ -879,11 +970,12 @@ __attribute__((used, retain)) void an_view_tick(void *view, void *flags) {
             u32 h = row_handle(view, o);
             if (!analog_osc(h)) continue;                   /* a Wavetable title is stock's (page_tick's 0xC3 refreshes it) */
             char t[TITLE_MAX + 1u];
-            title_text(view, o, h, t);
+            title_text(o, h, analog_osc(row_handle(view, 0)), t);
             slot_title(pane_title(view, o), t);
         }
     }
     if (page) dial_tick(a, view, now);
+    if (page) value_texts(view);                            /* Y1: the Type widget at its entry before stock's tick turns it */
     FN(S_SYNTH_VIEW_TICK, void (*)(void *, void *))(view, flags);
     if (page) value_texts(view);
 }

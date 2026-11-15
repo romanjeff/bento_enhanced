@@ -68,6 +68,7 @@ STOCK_161 = dict(
     KEY_WT_OSC_RESET=None, VIEW_WT_PANE=None, WT_PANE_STRIDE=None, WT_PANE_HINT=None, WT_PANE_FLAGS=None,   # BE4.40
     WT_PANE_REDRAW=None, VIEW_PANE_TITLE=None, PANE_TITLE_STRIDE=None, WIDGET_PARENT=None, WIDGET_HIDDEN=None,   # identity:
     SYNTH_SLOT0=None, SYNTH_SLOT_STRIDE=None, SLOT_KEY=None, SLOT_HANDLE=None, SLOT_VALUE=None,               # 1.6.8 only
+    SLOT_STEP=None, SLOT_STEP_LAST=None, SLOT_CUR=None, SYNTH_VIEW_SHOWN=None, SYNTH_SHOWN_ROW=None,
     VOICE_DESC=None, VOICE_CURSOR=None, VOICE_RATIO=None, VOICE_PITCH_PARAM=None, VOICE_LFO1=None,   # S6c drums: 1.6.8 only
     ROOT_FINE=None, ROOT_LOOP=None, ROOT_VOICES=None, ROOT_VOICE_N=None, VOICE_SERIAL=None, VOICE_FORWARD=None, BUF_CAPACITY=None,
     INST_CELL=None, INST_FILE=None, INST_TRACK_TYPE=None, INST_KEYS=None, INST_NATIVE_KEYS=None, INST_ROW_STRIDE=None,   # S6c-2: 1.6.8 only
@@ -250,6 +251,10 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     SYNTH_SLOT0=0x70, SYNTH_SLOT_STRIDE=0x468,   # measured on stock's page (test_synth_ui since rc33 implA); str.w [r3,#0x468] 0x0816001E
     SLOT_KEY=0x9C, SLOT_HANDLE=0x34,   # ENC_TURN: key +0x9C, UI_POST {0xCF, [+0x34], key, value} (0x0817400C..26)
     SLOT_VALUE=0xA8,              # add.w r0,r4,#0xa8; bl SLOT_TITLE (0x08173820)
+    SLOT_STEP=0x80,               # ENC_TURN: add.w r0,r4,#0x80; bl 0x081742EC (0x08173FD8); the bind's ENC_POS_SET (0x08173E18)
+    SLOT_STEP_LAST=0x98,          # ENC_TURN: ldr [r4,#0x8c] vs [r4,#0x98], equal -> no post (0x08173FE0..EA)
+    SLOT_CUR=0xA0,                # ENC_TURN: the entry's value vs ldr [r4,#0xa0], equal -> no post (0x08173FF4..FA)
+    SYNTH_VIEW_SHOWN=0x2434, SYNTH_SHOWN_ROW=0x11D88,   # SYNTH_ROW_BIND: ldr.w [view+0x2434]; ldrb [+0x11c00+0x188] (0x08160A50..5E)
 )}
 
 EXPECTED = {"stock_161": STOCK_161, "stock_168": STOCK_168}

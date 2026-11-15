@@ -723,6 +723,16 @@ SYMS = dict(
     SLOT_HANDLE=offset(None, note="encoder slot widget: the object it edits (handle)", status='absent'),
     SLOT_VALUE=offset(None, note="encoder slot widget: its value label (SLOT_TITLE target)", status='absent'),
     DEST_NAME=code(None, note="(view, &object handle, key, buf, size, flag): a mod destination's name ('OSC%d: %s' for a Wavetable oscillator, T0); tests", status='absent'),
+    VALUE_TEXT_1=code(None, note="encoder slot widget: bl SLOT_TITLE of its value text (a number) (V1 / Y1 site)", status='absent'),
+    VALUE_TEXT_2=code(None, note="encoder slot widget: bl SLOT_TITLE of its value text (a formatted number) (V1 / Y1 site)", status='absent'),
+    VALUE_TEXT_3=code(None, note="encoder slot widget: bl SLOT_TITLE of its value text (a label) (V1 / Y1 site)", status='absent'),
+    ENC_POS_SET=code(None, note="(step position, index): set a widget's step position to an index (clamped)", status='absent'),
+    SLOT_STEP=offset(None, note="encoder slot widget: its step position (acc s64, step, index +0xC, count +0x10)", status='absent'),
+    SLOT_STEP_LAST=offset(None, note="encoder slot widget: the index it last posted (ENC_TURN posts when the index moves off it)", status='absent'),
+    SLOT_CUR=offset(None, note="encoder slot widget: the value it shows (ENC_TURN posts a new entry's value only when it differs)", status='absent'),
+    SYNTH_VIEW_SHOWN=offset(None, note="synth view: the word holding the offset of the shown-row byte's base (view + [view + this])", status='absent'),
+    SYNTH_SHOWN_ROW=offset(None, note="synth view: the shown row's byte, from view + [view + SYNTH_VIEW_SHOWN]", status='absent'),
+    WT_PANE_FRAMES_DIRTY=code(None, note="(pane): mark the Wavetable pane's 16 frames for a redraw", status='absent'),
 )
 
 # ---------------------------------------------------------------- image checks

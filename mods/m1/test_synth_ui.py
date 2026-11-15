@@ -290,6 +290,8 @@ class Sites(unittest.TestCase):
         for i in (2, 4):
             self.assertTrue(same(getattr(S, f"PANE_TEXT_{i}")), f"T2: the hidden 'No WAV' label's site {i} is stock's")
         self.assertEqual(word(IMG, S.WT_PANE_PAINT_SLOT), SYM["an_wave_paint"] | 1, "D1")
+        for i in (1, 2, 3):
+            self.assertEqual(bl_target(getattr(S, f"VALUE_TEXT_{i}")), SYM["an_value_text"], f"V1 / Y1 value text {i}")
         for site, wrap, fn, ldr in (("PANE_TITLE_SITE", "wrap_pane_title", "an_pane_title", "ldr.w r2, [sp, #0x32c]"),
                                     ("BROWSE_POST_SITE", "wrap_browse", "an_browse", "ldr r2, [sp, #0x20]")):
             self.assertEqual(bl_target(getattr(S, site)), SYM[wrap], site)
@@ -336,7 +338,7 @@ class Sites(unittest.TestCase):
 class Disabled(unittest.TestCase):
     def test_a_bisect_leaves_the_page_stock(self):
         for site in ["SYNTH_VIEW_TICK_SLOT", "PAGE_KEYS_COPY", "SYNTH_VIEW_EV_SLOT", "PANE_TITLE_SITE", "WT_PANE_PAINT_SLOT",
-                     "BROWSE_POST_SITE"] + [f"PANE_TEXT_{i}" for i in range(1, 7)]:
+                     "BROWSE_POST_SITE"] + [f"PANE_TEXT_{i}" for i in range(1, 7)] + [f"VALUE_TEXT_{i}" for i in (1, 2, 3)]:
             self.assertTrue(same(getattr(S, site)), site)
         for site in ("STR_PREFIX_OSC1", "STR_PREFIX_OSC2", "STR_DEST_OSC_FMT"):
             self.assertTrue(same(getattr(S, site), 12 if site == "STR_DEST_OSC_FMT" else 8), site)
@@ -562,28 +564,49 @@ class Titles(unittest.TestCase):
         r = Rig(types=(1, 0), page=False)
         r.wavs = {r.h1: "Basic Shapes.wav", r.h2: "Vocal Formants.wav"}
         r.view = r.malloc(0x13000); r.call(S.SYNTH_VIEW_CTOR, r.view); r.notify(0xA8); r.tick()
-        self.assertEqual(r.titles_(), ["OSC1: Analog (WAV kept)  DSP 0%", "OSC2: Vocal Formants"])
+        self.assertEqual(r.titles_(), ["OSC1: Analog +WAV DSP 0%", "OSC2: Vocal Formants"])
         r.edit(r.h1, TYPE, 0); r.tick()
         self.assertEqual(r.titles_()[0], "OSC1: Basic Shapes", "stock's title again (it drops the extension)")
         r.edit(r.h2, TYPE, 1); r.tick()
-        self.assertEqual(r.titles_(), ["OSC1: Basic Shapes", "OSC2: Analog (WAV kept)  DSP 0%"])
+        self.assertEqual(r.titles_(), ["OSC1: Basic Shapes", "OSC2: Analog +WAV DSP 0%"])
+        r.edit(r.h1, TYPE, 1); r.tick()
+        self.assertEqual(r.titles_(), ["OSC1: Analog +WAV DSP 0%", "OSC2: Analog (WAV kept)"], "no load figure: the long marker")
 
-    def test_the_longest_form_that_fits(self):
-        """31 characters at most (SLOT_TITLE compares and keeps 0x1F): ' (WAV kept)' -> ' (WAV)' -> nothing, the separator
-        two spaces -> one, before the load figure is cut."""
-        r = Rig(types=(1, 0), page=False)
-        r.wavs = {r.h1: "x.wav"}
-        r.view = r.malloc(0x13000); r.call(S.SYNTH_VIEW_CTOR, r.view); r.notify(0xA8); r.tick()
-        seen, total, over, t = 1000, 600000, 0, 2000
-        Indicator.load(None, r, seen, total, over); Indicator.run_tick(None, r, t)
-        for pm, o, want in ((630, 0, "OSC1: Analog (WAV kept) DSP 63%"), (1000, 0, "OSC1: Analog (WAV)  DSP 100%"),
-                            (630, 1, "OSC1: Analog (WAV) DSP 63% OVER"), (1000, 1, "OSC1: Analog  DSP 100% OVER")):
-            with self.subTest(pm=pm, over=o):
-                seen += 100; total += pm * 100; over += o; t += 3000      # 3 s apart: an OVER from the step before is gone
-                Indicator.load(None, r, seen, total, over)
-                got = Indicator.run_tick(None, r, t)
-                self.assertEqual(got, want)
-                self.assertLessEqual(len(got), 31)
+    def test_one_form_per_state(self):
+        """Review rev_m4_1: the WAV marker does not change with the load (it did: ' (WAV kept)' -> ' (WAV)' -> nothing as the
+        figure grew). Next to the load it is ' +WAV' and one space, within SLOT_TITLE's 31 characters (it compares and
+        keeps 0x1F) in the longest case; without a WAV, two spaces."""
+        for wav, forms in ((True, ("OSC1: Analog +WAV DSP 63%", "OSC1: Analog +WAV DSP 100%", "OSC1: Analog +WAV DSP 63% OVER",
+                                   "OSC1: Analog +WAV DSP 100% OVER")),
+                           (False, ("OSC1: Analog  DSP 63%", "OSC1: Analog  DSP 100%", "OSC1: Analog  DSP 63% OVER",
+                                    "OSC1: Analog  DSP 100% OVER"))):
+            r = Rig(types=(1, 0), page=False)
+            if wav:
+                r.wavs = {r.h1: "x.wav"}
+            r.view = r.malloc(0x13000); r.call(S.SYNTH_VIEW_CTOR, r.view); r.notify(0xA8); r.tick()
+            seen, total, over, t = 1000, 600000, 0, 2000
+            Indicator.load(None, r, seen, total, over); Indicator.run_tick(None, r, t)
+            for (pm, o), want in zip(((630, 0), (1000, 0), (630, 1), (1000, 1)), forms):
+                with self.subTest(wav=wav, pm=pm, over=o):
+                    seen += 100; total += pm * 100; over += o; t += 3000      # 3 s apart: an OVER from the step before is gone
+                    Indicator.load(None, r, seen, total, over)
+                    got = Indicator.run_tick(None, r, t)
+                    self.assertEqual(got, want)
+                    self.assertLessEqual(len(got), 31)
+
+    def test_the_hook_alone_with_stale_row_handles(self):
+        """Review rev_m4_2: at PANE_TITLE_SITE the view's row handles are 0 or the previous page's, so OSC2's title takes
+        OSC1's Type from the track (its first oscillator), not from row 0's handle. Stock's 0xC3 refresh runs with no tick
+        of ours (the 250 ms retitle cannot hide the hook's text)."""
+        for types, stale, want in (((0, 1), "h2", "OSC2: Analog  DSP 0%"), ((1, 1), 0, "OSC2: Analog")):
+            with self.subTest(types=types):
+                r = Rig(types=types); r.tick()
+                r.u.mem_write(r.view + PANE_TITLE[1] + TEXT, b"x\0")
+                r.w32(r.view + S.SYNTH_VIEW_HANDLES, r.h2 if stale == "h2" else 0)   # row 0: an Analog one / none
+                r.title_hits.clear()
+                r.notify(0xC3, r.h2)
+                self.assertIn(r.view + PANE_TITLE[1], r.title_hits, "through PANE_TITLE_SITE")
+                self.assertEqual(r.titles_()[1], want)
 
     def test_a_type_edit_retitles_through_stocks_refresh(self):
         """A Type edit (0xD0, no rebuild): page_tick's 0xC3 refreshes the row, the hook composes the title (with the handle
@@ -806,10 +829,11 @@ class Dial(unittest.TestCase):
 
     def test_leaving_analog_asks_for_a_full_repaint(self):
         """Our fill must not stay under stock's pane (stock draws no background): a pane that leaves Analog gets the full
-        repaint flag once; a hidden pane is drawn afresh when it shows again."""
+        repaint flag once (with the partial one: stock's frames draw only with ctx+1); a hidden pane is drawn afresh when it
+        shows again."""
         r = Rig(types=(1, 0)); r.tick(); r.paint(0, full=1)
         r.edit(r.h1, TYPE, 0)
-        self.assertEqual(r.asked()[0], 1, "a full repaint")
+        self.assertEqual(r.asked(), (1, 1), "a full repaint")
         self.assertEqual(r.asked(), (0, 0), "once")
         r.edit(r.h1, TYPE, 1)
         self.assertEqual(r.asked(), (0, 1), "back to Analog: drawn")
@@ -817,6 +841,78 @@ class Dial(unittest.TestCase):
         r.u.mem_write(r.view + PANE[0] + HIDDEN, b"\1"); r.tick(dt=50)
         r.u.mem_write(r.view + PANE[0] + HIDDEN, b"\0")
         self.assertEqual(r.asked(), (0, 1), "shown again: drawn afresh")
+
+    def wav_frames(self, r, pane):
+        """Pane `pane` with a WAV's frames (harness stub: the pane paint's frame fetch, its bl at WT_PANE_PAINT + 0x4C,
+        answers 1; the samples at pane+0x1FC a zero buffer): returns a counter of stock's frame line draws (the bl at
+        WT_PANE_PAINT + 0xC0) and the panes' frame dirty bytes (+0x38 + 0x1C k + 0x19). Measured on stock 1.6.8's paint
+        (review rev_m4_2 probe4.py)."""
+        FRAME_FETCH, FRAME_LINE = bl_target(S.WT_PANE_PAINT + 0x4C), bl_target(S.WT_PANE_PAINT + 0xC0)
+        self.assertTrue(FRAME_FETCH and FRAME_LINE, "the pane paint's frame fetch and line draw")
+        buf = r.malloc(0x1000)
+        r.w32(r.view + PANE[pane] + 0x1FC, buf)
+        def fetch(uc, a, sz, _): uc.reg_write(UC_ARM_REG_R0, 1); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        r.u.hook_add(UC_HOOK_CODE, fetch, begin=FRAME_FETCH, end=FRAME_FETCH)
+        lines = []
+        r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: lines.append(1), begin=FRAME_LINE, end=FRAME_LINE)
+        r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+        dirty = lambda p: [r.u.mem_read(r.view + PANE[p] + 0x38 + 0x1C * k + 0x19, 1)[0] for k in range(16)]
+        return lines, dirty
+
+    def test_a_full_repaint_redraws_stocks_frames(self):
+        """Review rev_m4_2: stock draws a frame only while its dirty byte is set and clears it once drawn, so the full
+        repaint (the root clears the screen) left the other pane's wavetable blank. Both panes' frames are marked with it:
+        OSC2's WAV is drawn again on that repaint."""
+        r = Rig(types=(1, 0)); r.tick()
+        lines, dirty = self.wav_frames(r, 1)
+        for _ in range(20):
+            r.paint(1)
+            if not any(dirty(1)):
+                break
+        self.assertFalse(any(dirty(1)), "stock drew OSC2's frames (and cleared their bytes)")
+        r.paint(0, full=1); r.edit(r.h1, TYPE, 0)
+        self.assertEqual(r.asked(), (1, 1))
+        self.assertEqual((dirty(0), dirty(1)), ([1] * 16, [1] * 16), "both panes' frames marked")
+        lines.clear(); r.paint(1, full=1, partial=1)
+        self.assertGreater(len(lines), 100, "OSC2's wavetable drawn again after the clear")
+
+    def test_a_page_build_clears_a_dial(self):
+        """Review rev_m4_1: a track change (0xA8, the page built again) from an Analog OSC1 to a Wavetable one: the build
+        asks for no full repaint itself, and stock's no-WAV pane draws no background, so a dial this view showed gets the
+        full repaint (and the frames marked); a view that showed no dial is left alone."""
+        r = Rig(types=(1, 0)); r.tick(); r.paint(0, full=1)
+        lines, dirty = self.wav_frames(r, 1)
+        for _ in range(20):
+            r.paint(1)
+        r.notify(0xA8)
+        self.assertEqual(bytes(r.u.mem_read(r.view + PANE[0] + 0x31, 2)), b"\1\1", "full and partial asked")
+        self.assertEqual(dirty(1), [1] * 16)
+        r = Rig(types=(0, 0)); r.tick(); r.paint(0, full=1); r.asked()
+        r.notify(0xA8)
+        self.assertEqual(r.u.mem_read(r.view + PANE[0] + 0x31, 1)[0], 0, "no dial: no full repaint (the build's own partial)")
+
+    def test_the_glyphs_read_as_the_sound(self):
+        """Review rev_m4_1: the saw rises (the kernel's 2p - 1, analog_kernel.cpp) and falls back at each cycle's end, two
+        cycles per glyph; the pulse shows both edges and a high run of at least 3 px. Glass Y is down."""
+        import numpy as np
+        r, _ = self.draw(0)
+        g, (cx, cy) = r.glass(0)
+        ys, xs = np.nonzero(g[:, :cx - 50] == LIT)        # the saw glyph (left of the ring)
+        top = {x: ys[xs == x].min() for x in set(xs)}
+        cols = sorted(top)
+        up = sum(top[b] < top[a] for a, b in zip(cols, cols[1:]))
+        down = sum(top[b] > top[a] for a, b in zip(cols, cols[1:]))
+        self.assertGreater(up, 3 * down, f"a rising ramp ({up} columns up, {down} down)")
+        span = {x: ys[xs == x].max() - ys[xs == x].min() for x in cols}
+        self.assertGreaterEqual(sum(v >= 16 for v in span.values()), 2, "the falling edges")
+        r, _ = self.draw(127)
+        g, (cx, cy) = r.glass(0)
+        ys, xs = np.nonzero(g == LIT)
+        cols = sorted(set(xs))
+        span = {x: ys[xs == x].max() - ys[xs == x].min() for x in cols}
+        self.assertGreaterEqual(sum(v >= 16 for v in span.values()), 4, "both edges of two pulses")
+        high = sorted(set(xs[ys == ys.min()]))
+        self.assertGreaterEqual(len(high), 3, "a high run of 3 px or more")
 
     def test_cost(self):
         """One dial draw on the emulated M4: instructions and fills (recorded in the plan doc; the device's DMA2D time is not
@@ -853,6 +949,37 @@ class ValueTexts(unittest.TestCase):
     def test_wavetable_rows_are_stocks(self):
         r = Rig(); r.tick()
         self.assertEqual((r.wtitle(2), r.wvalue(2)), ("Position", "0"))
+
+    def test_a_row_switch_shows_our_text_at_once(self):
+        """Reviews rev_m4_1 / rev_m4_2: stock's row bind (SYNTH_ROW_SHOW) and its 0xC3 refresh write the widget's own number
+        or label; through VALUE_TEXT_1..3 ours is written instead, with no tick in between (it read '64' / 'Analog')."""
+        r = Rig(types=(1, 0)); r.set(r.w1, SHAPE, 64); r.tick()
+        r.show_row(1); r.show_row(0)
+        self.assertEqual(r.wvalue(2), "Saw>Sq 40%")
+        r.notify(0xC3, r.h1)
+        self.assertEqual(r.wvalue(2), "Saw>Sq 40%")
+        r = Rig(types=(7, 0)); r.tick()
+        r.show_row(1); r.show_row(0)
+        self.assertEqual(r.wvalue(3), "Wavetable")
+        r.show_row(2)
+        self.assertNotIn(r.wvalue(3), ("Wavetable", "Saw>Sq 40%"), "row 2's widgets are stock's")
+
+    def test_an_out_of_range_type_turns_from_what_it_shows(self):
+        """Review rev_m4_1 (Y1): stock's two-label widget kept Type 7 / -1 at its last entry ('Analog'): right did nothing
+        and left wrote 0. It is put at entry 0, what it reads ('Wavetable'): right writes 1, left writes nothing (the model
+        keeps the value). Also right after a row switch (the bind put it back at entry 1)."""
+        detent = 12800                                     # one entry of the two-label widget's step position (M)
+        for t in (7, -1):
+            with self.subTest(type=t):
+                r = Rig(types=(t, 0)); r.tick(); r.tick()
+                self.assertEqual(r.turn(3, detent), [(r.h1, TYPE, 1)], "right: Analog")
+                r = Rig(types=(t, 0)); r.tick(); r.tick()
+                self.assertEqual(r.turn(3, -detent), [], "left: already Wavetable")
+                self.assertEqual(r.prop(r.w1, TYPE), t)
+                r.show_row(1); r.show_row(0)
+                self.assertEqual(r.turn(3, detent), [(r.h1, TYPE, 1)], "after a row switch")
+        r = Rig(types=(1, 0)); r.tick()
+        self.assertEqual(r.turn(3, -detent), [(r.h1, TYPE, 0)], "an in-range Type: stock's widget")
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
