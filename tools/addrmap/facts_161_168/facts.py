@@ -828,6 +828,13 @@ REVIEWED = {
                              "WT_OSC_PROPERTY | 1; the root's set property calls it per voice for oscillator[index] (rc32 verif t4.py)"),
     'WT_OSC_PROPERTY': dict(value=0x8081a80, evidence="(osc r0, msg r1): key = ldrh [msg+0xC], value [msg+0x10]; cases 0x03, 0xC4..0xCC; "
                             "every other key returns without a write (rc32 verif t4.py: zero writes for 7 new keys)"),
+    # BE4.40 mixed sync (docs/plan-be440-sync-identity.md Track S; design wf/sync vt.py, verifiers wf/sync_v2 wfsv2_callers.py)
+    'WT_OSC_NOTE_SLOT': dict(value=0x80acbbc, orig='c11d0808', evidence="the Wavetable oscillator class (WT_OSC_VT_SLOT's) slot 2 = "
+                             "WT_NOTE_START | 1, the only word of that value in the image (S, M: vt.py); stock's voice note start "
+                             "0x0807C7F8..0x0807C80C calls slot 2 ([vt,#8]) of WT1, WT2 and the sub (S)"),
+    'WT_ENGINE_INIT': dict(value=0x807f180, evidence="(root): called once per root at 0x08058BD0 after WT_ROOT_CTOR's caller (S); "
+                           "connects each voice's modulation (pitch gets a root source) and leaves osc+0x108 = 2.0 on WT1 / WT2 "
+                           "(M: impl_SM pprobe.py; plan-analog-fm F0 verdict). Tests only (the device-shaped rig)"),
     'WT_ROOT_PROPERTY': dict(value=0x807bc20, evidence="(root r0, msg r1 {0x3E, 0, 0, 0, handle +8, key +0xC, value +0x10, index +0x14}): "
                              "index <= 2 -> every voice's oscillator[index] slot 8 (voice +0x178 / +0x17C / +0x180: WT1 / WT2 / sub); "
                              "reached from the synth message loop 0x0807AC60 case 0x3E (rc32 natprops m7.py, verif t4.py)"),

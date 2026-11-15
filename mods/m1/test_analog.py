@@ -21,8 +21,13 @@ bump allocator for its 10 voices, then stock's per-voice render through the root
 then stock's voice code with our oscillator hook), against the same voice with the track not Analog.
 Cost: instructions per voice-block (CYCCNT reads the instruction count here), with upper bounds, and the
 stats lines the M4 prints (an_print). Skipped on a build without the analog group (1.6.1).
+BE4.40 (docs/plan-be440-sync-identity.md): Device pins the device-shaped rig (Rig(dev=True): divider 2, 2N frames) to
+stock's engine init and voice path (B1); Sync covers chunked sync at 2N and mixed sync (a Wavetable OSC1 as the master,
+Track S) against WT1's real cycle starts; Golden checks an_master against the exact phase; ShapeMod is Track M (J4).
+Note starts go through the oscillator class's slot 2, as stock's voice note start calls them.
 """
-import json, math, struct, sys, unittest
+import json, math, random, struct, sys, unittest
+from fractions import Fraction
 from pathlib import Path
 from unicorn import Uc, UcError, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ
 from unicorn.arm_const import *
@@ -35,7 +40,7 @@ MAN = json.loads((BUILD / "manifest.json").read_text())
 IMG = (BUILD / "bento1.bin").read_bytes()
 STOCK_IMG = Path(sys.argv[1]).read_bytes()
 del sys.argv[1:3]
-HAVE = "analog" not in MAN.get("omitted", []) and "dsp_symbols" in MAN
+HAVE = "analog" not in MAN.get("omitted", []) and "analog" not in MAN.get("disabled", []) and "dsp_symbols" in MAN
 DSP = {k: int(v, 16) for k, v in MAN.get("dsp_symbols", {}).items()}
 
 BASE = 0x08040000
@@ -53,9 +58,26 @@ PROPS_AT = 0xB4             # AnProps in the kernel area: {u8 type, shape, sync,
 AN_MAGIC = 0x4F4C4E41
 CYCCNT = 0xE0001004
 FRAMES = 128
+# The device's shape (plan-analog-fm F0 verdict; docs/plan-be440-sync-identity.md B1): stock renders Wavetable oscillators at
+# 2N (the root's vt[19] 0x080A3420 returns 2), with the rate divider osc+0x108 = 2 from the engine init 0x0807F180, and
+# decimates to N in the voice post chain. N = 128 (device check: the black box n_max= 256).
+DEV_N, DEV_M = 128, 2
+DEV_FRAMES = DEV_N * DEV_M
+DEV_RATE = 48000 * DEV_M     # the oscillators' sample rate on the device
 
 
 def f32(x): return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def same(tc, a, b, msg="equal"):
+    """Two long sample lists (or bytes) equal; else fail naming the first difference (assertEqual's difflib on thousands of
+    floats effectively never returns: review M7)."""
+    a, b = list(a), list(b)
+    if a == b:
+        return
+    i = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+    at = lambda xs: xs[i] if i < len(xs) else "(end)"
+    tc.fail(f"{msg}: lengths {len(a)} / {len(b)}, first difference at {i}: {at(a)!r} / {at(b)!r}")
 
 
 class F64:
@@ -93,8 +115,12 @@ class F64:
 
 
 class Rig:
-    """One M7 with the built image; Analog state as the M4 would have published it."""
-    def __init__(self, img=IMG):
+    """One M7 with the built image; Analog state as the M4 would have published it. dev: the device's shape (DEV_*): every
+    oscillator's rate divider 2 (as stock's engine init leaves it: Device checks it against the real init) and 2N frames."""
+    def __init__(self, img=IMG, dev=False):
+        self.dev = dev
+        self.frames = DEV_FRAMES if dev else FRAMES
+        self.rate = DEV_RATE if dev else 48000
         u = self.u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         u.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M7)
         u.mem_map(0x08000000, 0x200000); u.mem_write(BASE, img)
@@ -191,22 +217,28 @@ class Rig:
         for o in (S.VOICE_WT1, S.VOICE_WT2):
             self.call(S.WT_OSC_CTOR, v + o)
             self.w32(v + o + 0x18, self.nowav)
+            if self.dev:
+                self.wf(v + o + 0x108, float(DEV_M))
         self.w32(v + 0x178, v + S.VOICE_WT1); self.w32(v + 0x17C, v + S.VOICE_WT2)   # as stock's root ctor (Voice checks it)
         self.voices.setdefault(handle, []).append(v)
         return root, v
 
-    def note(self, v, note):
+    def note(self, v, note, oscs=(0, 1)):
+        """Stock's note start through each oscillator's class slot 2 (stock's voice note start 0x0807C7F8 calls it so; our
+        slot-2 hook, then stock's WT_NOTE_START)."""
         nw = self.alloc(4); self.w32(nw, note)
-        for o in (S.VOICE_WT1, S.VOICE_WT2):
-            self.call(S.WT_NOTE_START, v + o, 0, nw)
+        for i in oscs:
+            o = self.osc(v, i)
+            self.call(self.r32(self.r32(o) + 8) & ~1, o, 0, nw)
 
     def buf(self, n, cap=None):
         b = self.alloc(0x20); d = self.alloc(4 * (cap or n))
         self.u.mem_write(b, struct.pack("<4I", cap or n, n, d, 0))
         return b, d
 
-    def render(self, root, v, n=FRAMES, oscs=(0, 1)):
+    def render(self, root, v, n=None, oscs=(0, 1)):
         """an_enter, then each oscillator's slot 0 through stock's vtable word (our trampoline). (samples, counts)"""
+        n = n or self.frames
         out, od = self.buf(n); scr, _ = self.buf(n)
         _, c0 = self.call(DSP["an_enter"], root, v)
         counts, rets = [c0], []
@@ -298,6 +330,83 @@ def period(xs):
     return (ups[-1] - ups[0]) / (len(ups) - 1) if len(ups) > 1 else None
 
 
+def ups(xs, t0=0):
+    """Upward zero crossings (interpolated): a sine table's cycle starts."""
+    return [t0 + i - 1 + (-xs[i - 1]) / (xs[i] - xs[i - 1]) for i in range(1, len(xs)) if xs[i - 1] < 0 <= xs[i] and xs[i] != xs[i - 1]]
+
+
+AN_RENDER_SLAVE = 2
+
+
+class Mixed:
+    """BE4.40 mixed sync in the device's shape (after the sync designer's wf/sync e2e.py): WT1 Wavetable (stock's render, a
+    sine table), WT2 Analog with Sync, a fifth up. WT1's pitch parameter gets a source of its own (vibrato and slides on
+    WT1 only). Note starts through slot 2, renders through slot 0 after an_enter, as stock's voice. Every slave event is
+    taken at an_render's entry (its frame in the block + e / 254), so all of a block's master wraps are seen."""
+    def __init__(self, sync=1, table=True, shape=48, stock=False, type2=1, frames=DEV_FRAMES, r=None, handle=0x51):
+        self.r = r = r or Rig(img=STOCK_IMG if stock else IMG, dev=True)
+        self.root, self.v = r.voice(handle)
+        self.o1, self.o2 = r.osc(self.v, 0), r.osc(self.v, 1)
+        if table:
+            r.tabled(self.o1)
+        r.level(self.v, 0, 1.0); r.level(self.v, 1, 1.0)
+        self.src = r.alloc(0x10); p = self.o1 + 0x70
+        r.w32(p + 0x30, 1); r.u.mem_write(p + 0x28, bytes(5)); r.w32(p, self.src); r.wf(p + 4, 1.0)
+        self.stock, self.handle = stock, handle
+        if not stock and type2:
+            self.prop(K_TYPE, 1); self.prop(K_SHAPE, shape); self.prop(K_SYNC, sync)
+        r.w32(self.o2 + 0x0C, 7000)                              # WT2 a fifth up
+        self.fr = frames
+        self.b1, self.b2, self.sc = r.buf(frames), r.buf(frames), r.buf(frames)
+        self.t, self.x1, self.x2, self.wr, self.counts, self.starts = 0, [], [], [], [], []
+        if not stock:
+            if not hasattr(r, "slaves"):
+                r.slaves = {}
+                r.u.hook_add(UC_HOOK_CODE, self._slave, begin=DSP["an_render"], end=DSP["an_render"], user_data=r)
+            r.slaves[self.o2 + S.OSC_KERNEL] = self
+    @staticmethod
+    def _slave(u, a, size, r):
+        me = r.slaves.get(u.reg_read(UC_ARM_REG_R0))
+        if not me or struct.unpack("<i", u.mem_read(u.reg_read(UC_ARM_REG_SP), 4))[0] != AN_RENDER_SLAVE:
+            return
+        off = (u.reg_read(UC_ARM_REG_R1) - me.sc[1]) // 4
+        ev = u.mem_read(u.reg_read(UC_ARM_REG_R3), u.reg_read(UC_ARM_REG_R2))
+        me.wr += [me.t + off + i + e / 254 for i, e in enumerate(ev) if e != 255]
+        me.starts += [me.t + off for i, e in enumerate(ev) if i == 0 and e == 0]
+    def prop(self, key, value): self.r.prop(self.o2, key, value, self.handle, 1)
+    def pitch(self, pm): self.r.wf(self.src + 4, pm)
+    def note(self, n): self.r.note(self.v, n)
+    def mphase(self):
+        hi, lo = struct.unpack("<2I", self.r.u.mem_read(self.o2 + S.OSC_KERNEL + 156, 8))   # AnOsc mphase, mphase_lo
+        return (hi << 32) | lo
+    def block(self, pm=None):
+        r = self.r
+        if pm is not None:
+            self.pitch(pm)
+        if not self.stock:
+            r.call(DSP["an_enter"], self.root, self.v)
+        cs = []
+        for o, (b, d) in ((self.o1, self.b1), (self.o2, self.b2)):
+            r.u.mem_write(d, bytes(4 * self.fr)); r.u.mem_write(b, struct.pack("<2I", self.fr, self.fr))
+            _, c = r.call(r.r32(r.r32(o)) & ~1, o, self.sc[0], b); cs.append(c)
+        self.counts.append(cs)
+        self.x1 += struct.unpack(f"<{self.fr}f", r.u.mem_read(self.b1[1], 4 * self.fr))
+        self.x2 += struct.unpack(f"<{self.fr}f", r.u.mem_read(self.b2[1], 4 * self.fr))
+        self.t += self.fr; r.block()
+    def errors(self, t_from=0, t_to=1e18):
+        """(WT1 cycle starts in the window, master wraps in it, worst |wrap - cycle start| in oscillator samples)"""
+        cyc = [c for c in ups(self.x1) if t_from < c < t_to]
+        wr = sorted(w for w in self.wr if t_from < w < t_to)
+        worst = max((min((abs(c - w) for w in wr), default=1e9) for c in cyc), default=1e9)
+        return cyc, wr, worst
+    def aligned(self, tc, t_from=0, t_to=1e18, tol=0.01, msg=""):
+        cyc, wr, worst = self.errors(t_from, t_to)
+        tc.assertGreater(len(cyc), 2, f"{msg}: WT1 cycles in the window")
+        tc.assertEqual(len(wr), len(cyc), f"{msg}: one master wrap per WT1 cycle")
+        tc.assertLess(worst, tol, f"{msg}: worst |wrap - WT1 cycle start| {worst:.4f} smp")
+        return worst
+
+
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
 class Hooks(unittest.TestCase):
     def test_stock_vtable_words_point_at_our_trampolines(self):
@@ -307,6 +416,23 @@ class Hooks(unittest.TestCase):
         self.assertTrue(S.M7_DSP <= DSP["an_render"] < S.M7_DSP_LIMIT)
         r = Rig(); root, v = r.voice()
         self.assertEqual(r.r32(v + S.VOICE_WT1) & ~1, S.WT_OSC_VT_SLOT, "stock's ctor installs the class whose slot 0 we took")
+
+    def test_slot_2_runs_an_note_then_stocks_note_start(self):
+        """S1: the class's slot 2 word is our trampoline; stock's note start still runs after an_note (the kernel tail reset:
+        frac 0, idx 0 with WTOscReset on, C8 -1, D 1, len 2048, fresh 1; the note at +0x10, -1 at +0x24), the same bytes
+        as stock's for a Wavetable oscillator next to a synced Analog one."""
+        w = lambda a: struct.unpack_from("<I", IMG, a - BASE)[0]
+        self.assertEqual(w(S.WT_OSC_NOTE_SLOT), DSP["tramp_note"] | 1)
+        self.assertEqual(S.WT_OSC_NOTE_SLOT, S.WT_OSC_VT_SLOT + 8)
+        def run(stock):
+            m = Mixed(stock=stock); m.r.u.mem_write(m.o1 + 0x1CC, bytes(range(0x24)))
+            m.note(67)
+            return bytes(m.r.u.mem_read(m.o1, 0x1F0)), m
+        a, m = run(False)
+        b, _ = run(True)
+        self.assertEqual(a, b, "WT1 after the note start")
+        self.assertEqual(struct.unpack_from("<fIiIII", a, 0x1CC), (0.0, 0, -1, 0, 1, 2048))
+        self.assertEqual((m.r.u.mem_read(m.o2 + S.OSC_KERNEL + 164, 2)[0], m.mphase()), (1, 0), "mrestart, phase 0")
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
@@ -451,38 +577,41 @@ class Oscillator(unittest.TestCase):
         self.assertEqual(r.r32(SA + SA_STATS + 52), 2, "one line per root (upstream's one-entry cache missed on every lookup)")
 
     def test_hard_sync_resets_the_slave_at_the_masters_wraps(self):
-        """Sync on: WT2 (a fifth up) restarts at each of WT1's wraps, so the voice repeats at WT1's period."""
-        r = Rig(); root, v = r.voice(0x66); r.table(0, 0x66, 3); r.note(v, 48)
+        """Sync on (device rig, 2N): WT2 (a fifth up) restarts at each of WT1's wraps, so the voice repeats at WT1's period;
+        both event arrays (WT2's for frames 0..127, WT1's for 128..255) carry wraps."""
+        r = Rig(dev=True); root, v = r.voice(0x66); r.table(0, 0x66, 3); r.note(v, 48)
         r.level(v, 0, 0.0)                                      # hear WT2 only; WT1 still tracks its phase (E3)
         w2 = r.osc(v, 1)
         r.w32(w2 + 0x0C, 7000)                                  # WT2 detune +7 semitones (1/1000 semitone units)
-        xs, wraps = [], 0
+        xs, wraps = [], [0, 0]
         for _ in range(16):
             out, _ = r.render(root, v, oscs=(0, 1)); xs += out; r.block()
-            wraps += sum(1 for e in r.state(v, 1)["events"] if e != 255)
-        self.assertGreaterEqual(wraps, 4, "WT1 wrote its wraps into WT2's events (130.8 Hz: one per 367 frames)")
-        p = 48000 / 130.81                                      # WT1: note 48
-        lag = round(p)
-        body = xs[512:]
-        err = sum(abs(body[i] - body[i + lag]) for i in range(len(body) - lag)) / (len(body) - lag)
-        self.assertLess(err, 0.05, "periodic at the master's period (a free fifth would not be)")
-        r2 = Rig(); root2, v2 = r2.voice(0x67); r2.table(0, 0x67, 1); r2.note(v2, 48); r2.level(v2, 0, 0.0)
+            for c, i in ((0, 1), (1, 0)):
+                wraps[c] += sum(1 for e in r.state(v, i)["events"] if e != 255)
+        self.assertGreaterEqual(min(wraps), 2, f"wraps in both halves of the block (130.8 Hz: one per 734 frames): {wraps}")
+        p = DEV_RATE / 130.81                                   # WT1: note 48
+        self.assertLess(lag_err(xs[1024:], p), 0.05, "periodic at the master's period (a free fifth would not be)")
+        r2 = Rig(dev=True); root2, v2 = r2.voice(0x67); r2.table(0, 0x67, 1); r2.note(v2, 48); r2.level(v2, 0, 0.0)
         r2.w32(r2.osc(v2, 1) + 0x0C, 7000)
         ys = []
         for _ in range(16):
             out, _ = r2.render(root2, v2, oscs=(0, 1)); ys += out; r2.block()
-        body2 = ys[512:]
-        err2 = sum(abs(body2[i] - body2[i + lag]) for i in range(len(body2) - lag)) / (len(body2) - lag)
-        self.assertGreater(err2, 0.2, "control: without sync the fifth is not periodic at WT1's period")
+        self.assertGreater(lag_err(ys[1024:], p), 0.2, "control: without sync the fifth is not periodic at WT1's period")
 
     def test_long_blocks_render_without_sync_and_are_counted(self):
-        r = Rig(); root, v = r.voice(0x44); r.table(0, 0x44, 3); r.note(v, 60)
-        out, _ = r.render(root, v, n=256, oscs=(0, 1)); r.block()
+        """Both Analog: up to AN_SYNC_FRAMES (2N) syncs; a longer block renders free and is counted. Mixed sync has no limit."""
+        r = Rig(dev=True); root, v = r.voice(0x44); r.table(0, 0x44, 3); r.note(v, 60)
+        out, _ = r.render(root, v, n=512, oscs=(0, 1)); r.block()
         self.assertGreater(max(map(abs, out)), 0.1)
-        self.assertEqual(r.r32(SA + SA_STATS + 24), 2, "sync_skipped: both oscillators of the 256-frame block")
-        self.assertEqual(r.r32(SA + SA_STATS + 20), 256, "n_max")
-        out, _ = r.render(root, v, n=64, oscs=(0, 1)); r.block()
-        self.assertEqual(r.r32(SA + SA_STATS + 24), 2, "a 64-frame block syncs")
+        self.assertEqual(stat(r, SYNC_SKIPPED), 2, "sync_skipped: both oscillators of the 512-frame block")
+        self.assertEqual(stat(r, N_MAX), 512, "n_max")
+        for n in (64, 256):
+            out, _ = r.render(root, v, n=n, oscs=(0, 1)); r.block()
+            self.assertEqual(stat(r, SYNC_SKIPPED), 2, f"a {n}-frame block syncs")
+        m = Mixed(frames=512); m.note(60)
+        for _ in range(4): m.block()
+        self.assertEqual(stat(m.r, SYNC_SKIPPED), 0)
+        m.aligned(self, 1)
 
     def test_a_non_analog_oscillator_goes_to_stocks_render(self):
         r = Rig(); root, v = r.voice(0x33); r.note(v, 60)       # no Type: not Analog
@@ -491,6 +620,308 @@ class Oscillator(unittest.TestCase):
         self.assertIn(S.WT_OSC_RENDER, r.pcs, "stock's render ran")
         self.assertEqual(out, [0.0] * FRAMES, "no table loaded: stock renders nothing")
         self.assertNotEqual(r.state(v, 0)["magic"], AN_MAGIC, "the kernel state is not ours")
+
+def pool_alloc(r, at=0xC5F10000):                           # addr-ok: harness
+    """A bump allocator behind stock's named pool allocator (the root ctor's 10 voices)."""
+    pool = [at]
+    def alloc(uc, a, size, _):
+        n = uc.reg_read(UC_ARM_REG_R2); p = pool[0]; pool[0] += (n + 31) & ~31
+        uc.mem_write(p, bytes(n)); uc.reg_write(UC_ARM_REG_R0, p); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+    r.u.hook_add(UC_HOOK_CODE, alloc, begin=S.NAMED_ALLOC, end=S.NAMED_ALLOC)
+
+
+def stat(r, i): return r.r32(SA + SA_STATS + 4 * i)
+N_MAX, SYNC_SKIPPED = 5, 6
+
+
+def lag_err(xs, period):
+    """Mean |x[i] - x[i + period]|: small when xs repeats at that period (rounded to whole samples)."""
+    lag = round(period)
+    return sum(abs(xs[i] - xs[i + lag]) for i in range(len(xs) - lag)) / (len(xs) - lag)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class Device(unittest.TestCase):
+    """B1 (docs/plan-be440-sync-identity.md): the device's shape, 2N frames per oscillator render with the rate divider 2.
+    Every sync test runs in it (Rig(dev=True)); this class pins the rig to stock's own engine init and voice path."""
+    def test_the_rig_is_the_devices(self):
+        """Stock's root ctor then engine init: every oscillator's divider is 2.0 (what Rig(dev=True) writes), and the root's
+        vt[19] (the oversampling factor the render sizes its buffers by) returns DEV_M."""
+        r = Rig(); pool_alloc(r)
+        root = r.alloc(0x2F0); r.call(S.WT_ROOT_CTOR, root); r.call(S.WT_ENGINE_INIT, root)
+        for i in range(10):
+            v = r.r32(root + 0x14 + 4 * i)
+            self.assertEqual((r.rf(v + S.VOICE_WT1 + 0x108), r.rf(v + S.VOICE_WT2 + 0x108)), (float(DEV_M), float(DEV_M)))
+        self.assertEqual(r.call(r.r32(r.r32(root) + 0x4C) & ~1, root)[0], DEV_M)
+        d = Rig(dev=True); _, v = d.voice(0x10)
+        self.assertEqual(d.rf(v + S.VOICE_WT2 + 0x108), float(DEV_M))
+
+    def test_both_analog_sync_engages_at_2n(self):
+        """B1: at n = 2N the slave restarts at the master's wraps (BE4.40 6adc04f: sync_skipped on every block, free-running)."""
+        r = Rig(dev=True); root, v = r.voice(0x66); r.table(0, 0x66, 3); r.note(v, 48)
+        r.level(v, 0, 0.0)                                      # hear WT2 only; WT1 still tracks its phase (E3)
+        r.w32(r.osc(v, 1) + 0x0C, 7000)                         # WT2 a fifth up
+        xs = []
+        for _ in range(24):
+            out, _ = r.render(root, v, oscs=(0, 1)); xs += out; r.block()
+        self.assertEqual(stat(r, N_MAX), DEV_FRAMES)
+        self.assertEqual(stat(r, SYNC_SKIPPED), 0, "sync engaged on every block")
+        p = DEV_RATE / 130.8128
+        self.assertLess(lag_err(xs[1024:], p), 0.05, "periodic at the master's period")
+
+    def test_the_voice_on_the_devices_path(self):
+        """Stock's whole voice as the device runs it: root ctor, engine init, buffers sized N x vt[19], the voice render (our
+        slot-18 trampoline, stock's voice code with our oscillator hook, the post chain's 2x decimation to N): an Analog saw
+        at note 60 is 261.63 Hz at 48 kHz, and both-Analog sync engages."""
+        r = Rig(); pool_alloc(r)
+        root = r.alloc(0x2F0); r.call(S.WT_ROOT_CTOR, root); r.call(S.WT_ENGINE_INIT, root)
+        r.w32(root + S.ROOT_HANDLE, 0x4343)
+        v = r.r32(root + 0x14)
+        for o in (S.VOICE_WT1, S.VOICE_WT2):
+            r.w32(v + o + 0x18, r.nowav)
+        r.voices[0x4343] = [v]
+        for flags, want in ((1, 261.63), (3, 261.63)):
+            with self.subTest(flags=flags):
+                r.table(0, 0x4343, flags, root=root); r.note(v, 60)
+                if flags & 2:
+                    r.level(v, 0, 0.0); r.w32(v + S.VOICE_WT2 + 0x0C, 7000)
+                m = r.call(r.r32(r.r32(root) + 0x4C) & ~1, root)[0]
+                acc, ad = r.buf(DEV_N * m, 1024); scr, _ = r.buf(DEV_N * m, 1024); out, od = r.buf(DEV_N, 1024)
+                slot18 = r.r32(r.r32(root) + 0x48)
+                skipped0, outs = stat(r, SYNC_SKIPPED), []
+                for _ in range(40):
+                    r.w32(acc + 4, DEV_N * m); r.w32(scr + 4, DEV_N * m); r.u.mem_write(ad, bytes(4096))
+                    r.w32(out + 4, DEV_N)
+                    r.call(slot18 & ~1, root, v, 0, scr, sargs=(acc, 0, out))
+                    outs += struct.unpack(f"<{DEV_N}f", r.u.mem_read(od, 4 * DEV_N)); r.block()
+                self.assertEqual(r.r32(out + 4), DEV_N, "decimated to N")
+                body = outs[1280:]
+                ups = [i + body[i] / (body[i] - body[i + 1]) for i in range(len(body) - 1) if body[i] < 0 <= body[i + 1]]
+                if flags == 1:
+                    hz = 48000 * (len(ups) - 1) / (ups[-1] - ups[0])
+                    self.assertAlmostEqual(hz, want, delta=0.5, msg=f"{hz:.2f} Hz")
+                else:
+                    self.assertEqual(stat(r, SYNC_SKIPPED), skipped0, "sync engaged")
+                    self.assertLess(lag_err(body, 48000 / want), 0.05 * max(map(abs, body)), "periodic at the master's period")
+                self.assertEqual(stat(r, N_MAX), DEV_N * m)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class Sync(unittest.TestCase):
+    """Track S (docs/plan-be440-sync-identity.md): sync in chunks at 2N, and a Wavetable OSC1 as the master of an Analog OSC2
+    (J1). Every case in the device's shape. Wraps and WT1 cycle starts are in 96 kHz oscillator samples."""
+    def test_chunked_2n_equals_two_n_blocks(self):
+        """B1 fix: a 256-frame block renders as two 128-frame ones (the same calls in chunks): both Analog and mixed, WT1 and
+        WT2 bit for bit, and the master's phase copy the same."""
+        def both(fr):
+            r = Rig(dev=True); root, v = r.voice(0x66); r.table(0, 0x66, 3); r.note(v, 48); r.shape(v, 1, 0.3)
+            r.w32(r.osc(v, 1) + 0x0C, 7000)
+            xs = []
+            for _ in range(DEV_FRAMES * 12 // fr):
+                out, _ = r.render(root, v, n=fr, oscs=(0, 1)); xs += out; r.block()
+            return xs, stat(r, SYNC_SKIPPED)
+        a, sa = both(DEV_FRAMES); b, sb = both(DEV_FRAMES // 2)
+        self.assertEqual((sa, sb), (0, 0))
+        self.assertLess(max(abs(x - y) for x, y in zip(a, b)), 1e-6, "both Analog (the level smoother is set per call)")
+        ma, mb = Mixed(), Mixed(frames=DEV_FRAMES // 2)
+        for m in (ma, mb):
+            m.note(60)
+            for _ in range(DEV_FRAMES * 12 // m.fr): m.block((1 / 12) * math.sin((m.t // DEV_FRAMES) / 3))   # per 2N
+        self.assertGreater(len(ma.wr), 5)
+        same(self, ma.wr, mb.wr, "mixed: the same wraps")
+        self.assertEqual(ma.mphase(), mb.mphase(), "mixed: the same phase")
+        for a_, b_, what in ((ma.x1, mb.x1, "stock's WT1 (its own per-call smoother)"), (ma.x2, mb.x2, "WT2")):
+            self.assertLess(max(abs(x - y) for x, y in zip(a_, b_)), 1e-6, what)
+
+    def test_a_wavetable_osc1_is_the_master_across_the_range(self):
+        """Every WT1 cycle start has its master wrap within 0.01 smp, notes 24..108, WT1's octave -2..+2 and a fine tune."""
+        for note, octv, fine in ((24, 0, 0), (36, 0, 0), (48, 0, 0), (60, 0, 0), (72, 0, 0), (84, 0, 0), (96, 0, 0), (108, 0, 0),
+                                 (60, -2, 0), (60, -1, 0), (60, 1, 0), (60, 2, 0), (60, 0, 3333), (61, 0, -12000)):
+            with self.subTest(note=note, octave=octv, fine=fine):
+                m = Mixed(); m.r.wf(m.o1 + 4, float(octv)); m.r.w32(m.o1 + 0x0C, fine & 0xFFFFFFFF); m.note(note)
+                for _ in range(40): m.block()
+                m.aligned(self, 1, msg=f"note {note}")
+                self.assertEqual(stat(m.r, SYNC_SKIPPED), 0)
+
+    def test_the_master_follows_wt1s_pitch_modulation(self):
+        """Vibrato (+-1 semitone) and a slide (WT1's pitch from -1 octave to 0, as a glide would) on WT1's own pitch."""
+        m = Mixed(); m.note(60)
+        for b in range(150): m.block((1 / 12) * math.sin(2 * math.pi * b / 50))
+        m.aligned(self, 1, msg="vibrato")
+        m = Mixed(); m.note(60)
+        for b in range(120): m.block(-1.0 * max(0.0, 1 - b / 80))
+        m.aligned(self, 1, msg="slide")
+
+    def test_the_master_rate_is_stocks(self):
+        """The copy advances by exactly n x (stock's WT1 rate +0x1E8) / 2048 per block (64-bit), across note x fine x octave x
+        pitch modulation: stock's own formula on WT1's fields, bit for bit (a firmware change to it would show here)."""
+        m = Mixed(); m.note(60)
+        m.block()
+        bad, seeded, checked = [], 0, 0
+        for note in (0, 24, 48, 60, 69, 96, 120, 127):
+            for fine in (0, 1, -12000, 49999):
+                for octv in (-2.0, 0.0, 1.5):
+                    for pm in (0.0, 1 / 12, -0.7, 2.0):
+                        m.r.w32(m.o1 + 0x0C, fine & 0xFFFFFFFF); m.r.wf(m.o1 + 4, octv)
+                        m.r.w32(m.o1 + 0x10, note)               # (stock's note start writes +0x10; no restart here)
+                        kern = lambda: (m.r.r32(m.o1 + 0x1D0), m.r.rf(m.o1 + 0x1CC), m.r.r32(m.o1 + 0x1E0))
+                        p0 = m.mphase(); live = m.r.u.mem_read(m.o2 + S.OSC_KERNEL + 165, 1)[0]; k0 = kern(); m.block(pm)
+                        rate = m.r.rf(m.o1 + 0x1E8)
+                        q = int(Fraction(f32(min(rate / 2048, f32(0.45)))) * 2 ** 64)
+                        if live == 3 and kern() != k0 and kern()[0] < kern()[2]:
+                            # stock's kernel was still the last block (far above its note start's mip, rate / D over
+                            # about 32 here, it steps whole table cycles per block: M) and moves now: the copy is seeded
+                            # from it, so this block ends at stock's phase rather than the formula's (unless stock's index
+                            # is out of its table, as it gets there: M, idx -69; seed() then keeps the copy)
+                            idx, frac, ln = kern()
+                            seeded += 1
+                            if abs((m.mphase() / 2 ** 64 - (idx + frac) / ln + 0.5) % 1 - 0.5) > 1e-6:
+                                bad.append(("seed", note, fine, octv, pm))
+                        elif (m.mphase() - p0) % 2 ** 64 != (m.fr * q) % 2 ** 64:
+                            bad.append((note, fine, octv, pm))
+                        else:
+                            checked += 1
+        self.assertEqual(bad, [], "the copy's rate is stock's")
+        self.assertGreater(checked, 300, f"the formula checked in most blocks ({seeded} after a frozen kernel)")
+
+    def test_retrigger_and_a_new_note_restart_master_and_slave(self):
+        """Slot 2 (stock's note start, our hook first): a same-note retrigger and a new note restart the copy with stock's WT1,
+        and the slave with it (an event at frame 0 of the next block)."""
+        m = Mixed(); m.note(60)
+        for _ in range(19): m.block()
+        t1 = m.t; m.note(60)
+        for _ in range(19): m.block()
+        t2 = m.t; m.note(67)
+        for _ in range(19): m.block()
+        m.aligned(self, t1 + 1, t2, msg="after the retrigger")
+        m.aligned(self, t2 + 1, msg="after the new note")
+        self.assertEqual(m.starts, [0, t1, t2], "the slave restarts at each note start, and only there")
+
+    def test_wtoscreset_off_seeds_the_copy_from_stocks_phase(self):
+        """WTOscReset off (osc+0x1ED = 0): stock's phase runs on at a note start (only its fraction is zeroed); the copy takes
+        it at the next block, and there is no restart event."""
+        m = Mixed(); m.r.u.mem_write(m.o1 + 0x1ED, b"\0"); m.note(60)
+        for _ in range(19): m.block()
+        t1 = m.t; m.note(72)
+        for _ in range(19): m.block()
+        m.aligned(self, t1 + 1, msg="Reset off, after the new note")
+        self.assertEqual(m.starts, [], "no restarts with Reset off")
+
+    def test_sync_turned_on_mid_note_is_seeded(self):
+        """Plan fix 2: Sync turned on mid-note takes stock's phase (no misalignment until the next note), and gives no
+        spurious slave restart (a note start with Sync off leaves nothing pending)."""
+        m = Mixed(sync=0); m.note(60)
+        for _ in range(15): m.block()
+        self.assertEqual(m.wr, [], "Sync off: no events")
+        t1 = m.t; m.prop(K_SYNC, 1)
+        for _ in range(20): m.block()
+        m.aligned(self, t1, msg="Sync on mid-note")
+        self.assertEqual(m.starts, [])
+
+    def test_sync_off_and_on_again_mid_note_is_seeded(self):
+        """Review M7: Sync on, off, on again within one note: the second engage seeds again (the copy did not move while
+        Sync was off), no restart."""
+        m = Mixed(); m.note(60)
+        for _ in range(10): m.block()
+        m.prop(K_SYNC, 0)
+        for _ in range(7): m.block()
+        t1 = m.t; m.prop(K_SYNC, 1)
+        for _ in range(15): m.block()
+        m.aligned(self, t1, msg="Sync on again")
+        self.assertEqual(m.starts, [0], "only the note start's restart")
+
+    def test_stocks_kernel_running_again_reseeds_the_copy(self):
+        """Review M7: stock's WT1 kernel stops at level 0 (smoother at rest) and with no WAV; the copy runs on, and when the
+        kernel runs again (level back; a WAV loaded mid-note) the copy takes its phase. A level 0 that stays (the classic
+        patch) keeps the copy free-running at OSC1's pitch."""
+        m = Mixed(); m.note(60)
+        for _ in range(10): m.block()
+        m.r.level(m.v, 0, 0.0)
+        for _ in range(8): m.block()
+        self.assertEqual(m.r.u.mem_read(m.o2 + S.OSC_KERNEL + 165, 1)[0], 3, "mlive: stock's kernel frozen")
+        t1 = m.t; m.r.level(m.v, 0, 1.0)
+        for _ in range(25): m.block()
+        m.aligned(self, t1 + 800, msg="WT1 level 0 for 8 blocks, back")   # (WT1's smoother: its cycles show from ~800)
+        self.assertEqual(m.starts, [0])
+        m = Mixed(table=False); m.note(60)
+        for _ in range(10): m.block()
+        t1 = m.t; m.r.tabled(m.o1)
+        for _ in range(25): m.block()
+        m.aligned(self, t1, msg="a WAV loaded mid-note")
+        m = Mixed(); m.r.level(m.v, 0, 0.0); m.note(48)
+        for _ in range(40): m.block()
+        self.assertEqual(max(map(abs, m.x1)), 0.0, "WT1 silent")
+        ws = m.wr[1:]
+        self.assertAlmostEqual((ws[-1] - ws[0]) / (len(ws) - 1), DEV_RATE / (440 * 2 ** ((48 - 69) / 12)), delta=0.01)
+
+    def test_wt2_turned_analog_mid_note_is_seeded(self):
+        """WT2 Wavetable -> Analog (Sync on) mid-note: the copy starts from stock's WT1 phase, not 0."""
+        m = Mixed(type2=0); m.note(60)
+        for _ in range(15): m.block()
+        t1 = m.t; m.prop(K_TYPE, 1); m.prop(K_SHAPE, 48); m.prop(K_SYNC, 1)
+        for _ in range(20): m.block()
+        m.aligned(self, t1, msg="Type -> Analog mid-note")
+        self.assertEqual(m.starts, [])
+
+    def test_the_master_runs_while_the_slave_is_silent(self):
+        """WT2 at level 0 for 20 blocks (no render, no events): the copy moves on, so the wraps are WT1's when it is back."""
+        m = Mixed(); m.note(60)
+        for _ in range(10): m.block()
+        m.r.level(m.v, 1, 0.0)
+        for _ in range(20): m.block()
+        n_wr = len(m.wr)
+        t1 = m.t; m.r.level(m.v, 1, 1.0)
+        for _ in range(20): m.block()
+        m.aligned(self, t1 + 600, msg="after WT2's silence")            # (its level smoother: a few hundred frames)
+        self.assertGreater(len(m.wr), n_wr)
+
+    def test_a_no_wav_osc1_is_still_a_master(self):
+        """The classic sync patch: OSC1 with no WAV is silent (stock's render returns before its pitch code), and the slave
+        still syncs to OSC1's pitch."""
+        m = Mixed(table=False); m.note(48)
+        for _ in range(40): m.block()
+        self.assertEqual(max(map(abs, m.x1)), 0.0, "WT1 silent")
+        ws = m.wr[1:]
+        per = (ws[-1] - ws[0]) / (len(ws) - 1)
+        self.assertAlmostEqual(per, DEV_RATE / (440 * 2 ** ((48 - 69) / 12)), delta=0.01)
+        self.assertLess(lag_err(m.x2[2048:], per), 0.05, "WT2 periodic at the master's period")
+
+    def test_wt1_is_stocks_bit_for_bit_with_wt2_synced(self):
+        """Plan 3.3: WT1's output and its whole 0x1F0-byte object are stock 1.6.8's, with WT2 Analog synced to it, through
+        vibrato and a new note (2N, divider 2)."""
+        def run(stock, table=True):
+            m = Mixed(stock=stock, table=table); m.note(60)
+            for b in range(25): m.block((1 / 12) * math.sin(b / 5))
+            m.note(64)
+            for b in range(25): m.block(0.1)
+            return m.x1, bytes(m.r.u.mem_read(m.o1, 0x1F0)), m
+        a, ka, ma = run(False)
+        b, kb, _ = run(True)
+        self.assertGreater(max(map(abs, b)), 0.1, "control: stock's WT1 plays its table")
+        same(self, a, b, "WT1's output")
+        same(self, ka, kb, "WT1's object")
+        self.assertGreater(len(ma.wr), 20, "WT2 was synced")
+        # review M7: with no WAV stock's render never reaches PARAM_VALUE on WT1's pitch, so the master's call to it must not
+        # leave its cached value in WT1 (+0xAC)
+        a, ka, ma = run(False, table=False)
+        b, kb, _ = run(True, table=False)
+        same(self, ka, kb, "WT1's object, no WAV")
+        self.assertGreater(len(ma.wr), 20, "WT2 was synced (no WAV)")
+
+    def test_two_voices_keep_their_own_masters(self):
+        """Two mixed voices of one track (one rig, its stats shared): each slave follows its own WT1."""
+        a = Mixed(handle=0x51); b = Mixed(r=a.r, handle=0x51)
+        a.note(60); b.note(67)
+        for _ in range(30):
+            a.block(); b.block()
+        a.aligned(self, 1, msg="voice A"); b.aligned(self, 1, msg="voice B")
+        self.assertNotEqual(len(a.wr), len(b.wr))
+
+    def test_the_stats_count_synced_renders(self):
+        m = Mixed(); m.note(60)
+        for _ in range(5): m.block()
+        self.assertEqual(stat(m.r, 14), 5, "synced: WT2's 5 renders (WT1 is stock's)")
+
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
 class Props(unittest.TestCase):
@@ -561,16 +992,32 @@ class Props(unittest.TestCase):
         self.assertEqual([r.settings(vo, 0)[4] for vo in voices], [250] * 10)
         self.assertEqual(r.r32(SA + SA_STATS + 16), 5 * 10, "props: every message of ours a WT oscillator took (the sub is another class)")
 
-    def test_sync_needs_both_oscillators_analog(self):
-        """A Wavetable OSC1 is no sync master (docs/plan-native-props.md 3.3 rule 4: not built): an Analog OSC2 with Sync
-        On runs free."""
-        r = Rig(); root, v = r.voice(0x65); r.note(v, 48)
-        r.prop(r.osc(v, 1), K_TYPE, 1); r.prop(r.osc(v, 1), K_SYNC, 1)
-        xs = []
-        for _ in range(8):
-            out, _ = r.render(root, v, oscs=(0, 1)); xs += out; r.block()
-        self.assertEqual(r.state(v, 1)["events"], bytes([255]) * 128, "no master wrote wraps")
-        self.assertGreater(max(map(abs, xs[256:])), 0.1, "WT2 plays")
+    def test_no_sync_master_for_a_wavetable_osc2(self):
+        """The reverse case is not built (plan Track S): Analog WT1 + Wavetable WT2 with Sync 1. an_prop drops WT2's Sync,
+        WT1 runs free (writes no wraps into WT2's area), and WT2 is stock's render bit for bit, its area untouched."""
+        def run(stock):
+            r = Rig(img=STOCK_IMG if stock else IMG, dev=True); root, v = r.voice(0x65)
+            r.tabled(r.osc(v, 1)); r.level(v, 0, 1.0); r.level(v, 1, 1.0)
+            if not stock:
+                r.prop(r.osc(v, 0), K_TYPE, 1); r.prop(r.osc(v, 1), K_SYNC, 1)
+            r.note(v, 48)
+            outs = []
+            for _ in range(8):
+                if not stock:
+                    r.call(DSP["an_enter"], root, v)
+                osc = r.osc(v, 1); out, od = r.buf(DEV_FRAMES); scr, _ = r.buf(DEV_FRAMES)
+                if not stock:
+                    r.call(r.r32(r.r32(r.osc(v, 0))) & ~1, r.osc(v, 0), scr, out)
+                    r.u.mem_write(od, bytes(4 * DEV_FRAMES))
+                r.call(r.r32(r.r32(osc)) & ~1, osc, scr, out)
+                outs += struct.unpack(f"<{DEV_FRAMES}f", r.u.mem_read(od, 4 * DEV_FRAMES)); r.block()
+            return outs, bytes(r.u.mem_read(r.osc(v, 1), 0x1F0)), r
+        ours, ka, r = run(False)
+        stock, kb, _ = run(True)
+        self.assertGreater(max(map(abs, stock)), 0.1)
+        same(self, ours, stock, "WT2's output")
+        same(self, ka, kb, "WT2's object, its kernel area included")
+        self.assertEqual(stat(r, 14), 0, "nothing synced")
 
     def test_a_wavetable_osc1_next_to_an_analog_osc2_is_stocks_bit_for_bit(self):
         """Plan 3.3, the test that matters most: in a mixed voice the Wavetable oscillator (a real table loaded) renders
@@ -597,8 +1044,8 @@ class Props(unittest.TestCase):
         ours, ka, ra = run(False)
         stock, kb, _ = run(True)
         self.assertGreater(max(map(abs, stock)), 0.1, "control: stock's WT1 plays its table")
-        self.assertEqual(ours, stock)
-        self.assertEqual(ka, kb, "WT1's kernel area and stock's fields after it")
+        same(self, ours, stock, "WT1's output")
+        same(self, ka, kb, "WT1's kernel area and stock's fields after it")
         self.assertEqual(ra.state(ra.voices[0x51][0], 1)["magic"], AN_MAGIC, "WT2 was Analog")
 
 
@@ -641,6 +1088,86 @@ class Golden(unittest.TestCase):
         want, _, _, _ = model(f32(0.034), 0.6, 128, sync=events)
         self.close(xs, want)
 
+    # ---- an_master (Track S): against the exact model of stock's phase (wf/sync mtest.py's): integer arithmetic on the
+    # float increment's exact value, wraps where the phase crosses a whole cycle
+    @staticmethod
+    def master_model(p, q, n, restart=False):
+        M, ev = 2 ** 64, [255] * n
+        if restart:
+            ev[0] = 0
+        for i in range(n):
+            a = p + i * q
+            if (a + q) // M > a // M:
+                fr = Fraction((a // M + 1) * M - a, q)
+                ev[i] = max(0, min(254, math.floor(fr * 254 + Fraction(1, 2))))
+        return ev, (p + n * q) % M
+
+    def master(self, r, st, ev, inc, n, p=None, restart=False):
+        if p is not None:
+            r.u.mem_write(st + 156, struct.pack("<II", p >> 32, p & 0xFFFFFFFF))
+        r.u.mem_write(st + 164, bytes([1 if restart else 0]))
+        _, c = r.call(DSP["an_master"], st, ev, n, fargs=(inc,))
+        hi, lo = struct.unpack("<II", r.u.mem_read(st + 156, 8))
+        return list(r.u.mem_read(ev, n)) if ev else None, (hi << 32) | lo, c
+
+    def same_wraps(self, got, want, msg):
+        tg = [i + e / 254 for i, e in enumerate(got) if e != 255]
+        tw = [i + e / 254 for i, e in enumerate(want) if e != 255]
+        self.assertEqual(len(tg), len(tw), f"{msg}: no missing or extra wraps")
+        if tg:
+            self.assertLessEqual(max(abs(a - b) for a, b in zip(tg, tw)), 1.01 / 254, msg)
+
+    def test_master_against_the_exact_phase(self):
+        """20 Hz .. 21 kHz at 96 kHz (2N), steady, a random walk and vibrato, 400 chunks of 128: the wraps within one 1/254
+        step of the exact ones, none missing or extra, and the phase exact after every chunk (no drift, plan fix 3)."""
+        r = Rig(); st = r.alloc(168); ev = r.alloc(128)
+        random.seed(5)
+        worst_cost = 0
+        for hz in (20.0, 55.0, 130.81, 261.63, 1000.0, 4186.0, 12543.9, 21000.0):
+            for mode in ("steady", "walk", "vibrato"):
+                p = random.getrandbits(64)
+                self.master(r, st, ev, 0.0, 0, p=p)
+                for b in range(400):
+                    f = hz if mode == "steady" else hz * 2 ** (random.uniform(-1, 1) if mode == "walk" else math.sin(b / 9) / 12)
+                    inc = f32(min(f / DEV_RATE, 0.45))
+                    q = int(Fraction(inc) * 2 ** 64)
+                    want, wp = self.master_model(p, q, 128)
+                    got, gp, c = self.master(r, st, ev, inc, 128)
+                    worst_cost = max(worst_cost, c)
+                    self.assertEqual(gp, wp, f"{hz} Hz {mode}: the exact phase")
+                    self.same_wraps(got, want, f"{hz} Hz {mode} chunk {b}")
+                    p = gp
+        print(f"\n  an_master(128), worst instructions 20 Hz..21 kHz: {worst_cost}", file=sys.stderr)
+
+    def test_master_edges(self):
+        """A wrap exactly on the chunk's end (in its last sample, fraction 1: the next chunk has none at its start), exactly at
+        the end of the sample before, one LSB either side; phase 0; mrestart (event 0, then cleared); events 0 (phase
+        only, mrestart cleared)."""
+        r = Rig(); st = r.alloc(168); ev = r.alloc(128)
+        n, M = 128, 2 ** 64
+        for inc in (f32(261.63 / DEV_RATE), f32(0.3), f32(0.0123456)):
+            q = int(Fraction(inc) * M)
+            # (the last four, review M7: the wrap 1 .. 2^40 units after the start of the last sample, where the float time
+            # puts it in the sample before: it must not be there too)
+            for p in ((-n * q) % M, (-n * q + 1) % M, (-n * q - 1) % M, (-(n - 1) * q) % M, (-(n - 1) * q + 1) % M, 0,
+                      (-(n - 1) * q - 1) % M, (-(n - 1) * q - 2 ** 20) % M, (-(n - 1) * q - 2 ** 30) % M,
+                      (-(n - 1) * q - 2 ** 40) % M):
+                with self.subTest(inc=inc, p=hex(p)):
+                    got, gp, _ = self.master(r, st, ev, inc, n, p=p)
+                    want, wp = self.master_model(p, q, n)
+                    self.same_wraps(got, want, "edge")
+                    self.assertEqual(gp, wp)
+                    got2, _, _ = self.master(r, st, ev, inc, n)
+                    want2, _ = self.master_model(wp, q, n)
+                    self.same_wraps(got2, want2, "the next chunk")
+        inc = f32(0.01); q = int(Fraction(inc) * M)
+        got, gp, _ = self.master(r, st, ev, inc, n, p=0, restart=True)
+        self.same_wraps(got, self.master_model(0, q, n, restart=True)[0], "restart")
+        self.assertEqual(got[0], 0)
+        self.assertEqual(r.u.mem_read(st + 164, 1)[0], 0, "mrestart consumed")
+        _, gp2, _ = self.master(r, st, 0, inc, 1000, restart=True)
+        self.assertEqual((gp2, r.u.mem_read(st + 164, 1)[0]), ((gp + 1000 * q) % M, 0), "events 0: phase only")
+
     def test_nan_and_range_guards(self):
         for inc, shape in ((float("nan"), 0.5), (0.01, float("nan")), (-1.0, 0.3), (5.0, 2.0)):
             with self.subTest(inc=inc, shape=shape):
@@ -648,6 +1175,182 @@ class Golden(unittest.TestCase):
                 self.assertTrue(all(math.isfinite(x) for x in xs) and math.isfinite(p))
                 want, _, _, _ = model(inc, shape, 64)
                 self.close(xs, want)
+
+
+K_POSITION = 0xC9            # stock's Position key: the modulation destination "OSC1: Position" / "OSC2: Position"
+
+
+def route(r, osc, slot, amount, key=K_POSITION):
+    """Stock's modulation routing: the oscillator class's slot 10 (osc, source, key, slot 0..3, amount s0) -> PARAM_CONNECT
+    on the key's parameter (0xC9: Position, osc+0x30). The source is any object with its value at +4 (an LFO's output).
+    Returns the source; its value is set with r.wf(source + 4, x)."""
+    src = r.alloc(0x10)
+    r.call(r.r32(r.r32(osc) + 0x28) & ~1, osc, src, key, slot, fargs=(amount,))
+    return src
+
+
+def duty(xs, period=None):
+    """The share of samples above the middle, over whole periods (a part period would bias it)."""
+    if period:
+        xs = xs[:int(int(len(xs) / period) * period)]
+    mid = (max(xs) + min(xs)) / 2
+    return sum(1 for x in xs if x > mid) / len(xs)
+
+
+P60 = DEV_RATE / 261.6256
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class ShapeMod(unittest.TestCase):
+    """Track M (J4): on an Analog oscillator the modulation stock routes to its Position destination drives Shape:
+    Shape + 127 x (the routed sum), clamped to 0..127; Position's own value (the knob) does not count."""
+    def run_(self, shape, mod=None, blocks=32, amount=1.0, base=None, r=None):
+        r = r or Rig(dev=True); root, v = r.voice(0x71); r.table(0, 0x71, 1); r.note(v, 60)
+        r.prop(r.osc(v, 0), K_SHAPE, shape)
+        if base is not None:
+            r.prop(r.osc(v, 0), K_POSITION, base)                 # the hidden Position knob (stock's slot 8: +0x2C)
+        src = route(r, r.osc(v, 0), 0, amount) if mod is not None else None
+        xs = []
+        for b in range(blocks):
+            if src:
+                r.wf(src + 4, mod(b) if callable(mod) else mod)
+            out, _ = r.render(root, v, oscs=(0,)); xs += out; r.block()
+        return xs, r
+
+    def test_routing_reaches_the_position_parameter(self):
+        r = Rig(dev=True); _, v = r.voice(0x72); o = r.osc(v, 0)
+        src = route(r, o, 1, 0.5)
+        self.assertEqual((r.r32(o + 0x30 + 0x30), list(r.u.mem_read(o + 0x30 + 0x28, 2))), (2, [0, 2]), "slot 0 the knob, slot 2")
+        self.assertEqual((r.r32(o + 0x30 + 16), r.rf(o + 0x30 + 20)), (src, 0.5))
+
+    def test_lfo_to_position_moves_the_pulse_width(self):
+        """Square (88) + 0.2 -> Shape 113.4: width 0.5 - 0.84 x (0.5 x 25.4 / 39) = 0.226; - 0.2 -> 62.6, a saw > square blend."""
+        base, _ = self.run_(88)
+        up, r = self.run_(88, 0.2)
+        self.assertAlmostEqual(duty(base[2048:], P60), 0.5, delta=0.01)
+        w = 0.5 - 0.84 * (0.5 * (88 + 0.2 * 127 - 88) / 39)
+        self.assertAlmostEqual(duty(up[2048:], P60), w, delta=0.01)
+        self.assertEqual(stat(r, 15), 32, "shape_mods: every render")
+        half, _ = self.run_(88, 0.1, amount=2.0)
+        same(self, half, up, "amount x source")
+        top, _ = self.run_(88, 5.0)
+        pulse, _ = self.run_(127)
+        same(self, top, pulse, "clamped at 127")
+        low, _ = self.run_(20, -1.0)
+        saw, _ = self.run_(0)
+        same(self, low, saw, "clamped at 0")
+
+    def test_an_lfo_sweeps_the_width_over_time(self):
+        xs, _ = self.run_(100, lambda b: 0.2 * math.sin(2 * math.pi * b / 32), blocks=64)
+        d = [duty(xs[i:i + 4 * DEV_FRAMES], P60) for i in range(0, len(xs) - 4 * DEV_FRAMES, 2 * DEV_FRAMES)]
+        self.assertGreater(max(d) - min(d), 0.2, f"the width follows the LFO: {min(d):.2f}..{max(d):.2f}")
+
+    def test_a_shape_change_ramps_over_the_block(self):
+        """Review M7: a Shape that moved since the last block ramps over this one, AN_RAMP (32) frames a step, each step's jump
+        corrected (an_reshape), the last part at the new Shape: the oscillator's state after every block is that of the
+        kernel driven that way directly, bit for bit (the modulated Shape held to 1/512 of a step), and its output that
+        kernel's times the level (the smoother settled)."""
+        r = Rig(dev=True); root, v = r.voice(0x74); r.table(0, 0x74, 1); r.note(v, 48); o = r.osc(v, 0)
+        r.prop(o, K_SHAPE, 100); src = route(r, o, 0, 1.0)
+        st = o + S.OSC_KERNEL
+        ref = r.alloc(172); out = r.alloc(4 * DEV_FRAMES); ev = r.alloc(128)
+        r.u.mem_write(ev, bytes([255]) * 128)
+        fma = lambda a, b, c: f32(float(Fraction(a) * Fraction(b) + Fraction(c)))   # (clang contracts a * b + c)
+        def k_of(sh):
+            if not sh > 48: return 0.0
+            if sh <= 88: return f32(f32(sh - 48) * f32(0.5 / 40))
+            return fma(f32(min(sh, 127.0) - 88), f32(0.5 / 39), 0.5)
+        ramps = 0
+        for b in range(16):
+            x = f32(0.2 * math.sin(b / 2)) if b else 0.0
+            r.wf(src + 4, x)
+            ph, dl = struct.unpack("<ff", r.u.mem_read(st + 4, 8)); sq0 = struct.unpack("<H", r.u.mem_read(st + 166, 2))[0]
+            xs, _ = r.render(root, v, oscs=(0,)); r.block()
+            inc = f32(r.rf(o + 0x1E8) * f32(1 / 2048))
+            sh = 100.0
+            if x:
+                sh = fma(x, 127.0, 100.0); sh = min(max(sh, 0.0), 127.0)
+                sh = f32(float(int(fma(sh, 512.0, 0.5))) * f32(1 / 512))
+            k1 = k_of(sh); sq = int(f32(sh * 512.0))
+            self.assertEqual(struct.unpack("<H", r.u.mem_read(st + 166, 2))[0], sq, f"block {b}: mshape")
+            r.u.mem_write(ref, struct.pack("<Iff", AN_MAGIC, ph, dl))
+            parts = [(0, DEV_FRAMES, k1)]
+            if sq0 != 0xFFFF and sq0 != sq:
+                ramps += 1
+                k0 = k_of(f32(sq0 * f32(1 / 512))); P = DEV_FRAMES // 32
+                parts = [(32 * j, 32, k1 if j + 1 == P else fma(f32(k1 - k0), f32((j + 1) / P), k0)) for j in range(P)]
+                kp = k0
+            else:
+                kp = k1
+            for off, n, k in parts:
+                if k != kp:
+                    r.call(DSP["an_reshape"], ref, fargs=(kp, k))
+                kp = k
+                r.call(DSP["an_render"], ref, out + 4 * off, n, ev, sargs=(0,), fargs=(inc, k))
+            self.assertEqual(r.u.mem_read(ref + 4, 8), r.u.mem_read(st + 4, 8), f"block {b}: phase and delayed")
+            want = struct.unpack(f"<{DEV_FRAMES}f", r.u.mem_read(out, 4 * DEV_FRAMES))
+            if b >= 4:
+                g = sum(x * y for x, y in zip(xs, want)) / sum(y * y for y in want)
+                err = max(abs(x - g * y) for x, y in zip(xs, want))
+                self.assertLess(err, 1e-5, f"block {b}: the output is the ramped kernel's (gain {g:.6f})")
+        self.assertGreater(ramps, 10)
+
+    def test_the_ramp_is_close_to_a_per_sample_one(self):
+        """Review M7 (fix_m7 zip.py): Shape under an 8 Hz LFO (saw to square, Shape 68 +- 19), the kernel stepped once per
+        block (before the fix) and per AN_RAMP frames, each against a step every sample: the ramp's error is a fraction."""
+        r = Rig(); N = 256
+        def an_shape(sh):
+            return 0.0 if not sh > 48 else (sh - 48) * (0.5 / 40) if sh <= 88 else 0.5 + (min(sh, 127) - 88) * (0.5 / 39)
+        def run(step):
+            st = r.alloc(172); out = r.alloc(4 * N); ev = r.alloc(128)
+            r.u.mem_write(st, struct.pack("<Iff", AN_MAGIC, 0.0, 0.0)); r.u.mem_write(ev, bytes([255]) * 128)
+            xs, kp = [], None
+            for b in range(24):
+                k1 = f32(an_shape(68 + 127 * 0.15 * math.sin(2 * math.pi * 8 * b * N / DEV_RATE)))
+                k0 = k1 if kp is None else kp
+                P = N // step if step else 1
+                cur = k0 if step else k1
+                for j in range(P):
+                    k = k1 if j + 1 == P else f32(k0 + (k1 - k0) * ((j + 1) / P))
+                    if step and k != cur:
+                        r.call(DSP["an_reshape"], st, fargs=(cur, k))
+                    cur = k
+                    r.call(DSP["an_render"], st, out + 4 * j * (N // P), N // P, ev, sargs=(0,), fargs=(f32(130.81 / DEV_RATE), k))
+                kp = k1
+                xs += struct.unpack(f"<{N}f", r.u.mem_read(out, 4 * N))
+            return xs
+        ref, ramp, step = run(1), run(32), run(0)
+        rms = lambda x: math.sqrt(sum((a - b) ** 2 for a, b in zip(x[N:], ref[N:])) / (len(x) - N))
+        self.assertLess(rms(ramp), rms(step) / 5, f"ramp {rms(ramp):.2e}, a step per block {rms(step):.2e}")
+
+    def test_no_modulation_is_bit_identical(self):
+        """No source routed, a routed source at 0, and the Position knob at any value: Shape as stored, bit for bit, and
+        nothing counted."""
+        plain, r0 = self.run_(70)
+        zero, r1 = self.run_(70, 0.0)
+        knob, _ = self.run_(70, 0.0, base=200)
+        same(self, plain, zero, "a routed source at 0")
+        same(self, plain, knob, "the knob alone does not move Shape")
+        self.assertEqual((stat(r0, 15), stat(r1, 15)), (0, 0))
+
+    def test_a_wavetable_oscillator_is_untouched(self):
+        """Position modulation on a Wavetable oscillator is stock's (its render reads the parameter as stock)."""
+        def run(stock):
+            r = Rig(img=STOCK_IMG if stock else IMG, dev=True); root, v = r.voice(0x73); o = r.osc(v, 0)
+            r.tabled(o); r.level(v, 0, 1.0); r.note(v, 60)
+            src = route(r, o, 0, 1.0)
+            outs = []
+            for b in range(8):
+                r.wf(src + 4, 0.1 * b)
+                if not stock:
+                    r.call(DSP["an_enter"], root, v)
+                out, od = r.buf(DEV_FRAMES); scr, _ = r.buf(DEV_FRAMES)
+                r.call(r.r32(r.r32(o)) & ~1, o, scr, out)
+                outs += struct.unpack(f"<{DEV_FRAMES}f", r.u.mem_read(od, 4 * DEV_FRAMES)); r.block()
+            return outs, bytes(r.u.mem_read(o, 0x1F0))
+        (a, ka), (b, kb) = run(False), run(True)
+        same(self, a, b, "the output")
+        same(self, ka, kb, "the object")
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
@@ -707,26 +1410,49 @@ class Voice(unittest.TestCase):
 class Cost(unittest.TestCase):
     """Instructions per voice-block of our hooks (an_enter + WT1 + WT2) for each regime; upper bounds."""
     BOUND = 12000
+    DEV_BOUND = 2 * BOUND            # the device's 2N block
 
-    def cost(self, shape, flags=1, n=FRAMES):
-        r = Rig(); root, v = r.voice(0x31); r.table(0, 0x31, flags); r.note(v, 60)
+    def cost(self, shape, flags=1, n=None, dev=False, note=60, mod=None):
+        r = Rig(dev=dev); root, v = r.voice(0x31); r.table(0, 0x31, flags); r.note(v, note)
         r.shape(v, 0, shape); r.shape(v, 1, shape)
+        if mod is not None:
+            for i in (0, 1):
+                r.wf(route(r, r.osc(v, i), 0, 1.0) + 4, mod)
         totals = []
         for _ in range(6):
             _, c = r.render(root, v, n, (0, 1)); r.block(); totals.append(sum(c))
         return sorted(totals)[len(totals) // 2], r
 
     def test_cost_per_regime(self):
+        for dev, bound in ((False, self.BOUND), (True, self.DEV_BOUND)):
+            rows = []
+            for name, shape, flags, note, mod in (("saw", 0.0, 1, 60, None), ("mixed", 0.25, 1, 60, None),
+                                                  ("square", 0.5, 1, 60, None), ("pulse", 1.0, 1, 60, None),
+                                                  ("saw+sync", 0.0, 3, 60, None), ("mixed+sync", 0.25, 3, 60, None),
+                                                  ("saw+sync note 120", 0.0, 3, 120, None),
+                                                  ("square+shape mod", 0.5, 1, 60, 0.1)):
+                c, r = self.cost(shape, flags, dev=dev, note=note, mod=mod)
+                rows.append((name, c))
+                self.assertLess(c, bound, name)
+            print(f"\n  hooks per voice-block (instructions, n={r.frames}): " + ", ".join(f"{n} {c}" for n, c in rows),
+                  file=sys.stderr)
+            st = struct.unpack("<16I", r.u.mem_read(SA + SA_STATS, 64))
+            self.assertGreater(st[0], 0, "blocks counted")
+            self.assertEqual(st[3], 2, "osc_peak: two oscillators per block")
+
+    def test_cost_of_mixed_sync(self):
+        """WT2's render (an_osc for an Analog WT2 next to stock's WT1), device block: Sync Off -> On at master notes 24..120."""
         rows = []
-        for name, shape, flags in (("saw", 0.0, 1), ("mixed", 0.25, 1), ("square", 0.5, 1), ("pulse", 1.0, 1),
-                                   ("saw+sync", 0.0, 3), ("mixed+sync", 0.25, 3)):
-            c, r = self.cost(shape, flags)
-            rows.append((name, c))
-            self.assertLess(c, self.BOUND, name)
-        print("\n  hooks per voice-block (instructions, n=128): " + ", ".join(f"{n} {c}" for n, c in rows), file=sys.stderr)
-        st = struct.unpack("<16I", r.u.mem_read(SA + SA_STATS, 64))
-        self.assertGreater(st[0], 0, "blocks counted")
-        self.assertEqual(st[3], 2, "osc_peak: two oscillators per block")
+        for note in (24, 60, 96, 120):
+            per = {}
+            for sync in (0, 1):
+                m = Mixed(sync=sync); m.note(note)
+                for _ in range(8): m.block()
+                cs = sorted(c[1] for c in m.counts[2:]); per[sync] = cs[len(cs) // 2]
+                w1 = sorted(c[0] for c in m.counts[2:])[3]
+            rows.append(f"note {note}: off {per[0]} on {per[1]} (+{per[1] - per[0]}; stock WT1 {w1})")
+            self.assertLess(per[1], self.DEV_BOUND, f"note {note}")
+        print("\n  mixed sync, WT2 render per voice-block (instructions, n=256): " + "; ".join(rows), file=sys.stderr)
 
 
 if __name__ == "__main__":

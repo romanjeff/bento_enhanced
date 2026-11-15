@@ -365,7 +365,7 @@ static void publish(volatile An4 *a) {
  * A descriptor (32 B): +0 key, +2 type, +4 title, +8 labels and +0xC their count (a list, type 7), +0x10 / +0x14 the range,
  * +0x18 the XML token. Type and Sync are lists as stock's Poly Mode (0x2E); Shape an integer in [0, 127] as stock's Shift
  * (0x1AD, type 2); Glide 0..1000 shown as a percentage as stock's Pulse Width (0xC5, type 10). */
-static const char T_TYPE[] = "Type", T_SHAPE[] = "Shape", T_SYNC[] = "Sync", T_GLIDE[] = "Glide";
+static const char T_TYPE[] = "Type", T_SHAPE[] = "Shape", T_SYNC[] = "Sync 1>2", T_GLIDE[] = "Glide";   /* J5: Sync 1>2 */
 static const char K_TYPE[] = "bento_osc_type", K_SHAPE[] = "bento_shape", K_SYNC[] = "bento_sync", K_GLIDE[] = "bento_glide";
 static const char *const TYPE_LABELS[2] = {"Wavetable", "Analog"};
 static const char *const SYNC_LABELS[2] = {"Off", "On"};
@@ -468,8 +468,8 @@ static int analog_osc(u32 h) { u32 t = 0; return np_ok() && prop(h, S_KEY_OSC_TY
  * 0, 0, 0, 0, 0} (the flash table A6 copies). Ours, per Type (slots 5..7 stay free for the FM sprint: Sub FM, Bit Depth,
  * FM 1>2):
  *   Wavetable: Level, Pitch, Position, Type
- *   Analog:    Level, Pitch, Shape, Type, then Glide (OSC1) / Sync (OSC2, only with OSC1 Analog too: the sync master is
- *              our OSC1 kernel; a Wavetable master is not built, docs/plan-native-props.md 3.3 rule 4)
+ *   Analog:    Level, Pitch, Shape, Type, then Glide (OSC1) / Sync 1>2 (OSC2, whatever OSC1's Type: BE4.40 J1, OSC1 is the
+ *              master as Analog or as Wavetable, docs/plan-be440-sync-identity.md Track S)
  * Only slots stock leaves empty get our keys, and slot 2 only while it is stock's key there. */
 #define ROW_BYTES 16u
 static volatile u16 *osc_row_keys(void *view, u32 row) { return (volatile u16 *)((u8 *)view + S_SYNTH_VIEW_KEYS + row * ROW_BYTES); }
@@ -479,7 +479,8 @@ static void want_row(const u16 *stock, u32 row, int me, int osc1, u16 *k) {
     if (!k[3]) k[3] = (u16)S_KEY_OSC_TYPE;
     if (!me) return;
     if (k[2]) k[2] = (u16)S_KEY_OSC_SHAPE;
-    if (!k[4]) k[4] = row == 0u ? (u16)S_KEY_OSC_GLIDE : osc1 ? (u16)S_KEY_OSC_SYNC : 0u;
+    (void)osc1;                                           /* BE4.40 J1: OSC2's Sync whatever OSC1's Type (mixed sync) */
+    if (!k[4]) k[4] = row == 0u ? (u16)S_KEY_OSC_GLIDE : (u16)S_KEY_OSC_SYNC;
 }
 /* The view's two oscillator rows as they should be for the oscillators' Types now: 1 = rewritten. stock: the page's own key
  * table (A6's source). */
@@ -996,6 +997,7 @@ __attribute__((used, retain)) void an_print(char *buf, u32 *len, u32 max) {
         field(&o, " osc_peak=", s->osc_peak); field(&o, " voices_peak=", s->voices_peak);
         field(&o, " renders=", s->renders); field(&o, " n_max=", s->n_max); field(&o, " sync_skipped=", s->sync_skipped);
         field(&o, " props=", s->props); field(&o, " roots=", s->misses);
+        field(&o, " synced=", s->synced); field(&o, " shape_mods=", s->shape_mods);   /* BE4.40 Tracks S / M */
     }
     field(&o, " | load_pm=", a->cpu_pm); field(&o, " over_with_analog=", a->over);
     field(&o, " | ui page_rows=", a->page_rows); field(&o, " heals=", a->heals); field(&o, " resends=", a->resends);

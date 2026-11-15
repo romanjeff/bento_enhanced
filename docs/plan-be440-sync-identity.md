@@ -48,6 +48,7 @@ Required by the verifiers (all must be in):
 
 Known remaining misalignments (accepted, M): WTOscReset off (stock's phase runs on, ours restarts) and OSC1's level
 to 0 and back (stock's phase freezes). Both last until the next note, and both are audible only when OSC1 is.
+(Both are fixed in the build: Reset off is seeded, and the review fix below re-seeds after a freeze.)
 
 Not built: the reverse case (Analog OSC1 master, Wavetable OSC2 slave). It is feasible (M), but it writes stock's
 kernel fields, the resets alias, and the WT-bit-identical guarantee would go. Its row stays hidden.
@@ -57,6 +58,49 @@ Wavetable.
 
 Cost (verifier, device domain, M): synced WT2 +2.3k instructions per voice-block at note 60, +4.6k at note 120. 80
 voices with high masters come to about 370k of the 1.28M-cycle block (I). This goes to the device CPU check, not a cap.
+Worst case (review M7, M, `rev_m7_2/cost2.py`, n = 256): with the master's increment at the 0.45 clamp (note 127, WT1
+octave +2, pitch mod +2) `an_master`'s per-wrap loop and the slave's resets double that: mixed WT2 +7.1k (14100 vs 7043
+free; Shape 100 +7.2k, 17351 vs 10139), both-Analog voice +5.2k (19940 vs 14711). 80 voices so: about 570k (I).
+
+### Track S: M results (built, 2026-11-14)
+
+Built as designed, with the verifiers' fixes 1-4. Rig: `test_analog` `Rig(dev=True)` (divider 2, 2N = 256 frames),
+pinned to stock's engine init `WT_ENGINE_INIT` 0x0807F180 and to stock's voice path (`Device`: vt[19] sizing, the post
+chain's decimation to N, 261.63 Hz at 48 kHz). Wraps and errors below are in 96 kHz oscillator samples.
+
+| Item | As built | Evidence |
+|---|---|---|
+| B1 before | 7bde5a0: `sync_skipped` on 48 of 48 renders (osc rig), 80 of 80 (voice path); both new Device tests fail | M |
+| Chunking | per 128-frame chunk; both Analog: chunk 0's wraps in WT2's events, chunk 1's in WT1's own (WT1 is never a slave), so AnOsc keeps one events[128]; > 256 frames: free, counted. Mixed: `an_master` per chunk, no limit | M: 256 = 2 x 128 within 1e-6 (both), wraps and phase exact (mixed) |
+| Phase copy | 64-bit fraction (`mphase`:`mphase_lo`), advanced by the float's exact value (`an_inc64`, no helper): no truncation at any rate above 0.04 Hz (fix 3, wider phase rather than rounding). It equals stock's phase exactly while stock's per-sample step rate / D is at least 0.5; below that (a note under about 23 Hz at D 1, or pitch modulated down more than about 0.3 octave at D > 1: D is set at the note start) stock's reader rounds its f32 fraction (0x08050E6A) and the copy differs by that | M: Golden, 8 rates 20 Hz..21 kHz x steady / walk / vibrato x 400 chunks: phase bit-exact, no missing or extra wrap, each within 1/254. Below 0.5: 1.1e-6 smp after 8 s at note 12, 6.8e-8 at note 60 held 1.5 oct down (M, `rev_m7_1/m8.py`); under 1e-3 smp an hour (I) |
+| Chunk edge | the last sample's wrap decided from the exact phase (a float time within rounding of the edge would lose a wrap or give it twice); a wrap in the last sample also clears the sample before, where the float time can put it a hair early (review M7) | M: Golden edges (wrap on the edge, the sample before, +-1 LSB, and 1..2^40 units after the last sample's start); `rev_m7_1/m10.py` 4000 cases: 442 doubled before the fix, 0 after |
+| Rate | `rate_of(o1, wt1_oct(o1))`: the copy advances by exactly n x stock's +0x1E8 / 2048. `wt1_oct` undoes PARAM_VALUE's cache store (param+0x3C, 0x080A0A52 `vstr s0, [r0, #0x3c]`: WT1+0xAC), which stock's render never makes with no WAV (review M7) | M: 384 cases note x fine x octave x pitch mod, 0 differ (blocks right after a frozen kernel are checked as seeds); WT1's object stock's byte for byte with no WAV too (was: +0xAC differs, `rev_m7_2/probe.py`) |
+| Freeze | stock's WT1 kernel does not run at level 0 with the smoother at rest (0x08081D22..38; an envelope or LFO can clamp OSC1 Level to 0) or with no WAV (0x08081C64). `watch`: a digest of WT1's kernel phase after its render, per block (`msnap`, 4 B); unchanged = frozen, the copy runs on (the classic patch keeps its wraps); changed after frozen = running again, the copy is seeded from it (review M7) | M: `rev_m7_1/m2.py` WT1 level 0 for 6 blocks then back 179 -> 0 smp, WAV loaded mid-note 8.57 -> 0; Sync test_stocks_kernel_running_again_reseeds_the_copy |
+| Far above the mip | with WT1's pitch about 4 octaves or more above its note start's mip (rate / D over about 32: fine tune near +50 st plus octave and modulation), stock's kernel phase steps whole table cycles per block and its index can leave the table (idx -69 seen); the copy then follows the formula and is seeded when stock's phase moves again in range | M (test_the_master_rate_is_stocks, `fix_m7/cap2.py`); not reached with fine 0: octave +1.5 and pitch mod at its +2 oct clamp give rate / D 7.9 (M; octave +2: about 11, I) |
+| Note start | S1: slot 2 0x080ACBBC -> `tramp_note` (an_note, then `b.w WT_NOTE_START`); acts only when WT2 is Analog with Sync 1 (fix 2); WTOscReset off: no restart, the copy is re-seeded | M; S (stock's note start bytes unchanged after it) |
+| Seeding | on engage (Sync on, WT2 -> Analog, Reset-off note): (idx << (64 - log2 len)) + (frac << (32 - log2 len)), minus this block's advance (WT1 renders first) | M |
+| AnOsc | 156 -> **172 B** (+8 phase, +4 flags and Track M's ramp Shape, +4 the freeze digest; limit 180, FM's +4 still fits) | static_assert |
+
+Alignment (worst |wrap - WT1 cycle start|, M, `impl_SM/meas.py`): notes 24..108 0.0016-0.0038; octave -2..+2
+0.0017-0.0036; vibrato +-1 st 0.0020; slide -1 oct -> 0 0.0019; retrigger / new note 0.0018 / 0.0019, restarts at
+frames 0, 4864, 9728 only; Sync on mid-note 0.0019, no restart; WT2 -> Analog mid-note 0.0019; **WTOscReset off
+0.0019** (was 17.3 smp: now seeded); 4 s notes at 12 / 24: 0.0020 (no drift); No WAV note 48: period 733.878 smp
+(stock's pitch table, 12-TET 733.873). WT1 level 1 -> 0 -> 1 (was 273 smp until the next note) and a WAV loaded
+mid-note: 0.0018 after the review fix (re-seeded, M). Sync on -> off -> on mid-note: 0.0019, no restart (M).
+
+WT1 bit-identical to stock with WT2 synced (output and its 0x1F0 B object, vibrato and a new note) (M). Unchanged
+from 7bde5a0, bit for bit (M, `impl_SM/ident.py`): free Analog oscillators in every regime at n = 128 and 256,
+both-Analog sync at n = 128, glide, a mixed voice with Sync off.
+
+Cost, instructions per voice-block at n = 256 (M, test_analog Cost): WT2's render next to stock's WT1, Sync off -> on:
+note 24 6454 -> 8791 (+2337), note 60 6460 -> 8855 (+2395), note 96 6502 -> 9188 (+2686), note 120 6658 -> 10262
+(+3604); stock's WT1 render 7092 at note 60. Both Analog, all hooks: saw 13076, saw + sync 15651 (+2575), mixed + sync
+22046, saw + sync at note 120 16580. `an_master`(128): at most 1930. Code: DSP 7000 -> 8864 B (default build; 14924 B
+with drums, of the 36 KB window); synth UI 10806 -> 10858 B; writes 100 -> 101. Black box: `synced=` counts synced
+renders. Not measured on the device: n_max, the CPU check.
+
+M4: `want_row` shows Sync on OSC2's row whenever OSC2 is Analog (the `osc1` argument kept, unused, so `fix_rows` is
+untouched); the Sync descriptor title is "Sync 1>2" (J5); `an_print` prints `synced=` and `shape_mods=`.
 
 ## Track M: Shape modulation (M7, J4)
 
@@ -67,6 +111,21 @@ osc's Position param object, the same helper the master rate uses for pitch): re
 subtract the unmodulated base, and add it to Shape. Wavetable oscillators are untouched (bit-identical). Must show:
 LFO -> Position on an Analog osc moves the pulse width (M), with no modulation the output is bit-identical to today,
 the cost per block, and the black box counts it.
+
+### Track M: M results (built, 2026-11-14)
+
+| Item | As built | Evidence |
+|---|---|---|
+| Source | stock's Position parameter (osc+0x30): PARAM_VALUE 0x080A09A0 sums amount x source+4 over the slots in its order bytes (+0x28) and clamps; slot 0 is the knob (the ctor's source at osc+0x28, value = key 0xC9 / 256), slots 1..4 the routed sources (PARAM_CONNECT 0x080A0920 via the osc class's slot 10 0x08081B60, key 0xC9) | S; M (routing reaches slot 2, order [0, 2]) |
+| Rule | effective Shape = clamp(Shape + 127 x (sum over slots 1..4), 0..127); Position's 1.0 (frames 0..255) = Shape's 127 | M |
+| Deviation | the plan says "PARAM_VALUE minus the base". Built: the same sum without slot 0, unclamped. PARAM_VALUE clamps base + modulation to -1..1, so a Position knob left anywhere (hidden on an Analog page) would bend the modulation's range; this way it does not | M: knob at 200 gives the same output as no knob |
+| Pulse width | Square (88) + 0.2: duty 0.226 as computed (+-0.01); an LFO sweeps the duty over 0.2+; amount x source as stock; clamps at 0 and 127 bit-equal to Shape 0 / 127 | M (ShapeMod) |
+| Bit identity | none routed, a source at 0, the knob alone: Shape as stored, bit for bit (a whole Shape through the float an_shape gives the integer version's results) | M; and unchanged from 7bde5a0 (ident.py) |
+| Wavetable osc | untouched: Position modulation on a Wavetable osc is stock's, output and object | M |
+| Ramp (review M7) | a Shape that changed since the last block (modulation or the knob) ramps over the block: a step every AN_RAMP = 32 frames, linear from the last block's Shape, the last part at the new Shape exactly; each step's jump wave_new(p) - wave_old(p) (a pulse edge too, where the width moved past p) corrected at fraction 0 (`an_reshape`, half into the sample in `delayed`). A modulated Shape is held to 1/512 of a step (`mshape`, u16); a whole Shape stays exact, so no modulation is still bit-identical. No ramp after a silent block | M: the state after every block is the kernel's driven that way, bit for bit, output to 1e-5 (ShapeMod test_a_shape_change_ramps_over_the_block) |
+| Ramp quality | error against a step every sample (`fix_m7/zip.py`, note 48): saw > square, Shape 68 +- 19, LFO 2 / 8 Hz: rms 1.0e-2 / 3.9e-2 (a step per block) -> 1.3e-3 / 4.8e-3; pulse, Shape 100 +- 25: 9.4e-2 / 1.8e-1 -> 1.8e-2 / 6.1e-2. Left: in the pulse regime an edge that the width moves past lands on the 32-frame grid (2-sample corrected, not at its exact time: up to about dw / inc, ~3 smp at 130 Hz with an 8 Hz deep PWM), so the pulse peak error stays about 2 | M |
+| Cost (n = 256, one Analog osc render) | none routed 8357 (7bde5a0 8307: +50 incl. the sync checks); one source at 0 8378; one moving 8390; four 8452. With the ramp (`fix_m7/cost.py`, note 60): steady +58 (Shape 68: 9994 -> 10052); Shape moving every block +1.1..1.5k (Shape 68 under an LFO 10006 -> 11471, Shape 100 9971 -> 11093), only while it moves | M (impl_SM/jcost.py; fix_m7/cost.py) |
+| Black box | `shape_mods=` counts renders whose Shape was moved | M |
 
 ## Track I: identity (M4)
 
@@ -94,8 +153,10 @@ preset / track default names after a WAV load, the "%s: Wavetable" header screen
 
 - test_analog: the device-shaped rig (B1); chunked n = 256 equals two 128 renders; mixed sync within 0.01 smp of WT1's
   cycle starts at notes 24..108, with vibrato, glide on WT1, octave -2..+2, retrigger and legato through slot 2; Sync on
-  mid-note and Type switch mid-note (seeded); WT1 bit-identical; both-Analog sync at n = 256; two-voice isolation; J4
-  modulation; cost.
+  mid-note and Type switch mid-note (seeded); Sync on -> off -> on and stock's kernel frozen then running (re-seeded);
+  WT1 bit-identical, with and without a WAV; both-Analog sync at n = 256; two-voice isolation; J4 modulation and its
+  ramp; cost. Long sample lists are compared with `same()` (the first difference named: assertEqual's diff of 8192
+  floats never returns). The suite skips on a `BE_DISABLE=analog` image (the DSP ELF is still in it).
 - test_synth_ui: visibility (the hidden flag up the parent chain) for titles, dial and CPU; the CPU title updates over
   ticks with no refresh; stale-handle titles and hints (B3); Sync row per J5 / J1; Y1; V1; H1; dial pixels at a few
   Shape values; B1' outcome filter; T0 strings including the mod destination list.
@@ -106,4 +167,7 @@ preset / track default names after a WAV load, the "%s: Wavetable" header screen
 The P1 items, then: the black box `n_max=` (expect 256); both-Analog and mixed sync audible on a sweep; Sync on
 mid-note; LFO -> OSC1: Position on an Analog osc moves the pulse width; OSC titles, "DSP nn%" live while playing;
 the dial follows Shape; double-tap on an Analog pane; WAV loaded then Type -> Analog -> back; CPU with SPACED plus
-synced voices; the 0xC3 notify from the tick under rapid Type switching.
+synced voices; the 0xC3 notify from the tick under rapid Type switching. Review M7 additions: PWM with a 2..8 Hz LFO
+(listen for a zipper or clicks: the Shape ramp steps every 32 frames); mixed sync with an LFO or envelope taking OSC1
+Level to 0 and back (the slave stays locked); the CPU check also as a high sweep on WT1's pitch with many synced voices
+(the clamped-increment worst case, about 570k).

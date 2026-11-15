@@ -311,7 +311,9 @@ GROUP_NAMES = {
                # N2 the registry build's bl, N3 the oscillator's slot 8 (BE4.22's handle sites and the menu are gone)
                "PROP_TEMPLATE", "PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B", "PROP_TEMPLATE_CMP_A", "PROP_TEMPLATE_CMP_B",
                "PROP_TEMPLATE_LAST", "REG_BUILD_SITE", "REG_BUILD", "WT_OSC_PROP_SLOT", "WT_OSC_PROPERTY",
-               "KEY_OSC_TYPE", "KEY_OSC_SHAPE", "KEY_OSC_SYNC", "KEY_OSC_GLIDE"),
+               "KEY_OSC_TYPE", "KEY_OSC_SHAPE", "KEY_OSC_SYNC", "KEY_OSC_GLIDE",
+               # BE4.40 mixed sync (docs/plan-be440-sync-identity.md Track S): S1 the oscillator's slot 2 (note start)
+               "WT_OSC_NOTE_SLOT", "WT_NOTE_START"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -1655,7 +1657,12 @@ def m7_dsp(base_img, patch, sources, out, inc):
         prop_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_prop']:#x}; cmp r0, #0; pop {{r0, r1, r2, r3, r4, lr}}; "
                         f"beq stock; bx lr; stock: b.w {S.WT_OSC_PROPERTY:#x}", {sd["an_prop"], S.WT_OSC_PROPERTY},
                         "Analog oscillator property trampoline")
-        sd.update(tramp_voice=voice, tramp_osc=osc_at, tramp_prop=prop_at)
+        # S1 (BE4.40 mixed sync): the oscillator's slot 2, note start (osc r0, r1, &note r2): an_note, then stock's
+        if bytes(base_img[S.WT_OSC_NOTE_SLOT - BASE:S.WT_OSC_NOTE_SLOT - BASE + 4]) != struct.pack("<I", S.WT_NOTE_START | 1):
+            raise SystemExit("Wavetable oscillator slot 2 does not hold stock's note start")
+        note_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_note']:#x}; pop {{r0, r1, r2, r3, r4, lr}}; "
+                        f"b.w {S.WT_NOTE_START:#x}", {sd["an_note"], S.WT_NOTE_START}, "Analog note start trampoline")
+        sd.update(tramp_voice=voice, tramp_osc=osc_at, tramp_prop=prop_at, tramp_note=note_at)
     an_end = len(tramps)
     if inc("drums"):
         with S.group("drums"):
@@ -1671,7 +1678,7 @@ def m7_dsp(base_img, patch, sources, out, inc):
     if len(tramps) > DSP_TRAMP_BYTES:
         raise SystemExit("DSP trampolines overrun their block")
     if an_end:
-        patch(lo, bytes(tramps[:an_end]), bytes(an_end), "Analog (S6a): M7 trampolines (voice enter, oscillator render, property)")
+        patch(lo, bytes(tramps[:an_end]), bytes(an_end), "Analog (S6a): M7 trampolines (voice enter, oscillator render, property, note start)")
     if len(tramps) > an_end:
         patch(lo + an_end, bytes(tramps[an_end:]), bytes(len(tramps) - an_end),
               "Drums (S6c): M7 trampoline (D1 render entry)")
@@ -1683,6 +1690,8 @@ def m7_dsp(base_img, patch, sources, out, inc):
               "Analog: Wavetable oscillator slot 0 (render) -> an_osc, else stock's")
         patch(S.WT_OSC_PROP_SLOT, struct.pack("<I", sd["tramp_prop"] | 1), S.orig("WT_OSC_PROP_SLOT"),
               "Analog: Wavetable oscillator slot 8 (set property, N3) -> an_prop, else stock's")
+        patch(S.WT_OSC_NOTE_SLOT, struct.pack("<I", sd["tramp_note"] | 1), S.orig("WT_OSC_NOTE_SLOT"),
+              "Analog: Wavetable oscillator slot 2 (note start, S1) -> an_note, then stock's")
     if inc("drums"):
         with S.group("drums"):
             patch(S.DRUM_RENDER, asm(f"b.w {sd['tramp_render']:#x}", S.DRUM_RENDER), S.orig("DRUM_RENDER"),
