@@ -81,7 +81,12 @@ typedef struct {
 /* +0x0200 (BE4.21..BE4.31: the M4's Analog track table, published; unused since BE4.40, when an oscillator's Type, Shape,
  * Sync and Glide became stock properties that reach the M7 as set_property messages: docs/plan-native-props.md) */
 #define AN_GLIDE_MAX 1000u                                  /* Glide 0..1000 = 0..2 s, stock's encoder units */
-#define AN_SHAPE_MAX 127u                                   /* Shape 0..127: sine > triangle > saw > square > pulse */
+#define AN_SHAPE_MAX 127u                                   /* Shape 0..127 (4.40: saw > square > pulse; sine and triangle
+                                                               below the saw come with the FM sprint) */
+#define AN_SHAPE_SAW_END 48u                                /* 0..48 plays one saw (dsp/analog.cpp an_shape), */
+#define AN_SHAPE_SQUARE 88u                                 /* 48..88 morphs it to a square, 88..127 narrows the pulse:
+                                                               the kernel's map and the M4's dial / value text (m4_synth.c)
+                                                               read these, so they change together */
 #define AN_SHAPE_DEFAULT 48u                                /* saw (the BE4.22..BE4.31 sound); N1's template default */
 /* +0x0600 Analog per-root glide lines, 16 x 32 B (M7 private): the track's last note (glide starts from it) and the
  * glide coefficient cache */

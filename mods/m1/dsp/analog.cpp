@@ -201,10 +201,10 @@ extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
  * narrows the square to the pulse (the anchors of plan-analog-fm "Shape control"). BE4.40: s is a float (Shape plus its
  * modulation, J4); for a whole s every result is the integer version's bit for bit (s - 48 and s - 88 are exact). */
 static float an_shape(float s) {
-    if (!(s > 48.f)) return 0.f;                              /* (NaN too) */
-    if (s <= 88.f) return (s - 48.f) * (0.5f / 40.f);
+    if (!(s > (float)AN_SHAPE_SAW_END)) return 0.f;                              /* (NaN too) */
+    if (s <= (float)AN_SHAPE_SQUARE) return (s - (float)AN_SHAPE_SAW_END) * (0.5f / (float)(AN_SHAPE_SQUARE - AN_SHAPE_SAW_END));
     if (s > (float)AN_SHAPE_MAX) s = (float)AN_SHAPE_MAX;
-    return 0.5f + (s - 88.f) * (0.5f / 39.f);
+    return 0.5f + (s - (float)AN_SHAPE_SQUARE) * (0.5f / (float)(AN_SHAPE_MAX - AN_SHAPE_SQUARE));
 }
 
 /* J4 (Track M): the modulation stock routes to a parameter, without the parameter's own value: the sum PARAM_VALUE takes over

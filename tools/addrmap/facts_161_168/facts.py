@@ -1249,6 +1249,123 @@ REVIEWED = {
                          "(movs r2,#0x81 at 0x081540A8)"),
     'KEY_POLY_MODE': dict(value=0x2e, evidence="registry 'Poly Mode' (type 7, 6 choices, token 'polymode') in both; the One-Shot "
                           "page's Config row slot 3 (0x081A0740 + 0x16)"),
+    # BE4.40 identity (docs/plan-be440-sync-identity.md track I). Design workflow wf/identity + its two verifiers (scratch
+    # wf/design_results.json; identity_v2 e1..e4, v1..v4) and the implementer's own disassembly (wf/impl_m4 st.py, loop.py,
+    # q1..q3.py, blscan.py): S below; M = measured in the emulator on stock's page (test_synth_ui runs every one of these).
+    'STR_PREFIX_OSC1': dict(value=0x818f144, orig='5754313a20000000', evidence="'WT1: ' + 3 zero bytes (the next string at "
+                            "0x0818F14C); one literal reference, PREFIX_LIT_OSC1, and no movw / movt pair builds it (verifier v1/v2.py); "
+                            "the page builder stores it as row 0's prefix view+0x11D5C (ldr 0x0816144E, str.w 0x08161450), which "
+                            "the Wavetable title formats with '%s%.20s' (0x0815F948..58); T0 rewrites it 'OSC1: ' (M rendered)"),
+    'STR_PREFIX_OSC2': dict(value=0x818f14c, orig='5754323a20000000', evidence="'WT2: ' + 3 zero bytes ('Res' follows at "
+                            "0x0818F154, its own referenced string); one literal reference, PREFIX_LIT_OSC2 (ldr 0x08161454, row 1's "
+                            "prefix view+0x11D60)"),
+    'STR_DEST_OSC_FMT': dict(value=0x818efd8, orig='575425643a20257300000000', evidence="'WT%d: %s' + 4 zero bytes ('GR%d: %s' at "
+                             "0x0818EFE4); one literal reference DEST_FMT_LIT, loaded at 0x08159B84 by DEST_NAME 0x08159A5C for an object "
+                             "of type 6 (tbb on type - 6 at 0x08159B72; the index from the count of earlier siblings of the type), "
+                             "snprintf into the caller's buffer; DEST_NAME's two callers 0x08159DCC / 0x0815A002 are the destination "
+                             "list's builders (a list-item compare 0x0817CCB2, strlen 0x0818956A): display text (I: no XML writer "
+                             "reaches it; routes are stored by key). The packed 'WT1: %s' / 'WT2: %s' at 0x0818EAB8 / 0x0818EAC0 are "
+                             "another table's (0x081A0D18: users 0x081347D4, 0x08159408), not DEST_NAME's: left stock"),
+    'PREFIX_LIT_OSC1': dict(value=0x8161504, orig='44f11808', evidence="the page builder's literal pool: = STR_PREFIX_OSC1, loaded by "
+                            "ldr r2,[pc,#0xb4] at 0x0816144E"),
+    'PREFIX_LIT_OSC2': dict(value=0x8161508, orig='4cf11808', evidence="= STR_PREFIX_OSC2, loaded by ldr r2,[pc,#0xb0] at 0x08161454"),
+    'DEST_FMT_LIT': dict(value=0x8159c8c, orig='d8ef1808', evidence="DEST_NAME's literal pool: = STR_DEST_OSC_FMT, loaded by "
+                         "ldr r2,[pc,#0x104] at 0x08159B84"),
+    'PANE_TITLE_SITE': dict(value=0x815f96c, orig='21f037f8', evidence="bl SLOT_TITLE in the synth row refresh, Wavetable branch: "
+                            "snprintf(sp+0x330, 0x40, '%s%.20s', [view+0x11D5C+4 row], name) (0x0815F948..58), r0 = view + 0x29C0 + "
+                            "(0x70 & -row) (0x0815F95E..6A); right after, CONTEXT_GET of key 0xC9 with ctx = sp+0x32C (0x0815F97C..7E): "
+                            "the row's handle is at [sp, #0x32C] at the bl (M, verifier e1: 5 / 6; the view's row handle "
+                            "view+0x243C+4 row is written later, 0x0815F8DA, and is 0 / stale here). The Granular branch's title is "
+                            "0x0815F84A (never on the Wavetable page, M)"),
+    'WT_PANE_PAINT_SLOT': dict(value=0x81b6914, orig='51451808', evidence="the Wavetable pane class 0x081B6910 slot 1 (= WT_PANE_PAINT "
+                               "| 1); its one literal 0x081848E0 is the pane constructor's 0x081847E4, called only for view+0x3550 / "
+                               "+0x3830 by SYNTH_VIEW_CTOR (0x081600B8 / 0x081600C2) (verifier v4.py); slot 12 0x0818477D the press "
+                               "(0x79 / 0x7A); slots match 1.6.1's class 0x081B3A18 (Playground's pane hook) by signature"),
+    'WT_PANE_PAINT': dict(value=0x8184550, evidence="(pane r0, ctx r1): ctx+1 set -> one wavetable frame per call (16 frames at "
+                          "+0x38 stride 0x1C, each its own dirty byte +0x19) (0x0818455E..0x08184676); the Position marker; +0x2DE "
+                          "pressed -> GFX_FILL(pane rect, 0xF6, [ctx+4]) (0x08184748..5A); +0x2DF -> GFX_FRAME(pane rect, +0x2DC) "
+                          "(0x08184760..6A); then WIDGET_PAINT_KIDS(pane, ctx) (0x08184718)"),
+    'WIDGET_PAINT_KIDS': dict(value=0x8171c4c, evidence="(widget, ctx): for each child ([+0x1C], next [+0x24], whose parent [+0x2C] is "
+                              "the widget) with +0x30 == 0: its class slot 1 (paint) (0x08171C52..80)"),
+    'GFX_FILL': dict(value=0x8168d62, evidence="(int rect[4] r0, colour r1, surface r2): the rect's words as halfwords {0, 0, w, h, x, y} "
+                     "on the stack, then 0x08169EB4(surface, colour, &rect) (0x08168D62..94); stock's pane paint calls it with ctx+4 "
+                     "(0x08184754..5A); same instructions as 1.6.1 0x08166EF6 (Playground's WFILL). M: the dial's fills land where "
+                     "expected (test_synth_ui Dial)"),
+    'GFX_FRAME': dict(value=0x8168d0a, evidence="(int rect[4] r0, colour r1, surface r2): 0x08169FA0(surface, x, y, w, h on the stack, "
+                      "colour) (0x08168D0A..2C); the pane paint's +0x2DF frame (0x08184760..6A)"),
+    'BROWSE_POST_SITE': dict(value=0x816108a, orig='10f083fe', evidence="synth view event handler (SYNTH_VIEW_EVENT) event 0x7B with "
+                             "ev+8 <= 1 (0x08160FCC..D4): on a Wavetable track (OBJ_TYPE(view+0x2430) == 0x12, 0x08161004..0A) "
+                             "UI_POST {0xA8, [view+0x243C + 4 ev+8]} (the oscillator, stored at sp+0x20: 0x0816104C..6C), then this "
+                             "bl UI_POST {0x3F, [view+0x2438]} (0x08161070..8A); the app's 0x3F (model handler 0x08141EA4 tbh -> "
+                             "0x08142682) opens its page 0x14 (0x08143D44(model, 0x14, ...)). A non-Wavetable track posts 0x1D "
+                             "{oscillator, index} instead (0x08161030..44, page 0xD). Which touch is 0x7B, and that page 0x14 is the "
+                             "WAV browser: device checks (I). Not the pane's 0x7C (its press, 0x0818477C): the synth view returns 1 "
+                             "and its parent, the page host 0x081702F4, hands it to the header root (0x081821F4: 0x68..0x6A only) "
+                             "and the model handler (default): nothing opens from it (S); 0x0814D48C / 0x13B is MIXER_EVENT's"),
+    'KEY_WT_OSC_RESET': dict(value=0xc6, evidence="registry 'WTOscReset' (keys up to 0x13A unchanged); the Wavetable page's row 2 "
+                             "('Osc + Config', prefix 'Osc: ') slot 7 in the page's key table (M, verifier rows: c4,3,c3,c5,cb,d9,da,c6); "
+                             "dsp/analog.cpp has no reset (H1 hides it with both oscillators Analog)"),
+    'VIEW_WT_PANE': dict(value=0x3550, evidence="SYNTH_VIEW_CTOR: add.w r0,r4,#0x3540; adds r0,#0x10; bl 0x081847E4 (the pane "
+                         "constructor, 0x081600B2..B8); M: vt 0x081B6910, parent the view, rect (11,271,622,142)"),
+    'WT_PANE_STRIDE': dict(value=0x2e0, evidence="the second pane: add.w r0,r4,#0x3800; adds r0,#0x30 (0x081600BC..C2) = 0x3830 = "
+                           "0x3550 + 0x2E0; the row refresh steps the hint by mul 0x2E0 row (0x0815F70A, PANE_TEXT_1)"),
+    'WT_PANE_HINT': dict(value=0x26c, evidence="PANE_TEXT_1: add.w r0,r5,#0x3780; adds r0,#0x3c (= 0x37BC = 0x3550 + 0x26C, "
+                         "'Double-tap to load WAV'); M: a child of the pane (parent pane+0), visible"),
+    'WT_PANE_FLAGS': dict(value=0x2dc, evidence="WT_PANE_PAINT: ldrb [pane,#0x2dc] the frame colour (0x08184762), [#0x2dd] the frame "
+                          "background (0x081845D6, cleared per frame by 0x08169E5C), [#0x2de] pressed (0x08184708; the press 0x79 "
+                          "sets it, 0x7A clears it: 0x081847AA / 0x081847D4), [#0x2df] framed (0x0818470E); M: f7 f1 00 00"),
+    'WT_PANE_REDRAW': dict(value=0x31, evidence="the pane class's tick 0x081844E0: flags[0] |= pane+0x31, flags[1] |= pane+0x32, both "
+                           "cleared (0x081844E0..FE); the press sets +0x32 (0x081847AE); the paint walk's ctx +0 makes the root clear "
+                           "the screen (0x081701F8..1E), +1 makes the pane draw its frames (0x0818455E)"),
+    'VIEW_PANE_TITLE': dict(value=0x29c0, evidence="PANE_TITLE_SITE: add.w r0,r0,#0x29c0 (0x0815F964); M: rect (6,236,632,30), a child "
+                            "of the view below the pane"),
+    'PANE_TITLE_STRIDE': dict(value=0x70, evidence="and r0,r6,#0x70 with r6 = -row (0x0815F95E..60): 0 / 0x70 for rows 0 / 1; M: "
+                              "OSC2's title at 0x2A30"),
+    'WIDGET_PARENT': dict(value=0x2c, evidence="UI_POST: ldr r0,[r0,#0x2c] (0x08171D98); WIDGET_PAINT_KIDS compares a child's "
+                          "[+0x2C] with the widget (0x08171C68)"),
+    'WIDGET_HIDDEN': dict(value=0x30, evidence="WIDGET_PAINT_KIDS: ldrb.w r3,[r4,#0x30]; cmp; bne skip (0x08171C6E..74); the root "
+                          "paint the same for its pages (0x08170200)"),
+    'SYNTH_SLOT0': dict(value=0x70, evidence="M: the shown row's first encoder slot widget at view+0x70 (test_synth_ui SLOT0, measured "
+                        "on stock's page since rc33 implA; its key / handle as SYNTH_ROW_BIND set them)"),
+    'SYNTH_SLOT_STRIDE': dict(value=0x468, evidence="M: slot i at view+0x70+0x468 i (test_synth_ui SLOT_STRIDE, all 8 slots read back "
+                              "as stock bound them); S: the view constructor's str.w r2,[r3,#0x468] steps (0x0815FE5A, 0x0816001E)"),
+    'SLOT_KEY': dict(value=0x9c, evidence="ENC_TURN: the widget's key at +0x9C (0 = unbound), posted with 0xCF (0x0817400C..26)"),
+    'SLOT_HANDLE': dict(value=0x34, evidence="ENC_TURN: UI_POST {0xCF, [+0x34], key, value} (0x0817400C..26)"),
+    'DEST_NAME': dict(value=0x8159a5c, evidence="(view r0, &handle r1, key r2, buf r3, size [sp], flag [sp+4]): the key's registry "
+                      "title (0x081683D0); an object other than the view's track ([view+0x11CD08]) by its type: type 6 -> "
+                      "snprintf(buf, size, STR_DEST_OSC_FMT, its index among the track's type-6 children + 1, title) (0x08159B6A..8A). "
+                      "M: test_synth_ui runs it: 'OSC1: Position' / 'OSC2: Level' (stock: 'WT1: ..')"),
+    'SLOT_VALUE': dict(value=0xa8, evidence="the encoder widget's value text: add.w r0,r4,#0xa8; bl SLOT_TITLE (0x08173820, "
+                       "0x08173ADE, 0x08173CF8); its title label is +0x3C8 (0x08173310)"),
+    # BE4.40 identity review fixes (wf/fix_m4: dis via impl_m4/st.py, blscan.py; M = test_synth_ui on stock's page)
+    'VALUE_TEXT_1': dict(value=0x8173824, orig='0df0dbf8', evidence="bl SLOT_TITLE(widget + SLOT_VALUE, the number text): "
+                         "0x081685E8(sp+0x608, key +0x9C, value +0xA0, +0x458) formats it (0x08173808..18), add.w r0,r4,#0xa8 "
+                         "(0x08173820); r4 the encoder slot widget (+0x9C key, +0xA0 value). M: on a row bind (SYNTH_ROW_SHOW) a "
+                         "Shape widget gets '64' through here"),
+    'VALUE_TEXT_2': dict(value=0x8173ae2, orig='0cf07cff', evidence="bl SLOT_TITLE(widget + SLOT_VALUE, sp+0x608): the number "
+                         "formats' shared tail ('%ld' of +0xA0 at 0x08173AB4..C0, '%d.%01dkHz' at 0x08173CCA..D6, ...: snprintf to "
+                         "sp+0x508, 16 bytes copied to sp+0x608, 0x08173AC4..DE). M: a bind's Shape '64' comes through here"),
+    'VALUE_TEXT_3': dict(value=0x8173cfc, orig='0cf06ffe', evidence="bl SLOT_TITLE(widget + SLOT_VALUE, sp+0x608: 16 bytes of "
+                         "the widget's label at +0x2C8, 0x08173CD8..F8); M: the Type widget's 'Analog' / 'Wavetable' on a bind"),
+    'ENC_POS_SET': dict(value=0x8174298, evidence="(step position, index): index clamped to [0, count +0x10 - 1], acc (s64 +0) = index "
+                     "* step (+8) + step / 2, index stored at +0xC (0x08174298..D6); the encoder widget's bind calls it with "
+                     "widget+0x80 and the value's list index (0x08173E16..1C), then copies +0x8C to +0x98 (0x08173E26..2A)"),
+    'SLOT_STEP': dict(value=0x80, evidence="ENC_TURN: add.w r0,r4,#0x80; bl 0x081742EC (the step by the turn, 0x08173FD8..DC); the "
+                      "bind: add.w r0,r4,#0x80; bl ENC_POS_SET (0x08173E18..1C). M: Type 7 at index 1, Type 0 at index 0"),
+    'SLOT_STEP_LAST': dict(value=0x98, evidence="ENC_TURN: ldr [r4,#0x8c] (the index) vs ldr [r4,#0x98]: equal -> no post "
+                           "(0x08173FE0..EA); a value equal to +0xA0 copies +0x8C to +0x98 without a post (0x08173FF4..FC)"),
+    'SLOT_CUR': dict(value=0xa0, evidence="ENC_TURN: the new entry's value (0x081735F0) vs ldr [r4,#0xa0]: equal -> no post "
+                     "(0x08173FEE..FA); the bind stores the value there (str.w r5,[r4,#0xa0], 0x08173E2E); VALUE_TEXT_1 formats it. "
+                     "M: Type 7 bound with +0xA0 = 1"),
+    'SYNTH_VIEW_SHOWN': dict(value=0x2434, evidence="SYNTH_ROW_BIND: add.w r3,r7,#0x2000; ldr.w r3,[r3,#0x434] (0x08160A50..54): "
+                             "the offset from the view of the shown-row byte's base; M: test_synth_ui SHOWN since rc33 implA"),
+    'SYNTH_SHOWN_ROW': dict(value=0x11d88, evidence="SYNTH_ROW_BIND: add r3,r7; add.w r3,r3,#0x11c00; ldrb.w sb,[r3,#0x188] "
+                            "(0x08160A58..5E): the shown row = byte view + [view + SYNTH_VIEW_SHOWN] + 0x11D88"),
+    'WT_PANE_FRAMES_DIRTY': dict(value=0x818497a, evidence="(pane): strb 1 at +0x51 (frame +0x19) for the 16 frames at +0x38 stride "
+                                 "0x1C, then +0x22C = -1 (0x0818497A..94); callers 0x081849CA (the pane's data change) and "
+                                 "the wrapper 0x081849FC, which the row refresh calls for a row with a WAV (0x0815F6F8) and "
+                                 "0x08161614 calls. M: after it "
+                                 "stock's paint draws the frames again (test_synth_ui Dial)"),
 }
 
 # Registry keys missing from registry_keys.txt (entries without a title to match by): the measured

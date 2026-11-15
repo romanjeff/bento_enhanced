@@ -65,6 +65,10 @@ STOCK_161 = dict(
     # S6a (Analog; the group is 1.6.8 only): Playground's 1.6.1 values, checked in this image (rc20/s6a)
     KEY_OSC_TYPE=None, KEY_OSC_SHAPE=None, KEY_OSC_SYNC=None, KEY_OSC_GLIDE=None,   # BE4.40 native keys: 1.6.8 only
     SYNTH_VIEW_KEYS=None, SYNTH_VIEW_HANDLES=None,
+    KEY_WT_OSC_RESET=None, VIEW_WT_PANE=None, WT_PANE_STRIDE=None, WT_PANE_HINT=None, WT_PANE_FLAGS=None,   # BE4.40
+    WT_PANE_REDRAW=None, VIEW_PANE_TITLE=None, PANE_TITLE_STRIDE=None, WIDGET_PARENT=None, WIDGET_HIDDEN=None,   # identity:
+    SYNTH_SLOT0=None, SYNTH_SLOT_STRIDE=None, SLOT_KEY=None, SLOT_HANDLE=None, SLOT_VALUE=None,               # 1.6.8 only
+    SLOT_STEP=None, SLOT_STEP_LAST=None, SLOT_CUR=None, SYNTH_VIEW_SHOWN=None, SYNTH_SHOWN_ROW=None,
     VOICE_DESC=None, VOICE_CURSOR=None, VOICE_RATIO=None, VOICE_PITCH_PARAM=None, VOICE_LFO1=None,   # S6c drums: 1.6.8 only
     ROOT_FINE=None, ROOT_LOOP=None, ROOT_VOICES=None, ROOT_VOICE_N=None, VOICE_SERIAL=None, VOICE_FORWARD=None, BUF_CAPACITY=None,
     INST_CELL=None, INST_FILE=None, INST_TRACK_TYPE=None, INST_KEYS=None, INST_NATIVE_KEYS=None, INST_ROW_STRIDE=None,   # S6c-2: 1.6.8 only
@@ -233,6 +237,24 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     KEY_DR_FIRST=0x1AE,           # keyscan.py: 0x1AE..0x1B4 empty, no immediates; range 0x08059990 only for the 0xFFFFFFF1 object
     KEY_FILENAME=0x81,            # desc.py: 'Filename' type 19; movs r2,#0x81 before GET_STRING (0x081540A8)
     KEY_POLY_MODE=0x2E,           # desc.py: 'Poly Mode' type 7 (6 choices); the One-Shot Config row (rows.py)
+    # BE4.40 identity (scratch wf/impl_m4: st.py disassembly; test_synth_ui runs each on stock's page):
+    KEY_WT_OSC_RESET=0xC6,        # registry 'WTOscReset'; the page's row 2 key table slot 7 (rows: c4,3,c3,c5,cb,d9,da,c6)
+    VIEW_WT_PANE=0x3550,          # SYNTH_VIEW_CTOR: add.w r0,r4,#0x3540; adds r0,#0x10; bl 0x081847E4 (0x081600B2..B8)
+    WT_PANE_STRIDE=0x2E0,         # the second pane: add.w r0,r4,#0x3800; adds r0,#0x30 (0x081600BC..C2) = 0x3830
+    WT_PANE_HINT=0x26C,           # PANE_TEXT_1: add.w r0,r5,#0x3780; adds r0,#0x3c = 0x37BC = 0x3550 + 0x26C
+    WT_PANE_FLAGS=0x2DC,          # pane paint: ldrb [r8,#0x2dc] / #0x2dd / #0x2de / #0x2df (0x08184762, 0x081845D6, 0x08184708, 0x0818470E)
+    WT_PANE_REDRAW=0x31,          # pane tick 0x081844E0: ldrb.w r2,[r0,#0x31] / [r0,#0x32] ORed into the flags
+    VIEW_PANE_TITLE=0x29C0,       # add.w r0,r0,#0x29c0 before bl SLOT_TITLE (0x0815F964)
+    PANE_TITLE_STRIDE=0x70,       # and r0,r6,#0x70 with r6 = -row (0x0815F960)
+    WIDGET_PARENT=0x2C,           # UI_POST: ldr r0,[r0,#0x2c] (0x08171D98)
+    WIDGET_HIDDEN=0x30,           # paint children: ldrb.w r3,[r4,#0x30]; bne skip (0x08171C6E)
+    SYNTH_SLOT0=0x70, SYNTH_SLOT_STRIDE=0x468,   # measured on stock's page (test_synth_ui since rc33 implA); str.w [r3,#0x468] 0x0816001E
+    SLOT_KEY=0x9C, SLOT_HANDLE=0x34,   # ENC_TURN: key +0x9C, UI_POST {0xCF, [+0x34], key, value} (0x0817400C..26)
+    SLOT_VALUE=0xA8,              # add.w r0,r4,#0xa8; bl SLOT_TITLE (0x08173820)
+    SLOT_STEP=0x80,               # ENC_TURN: add.w r0,r4,#0x80; bl 0x081742EC (0x08173FD8); the bind's ENC_POS_SET (0x08173E18)
+    SLOT_STEP_LAST=0x98,          # ENC_TURN: ldr [r4,#0x8c] vs [r4,#0x98], equal -> no post (0x08173FE0..EA)
+    SLOT_CUR=0xA0,                # ENC_TURN: the entry's value vs ldr [r4,#0xa0], equal -> no post (0x08173FF4..FA)
+    SYNTH_VIEW_SHOWN=0x2434, SYNTH_SHOWN_ROW=0x11D88,   # SYNTH_ROW_BIND: ldr.w [view+0x2434]; ldrb [+0x11c00+0x188] (0x08160A50..5E)
 )}
 
 EXPECTED = {"stock_161": STOCK_161, "stock_168": STOCK_168}
