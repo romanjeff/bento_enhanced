@@ -403,7 +403,11 @@ class GroupSplit(unittest.TestCase):
         inc, omitted, refused, _ = build.plan(S, set())
         later = self.OFF_BY_DEFAULT[S.module]
         self.assertEqual(set(refused), later)
-        self.assertEqual(set(build.BASE_SETTINGS[S.module].get("default_off", ())), later, "build() leaves them out by default")
+        bs = build.BASE_SETTINGS[S.module]
+        self.assertEqual(set(bs.get("default_off", ())) - set(bs.get("omit_off", ())), later, "build() leaves them out by default")
+        if S.module == "stock_168":                               # BE4.40: the carrier drums are off and left out unless asked for
+            self.assertEqual(set(bs.get("omit_off", ())), {"drums"})
+            self.assertIn("drums", omitted)
         msg = build.refuse_message(S, refused, omitted)
         self.assertIn("Build without them: BE_DISABLE=" + ",".join(sorted(later)), msg)
 

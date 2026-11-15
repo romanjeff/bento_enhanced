@@ -789,12 +789,90 @@ REVIEWED = {
                                       "any of them, decoding every halfword (pclit.py); check_dsp_assumptions repeats both"),
     'ACT_ANALOG': dict(value=0x10f4, evidence="after ACT_NM 0x10F3; stock's menu / header action ids end at 0x104A (menu table: "
                        "0x1025..0x102C; REVIEW_OURS rule)"),
-    'KEY_AN_SYNC': dict(value=0x1c0, evidence="plan allow-list: empty after stock's builder (test_keys), no immediate in either core, "
-                        "below claim()'s 0x1C1. Stock's key-range tests that cover it both send it to their default case: M4 "
-                        "0x08132E80 (sub.w r3,r5,#0x1b8; cmp r3,#0xf; table 0x08132E98, entry 8 = the default 0x08132DF6) and M7 "
-                        "0x0805D4F4 (keys 0x1B8..0x1D1, table 0x0805D504, entry 8 = the default 0x0805D360); test_keys decodes both"),
-    'KEY_AN_GLIDE': dict(value=0x1b7, evidence="plan allow-list: as KEY_AN_SYNC; no key-range test covers it (M7 0x08059990 "
-                         "takes 0x18C..0x1B6, one below it; test_keys)"),
+    'PUSH_STUB_DELAY': dict(value=0x8115638, evidence="called by PROP_PUSH per property (38 calls for one Wavetable track, rc33 implA "
+                            "p0/dbgpush2.py); listed as the 'delay' of rc32 natprops np.py's stubs; not characterised further (tests only)"),
+    'PUSH_STUB_LOCK': dict(value=0x81085a8, evidence="called by PROP_PUSH per property (40 calls, p0/dbgpush2.py); np.py's 'lock' (tests only)"),
+    'PUSH_STUB_ENGINE': dict(value=0x810ba7a, evidence="called once by PROP_PUSH (p0/dbgpush2.py); np.py's 'engine helper' (tests only)"),
+    'PUSH_STUB_SAMPLE': dict(value=0x810e444, evidence="called by PROP_PUSH for a file reference (p0/dbgpush2.py); np.py's 'sample loader' "
+                             "(tests only)"),
+    'KEY_OSC_TYPE': dict(value=0x1c0, evidence="BE4.40 (docs/plan-native-props.md 3.1; BE4.21..BE4.31's Sync key): empty after stock's "
+                         "builder (test_keys), no movw / mov.w / cmp.w immediate in either core, below claim()'s 0x1C1, not one of "
+                         "MODEL_CHILD_EDIT's special cases (0x36 / 0x37, 0x58, 0x143, 0x14E, 0x150). Stock's key-range tests that cover "
+                         "it send it to their default case: M4 0x08132E80 (sub.w r3,r5,#0x1b8; cmp r3,#0xf; table 0x08132E98, entry 8 = "
+                         "the default 0x08132DF6) and M7 0x0805D4F4 (keys 0x1B8..0x1D1, table 0x0805D504, entry 8 = the default "
+                         "0x0805D360); test_keys decodes both"),
+    'KEY_OSC_SHAPE': dict(value=0x1a7, evidence="BE4.40: one of the three drum allow-list keys S6c-2 left unclaimed (0x1A4 / 0x1A7 / "
+                          "0x1AB): empty, no immediate in either core, not a MODEL_CHILD_EDIT special case. Its one range test, M7 "
+                          "0x08059990 (sub.w r2,r3,#0x18c; cmp r2,#0x2a: a native table store), is reached only after 'cmn.w r3,#0xf; "
+                          "bne' (0x08059988): set_property messages for the object 0xFFFFFFF1 (the reverb); ours carry a track handle "
+                          "(MODEL_CHILD_EDIT, PROP_PUSH), so they go to the track's mailbox (0x0809F8A0) and the oscillator (test_keys, "
+                          "test_native_props)"),
+    'KEY_OSC_SYNC': dict(value=0x1ab, evidence="BE4.40: as KEY_OSC_SHAPE (0x18C..0x1B6 only for 0xFFFFFFF1; test_keys)"),
+    'KEY_OSC_GLIDE': dict(value=0x1b7, evidence="BE4.40 (BE4.21..BE4.31's Glide key): empty, no immediate in either core, no key-range "
+                          "test covers it (M7 0x08059990 takes 0x18C..0x1B6, one below it; test_keys), not a MODEL_CHILD_EDIT special case"),
+    'PROP_TEMPLATE': dict(value=0x8199254, evidence="0x2FC entries {u8 type, u8 0, u16 key, u32 default}, one contiguous run per type (type "
+                          "6 = entries 154..160: 0x03, 0xC4, 0xC7, 0xC9, 0x23, 0x26, 0x81); referenced only through the literals "
+                          "PROP_TEMPLATE_LIT_A / _B (rc32 verif stat.py); 0x0819AA34, its end, starts a separate 5-key list (0x1A9, "
+                          "0x1AA, 0x1A6, 0x1A5, 0x18C) with three readers, so the table stays in place (N1 copies it)"),
+    'PROP_TEMPLATE_LIT_A': dict(value=0x812ea44, orig='54921908', evidence="= PROP_TEMPLATE; loaded by the default lookup 0x0812EA0C "
+                                "(ldr r2,[pc,#0x30] at 0x0812EA12 and ldr r2,[pc,#0x10] at 0x0812EA32)"),
+    'PROP_TEMPLATE_LIT_B': dict(value=0x812eb4c, orig='54921908', evidence="= PROP_TEMPLATE; loaded by the array builder 0x0812EA48 "
+                                "(ldr r0,[pc,#0xe0] at 0x0812EA68, ldr r7,[pc,#0x84] at 0x0812EAC6)"),
+    'PROP_TEMPLATE_CMP_A': dict(value=0x812ea1c, orig='b3f53f7f', evidence="cmp.w r3,#0x2fc in the default lookup's loop; with "
+                                "PROP_TEMPLATE_CMP_B and _LAST the only bounds (a sweep for #0x2FA..#0x2FD, rc32 verif stat.py)"),
+    'PROP_TEMPLATE_CMP_B': dict(value=0x812ea80, orig='b3f53f7f', evidence="cmp.w r3,#0x2fc in the array builder's counting loop"),
+    'PROP_TEMPLATE_LAST': dict(value=0x812ea6a, orig='40f2fb27', evidence="movw r7,#0x2fb in the array builder (the last index)"),
+    'REG_BUILD_SITE': dict(value=0x8131fd4, orig='33f038fc', evidence="bl REG_BUILD in model init (called by UI init at 0x08164B5A): the "
+                           "builder's only bl (rc32 verif callers.py), so our descriptors exist whenever stock's do"),
+    'WT_OSC_PROP_SLOT': dict(value=0x80acbd4, orig='811a0808', evidence="the Wavetable oscillator class (WT_OSC_VT_SLOT's) slot 8 = "
+                             "WT_OSC_PROPERTY | 1; the root's set property calls it per voice for oscillator[index] (rc32 verif t4.py)"),
+    'WT_OSC_PROPERTY': dict(value=0x8081a80, evidence="(osc r0, msg r1): key = ldrh [msg+0xC], value [msg+0x10]; cases 0x03, 0xC4..0xCC; "
+                            "every other key returns without a write (rc32 verif t4.py: zero writes for 7 new keys)"),
+    'WT_ROOT_PROPERTY': dict(value=0x807bc20, evidence="(root r0, msg r1 {0x3E, 0, 0, 0, handle +8, key +0xC, value +0x10, index +0x14}): "
+                             "index <= 2 -> every voice's oscillator[index] slot 8 (voice +0x178 / +0x17C / +0x180: WT1 / WT2 / sub); "
+                             "reached from the synth message loop 0x0807AC60 case 0x3E (rc32 natprops m7.py, verif t4.py)"),
+    'SET_PROPERTY': dict(value=0x810b920, evidence="(engine r0, handle r1, key r2, value r3, [sp] index, [sp+4], [sp+8]): builds {0x3E, "
+                         "index, 0, handle, key, value, ...} into the engine's ring (0x0810B948..8E); MODEL_CHILD_EDIT calls it with "
+                         "r0 = [ENGINE_PTR] (ldr r0,[pc,#0xdc] -> 0x08132D38 = 0x3000F65C; ldr r0,[r0] at 0x08132C58..5C)"),
+    'MODEL_CHILD_EDIT': dict(value=0x8132b78, evidence="(model r0, ev r1 {0xD0, child handle +4, key +8, value +0xC}): the child, its "
+                             "index among same-type children (WT1 0, WT2 1, sub 2), SET_PROPERTY(engine, track, key, value, index) at "
+                             "0x08132C5C, the setter, the project touch; no clamp (rc32 verif t2.py)"),
+    'PROP_SET': dict(value=0x812ecc2, evidence="(object r0, key r1, value r2): sets a key the object has; a missing key is not added "
+                     "(rc32 verif t2.py: count 44 kept)"),
+    'PROP_PUSH': dict(value=0x813e4b8, evidence="(model, handle, flag): the property iterator 0x0812EE5E per child, SET_PROPERTY with "
+                      "the child's index (0x0813E578..0x0813F3D0); after a menu create (0x0813F858), a preset apply (0x0813F476) and "
+                      "LOAD_PUSH_ALL (0x0813FFBA)"),
+    'LOAD_PUSH_ALL': dict(value=0x813fec8, evidence="(model r0): every top-level object of the live store (STORE_NTH loop 0x0813FFCA..D4), "
+                          "PROP_PUSH(model, handle, 1) at 0x0813FFBA; the project load handler calls it (bl at 0x08140998) right "
+                          "after the load commit 0x08126768 (bl at 0x0814094A: STORE_COPY_ALL live <- scratch)"),
+    'STORE_NTH': dict(value=0x812e67a, evidence="(store, i, &out) -> ok: LOAD_PUSH_ALL's and the preset code's object walk "
+                      "(0x0813FF10, 0x08126790)"),
+    'PROJECT_WRITE': dict(value=0x8131220, evidence="(path, buf, n, store) -> ok: the project writer; writes every track and child "
+                          "<cell> through the instrument writer 0x08130484, then the file write FILE_WRITER (rc32 verif t2.py)"),
+    'PROJECT_READ': dict(value=0x81313ec, evidence="(path, buf, n, store) -> ok: the project reader; DOC_READ, then per track "
+                         "0x0812E7C4 + INST_LOAD (0x081315FC), per <cell> CHILD_CREATE (0x08131514) + INST_LOAD (rc32 verif t2.py)"),
+    'XML_PARSE': dict(value=0x810ab76, evidence="(doc, text, n) -> 0 when parsed: DOC_READ's parser (rc32 verif t2.py feeds it)"),
+    'SYNTH_VIEW_CTOR': dict(value=0x815ffd8, evidence="push.w {r4-fp,lr}; the base view ctor 0x08171C88 (0x0815FFE0); the class word "
+                            "0x081A175C (= SYNTH_VIEW_TICK_SLOT) from the literal 0x08160310; the oscillator panes and rows "
+                            "(rc33 implA p0/t5.py runs it)"),
+    'SYNTH_VIEW_NOTIFY': dict(value=0x81616f8, evidence="the class's slot 13 (0x081A175C + 0x34 = 0x081616F9); tbb on code - 0xA8: 0xA8 "
+                              "-> 0x0816187C (the page build 0x081612E4 for the selected track), 0xC0 / 0xC3 -> 0x08161786 (the row "
+                              "whose handle is ev+4 refreshed, then SYNTH_ROW_BIND), 0xC4 -> SYNTH_ROW_SHOW, 0xC5 the panes (rc33 implA "
+                              "p0/t5.py)"),
+    'SYNTH_ROW_BIND': dict(value=0x8160a1c, evidence="(view): the shown row (byte view+[view+0x2434]+0x11D88) and its keys at "
+                           "SYNTH_VIEW_KEYS + 16 row, each slot bound to the row's handle (keys > 0xDA except 0x151, and <= 0xC5 except "
+                           "0x36 / 0x37: [SYNTH_VIEW_HANDLES + 4 row], 0x08160D8C) with CONTEXT_GET for its value; rereads the keys on "
+                           "every call (rc33 implA p0/t5.py: a rewritten row is bound)"),
+    'SYNTH_ROW_SHOW': dict(value=0x8160e4c, evidence="(view): 0x0815F758(view, shown row), then SYNTH_ROW_BIND (0x08160E4C..6C); "
+                           "SYNTH_VIEW_NOTIFY 0xC4 calls it"),
+    'ENC_TURN': dict(value=0x8173fa4, evidence="(slot widget, delta): its key at +0x9C (0 = unbound), the step position +0x80 "
+                     "(0x081742EC), the value from the descriptor type (+0x9E, 0x081735F0); on a change UI_POST {0xCF, +0x34 handle, "
+                     "key, value} (0x0817400C..26)"),
+    'SYNTH_VIEW_KEYS': dict(value=0x11cac, evidence="the page builder's bl memcpy(view+0x11CAC, 0x081A17E0, 0xB0) (PAGE_KEYS_COPY); "
+                            "SYNTH_ROW_BIND reads view+0x11CAA + 16 row + 2 (slot) (0x08160ACC..D4, ldrh [r8,#2]! at 0x08160D0C)"),
+    'SYNTH_VIEW_HANDLES': dict(value=0x243c, evidence="SYNTH_ROW_BIND: addw r3,sb,#0x90f; add.w r3,r7,r3,lsl #2 = view + 0x243C + 4 "
+                               "row, CONTEXT_GET's ctx (0x08160A8E..A4); the page build left WT1, WT2, ... there (p0/t5.py: 5, 6, 7, "
+                               "10, 11, 8, 9, 14, 12, 13, 15)"),
     'ACT_WAVETABLE': dict(value=0x102c, evidence="instrument menu table 0x0819AD30 cell 5 {0x102C, 'Wavetable', 0, 0, 1}; the "
                           "menu handler 0x0815095C posts {0x42, 0, 6, track} for it (0x08150BD6)"),
     'TYPE_WAVETABLE': dict(value=0x12, evidence="'blx; cmp r0,#0x12' 10 sites in both images (and 0x13 13 / 0x0E 5 in both: the type "

@@ -441,7 +441,8 @@ class BuildRefusal(unittest.TestCase):
         self.assertEqual(refused, {})
         self.assertTrue({"core", "trace", "stall", "irq30", "bbox"} <= inc)
         if S.module == "stock_168":
-            self.assertEqual(omitted, self.later, "S3: a ported group is built even when disabled (sites left stock)")
+            self.assertEqual(omitted, self.later | ({"drums"} - self.b.ENABLED),
+                             "S3: a ported group is built even when disabled (sites left stock); BE4.40: drums is left out unless BE_ENABLE asks")
         self.assertEqual(self.off, self.s3 | self.later)
 
     def test_any_later_feature_is_refused_with_its_entries(self):

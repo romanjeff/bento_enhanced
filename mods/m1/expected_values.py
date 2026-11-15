@@ -63,7 +63,8 @@ STOCK_161 = dict(
     UI_PAGE_PIANO=0x2ED980, UI_PAGE_DRUM=0x675AF8,
     MODEL_HEADER_ON=0x14C,         # HEADER_GEN 0x08134808 ldrb.w r6,[r0,#0x14c]; beq.w out
     # S6a (Analog; the group is 1.6.8 only): Playground's 1.6.1 values, checked in this image (rc20/s6a)
-    KEY_AN_SYNC=None, KEY_AN_GLIDE=None,   # 1.6.8 only
+    KEY_OSC_TYPE=None, KEY_OSC_SHAPE=None, KEY_OSC_SYNC=None, KEY_OSC_GLIDE=None,   # BE4.40 native keys: 1.6.8 only
+    SYNTH_VIEW_KEYS=None, SYNTH_VIEW_HANDLES=None,
     VOICE_DESC=None, VOICE_CURSOR=None, VOICE_RATIO=None, VOICE_PITCH_PARAM=None, VOICE_LFO1=None,   # S6c drums: 1.6.8 only
     ROOT_FINE=None, ROOT_LOOP=None, ROOT_VOICES=None, ROOT_VOICE_N=None, VOICE_SERIAL=None, VOICE_FORWARD=None, BUF_CAPACITY=None,
     INST_CELL=None, INST_FILE=None, INST_TRACK_TYPE=None, INST_KEYS=None, INST_NATIVE_KEYS=None, INST_ROW_STRIDE=None,   # S6c-2: 1.6.8 only
@@ -197,7 +198,9 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     UI_CODE_PRESS=0xaf,           # 0xAF -> 0x08141024 (BUTTON_EVENT 0x73) (hold)
     UI_CODE_RELEASE=0xb0,         # 0xB0 -> 0x08141042 (BUTTON_EVENT 0x74) (hold)
     # S6a (rc20/s6a): the allow-list keys (regdump.py: empty after stock's builder), the menu, the type, the M7 layout
-    KEY_AN_SYNC=0x1C0, KEY_AN_GLIDE=0x1B7,
+    KEY_OSC_TYPE=0x1C0, KEY_OSC_SHAPE=0x1A7, KEY_OSC_SYNC=0x1AB, KEY_OSC_GLIDE=0x1B7,   # BE4.40: registry empty, test_keys
+    SYNTH_VIEW_KEYS=0x11CAC,       # page builder: add.w r0,r5,#0x11c00; adds r0,#0xac; bl memcpy (0x08161440..46)
+    SYNTH_VIEW_HANDLES=0x243C,     # binder: addw r3,sb,#0x90f; add.w r3,r7,r3,lsl #2 (= view + 0x243C + 4 row) (0x08160A8E)
     # S6c drums (rc25/s6c re/d1_168.txt, the one-shot render entry 0x08092320 and its callers, read by hand):
     VOICE_DESC=0x0C,              # ldr r0,[r4,#0xc] (0x0809234C) then [r0,#0x14] / [r0,#0x18]: the sample's range
     VOICE_CURSOR=0x40,            # ldrd r2,r3,[r4,#0x40] into the sample read 0x0808F0E0; str r0/r1 back (0x080925C8)

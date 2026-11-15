@@ -64,6 +64,8 @@ FORBIDDEN_FROM = 0x081E0000
 # counts the +0x14 words stock gives recorded melodic notes (their producer is not traced; expected all 0).
 # S6a: the synth groups exist on 1.6.8 only, so 1.6.1 lists its groups (every group up to v3.72) and leaves analog out
 # (default_off, then omitted: plan() would otherwise build any group whose entries resolve). 1.6.8 adds analog (BE4.20; BE4.21 after its review: the v4.20 kit, never flashed, stays as it was).
+# BE4.40: drums is default-off on 1.6.8 (omit_off: not built at all unless BE_ENABLE asks, like a group that is not ported) (Jeff rejected the carrier-WAV drums; the code stays for the Drum Synth track, and
+# BE_ENABLE=drums builds it): a plain 1.6.8 build leaves it out (omitted, -DBE_OMIT_DRUMS), with the sites only it uses.
 # BE4.22 (docs/plan-ext-low-notes.md): note0 (literal MIDI note 0 at stock's five M7 note senders), 1.6.8 only, the same
 # way: default_off and omitted on 1.6.1. (note0_ui, the Step Note field down to 0, is not built yet: plan sprint N3.)
 GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve", "poly_at",
@@ -71,9 +73,9 @@ GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_en
 BASE_SETTINGS = {
     "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0", "drums"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.31", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.40", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
-                              "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx",),
+                              "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx", "drums"), omit_off=("drums",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
 }
 VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (display: boot label, max 6 characters)
@@ -157,8 +159,8 @@ if _unknown:
     raise SystemExit(f"unknown BE_DISABLE/BE_ENABLE name(s): {', '.join(_unknown)}; known: {', '.join(sorted(KNOWN_NAMES))}")
 def patch_group(why):
     return next((g for g, prefixes in PATCH_GROUPS if why.startswith(prefixes)), None)
-# S6c-2: the sites both synth groups use (X1-X3 XML and value reads, H1-H3 handles) start "Synth:"; a bisect leaves them
-# stock only when both groups are off (with Analog off the drums still need them, and the other way round).
+# S6c-2: the sites both synth groups use start "Synth:"; a bisect leaves them stock only when both groups are off. Since
+# BE4.40 there are none (X1-X3 and H1-H3 are the drums' alone, "Drums:"); the rule stays for a later shared site.
 SHARED_SYNTH_PREFIX = "Synth:"
 def site_disabled(why):
     if why.startswith(SHARED_SYNTH_PREFIX):
@@ -302,18 +304,20 @@ GROUP_NAMES = {
              "HOLD_TAP_TOUCH"),
     "mx": ("EXT_BUILD", "EXT_EVENT", "EV_ENCODER", "MX_BUILD", "MX_ROUTE", "MX_EDIT", "MX_BAR", "MX_EVENT"),
     "analog": ("M7_DSP", "M7_DSP_LIMIT", "DSP_WINDOW_WORDS", "WT_VOICE_VT_SLOT", "WT_VOICE_RENDER", "WT_OSC_VT_SLOT", "WT_OSC_RENDER",
-               "MENU_CELL", "MENU_COUNT", "MENU_VT_SLOT", "MENU_HANDLER", "ACT_ANALOG", "PAGE_KEYS_COPY", "M4_MEMCPY",
-               "PANE_TEXT_1", "PANE_TEXT_2", "PANE_TEXT_3", "PANE_TEXT_4", "PANE_TEXT_5", "PANE_TEXT_6", "SLOT_TITLE",
-               "SYNTH_VIEW_EV_SLOT", "SYNTH_VIEW_EVENT", "INST_SAVE_SITE", "INST_LOAD", "CONTEXT_GET", "KEY_AN_SYNC",
-               "KEY_AN_GLIDE", "CTRL_INPUT", "EXT_POOL_END", "PROBE_SCRATCH",
-               "SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "VIEW_NOWAV_LABEL", "ACT_INST_FIRST", "M7_DATA_END",   # S6a review
-               "OBJ_CTOR", "OBJ_BASE_VT", "OBJ_HANDLE_CTR", "NODE_VT_DESTROY", "NODE_DESTROY", "NODE_VT_CLONE", "NODE_CLONE"),   # BE4.22 handles
+               "PAGE_KEYS_COPY", "M4_MEMCPY", "PANE_TEXT_1", "PANE_TEXT_2", "PANE_TEXT_3", "PANE_TEXT_4", "PANE_TEXT_5",
+               "PANE_TEXT_6", "SLOT_TITLE", "CTRL_INPUT", "EXT_POOL_END", "PROBE_SCRATCH",
+               "SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "M7_DATA_END",   # S6a review
+               # BE4.40 native properties (docs/plan-native-props.md): N1 the template copy (2 literal words, 3 immediates),
+               # N2 the registry build's bl, N3 the oscillator's slot 8 (BE4.22's handle sites and the menu are gone)
+               "PROP_TEMPLATE", "PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B", "PROP_TEMPLATE_CMP_A", "PROP_TEMPLATE_CMP_B",
+               "PROP_TEMPLATE_LAST", "REG_BUILD_SITE", "REG_BUILD", "WT_OSC_PROP_SLOT", "WT_OSC_PROPERTY",
+               "KEY_OSC_TYPE", "KEY_OSC_SHAPE", "KEY_OSC_SYNC", "KEY_OSC_GLIDE"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
     "drums": ("M7_DSP", "M7_DSP_LIMIT", "DRUM_RENDER", "EXT_POOL_END",
               # S6c-2: the drum page (D5 refresh entry, D6 event slot, the page's tick slot), the pad copy (H4), and the
-              # shared synth UI sites the drums need when Analog is left out (X1-X3, H1-H3: built under analog otherwise)
+              # synth UI sites only the drums use since BE4.40 (X1-X3, H1-H3)
               "INST_REFRESH", "INST_EV_SLOT", "INST_EVENT", "INST_TICK_SLOT", "INST_TICK", "CHILD_DUP", "KEY_DR_FIRST",
               "INST_SAVE_SITE", "INST_LOAD", "CONTEXT_GET", "OBJ_CTOR", "OBJ_BASE_VT", "OBJ_HANDLE_CTR", "NODE_VT_DESTROY",
               "NODE_DESTROY", "NODE_VT_CLONE", "NODE_CLONE", "DSP_WINDOW_WORDS", "M7_DATA_END", "PROBE_SCRATCH", "CTRL_INPUT"),
@@ -409,8 +413,12 @@ def plan(base, disabled):
                 n |= lean[src] if src in lean and g not in OMIT_DEFINES else refs[src]
         return n
     included, omitted, refused = {"core"}, set(), {}
+    omit_off = set(BASE_SETTINGS[base.module].get("omit_off", ())) - ENABLED   # BE4.40: default-off and left out of the image
     for g in GROUP_NAMES:
         if g == "core":
+            continue
+        if g in omit_off:
+            omitted.add(g)
             continue
         bad = [n for n, _ in base.unreviewed(sorted(needs(g)))]
         if not bad and (verified is None or g in verified):
@@ -437,7 +445,8 @@ def refuse_message(base, refused, omitted):
     if "core" not in refused:
         default_off = set(BASE_SETTINGS[base.module].get("default_off", ()))
         asked = sorted(set(refused) & default_off & ENABLED)          # on by BE_ENABLE only: dropping it is enough
-        off = sorted((set(refused) | omitted) & {g for g, _ in PATCH_GROUPS} - set(asked))
+        omit_off = set(BASE_SETTINGS[base.module].get("omit_off", ())) - ENABLED   # already left out: nothing to disable
+        off = sorted((set(refused) | omitted) & {g for g, _ in PATCH_GROUPS} - set(asked) - omit_off)
         if asked:
             lines.append(f"Build without them: drop {','.join(asked)} from BE_ENABLE (left out by default on {base.label})")
         if off:
@@ -1639,7 +1648,14 @@ def m7_dsp(base_img, patch, sources, out, inc):
         osc_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_osc']:#x}; cmp r0, #0; pop {{r0, r1, r2, r3, r4, lr}}; "
                        f"beq stock; bx lr; stock: b.w {S.WT_OSC_RENDER:#x}", {sd["an_osc"], S.WT_OSC_RENDER},
                        "Analog oscillator trampoline")
-        sd.update(tramp_voice=voice, tramp_osc=osc_at)
+        # N3 (BE4.40): the oscillator's slot 8 (osc r0, msg r1): an_prop takes our four keys, every other key goes on to
+        # stock's (which ignores ours anyway: it has no case for them)
+        if bytes(base_img[S.WT_OSC_PROP_SLOT - BASE:S.WT_OSC_PROP_SLOT - BASE + 4]) != struct.pack("<I", S.WT_OSC_PROPERTY | 1):
+            raise SystemExit("Wavetable oscillator slot 8 does not hold stock's set property")
+        prop_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_prop']:#x}; cmp r0, #0; pop {{r0, r1, r2, r3, r4, lr}}; "
+                        f"beq stock; bx lr; stock: b.w {S.WT_OSC_PROPERTY:#x}", {sd["an_prop"], S.WT_OSC_PROPERTY},
+                        "Analog oscillator property trampoline")
+        sd.update(tramp_voice=voice, tramp_osc=osc_at, tramp_prop=prop_at)
     an_end = len(tramps)
     if inc("drums"):
         with S.group("drums"):
@@ -1655,7 +1671,7 @@ def m7_dsp(base_img, patch, sources, out, inc):
     if len(tramps) > DSP_TRAMP_BYTES:
         raise SystemExit("DSP trampolines overrun their block")
     if an_end:
-        patch(lo, bytes(tramps[:an_end]), bytes(an_end), "Analog (S6a): M7 trampolines (voice enter, oscillator render)")
+        patch(lo, bytes(tramps[:an_end]), bytes(an_end), "Analog (S6a): M7 trampolines (voice enter, oscillator render, property)")
     if len(tramps) > an_end:
         patch(lo + an_end, bytes(tramps[an_end:]), bytes(len(tramps) - an_end),
               "Drums (S6c): M7 trampoline (D1 render entry)")
@@ -1665,6 +1681,8 @@ def m7_dsp(base_img, patch, sources, out, inc):
               "Analog: Wavetable root slot 18 (voice render) -> an_enter, then stock's")
         patch(S.WT_OSC_VT_SLOT, struct.pack("<I", sd["tramp_osc"] | 1), S.orig("WT_OSC_VT_SLOT"),
               "Analog: Wavetable oscillator slot 0 (render) -> an_osc, else stock's")
+        patch(S.WT_OSC_PROP_SLOT, struct.pack("<I", sd["tramp_prop"] | 1), S.orig("WT_OSC_PROP_SLOT"),
+              "Analog: Wavetable oscillator slot 8 (set property, N3) -> an_prop, else stock's")
     if inc("drums"):
         with S.group("drums"):
             patch(S.DRUM_RENDER, asm(f"b.w {sd['tramp_render']:#x}", S.DRUM_RENDER), S.orig("DRUM_RENDER"),
@@ -1672,25 +1690,69 @@ def m7_dsp(base_img, patch, sources, out, inc):
     return sd, len(code)
 
 
+# BE4.40 N1 (docs/plan-native-props.md 3.1 / 3.2): our oscillator keys, appended to the type-6 run of stock's property
+# template in this order (Type first: stock's push sends a child's properties in template order, and the M7 keeps the
+# others only once the oscillator is Analog), with their defaults (Shape 48 = saw, NP6). Keys left for the FM sprint:
+# Bit Depth 0x1A4, Sub FM 0x18B, FM 1>2 0x132 (0x300 + 3 = 0x303, padded to 0x304).
+NP_TEMPLATE_KEYS = (("KEY_OSC_TYPE", 0), ("KEY_OSC_SHAPE", 48), ("KEY_OSC_SYNC", 0), ("KEY_OSC_GLIDE", 0))
+NP_OSC_TYPE = 6                       # the Wavetable oscillator objects' template type (WT1 / WT2)
+NP_PAD_TYPE = 0xFF                    # pad entries (an encodable count): no object type stock reads or makes (test_native_props)
+
+
+def np_template(base_img, stock_n):
+    """N1: stock's template (stock_n entries at PROP_TEMPLATE) with our keys after its type-6 run, padded with type-0xFF
+    entries to the next count both bounds can encode (cmp.w: every multiple of 4 from 0x300 to 0x3FC). -> (bytes, count)"""
+    t = S.PROP_TEMPLATE - BASE
+    ents = [bytes(base_img[t + 8 * i:t + 8 * i + 8]) for i in range(stock_n)]
+    run = [i for i, e in enumerate(ents) if e[0] == NP_OSC_TYPE]
+    if not run or run != list(range(run[0], run[-1] + 1)):
+        raise SystemExit("N1: the template's type-6 entries are not one run")
+    keys = [getattr(S, k) for k, _ in NP_TEMPLATE_KEYS]
+    if any(struct.unpack_from("<H", e, 2)[0] in keys for e in ents):
+        raise SystemExit("N1: one of our keys is already in stock's template")
+    if any(e[0] == NP_PAD_TYPE for e in ents):
+        raise SystemExit("N1: stock's template already uses the pad type")
+    add = [struct.pack("<BBHI", NP_OSC_TYPE, 0, k, d) for k, (_, d) in zip(keys, NP_TEMPLATE_KEYS)]
+    new = ents[:run[-1] + 1] + add + ents[run[-1] + 1:]
+    n = (len(new) + 3) & ~3
+    if not 0x300 <= n <= 0x3FC:
+        raise SystemExit(f"N1: {n:#x} entries: no cmp.w encoding")
+    new += [struct.pack("<BBHI", NP_PAD_TYPE, 0, 0, 0)] * (n - len(new))
+    return b"".join(new), n
+
+
 def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
-    """S6a M4: m4_synth.c after the poly AT handlers, its entry table (m4_diag.c calls it), the menu label and the
-    wrappers; then the Analog sites (A3-A7, A9, X1-X3)."""
+    """M4: m4_synth.c after the poly AT handlers, its entry table (m4_diag.c calls it) and the wrappers; the Analog sites
+    (BE4.40: N1 the template copy after the code, N2 the registry build, A6, A7, A10) and the drums' (D5, D6, the page tick,
+    X1-X3, H1-H4; only in a drums build since BE4.40)."""
     if BASE + len(img) != SYNTH_UI:
         raise SystemExit(f"synth UI block: the image ends at {BASE + len(img):#x}, not at {SYNTH_UI:#x}")
     e = compile_elf(sources("m4_synth"), "cortex_m4", HERE / "m4_synth.ld", out / "m4_synth.elf", SYNTH_CODE, SYNTH_LIMIT)
     va, code, ss = elf_load(e, SYNTH_CODE, SYNTH_LIMIT)
     if va != SYNTH_CODE:
         raise SystemExit(f"synth UI code placement {va:#x}")
-    marker = b"BENTO_MOD:synth-ui(Analog, drum page; after bento-playground A1, K7)\0"
-    end = (SYNTH_CODE + len(code) + len(marker) + 3) & ~3
+    marker = b"BENTO_MOD:synth-ui(Analog oscillators as native properties, drum page; after bento-playground A1, K7)\0"
+    end = (SYNTH_CODE + len(code) + len(marker) + 7) & ~7
+    tpl_data, tpl_n, tpl_at = b"", 0, end
+    an = inc("analog")
+    if an:
+        with S.group("analog"):
+            stock_n = BASE_SETTINGS[S.module]["prop_template_n"]
+            for site, src in (("PROP_TEMPLATE_CMP_A", f"cmp.w r3, #{stock_n:#x}"), ("PROP_TEMPLATE_CMP_B", f"cmp.w r3, #{stock_n:#x}"),
+                              ("PROP_TEMPLATE_LAST", f"movw r7, #{stock_n - 1:#x}")):
+                if asm(src, getattr(S, site)) != S.orig(site):
+                    raise SystemExit(f"N1: {site} is not stock's '{src}'")
+            for site in ("PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B"):
+                if S.orig(site) != struct.pack("<I", S.PROP_TEMPLATE):
+                    raise SystemExit(f"N1: {site} does not hold PROP_TEMPLATE")
+            tpl_data, tpl_n = np_template(base_img, stock_n)
+            end = tpl_at + len(tpl_data)
     if end > SYNTH_LIMIT:
         raise SystemExit(f"synth UI block ends at {end:#x}, past the proven image size ({SYNTH_LIMIT:#x})")
     extend(end, "Analog (S6a): extend image with erased (0xFF) flash for the synth UI block")
     head = asm(f"b.w {ss['an_tick']:#x}; b.w {ss['an_print']:#x}", SYNTH_UI)    # entry table: m4_diag.c slot 0 / slot 1
     if len(head) != 8:
         raise SystemExit("synth UI entry table is not two 4-byte branches")
-    label = SYNTH_UI + 8
-    head += b"Analog\0\0"                                                     # the menu cell's label
     wrap = bytearray(head)
     def block(src, exits, what):
         while len(wrap) % 4:
@@ -1700,70 +1762,83 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
         check_branches(c, a, exits, what)
         wrap.extend(c)
         return a
-    save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; "
-    restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
-    # X1: the instrument writer just appended its params element (r0); r6 = the instrument object (also a pad: S6c-2)
-    replays("INST_SAVE_SITE", "mov r8, r0; movs r4, #0")
-    x1 = block(save + f"mov r0, r6; ldr r1, [sp, #8]; bl {ss['an_save']:#x}; " + restore
-               + f"mov r8, r0; movs r4, #0; b.w {S.INST_SAVE_SITE + 4:#x}", {ss["an_save"], S.INST_SAVE_SITE + 4}, "Synth XML save")
-    # X2: the instrument reader's entry (node r0, object r1): ours first (stock skips attributes it does not know)
-    replays("INST_LOAD", "push {r4, r5, r6, r7, lr}; sub sp, #0x14")
-    x2 = block(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['an_load']:#x}; " + restore
-               + f"push {{r4, r5, r6, r7, lr}}; sub sp, #0x14; b.w {S.INST_LOAD + 4:#x}", {ss["an_load"], S.INST_LOAD + 4}, "Synth XML load")
-    # X3: CONTEXT_GET (model, ctx, key r2, &value): our keys go to an_context (Analog's two) and dr_context (S6c-2: the seven
-    # contiguous drum keys, one range test), every other key straight to stock; only ip is used before the branch
-    replays("CONTEXT_GET", "push {r4, r5, r6, r7, lr}; sub sp, #0xc")
-    dr_test, x3_exits = "", {S.CONTEXT_GET + 4, ss["an_context"]}
+    n2 = None
+    if an:
+        with S.group("analog"):
+            # N2: model init's bl REG_BUILD (its only call) -> stock's builder, then np_keys (our four descriptors), r0 kept
+            if S.orig("REG_BUILD_SITE") != asm(f"bl {S.REG_BUILD:#x}", S.REG_BUILD_SITE):
+                raise SystemExit("REG_BUILD_SITE: not the expected bl REG_BUILD")
+            n2 = block(f"push {{r4, lr}}; bl {S.REG_BUILD:#x}; mov r4, r0; bl {ss['np_keys']:#x}; mov r0, r4; pop {{r4, pc}}",
+                       {S.REG_BUILD, ss["np_keys"]}, "Analog registry build")
+    x1 = x2 = x3 = h1 = None
     if inc("drums"):
         with S.group("drums"):
-            dr_test = f"sub.w r12, r2, #{S.KEY_DR_FIRST:#x}; cmp.w r12, #{DRUM_KEYS_N - 1}; bls drum; "
-            x3_exits.add(ss["dr_context"])
-    x3 = block(dr_test + f"movw r12, #{S.KEY_AN_SYNC:#x}; cmp r2, r12; beq ours; movw r12, #{S.KEY_AN_GLIDE:#x}; cmp r2, r12; beq ours; "
-               f"push {{r4, r5, r6, r7, lr}}; sub sp, #0xc; b.w {S.CONTEXT_GET + 4:#x}; ours: b.w {ss['an_context']:#x}"
-               + (f"; drum: b.w {ss['dr_context']:#x}" if dr_test else ""), x3_exits, "Synth value reads")
-    # H1 (BE4.22): OBJ_CTOR's entry (obj r0): an_forget first with every register kept (the constructor itself writes
-    # only r1, r2, ip and the flags, so its callers may keep r3 across it), then stock's vtable store, back after it
-    replays("OBJ_CTOR", "ldr r2, [pc, #0x1c]; str r2, [r0]")
-    lit = ((S.OBJ_CTOR + 4) & ~3) + 0x1C
-    if struct.unpack_from("<I", base_img, lit - BASE)[0] != S.OBJ_BASE_VT:
-        raise SystemExit(f"OBJ_CTOR: its literal at {lit:#x} is not OBJ_BASE_VT")
-    h1 = block(f"push.w {{r0, r1, r2, r3, r12, lr}}; bl {ss['an_forget']:#x}; pop.w {{r0, r1, r2, r3, r12, lr}}; "
-               f"movw r2, #{S.OBJ_BASE_VT & 0xFFFF:#x}; movt r2, #{S.OBJ_BASE_VT >> 16:#x}; str r2, [r0]; b.w {S.OBJ_CTOR + 4:#x}",
-               {ss["an_forget"], S.OBJ_CTOR + 4}, "Analog handles: object constructor")
+            save = "push.w {r0-r12, lr}; mrs r0, apsr; push {r0, r1}; "
+            restore = "pop {r0, r1}; msr apsr_nzcvq, r0; pop.w {r0-r12, lr}; "
+            # X1: the instrument writer just appended its params element (r0); r6 = the instrument object (a pad)
+            replays("INST_SAVE_SITE", "mov r8, r0; movs r4, #0")
+            x1 = block(save + f"mov r0, r6; ldr r1, [sp, #8]; bl {ss['an_save']:#x}; " + restore
+                       + f"mov r8, r0; movs r4, #0; b.w {S.INST_SAVE_SITE + 4:#x}", {ss["an_save"], S.INST_SAVE_SITE + 4}, "Drums XML save")
+            # X2: the instrument reader's entry (node r0, object r1): ours first (stock skips attributes it does not know)
+            replays("INST_LOAD", "push {r4, r5, r6, r7, lr}; sub sp, #0x14")
+            x2 = block(save + f"ldr r0, [sp, #8]; ldr r1, [sp, #12]; bl {ss['an_load']:#x}; " + restore
+                       + f"push {{r4, r5, r6, r7, lr}}; sub sp, #0x14; b.w {S.INST_LOAD + 4:#x}", {ss["an_load"], S.INST_LOAD + 4}, "Drums XML load")
+            # X3: CONTEXT_GET (model, ctx, key r2, &value): the seven contiguous drum keys go to dr_context (one range test),
+            # every other key straight to stock; only ip is used before the branch
+            replays("CONTEXT_GET", "push {r4, r5, r6, r7, lr}; sub sp, #0xc")
+            x3 = block(f"sub.w r12, r2, #{S.KEY_DR_FIRST:#x}; cmp.w r12, #{DRUM_KEYS_N - 1}; bls drum; "
+                       f"push {{r4, r5, r6, r7, lr}}; sub sp, #0xc; b.w {S.CONTEXT_GET + 4:#x}; drum: b.w {ss['dr_context']:#x}",
+                       {S.CONTEXT_GET + 4, ss["dr_context"]}, "Drums value reads")
+            # H1 (BE4.22): OBJ_CTOR's entry (obj r0): an_forget first with every register kept (the constructor itself writes
+            # only r1, r2, ip and the flags, so its callers may keep r3 across it), then stock's vtable store, back after it
+            replays("OBJ_CTOR", "ldr r2, [pc, #0x1c]; str r2, [r0]")
+            lit = ((S.OBJ_CTOR + 4) & ~3) + 0x1C
+            if struct.unpack_from("<I", base_img, lit - BASE)[0] != S.OBJ_BASE_VT:
+                raise SystemExit(f"OBJ_CTOR: its literal at {lit:#x} is not OBJ_BASE_VT")
+            h1 = block(f"push.w {{r0, r1, r2, r3, r12, lr}}; bl {ss['an_forget']:#x}; pop.w {{r0, r1, r2, r3, r12, lr}}; "
+                       f"movw r2, #{S.OBJ_BASE_VT & 0xFFFF:#x}; movt r2, #{S.OBJ_BASE_VT >> 16:#x}; str r2, [r0]; b.w {S.OBJ_CTOR + 4:#x}",
+                       {ss["an_forget"], S.OBJ_CTOR + 4}, "Drums handles: object constructor")
     if SYNTH_UI + len(wrap) > SYNTH_CODE:
         raise SystemExit("synth UI wrappers overrun into its code")
-    patch(SYNTH_UI, bytes(wrap), b"\xff" * len(wrap), "Analog (S6a): synth UI entry table, menu label, wrappers")
+    patch(SYNTH_UI, bytes(wrap), b"\xff" * len(wrap), "Analog (S6a): synth UI entry table, wrappers")
     patch(SYNTH_CODE, code + marker, b"\xff" * (len(code) + len(marker)), "Analog (S6a): synth UI code (m4_synth.c)")
-    # A3 / A4: a 9th cell in stock's instrument menu table (flash), shown by raising the cell count to 9
-    cell = struct.unpack("<5I", S.orig("MENU_CELL"))
-    if cell[0] or cell[2] or cell[3] or cell[4] != 1:
-        raise SystemExit(f"MENU_CELL: not an empty enabled cell ({cell})")
-    patch(S.MENU_CELL, struct.pack("<5I", S.ACT_ANALOG, label, 0, 0, 1), S.orig("MENU_CELL"), "Analog: instrument menu cell 9 = Analog",
-          site=True)                                                 # a 20 B site in stock's table: a bisect leaves it stock
-    replays("MENU_COUNT", "movs r3, #8")
-    patch(S.MENU_COUNT, asm("movs r3, #9", S.MENU_COUNT), S.orig("MENU_COUNT"), "Analog: the instrument menu shows 9 cells")
-    # A5 / A9: two view event slots; A6 / A7: bl sites
-    for slot, target, fn, why in (("MENU_VT_SLOT", "MENU_HANDLER", "an_menu_event", "Analog: instrument menu events -> Analog action"),
-                                  ("SYNTH_VIEW_EV_SLOT", "SYNTH_VIEW_EVENT", "an_view_event", "Analog: synth page encoder edits of Sync / Glide"),
-                                  ("SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "an_view_tick", "Analog: synth page tick: the Analog CPU indicator"),
-                                  ("NODE_VT_DESTROY", "NODE_DESTROY", "an_destroy", "Synth: handles (H3): node destroy drops its Analog / drum entries"),
-                                  ("NODE_VT_CLONE", "NODE_CLONE", "an_clone", "Synth: handles (H2): node clone carries Analog / drum knobs to the copy")):
-        if S.orig(slot) != struct.pack("<I", getattr(S, target) | 1):
-            raise SystemExit(f"{slot} does not hold stock's {target}")
-        patch(getattr(S, slot), struct.pack("<I", ss[fn] | 1), S.orig(slot), why)
-    for site_name, target, fn, why in [("PAGE_KEYS_COPY", "M4_MEMCPY", "an_page_keys", "Wavetable page keys: Glide / Sync on Analog tracks")] + \
-            [(f"PANE_TEXT_{i}", "SLOT_TITLE", "an_pane_text", f"Wavetable pane text {i}") for i in range(1, 7)]:
-        site = getattr(S, site_name)
-        orig = asm(f"bl {getattr(S, target):#x}", site)
-        if S.orig(site_name) != orig:
-            raise SystemExit(f"{site_name}: not the expected bl {target}")
-        patch(site, asm(f"bl {ss[fn]:#x}", site), orig, f"Analog: {why}")
-    patch(S.INST_SAVE_SITE, asm(f"b.w {x1:#x}", S.INST_SAVE_SITE), S.orig("INST_SAVE_SITE"), "Synth: instrument XML save -> bento_analog*, bento_drum_*")
-    patch(S.INST_LOAD, asm(f"b.w {x2:#x}", S.INST_LOAD), S.orig("INST_LOAD"), "Synth: instrument XML load -> bento_analog*, bento_drum_*")
-    patch(S.CONTEXT_GET, asm(f"b.w {x3:#x}", S.CONTEXT_GET), S.orig("CONTEXT_GET"), "Synth: CONTEXT_GET answers Sync / Glide and the drum keys")
-    patch(S.OBJ_CTOR, asm(f"b.w {h1:#x}", S.OBJ_CTOR), S.orig("OBJ_CTOR"), "Synth: handles (H1): object constructor -> an_forget first")
+    if an:
+        with S.group("analog"):
+            patch(tpl_at, tpl_data, b"\xff" * len(tpl_data),
+                  f"Analog (BE4.40): N1 property template ({tpl_n:#x} entries: stock's, our keys after the type-6 run)")
+            for site in ("PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B"):
+                patch(getattr(S, site), struct.pack("<I", tpl_at), S.orig(site), f"Analog: N1 template literal ({site})")
+            for site, src in (("PROP_TEMPLATE_CMP_A", f"cmp.w r3, #{tpl_n:#x}"), ("PROP_TEMPLATE_CMP_B", f"cmp.w r3, #{tpl_n:#x}"),
+                              ("PROP_TEMPLATE_LAST", f"movw r7, #{tpl_n - 1:#x}")):
+                c = asm(src, getattr(S, site))
+                if len(c) != 4:
+                    raise SystemExit(f"N1: '{src}' is not one 4-byte instruction")
+                patch(getattr(S, site), c, S.orig(site), f"Analog: N1 template bound ({site}: {src})")
+            patch(S.REG_BUILD_SITE, asm(f"bl {n2:#x}", S.REG_BUILD_SITE), S.orig("REG_BUILD_SITE"),
+                  "Analog: N2 registry build -> stock's, then our oscillator keys' descriptors")
+            # A10: the synth view's tick slot (vtable word); A6 / A7: bl sites
+            if S.orig("SYNTH_VIEW_TICK_SLOT") != struct.pack("<I", S.SYNTH_VIEW_TICK | 1):
+                raise SystemExit("SYNTH_VIEW_TICK_SLOT does not hold stock's SYNTH_VIEW_TICK")
+            patch(S.SYNTH_VIEW_TICK_SLOT, struct.pack("<I", ss["an_view_tick"] | 1), S.orig("SYNTH_VIEW_TICK_SLOT"),
+                  "Analog: synth page tick: oscillator rows per Type, resend, CPU indicator")
+            for site_name, target, fn, why in [("PAGE_KEYS_COPY", "M4_MEMCPY", "an_page_keys", "Wavetable page keys: Type, the Analog rows")] + \
+                    [(f"PANE_TEXT_{i}", "SLOT_TITLE", "an_pane_text", f"Wavetable pane text {i}") for i in range(1, 7)]:
+                site = getattr(S, site_name)
+                orig = asm(f"bl {getattr(S, target):#x}", site)
+                if S.orig(site_name) != orig:
+                    raise SystemExit(f"{site_name}: not the expected bl {target}")
+                patch(site, asm(f"bl {ss[fn]:#x}", site), orig, f"Analog: {why}")
     if inc("drums"):
         with S.group("drums"):
+            for slot, target, fn, why in (("NODE_VT_DESTROY", "NODE_DESTROY", "an_destroy", "Drums: handles (H3): node destroy drops its pads' entries"),
+                                          ("NODE_VT_CLONE", "NODE_CLONE", "an_clone", "Drums: handles (H2): node clone carries its pads' knobs to the copy")):
+                if S.orig(slot) != struct.pack("<I", getattr(S, target) | 1):
+                    raise SystemExit(f"{slot} does not hold stock's {target}")
+                patch(getattr(S, slot), struct.pack("<I", ss[fn] | 1), S.orig(slot), why)
+            patch(S.INST_SAVE_SITE, asm(f"b.w {x1:#x}", S.INST_SAVE_SITE), S.orig("INST_SAVE_SITE"), "Drums: instrument XML save -> bento_drum_*")
+            patch(S.INST_LOAD, asm(f"b.w {x2:#x}", S.INST_LOAD), S.orig("INST_LOAD"), "Drums: instrument XML load -> bento_drum_*")
+            patch(S.CONTEXT_GET, asm(f"b.w {x3:#x}", S.CONTEXT_GET), S.orig("CONTEXT_GET"), "Drums: CONTEXT_GET answers the drum keys")
+            patch(S.OBJ_CTOR, asm(f"b.w {h1:#x}", S.OBJ_CTOR), S.orig("OBJ_CTOR"), "Drums: handles (H1): object constructor -> an_forget first")
             # S6c-2: the instrument page. D5: the refresh entry (view r0) -> dr_refresh, which calls stock's body through
             # its own replay of the first instruction (m4_synth.c stock_refresh); D6 and the tick: vtable words.
             replays("INST_REFRESH", PUSH_R4_R11_LR)
@@ -1780,8 +1855,12 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
             patch(S.CHILD_DUP, asm(f"b.w {ss['dr_dup']:#x}", S.CHILD_DUP), S.orig("CHILD_DUP"),
                   "Drums: handles (H4): a pad's child copy carries its knobs")
     s4.update({f"synth.{k}": v for k, v in ss.items()})
-    s4.update({"synth.wrap_save": x1, "synth.wrap_load": x2, "synth.wrap_context": x3, "synth.wrap_ctor": h1})
-    return len(code)
+    s4.update({"synth.np_template": tpl_at if an else 0, "synth.np_template_n": tpl_n})
+    if n2 is not None:
+        s4["synth.wrap_reg_build"] = n2
+    if inc("drums"):
+        s4.update({"synth.wrap_save": x1, "synth.wrap_load": x2, "synth.wrap_context": x3, "synth.wrap_ctor": h1})
+    return len(code) + len(tpl_data)
 
 
 def note_on_case(status, two_data=True, native=False, guard=False):

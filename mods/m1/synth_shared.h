@@ -65,29 +65,25 @@ typedef struct {
     unsigned sum16;           /* DWT cycles in our hooks per such block, >> 4, summed; both halve near 2^31 */
     unsigned peak;            /* most cycles in one block */
     unsigned osc_peak;        /* most oscillators rendered in one block */
-    unsigned r4;              /* (spare: blocks over 100 % LOAD are counted by the M4, AN4 'over') */
+    unsigned props;           /* BE4.40: set-property messages of our keys an oscillator took (N3, dsp/analog.cpp an_prop) */
     unsigned n_max;           /* the largest frame count seen */
     unsigned sync_skipped;    /* oscillator renders with sync skipped because n > SYNC_FRAMES */
     unsigned hist[4];         /* Analog's share of the block: < 5, 5-15, 15-30, 30+ % */
     unsigned voices_peak;     /* most voice entries in one block */
     unsigned renders;         /* oscillator renders (all) */
-    unsigned misses;          /* per-root cache refills */
+    unsigned misses;          /* per-root glide line refills (BE4.40: the glide's last note per root only) */
     unsigned r14, r15;
 } SaStats;                    /* 64 bytes: blocks +0, sum16 +4, peak +8, osc_peak +12, n_max +20, sync_skipped +24,
                                  hist +28, voices_peak +44, renders +48, misses +52 */
 /* +0x0400 M7 private: the DSP's running state (two lines) */
 #define SA_RUN 0x0400u
-/* +0x0200 Analog track table, 16 lines (M4 writes, M7 reads): the M4's AN4 table, published */
-#define SA_ANTAB 0x0200u
-#define SA_ANTAB_N 16u
-#define AN_ON 1u
-#define AN_SYNC 2u
+/* +0x0200 (BE4.21..BE4.31: the M4's Analog track table, published; unused since BE4.40, when an oscillator's Type, Shape,
+ * Sync and Glide became stock properties that reach the M7 as set_property messages: docs/plan-native-props.md) */
 #define AN_GLIDE_MAX 1000u                                  /* Glide 0..1000 = 0..2 s, stock's encoder units */
-typedef struct {
-    unsigned head, handle, flags, glide;                    /* glide 0..AN_GLIDE_MAX */
-    unsigned r4, r5, r6, tail;
-} SaTrack;
-/* +0x0600 Analog per-root cache, 16 x 32 B (M7 private) */
+#define AN_SHAPE_MAX 127u                                   /* Shape 0..127: sine > triangle > saw > square > pulse */
+#define AN_SHAPE_DEFAULT 48u                                /* saw (the BE4.22..BE4.31 sound); N1's template default */
+/* +0x0600 Analog per-root glide lines, 16 x 32 B (M7 private): the track's last note (glide starts from it) and the
+ * glide coefficient cache */
 #define SA_ANCACHE 0x0600u
 #define SA_ANCACHE_N 16u
 /* +0x0800 M4 only: synth UI state (2 KB, unused since the review: the M4's state is in AN4) */

@@ -1346,7 +1346,7 @@ class NoCardWrites(FatFsRig):
         self.assertIn("# saved: m7 dropped=", self.fs[SAVES].decode())
         if "analog" not in MAN.get("omitted", []):    # S6a (X6): the synth UI's line, through its entry table
             if "analog" not in OFF:
-                self.assertRegex(self.fs[SAVES].decode(), r"\nANALOG area not taken keys=\S+ tracks=0 \|[^\n]*\r\n",
+                self.assertRegex(self.fs[SAVES].decode(), r"\nANALOG area not taken keys=\S+ oscs=0 \|[^\n]*\r\n",
                                  "the M7 has not taken the synth area here")
             if "drums" not in OFF and "drums" not in MAN.get("omitted", []):   # S6c: the drums' line, before ANALOG's
                 self.assertRegex(self.fs[SAVES].decode(), r"\nDRUMS area not taken \| ui keys=\S+ pages=0 heals=0 edits=0 [^\n]*"

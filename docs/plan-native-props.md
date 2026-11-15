@@ -45,11 +45,28 @@ The reviewer's own scripts are in `scratchpad\rc32\verif\` (same parent folder):
 | The padded size must be 0x308 or more | **refuted** | 0x2FC + 7 = 0x303, and 0x304 encodes. Checked by keystone with a capstone round trip and run end to end. Every multiple of 4 from 0x300 to 0x3FC encodes (imm8 0xC0..0xFF << 2), so the pad is never more than 3 entries. |
 | Type 0xFF pad is inert | **corrected** | M: stock's CHILD_CREATE(0xFF) fails ("Unable to initialize cell"). With the pad it **succeeds**, making an object with one property (key 0). This is harmless only while nothing asks for type 0xFF. The reader decodes cell types by name (0x08131168), so test that no name maps to 0xFF. |
 | Emulator method | **note** | Unicorn keeps translated blocks: patching 0x0812EA48's bounds after it has run once left type 47 (the last run) with 7 of 14 keys (M, `t1.py` first version). test_native_props must run on the built image, or patch before any creation. |
-| Project load reaches the M7 | **unsettled** (still P0) | S: the file task loads into a scratch store (0x08127ACE -> 0x081313EC, store at task+0x330) and posts the result with 0x08100590. The adoption into the live model and its push were not traced. Candidates are the 0x0813E4B8 callers 0x0813FA1C / 0x0813FEC8. The push looks generic: there are 9 `bl` sites of the property iterator 0x0812EE5E at 0x0813E64C..0x0813F22A. A backward push-scan attributes them to 0x0813E4B8 (S, a coarse attribution). |
+| Project load reaches the M7 | **unsettled** (still P0); settled in P0 results: M | S: the file task loads into a scratch store (0x08127ACE -> 0x081313EC, store at task+0x330) and posts the result with 0x08100590. The adoption into the live model and its push were not traced. Candidates are the 0x0813E4B8 callers 0x0813FA1C / 0x0813FEC8. The push looks generic: there are 9 `bl` sites of the property iterator 0x0812EE5E at 0x0813E64C..0x0813F22A. A backward push-scan attributes them to 0x0813E4B8 (S, a coarse attribution). |
 | Boot order risk (section 7, row 1) | **resolved by reasoning** | N2 registers our tokens inside the same REG_BUILD call (the only `bl` to 0x08165848 is at 0x08131FD4, S). So our tokens exist whenever stock's do. A load before REG_BUILD would lose stock's own parameters too. |
-| Not re-derived | **unsettled** | M7 free bytes, the mixed-voice rules, T5 (live row-key change), flash budget (19,780 B), the drum section, undo per view, and the migration conversion itself. |
+| Not re-derived | **unsettled** | M7 free bytes, the mixed-voice rules, T5 (live row-key change), flash budget (19,780 B), the drum section, undo per view, and the migration conversion itself. M7 free bytes, T5 and the flash budget: settled in P0 results (M). |
 
 The main reason for GO: the BE4.21 bug class (copies renumber handles, so our side table loses track of them) **stops being possible**, because the state lives inside stock's own object. Today we guard against it with four hooks and a 16-entry table. After this change there is nothing left to guard.
+
+## P0 results (measured 2026-11-09, recorded 2026-11-14)
+
+The implementer's probes are in `scratchpad\rc33\implA\p0\` (same parent folder). Re-run on 2026-11-14 on the working tree's build (`b.sh p0doc 1.6.8`; image 0x187F98). test_native_props passed (14 tests, 1 skipped: no BE4.22 kit), and test_analog passed (29 tests).
+
+| P0 item | Answer | Label | Evidence |
+|---|---|---|---|
+| Boot order: REG_BUILD vs the boot project load | No risk. N2 puts our descriptors inside the only REG_BUILD call, so they exist whenever stock's do. Where the real boot load sits relative to model init was not traced. | S (+ M for the order the rig uses) | `dump.sh`: 0x08131FD4 `bl 0x08165848` is the only call (REG_BUILD_SITE). test_native_props' Rig runs model init's registry build through the N2 wrapper, then every Project test reads a project. |
+| The project-load push path | The load handler commits the scratch store with STORE_COPY_ALL (`bl` at 0x0814094A, inside the load commit 0x08126768), then calls LOAD_PUSH_ALL 0x0813FEC8 (`bl` at 0x08140998). That runs PROP_PUSH 0x0813E4B8 (model, handle, 1) for each top-level object (0x0813FFBA). It is the plan's candidate 0x0813FEC8, and the push is the same per-child loop as after a create. | M (WT1), I (WT2) | test_native_props `test_the_push_after_a_load_reaches_the_m7`: WT1's 4 keys arrive with index 0 and the loaded values (1, 127, 0, 77), after stock's 0xC9 = 321. The push stops at WT1's file reference because the sample loader is stubbed, so WT2 is covered only by PROP_PUSH (`test_the_push_after_a_create_sends_type_first`). `p0/x2.sh`, `x3.sh`, `dbgpush2.py`. |
+| M7 value integrity | Values arrive unchanged on the M4 side and from the root to slot 8. an_prop clamps them where it stores them. The M7 entry 0x08059960 case 0x3E was not run, only read (no clamp). | M (M4, root to slot 8, an_prop), S (M7 entry) | test_analog `Props`: `test_stocks_root_sends_each_key_to_the_right_oscillator` (WT_ROOT_PROPERTY 0x0807BC20, index 0 / 1 to all 10 voices' WT1 / WT2, the sub neither; 50 props counted) and `test_settings_are_clamped_where_they_are_stored` (Shape 1000 -> 127, -5 -> 0; Glide 5000 -> 1000; Sync 7 -> 0). rc32 `verif\t4.py`: the root makes no writes. |
+| T5: stock's widgets take rewritten row keys without a page rebuild | **Yes**, on a refresh. SYNTH_ROW_BIND 0x08160A1C reads the shown row's keys again on every call. SYNTH_ROW_SHOW 0x08160E4C and notifications 0xC0 / 0xC3 / 0xC4 all bind the new keys; no 0xA8 rebuild is needed. A rewrite with no refresh is not picked up. The slot's object depends on the key: keys > 0xDA (except 0x151) and keys <= 0xC5 bind to the row's handle. All 4 of our keys are > 0xDA, so they bind to the row's handle. A key in 0xC6..0xDA does not (0xCB went to handle 15). Same result on the stock image and on the built image. | M | `p0/t5.py` (stock 1.6.8 page, ctor 0x0815FFD8): row 0 slot 2 0xC9 -> 0xC5 gives CONTEXT_GET (5, 0xC5) and title "Pulse Width"; nothing without a refresh. The page tick uses SYNTH_ROW_SHOW (m4_synth.c `page_tick`). |
+| The oscillator's free bytes (write watchpoints) | **None outside the kernel area +0x10C..+0x1CC.** The bytes outside it that stock never writes after construction hold constructor values (pointers such as 0x080AD290, floats 1.0, coefficient runs). They are configuration, not free space (I). In this run the WT render wrote only +0x10C..+0x16B of the kernel area; +0x16C..+0x1CC stayed zero. **Contradicts 3.3 rule 1:** N3 uses neither a free byte nor an M7-local table. It keeps AnProps at the top of the kernel area (+0x1C0..+0x1CC), valid only while the oscillator is Analog (magic and Type == 1). Leaving Analog zeroes the whole area. Shape / Sync / Glide sent while the oscillator is Wavetable are dropped. They come back from the push (Type goes first, in template order) or from the page tick's `resend` when the page sees a Wavetable -> Analog change. | M (writes), I (the never-written bytes are in use), S (our code) | `p0/oscfree.py` on stock 1.6.8, voice 0 WT1 / WT2, 0x1F0 B each: 4 note starts, slot-8 writes of every stock key, 30 render blocks per note with a real table. test_analog `test_type_is_analog_only_when_exactly_1` (a Wavetable oscillator's area is left untouched) and `test_leaving_analog_zeroes_the_whole_area`. dsp/analog.h AN_PROPS_OFF 0xB4. |
+| Template count encoding | P1 has 4 keys: 0x2FC + 4 = **0x300, which encodes with no pad entry** (`cmp.w #0x300`, `movw r7,#0x2ff`). The 0x304 / one-pad case comes with P3's 3 keys (0x303). | M | manifest `synth.np_template_n` = 0x300. test_native_props `Template` (4 tests: sites, copy = stock + ours after the type-6 run, every object's array, the setter cannot add a key). `dump.sh`: stock's type-6 run is entries 154..160. |
+| Size of the removals (flash budget) | **Budget met; NP1 stays the table copy.** Same groups (drums built), HEAD (BE4.31 code) 0x1885F0 -> working tree 0x189958: +4,968 B, which includes the 6,144 B table (0x300 x 8). The removals therefore give back 1,176 B more than the N2 / N3 / page / resend code adds. **That is about 1.2 KB, not the "several KB" 3.2 inferred.** Default 1.6.8 build (drums now default-off): 0x187F98, **21,404 B free** (BE4.31: 19,780 B). With drums: 14,812 B free. | M (sizes), I (the net split: per-item removal sizes were not isolated) | `git archive HEAD` built to `~/rv33p0doc/be431` (19,780 B free, as noted); `b.sh p0doc 1.6.8` and `b.sh p0docdr 1.6.8 BE_ENABLE=drums`; proven max 0x18D334. |
+| (3.4) Does the encoder widget clamp before 0xCF? | **Not settled.** ENC_TURN 0x08173FA4 maps a step position to a value through the descriptor type (0x081735F0), and the disassembly was not resolved into a yes or no. This does not matter for safety, because the readers clamp (an_prop M; the page: test_synth_ui, being rewritten). A9 is gone anyway. | open | `p0/x12.sh`, `x13.sh` (static read only) |
+
+NP1 / NP2 / NP3: decided (Decision, end of file). NP1 = table copy (built), NP2 = drop the menu entry, NP3 = no migration.
 
 ## 1. What Jeff sees and does
 
@@ -213,7 +230,7 @@ Keys are per object, so one key serves both WT1 and WT2. That removes plan-analo
     - it must allocate from the same pool that NODE_DESTROY frees (unverified);
     - 0x0812EA0C would miss our defaults, although its callers only ask for fixed stock keys (S);
     - it adds a code path to every object creation.
-  - BE4.31 has 19,780 B free below 0x18D334 (A, S). The table takes 6 KB of that, and the removals in section 5 give some back (size measured in P0, I: several KB).
+  - BE4.31 has 19,780 B free below 0x18D334 (A, S). The table takes 6 KB of that, and the removals in section 5 give some back (size measured in P0, I: several KB). P0 results: about 1.2 KB net, M; 21,404 B free.
   - **Recommendation:** the table copy. A diff of the data against stock is easy to review, and there is no new runtime code.
 - **N2, the descriptors (M4 code).**
   - Redirect the `bl REG_BUILD` at 0x08131FD4 to a wrapper: stock's builder, then our descriptors with their real tokens, all or nothing.
@@ -232,7 +249,8 @@ Today's `an_osc` assumes both oscillators are Analog. B found a real hazard ther
 
 The rules:
 1. **Where our properties live.** The values N3 stores must not live at osc+0x10C, or a Wavetable oscillator's render overwrites its Shape, Bits and so on. P0 finds bytes in the oscillator object that stock never writes after construction, by running stock's WT render with write watchpoints. If there are none, a small M7-local table keyed by the oscillator pointer.
-   - Pointer reuse cannot leave stale values: stock pushes every child property after it creates an instrument. For the project-load path this is still I; P0 verifies it.
+   - P0 results (M): there are none. N3 keeps the values in the kernel area while the oscillator is Analog instead, which departs from this rule.
+   - Pointer reuse cannot leave stale values: stock pushes every child property after it creates an instrument. For the project-load path this is still I; P0 verifies it. Settled in P0 results: M (WT1), I (WT2).
 2. **The voice state** lives in the first Analog oscillator (WT1 if it is Analog, otherwise WT2), and is reset when that changes.
 3. **Leaving Analog** runs `forget()` on that oscillator, so stock finds a zeroed history.
 4. **Sync:**
@@ -252,14 +270,14 @@ The rules:
   - The synth view's tick (A10) reads each oscillator's Type with CONTEXT_GET (stock's generic path, so no X3).
   - If the row's keys don't match the Type, it rewrites view+0x11CAC and refreshes.
   - A Type edit is shown within one pass.
-  - Whether stock's widgets take new keys on a refresh without a page rebuild is not traced; this is P0's T5 run in the display emulator.
+  - Whether stock's widgets take new keys on a refresh without a page rebuild is not traced; this is P0's T5 run in the display emulator. Settled in P0 results: M, yes, on SYNTH_ROW_SHOW.
   - **Fallback:** a fixed layout. Shape sits in slot 4, Position stays in slot 2 on both types, and the inert controls show "--".
 - **A7 works per pane** ("OSC1: Analog" / "OSC1: <wav>"). The pane index comes from the slot offset (0x29C0 + 0x70·i, B, S).
 - **A8** (CPU indicator, shape dial) and **A10's "No WAV" label** check the pane's oscillator Type instead of the track's flag.
 - **Edits go through stock.** 0xCF becomes 0xD0, which runs set_property and touches the project.
   - **A9 goes** for our keys, provided the descriptor ranges clamp in stock's encoder path.
     - **[V]** Measured: the 0xD0 step does **not** clamp (M), and the 0xCF -> 0xD0 forwarder 0x08161158 does not either (S).
-    - Any clamp must come from the encoder widget that builds 0xCF from the descriptor. P0 measures that.
+    - Any clamp must come from the encoder widget that builds 0xCF from the descriptor. P0 measures that. Not settled in P0 results (open); the readers clamp.
     - Either way the readers must clamp (3.1), because files are not clamped.
 
 ## 4. What is removed
@@ -275,7 +293,7 @@ The rules:
 | X1 save 0x081304DE | `bento_analog*`, `bento_drum_*` | Analog part gone | **gone** |
 | X2 load 0x081309A0 | both | **migration-only** (section 6), or gone if NP3 = no | migration only, or gone |
 | X3 CONTEXT_GET 0x08134A70 | our keys | synth keys gone; drums keep it | **gone** |
-| A9 synth view event slot | our keys | **gone** (if P0 confirms) | gone |
+| A9 synth view event slot | our keys | **gone** (if P0 confirms; gone in P1, see P0 results) | gone |
 | `synth_keys()` (lazy, empty tokens) | | replaced by N2 | |
 | DK4 table, D6's edit swallow | drum knobs | stays | **gone** (D6 keeps only the page's row logic, if needed) |
 
@@ -319,12 +337,12 @@ The `analog` bisect group becomes N1-N3 plus the page sites. `BE_DISABLE=analog`
 |---|---|---|
 | The boot project load runs before REG_BUILD, so our tokens are unknown at the first load | **[V] resolved by reasoning (S + I):** N2 adds our tokens inside the only REG_BUILD call (0x08131FD4), so they exist exactly when stock's do | test_native_props loads a project immediately after model init |
 | **[V] new:** out-of-range values reach our code (hand-edited file, a widget without a clamp) | M: stock stores and forwards them raw | defensive reads (3.1); a test loads a file with bento_bits=99, bento_osc_type=-7, bento_shape=1000 and checks render and page |
-| The project-load path does not push child properties to the M7 the way 0x0813E4B8 does after a create | I (stock's own Position must reach the M7 somehow) | P0: trace it, and log set_property during a project load in the emulator |
+| The project-load path does not push child properties to the M7 the way 0x0813E4B8 does after a create | I (stock's own Position must reach the M7 somehow) | P0: trace it, and log set_property during a project load in the emulator. Settled in P0 results: M |
 | A forwarded value is clamped or changed on the way (the M7 registry copy, the broadcast flags at engine+0x8CB2) | S: only 0x05 / 0x27 / 0x31 are flagged. **[V]** M4 side M: unchanged (5000 and -3 pass). M7 entry S: no clamp. Root to slot 8 M: delivered with index | test: the value at slot 8 equals the value sent, for each key at its extremes |
-| A live row-key change is not picked up by stock's widgets | not traced | P0 T5 run; the fixed-layout fallback (3.4) |
+| A live row-key change is not picked up by stock's widgets | not traced | P0 T5 run; the fixed-layout fallback (3.4). Settled in P0 results: M, picked up on a refresh |
 | A mixed voice corrupts stock's wavetable history | S (B's hazard) | the rules in 3.3; the bit-identical WT test |
 | The padded template count does not encode, or type 0xFF collides | **[V]** M: 0x304 encodes and works. The pad makes type 0xFF creatable | test: no reader type name maps to 0xFF and no CHILD_CREATE type is 0xFF |
-| Flash space (about 6 KB of data) | S: 19,780 B free | P0 measures the removals; NP1 fallback is the wrapper |
+| Flash space (about 6 KB of data) | S: 19,780 B free | P0 measures the removals; NP1 fallback is the wrapper. Settled in P0 results: M, 21,404 B free |
 | Keys forwarded by set_property hit a stock M7 case we missed (computed keys, u16 tables are invisible to the scan) | S, limit of the evidence | device check: edit every new control and confirm no stock parameter on the track changes |
 | Every saved project carries our attributes on every oscillator cell, even at default | M: stock ignores them | none needed; noted for Jeff |
 | An M7-only reset loses our per-oscillator values until the next push | I (same as stock's own properties) | none beyond stock's behaviour |
@@ -367,7 +385,7 @@ Stock 1.6.1 and 1.6.8 would not load such a track at all, so rollback would brea
 
 | Sprint | Work | Exit (offline) | Device check |
 |---|---|---|---|
-| **P0: measure** (no kit) | Boot order of REG_BUILD vs the boot project load; the project-load push path; M7 value integrity; the T5 row-key rewrite run; the oscillator's free bytes (watchpoints); template count encoding; size of the removals | each item answered M or S, written into this plan; NP1 / NP2 / NP3 decided | none |
+| **P0: measure** (no kit) | Boot order of REG_BUILD vs the boot project load; the project-load push path; M7 value integrity; the T5 row-key rewrite run; the oscillator's free bytes (watchpoints); template count encoding; size of the removals | each item answered M or S, written into this plan; NP1 / NP2 / NP3 decided (done: P0 results; the encoder clamp is open) | none |
 | **P1: native Type, Sync, Glide, Shape** (kit BE4.32) | N1-N3; per-oscillator M7 rules (3.3); page rows / titles / tick heal; remove A3-A5, AN4, the Analog parts of H1 / X1-X3, A9, the M7 handle cache | all tests in 8 green except FM / Bits; the size budget met; `BE_DISABLE=analog` stock-identical for the touched sites | menu has 8 entries; mixed OSC1 Analog + OSC2 WT plays both; Type switch with a wav loaded and back; save / reload / preset / copy-paste keep everything; stock 1.6.8 opens the project as plain WT; no stock parameter changes on any edit |
 | **P2: migration** (only if NP3 = yes; same kit) | cut-down X2; Shape remap | the migration fixture passes; BE4.31 opens a new project as plain WT | open a real BE4.22 / BE4.31 Analog project: it sounds the same, then save and reload |
 | **P3: FM and Bit Depth** (kit BE4.33) | plan-analog-fm on native keys (0x18B, 0x132, 0x1A4); its AN4 second word is dropped | plan-analog-fm section 8 tests on native properties | plan-analog-fm's device checks |
@@ -380,11 +398,11 @@ Stock 1.6.1 and 1.6.8 would not load such a track at all, so rollback would brea
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
-| NP1 | How our keys get into the template | table copy (about 6 KB data, no code) / wrapper on 0x0812EA48 (about 200 B code, an allocator assumption) | table copy, unless P0's size budget fails |
+| NP1 | How our keys get into the template | table copy (about 6 KB data, no code) / wrapper on 0x0812EA48 (about 200 B code, an allocator assumption) | table copy, unless P0's size budget fails (it holds: P0 results) |
 | NP2 | The Analog menu entry | drop it / keep it as a shortcut that only sets both Types | drop it: it is the hack you asked to remove, and it costs 3 hooks |
 | NP3 | Migrate BE4.22-BE4.31 Analog projects | yes (cut-down X2) / no | depends on whether you saved any you care about. No means less code |
 | NP4 | Glide on a Wavetable oscillator | only Analog oscillators / try the osc+0x04 follow (untraced) | only Analog in P1; trace later |
-| NP5 | Inert controls | hide them (tick heal) / show "--" in a fixed layout | hide them, if P0's T5 run allows |
+| NP5 | Inert controls | hide them (tick heal) / show "--" in a fixed layout | hide them, if P0's T5 run allows (it does: P0 results) |
 | NP6 | Shape's default | 48 (saw, today's sound) / 0 (sine) | 48 |
 | NP7 | OSC1 / OSC2 titles | always on Wavetable tracks / only when one is Analog | always: one consistent name, which FD8 already approved |
 

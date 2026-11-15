@@ -1,49 +1,38 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Synth UI on the M4 (S6a: Analog oscillators on Wavetable tracks), docs/plan-synths-168.md.
+/* Synth UI on the M4 (Analog oscillators on Wavetable tracks; the drum page), docs/plan-native-props.md and
+ * docs/plan-synths-168.md.
  *
- * A port of bento-playground's A1 "Analog" UI (eu4_work/integration/kick_ui.c, 9fc7787, GPL-3.0-or-later),
- * rewritten for our layout: the track's Analog flag, Sync and Glide live in our own 16-entry table (AN4, in the
- * reset-surviving slice: diag_shared.h AN4_SLICE), not in the drum knob table, and the M7 reads a published copy
- * in the synth area (synth_shared.h). The registry keys come from a reviewed allow-list (synth_keys), not fixed
- * numbers. Hooks (all 1.6.8; build.py writes them):
- *   A3/A4  instrument menu: a 9th cell "Analog" (action S_ACT_ANALOG) in stock's flash table, count 9
- *   A5     the menu view's event slot -> an_menu_event: our action = stock's Wavetable action + flag; any of
- *          stock's instrument actions clears the flag of the track it replaces
- *   A6     the Wavetable page's key copy (bl memcpy) -> an_page_keys: Glide in WT1's free 4th slot,
- *          Sync in WT2's, on Analog tracks only
- *   A7     six pane texts (bl SLOT_TITLE) -> an_pane_text: "Analog" / "Saw > Square > Pulse"
- *   A9     the synth view's event slot -> an_view_event: encoder edits (0xCF) of our keys are ours;
- *          stock would forward them to the model as 0xD0 (0x08161158)
- *   A10    the synth view's tick slot -> an_view_tick: the CPU indicator in WT1's "No WAV" label (D3)
- *   X1/X2  instrument XML save / load -> an_save / an_load: bento_analog, bento_analog_sync,
- *          bento_analog_glide on the track's params element (stock ignores unknown attributes)
- *   X3     CONTEXT_GET -> an_context for our two keys only (the wrapper tests the key first)
- *   X6     m4_diag.c calls the entry table: slot 0 an_tick (every UI loop pass), slot 1 an_print
- *          (save time: the black box's ANALOG line)
- *   H1     stock's one base object constructor (OBJ_CTOR) -> an_forget first: a handle about to be given out
- *          carries no Analog state from an earlier boot (decision 7: nothing new inherits Analog)
- *   H2     the generic node's clone slot (NODE_VT_CLONE) -> an_clone: a copy (load commit, save snapshot, preset
- *          apply / save, paste) gets its source's Analog state under its own new handle
- *   H3     the generic node's destroy slot (NODE_VT_DESTROY) -> an_destroy: a freed instrument's entry goes with it
- * S6c-2 (BE4.31, docs/plan-synths-168.md "S6c-2"): the drum page, after bento-playground's K7 Kick UI
- * (eu4_work/integration/kick_ui.c, 9fc7787, GPL-3.0-or-later), rewritten: the pad's knobs in our own table (DK4, the
- * slice), seven reviewed keys, no menu entry (D6: the carrier is loaded from the browser), no FatFS, no Mod Matrix.
+ * BE4.40 (native properties, docs/plan-native-props.md): an oscillator's Type (Wavetable / Analog), Shape, Sync and Glide
+ * are stock properties of the oscillator object itself (WT1 / WT2, type 6): build.py appends our four keys to the type-6
+ * run of stock's property template (N1), and np_keys() gives them descriptors with real XML tokens inside stock's one
+ * registry build (N2). Stock then creates, stores, saves (bento_osc_type, bento_shape, bento_sync, bento_glide on each
+ * oscillator's <cell> params), loads, clones, copies, reads (CONTEXT_GET), edits (0xCF -> 0xD0) and forwards them to the
+ * M7 with the oscillator's index (set_property), where dsp/analog.cpp stores them per oscillator (N3). Nothing here holds
+ * Analog state: the BE4.22..BE4.31 table (AN4), its handle hooks (H1-H3), the XML hooks (X1, X2), the value hook (X3), the
+ * menu entry (A3-A5) and the edit hook (A9) are gone for Analog. Stock never range-checks a value (a file is read raw), so
+ * every reader here clamps, and Type is Analog only when it is exactly 1.
+ * Sites (1.6.8; build.py writes them):
+ *   N2     model init's bl REG_BUILD -> a wrapper: stock's builder, then np_keys (all four descriptors, or none)
+ *   A6     the Wavetable page's key copy (bl memcpy) -> an_page_keys: Type in each oscillator row's free 4th slot, and the
+ *          Analog layout (Shape instead of Position, Glide / Sync) for an oscillator that is Analog
+ *   A7     six pane texts (bl SLOT_TITLE) -> an_pane_text: an Analog oscillator's "No WAV" / "Double-tap to load WAV" texts
+ *   A10    the synth view's tick slot -> an_view_tick: puts each oscillator row's keys right for its Type (stock's own row
+ *          bind rereads them, SYNTH_ROW_SHOW), sends an oscillator that just became Analog its other settings again (the M7
+ *          keeps them only while it is Analog), and the CPU indicator in the first Analog oscillator's "No WAV" label
+ *   X6     m4_diag.c calls the entry table: slot 0 an_tick (every UI loop pass), slot 1 an_print (save time: the ANALOG and
+ *          DRUMS lines of the black box)
+ * The drum page (S6c-2, BE4.31; group drums, default-off on 1.6.8 since BE4.40, built only with BE_ENABLE=drums), after
+ * bento-playground's K7 Kick UI (eu4_work/integration/kick_ui.c, 9fc7787, GPL-3.0-or-later), rewritten: the pad's knobs in
+ * our own table (DK4, the slice), seven reviewed keys, no menu entry, no FatFS, no Mod Matrix. Its sites:
  *   D5     the instrument page's refresh entry -> dr_refresh: on a Kick pad the Config row shows the Kick's knobs
  *   D6     the page's event slot -> dr_page_event: encoder edits of the drum keys set the pad's knobs (never the model)
- *          the page's tick slot -> dr_view_tick: the CPU readout in the page's title label, and puts the row right
- *          when stock rewrote it without a refresh (dr_heal: the cell set of event 0xA8, a file change 0xC5)
- *   X1-X3  also for pads: bento_drum_engine, bento_drum_k1..k7; CONTEXT_GET answers the drum keys (dr_context)
- *   H1-H3  also drop / carry the pads' entries (a track's children: H2 walks them pairwise, H3 drops them)
- *   H4     stock's copy of one child (CHILD_DUP) -> dr_dup: a copied pad keeps its knobs
- * The sites X1-X3 and H1-H3 serve both synths (build.py "Synth:" writes): a bisect leaves them stock only when both are off.
- * Instrument handles (BE4.22, docs/plan-synths-168.md "Instrument handles"): every M4 object gets its handle from
- * OBJ_CTOR's counter, which only goes up within a boot, and a copy always gets a new one. With H1-H3 every AN4
- * entry names a live object of this boot; BE4.21's 30 s sweep and 10 s swap watch are gone.
- * Tasks: an_load and an_save run in stock's "pcmStreamer" task (command queue 0x0812B27C, entry 0x08114EA0: a
- * project load can come before the black box's first tick, review 2026-11-08), everything else in the UI task.
- * Both change AN4 only with interrupts masked (a few stores); only the UI task writes the synth area.
- * Position (key 0xC9) stays stock's: on an Analog track it is the oscillator's shape. Integer code
- * only (soft-float M4 build); strict-align on 1.6.8 like every M4 source. */
+ *          the page's tick slot -> dr_view_tick: the CPU readout in the page's title label, and dr_heal
+ *   X1-X3  instrument XML save / load -> an_save / an_load (bento_drum_engine, bento_drum_k1..k7), CONTEXT_GET's drum keys
+ *   H1-H4  stock's object lifecycle (OBJ_CTOR, NODE_VT_CLONE, NODE_VT_DESTROY, CHILD_DUP) for DK4's handles
+ * (X1-X3 and H1-H4 served both synths until BE4.31; since BE4.40 they are the drums' alone and only drum builds have them.)
+ * Tasks: stock's project loads and saves run in its "pcmStreamer" task (command queue 0x0812B27C); everything of ours that
+ * runs there is the drums' (an_load / an_save), which change DK4 only with interrupts masked. The rest runs in the UI task.
+ * Integer code only (soft-float M4 build); strict-align on 1.6.8 like every M4 source. */
 #include "diag_shared.h"
 #include "synth_shared.h"
 
@@ -57,25 +46,14 @@
 #define M7HDR ((volatile SaM7 *)SA(SA_M7))
 #define M4HDR ((volatile SaM4 *)SA(SA_M4))
 #define STATS ((volatile SaStats *)SA(SA_STATS))
-#define TAB ((volatile SaTrack *)SA(SA_ANTAB))
 
-#define SYNC_KEY S_KEY_AN_SYNC
-#define GLIDE_KEY S_KEY_AN_GLIDE
-
-/* ---- AN4: the M4's table (diag_shared.h AN4_SLICE, 256 B, M4 only) ---------------------------------------
- * An entry: handle (0 = free) and a word: [3:0] flags (AN_ON, AN_SYNC), [13:4] glide 0..1000, [31:16] 0.
- * The table survives an M4 reset (the slice); stock's handle counter does not (it starts again at 1). So an entry
- * whose handle is not below the counter is from an earlier boot and names no object of this one: H1 drops every such
- * entry before the counter can reach it (in practice: all of them, at the first of stock's static constructors). */
-#define AN4_MAGIC 0x32344E41u                /* "AN42": BE4.22's layout (a v4.21 table is started again, review rc23 I5) */
-#define AN4_N SA_ANTAB_N
-#ifdef BE_NO_ANALOG                                 /* S6c: a BE_DISABLE=analog bisect keeps the drums (and this ELF): */
-#define ANALOG_ON 0                                 /* the tick and the ANALOG line do nothing, the code stays referenced */
+#ifdef BE_NO_ANALOG                                 /* a BE_DISABLE=analog bisect: N1-N3 and the page sites stay stock, */
+#define ANALOG_ON 0                                 /* the code stays referenced and does nothing */
 #else
 #define ANALOG_ON 1
 #endif
-#if defined(BE_OMIT_DRUMS) || defined(BE_NO_DRUMS)  /* S6c-2: the drum page (BE_DISABLE=drums: its sites stay stock, the */
-#define DRUMS_ON 0                                  /* tick, keys and XML do no drum work) */
+#if defined(BE_OMIT_DRUMS) || defined(BE_NO_DRUMS)  /* the drum page off (left out, or BE_DISABLE=drums) */
+#define DRUMS_ON 0
 #else
 #define DRUMS_ON 1
 #endif
@@ -85,33 +63,37 @@
 #define DRUMS_BUILT 0
 #endif
 #define HANDLE_CTR (*(volatile u32 *)S_OBJ_HANDLE_CTR)
+
+/* ---- the synth UI's own state (diag_shared.h AN4_SLICE, 256 B, M4 only) ---------------------------------------
+ * BE4.40: no Analog table any more (Analog lives in stock's objects); the block keeps the boot generation, np_keys'
+ * answer, the CPU indicator (also the drum page's) and the black box counters. "AN50": a BE4.22..BE4.31 table left in the
+ * slice by a warm reset is started again. */
+#define AN4_MAGIC 0x30354E41u                /* "AN50" */
 typedef struct {
-    u32 magic, gen;                          /* gen: the config line's boot generation this table last saw */
-    u32 serial, pub, pub_m7gen, pub_boot;    /* serial: +1 per change; pub*: what is published in the synth area */
-    u32 keys, r7, r8;                        /* keys: synth_keys() 1 ok, 0x100 | taken bits, 0 not yet */
-    u32 carried, dropped, forgot;            /* H2 copies given Analog, H3 entries freed, H1 / stale entries dropped */
+    u32 magic, gen;                          /* gen: the config line's boot generation this block last saw */
+    u32 keys;                                /* np_keys: 1 ok, 0x100 | taken bits, 0x200 no registry, 0 not run this boot */
+    u32 keys_gen;                            /* the boot np_keys last ran in */
+    u32 src;                                 /* the Wavetable page's stock key table (A6's memcpy source) */
+    u32 heals, resends, page_rows;           /* rows put right by the tick; oscillators sent their settings again; A6 */
     u32 cpu_t, seen, sum, h3;                /* CPU indicator: last update, the LOAD counters (D0L) then */
     u32 over_t, cpu_pm, over, stats_blocks;  /* last block over budget, average LOAD, over-budget blocks with Analog */
-    u32 menus, edits, saves, loads, full, evicted, label_t, cpu_ok, menu_miss, menu_same, r30, r31;
-    struct { u32 handle, word; } e[AN4_N];
+    u32 label_t, cpu_ok, oscs, oscs_t;       /* the label's last update; the black box's Analog oscillator count */
+    u32 last_h[2], last_t[2];                /* the synth page's oscillator rows as the tick last saw them: handle, Type */
+    u32 label_v, label_o;                    /* the view and pane (1 + index, 0 none) whose label the indicator last wrote */
+    u32 r26[38];
 } An4;
-_Static_assert(sizeof(An4) == AN4_SLICE_END - AN4_SLICE, "AN4 fills its 256 B");
+_Static_assert(sizeof(An4) == AN4_SLICE_END - AN4_SLICE, "the synth UI state fills its 256 B");
 #define AN4 ((volatile An4 *)SLICE(AN4_SLICE))
-static inline u32 flags_of(u32 w) { return w & 15u; }
-static inline u32 glide_of(u32 w) { return (w >> 4) & 0x3FFu; }
-static inline u32 word_of(u32 flags, u32 glide) {
-    return (flags & 15u) | ((glide > AN_GLIDE_MAX ? AN_GLIDE_MAX : glide) << 4);
-}
 
 static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
-static void dsb(void) { __asm volatile("dsb" ::: "memory"); }
+__attribute__((unused)) static void dsb(void) { __asm volatile("dsb" ::: "memory"); }
 static u32 lock(void) { u32 p; __asm volatile("mrs %0, primask\n cpsid i" : "=r"(p)::"memory"); return p; }
 static void unlock(u32 p) { __asm volatile("msr primask, %0" ::"r"(p) : "memory"); }
 static void bump(volatile u32 *c) { u32 p = lock(); (*c)++; unlock(p); }   /* a counter two tasks may move */
 
 static volatile An4 *an4(void) {
     volatile An4 *a = AN4;
-    if (a->magic != AN4_MAGIC) {             /* a cold start (slice garbage), or the canary pattern before the first use */
+    if (a->magic != AN4_MAGIC) {             /* a cold start (slice garbage), an older layout, or the canary pattern */
         u32 p = lock();
         if (a->magic != AN4_MAGIC) {
             for (u32 i = 0; i < sizeof(An4) / 4u; i++) ((volatile u32 *)a)[i] = 0;
@@ -121,67 +103,8 @@ static volatile An4 *an4(void) {
     }
     return a;
 }
-static int find_i(volatile An4 *a, u32 h) {
-    if (!h) return -1;
-    for (u32 i = 0; i < AN4_N; i++)
-        if (a->e[i].handle == h && (flags_of(a->e[i].word) & AN_ON)) return (int)i;
-    return -1;
-}
-/* Analog flags of a handle: AN_ON | AN_SYNC, 0 if not Analog; glide into *g if given. */
-static u32 lookup(u32 h, u32 *g) {
-    volatile An4 *a = an4();
-    u32 p = lock();
-    int i = find_i(a, h);
-    u32 w = i < 0 ? 0u : a->e[i].word;
-    unlock(p);
-    if (g) *g = glide_of(w);
-    return i < 0 ? 0u : flags_of(w) & (AN_ON | AN_SYNC);
-}
-/* Is h an object of the live project (stock's store [MODEL])? A load's scratch copies, a save's snapshot and the
- * clipboard are other stores. */
-static int live(u32 h) {
-    void *obj = 0;
-    return h && FN(S_RESOLVE_OBJECT, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) && obj;
-}
-/* A free slot (under the lock). Entries from an earlier boot never reach here: H1 dropped them at boot. */
-static int free_slot(volatile An4 *a) {
-    for (u32 k = 0; k < AN4_N; k++)
-        if (!(flags_of(a->e[k].word) & AN_ON) || !a->e[k].handle) return (int)k;
-    return -1;
-}
-/* flags 0: not Analog any more. A full table gives up its oldest copy: the lowest handle that is not in the live
- * project (handles only go up, so that is the copy made first: a load's scratch before a save's snapshot before a
- * paste). Live tracks are never given up; if there is no copy to give up, the mark is lost and counted (full). At
- * most 8 live tracks + the 8 copies of a load commit or a save snapshot in progress are needed at once. */
-static void mark(u32 h, u32 flags, u32 glide) {
-    if (!h) return;
-    volatile An4 *a = an4();
-    for (int pass = 0; pass < 2; pass++) {
-        u32 victim = 0;
-        if (pass)                                             /* stock's lookups outside the lock */
-            for (u32 k = 0; k < AN4_N; k++) {
-                u32 x = a->e[k].handle;
-                if (x && x != h && (!victim || x < victim) && !live(x)) victim = x;
-            }
-        u32 p = lock();
-        int i = find_i(a, h);
-        if (i < 0 && flags) {
-            i = free_slot(a);
-            for (u32 k = 0; i < 0 && victim && k < AN4_N; k++)
-                if (a->e[k].handle == victim) { i = (int)k; a->evicted++; }
-            if (i < 0 && !pass) { unlock(p); continue; }
-            if (i < 0) a->full++;
-        }
-        if (i >= 0) {
-            if (flags) { a->e[i].handle = h; a->e[i].word = word_of(flags | AN_ON, glide); }
-            else { a->e[i].word = 0; a->e[i].handle = 0; }
-            a->serial++;
-        }
-        unlock(p);
-        return;
-    }
-}
 
+#if DRUMS_BUILT
 /* ---- DK4 (S6c-2): the M4's drum knob table (diag_shared.h DK4_SLICE, 1152 B, M4 only) -------------------------------
  * Who holds the truth, as AN4: a pad's knob values live here, keyed by the pad's object handle (the instrument page's
  * cell, a child of its track node, whose M7 root carries the same handle at +0x0C), so a load works before the M7 has
@@ -319,56 +242,28 @@ static void dk_copy(u32 from, u32 to, volatile u32 *count) {
     bump(count);
 }
 
-/* ---- H1 / H2 / H3: stock's object lifecycle (any task: the storage task's loads and saves, the UI task's menu
- * and clipboard). AN4 is read without the lock first: the common case (nothing to do) costs a 16-entry scan. */
-/* H1: OBJ_CTOR's first act (build.py's wrapper keeps every register): the counter is the handle the object is about
- * to get; every entry at or above it is from an earlier boot. Also runs for stock's static constructors at M4 boot:
- * before the table exists (no magic) it only reads. */
+/* ---- H1 / H2 / H3: stock's object lifecycle, for DK4's handles (the drums' only since BE4.40) ------------------------
+ * H1: OBJ_CTOR's first act (build.py's wrapper keeps every register): the counter is the handle the object is about to get;
+ * every entry at or above it is from an earlier boot. Also runs for stock's static constructors at M4 boot: before the table
+ * exists (no magic) it only reads. */
 __attribute__((used, retain)) void an_forget(void) {
     u32 ctr = HANDLE_CTR;
     if (!ctr) return;                                          /* (never on the device: .data is copied first) */
-#if DRUMS_BUILT
-    volatile Dk4 *d = DK4;                                     /* S6c-2: the drum knob table survives a reset as AN4 does */
-    if (d->magic == DK4_MAGIC) {
-        u32 any = 0;
-        for (u32 k = 0; k < DK4_N; k++) any |= d->e[k].handle >= ctr;
-        if (any) {
-            u32 p = lock(), n = 0;
-            ctr = HANDLE_CTR;
-            for (u32 k = 0; k < DK4_N; k++)
-                if (d->e[k].handle >= ctr) { d->e[k].word = 0; d->e[k].handle = 0; n++; }
-            if (n) { d->serial++; d->forgot += n; }
-            unlock(p);
-        }
-    }
-#endif
-    volatile An4 *a = AN4;
-    if (a->magic != AN4_MAGIC) return;
+    volatile Dk4 *d = DK4;
+    if (d->magic != DK4_MAGIC) return;
     u32 any = 0;
-    for (u32 k = 0; k < AN4_N; k++) any |= a->e[k].handle >= ctr;
+    for (u32 k = 0; k < DK4_N; k++) any |= d->e[k].handle >= ctr;
     if (!any) return;
     u32 p = lock(), n = 0;
     ctr = HANDLE_CTR;
-    for (u32 k = 0; k < AN4_N; k++)
-        if (a->e[k].handle >= ctr) { a->e[k].word = 0; a->e[k].handle = 0; n++; }
-    if (n) { a->serial++; a->forgot += n; }
+    for (u32 k = 0; k < DK4_N; k++)
+        if (d->e[k].handle >= ctr) { d->e[k].word = 0; d->e[k].handle = 0; n++; }
+    if (n) { d->serial++; d->forgot += n; }
     unlock(p);
 }
-/* H3: NODE_DESTROY (obj, pool): every top-level object's way out (store clear, remove, a failed create). Stock frees its
- * children (the pads of a track) directly, so their drum entries go here too (S6c-2). */
+/* H3: NODE_DESTROY (obj, pool): every top-level object's way out. Stock frees its children (a track's pads) directly, so
+ * their drum entries go here. */
 __attribute__((used, retain)) u32 an_destroy(void *obj, void *pool, u32 r2, u32 r3) {
-    volatile An4 *a = AN4;
-    u32 h = obj ? W(obj, 0x10) : 0u, any = 0;
-    if (h && a->magic == AN4_MAGIC) {
-        for (u32 k = 0; k < AN4_N; k++) any |= a->e[k].handle == h;
-        if (any) {
-            u32 p = lock();
-            for (u32 k = 0; k < AN4_N; k++)
-                if (a->e[k].handle == h) { a->e[k].word = 0; a->e[k].handle = 0; a->serial++; a->dropped++; }
-            unlock(p);
-        }
-    }
-#if DRUMS_BUILT
     volatile Dk4 *d = DK4;
     if (obj && dk_any(d)) {
         u32 n = W(obj, S_NODE_CHILD_N);
@@ -378,19 +273,14 @@ __attribute__((used, retain)) u32 an_destroy(void *obj, void *pool, u32 r2, u32 
             if (dk_find(d, ph) >= 0) { dk_mark(ph, 0, 0); bump(&d->dropped); }
         }
     }
-#endif
     return FN(S_NODE_DESTROY, u32 (*)(void *, void *, u32, u32))(obj, pool, r2, r3);
 }
-/* H2: NODE_CLONE (src, pool, &out) -> ok: the copy has a new handle (OBJ_CTOR) and gets src's Analog state. S6c-2: stock
- * clones a node's children (the pads) in order, each with a new handle (0x0812F2B4, not through a vtable), so the pads'
- * drum entries are carried pairwise here; a copy whose child count differs (a child stock failed to copy) is skipped and
- * counted (clone_skips), not guessed at. */
+/* H2: NODE_CLONE (src, pool, &out) -> ok: stock clones a node's children (the pads) in order, each with a new handle
+ * (0x0812F2B4, not through a vtable), so the pads' drum entries are carried pairwise; a copy whose child count differs (a
+ * child stock failed to copy) is skipped and counted (clone_skips), not guessed at. */
 __attribute__((used, retain)) u32 an_clone(void *src, void *pool, void **out) {
     u32 ok = FN(S_NODE_CLONE, u32 (*)(void *, void *, void **))(src, pool, out);
     if (ok && src && out && *out && *out != src) {
-        u32 glide = 0, f = lookup(W(src, 0x10), &glide);
-        if (f) { mark(W(*out, 0x10), f, glide); bump(&an4()->carried); }
-#if DRUMS_BUILT
         volatile Dk4 *d = DK4;
         if (dk_any(d)) {
             u32 n = W(src, S_NODE_CHILD_N);
@@ -401,11 +291,9 @@ __attribute__((used, retain)) u32 an_clone(void *src, void *pool, void **out) {
                     if (s && t && B(s, 4) == B(t, 4) && dk_find(d, W(s, 0x10)) >= 0) dk_copy(W(s, 0x10), W(t, 0x10), &d->carried);
                 }
         }
-#endif
     }
     return ok;
 }
-#if DRUMS_BUILT
 /* H4 (S6c-2): CHILD_DUP (store, type, parent, src, &out) -> ok: stock's copy of one child (a pad) by its properties into a
  * new child (a new handle): the clipboard's copy and paste and the instrument replace (0x0812F91E's 9 callers). The copy
  * gets src's drum entry. The entry replays stock's first two instructions (naked: the stack argument stays in place). */
@@ -421,24 +309,19 @@ __attribute__((used, retain)) u32 dr_dup(void *store, u32 type, void *parent, vo
 }
 #endif
 
-/* ---- the synth area: the handshake and the published copy (synth_shared.h) -----------------------------------
- * ready(): the M7 holds the reservation and its header is stamped for this M4 boot. Only then may anything be
- * written there (before, the area is stock's pool memory). UI task only. */
+/* ---- the synth area: the handshake (synth_shared.h) ------------------------------------------------------------
+ * ready(): the M7 holds the reservation and its header is stamped for this M4 boot. Only then may anything be written
+ * there (before, the area is stock's pool memory). UI task only. Since BE4.40 the M4 publishes only the drums' knob
+ * lines (Analog's settings reach the M7 as stock's own properties); the Analog CPU figures still come from the M7's
+ * stats line there. */
 static int ready(void) {
     volatile SaM7 *m = M7HDR;
     u32 boot = boot_gen();
     return boot && m->magic == SA_M7_MAGIC && m->layout == SA_LAYOUT && m->total == SYNTH_TOTAL && m->gen &&
            m->boot == boot;
 }
-static void put_line(volatile SaTrack *t, u32 h, u32 flags, u32 glide) {
-    u32 s = (t->head + 2u) & ~1u;
-    t->head = s | 1u; t->tail = s | 1u; dsb();
-    t->handle = flags ? h : 0u; t->flags = flags; t->glide = glide; dsb();
-    t->tail = s; t->head = s; dsb();
-}
-/* The whole table into the synth area when it changed, or for a new M7 generation / M4 boot (an M7-only reset
- * keeps the M4's lines there, a new M4 boot finds whatever the last one left: both are rewritten). */
-/* S6c-2: a drum knob line (the M4 has no data cache: the stores reach SDRAM in order, dsb between the seqlock steps; the M7
+#if DRUMS_BUILT
+/* A drum knob line (the M4 has no data cache: the stores reach SDRAM in order, dsb between the seqlock steps; the M7
  * invalidates the lines before it reads them, drums.cpp knob_entry). */
 static void put_knobs(volatile SaKnobs *t, u32 h, u32 word, u32 v0, u32 v1) {
     u32 s = (t->head + 2u) & ~1u;
@@ -448,53 +331,82 @@ static void put_knobs(volatile SaKnobs *t, u32 h, u32 word, u32 v0, u32 v1) {
     t->tail = s; t->head = s; dsb();
 }
 #define KTAB ((volatile SaKnobs *)SA(SA_DKTAB))
-/* Both tables into the synth area, each when it changed, or for a new M7 generation / M4 boot. The M4 header carries a
- * serial per table (serial: Analog, drum_serial: drums), each moved by 2 on its table's publish. */
+#endif
+/* DK4 into the synth area when it changed, or for a new M7 generation / M4 boot. The M4 header's drum_serial moves by 2 on
+ * each publish; its Analog serial stays 2 (nothing of Analog is published since BE4.40). */
 static void publish(volatile An4 *a) {
-    if (!ready()) return;
+    (void)a;
+#if DRUMS_BUILT
+    if (!DRUMS_ON || !ready()) return;
     volatile SaM7 *m = M7HDR;
     u32 gen = m->gen, boot = m->boot;
-    int an = ANALOG_ON && (a->pub != a->serial || a->pub_m7gen != gen || a->pub_boot != boot);
-#if DRUMS_BUILT
     volatile Dk4 *d = dk4();
-    int dk = DRUMS_ON && (d->pub != d->serial || d->pub_m7gen != gen || d->pub_boot != boot);
-#else
-    int dk = 0;
-#endif
-    if (!an && !dk) return;
+    if (d->pub == d->serial && d->pub_m7gen == gen && d->pub_boot == boot) return;
     u32 p = lock();
     volatile SaM4 *h = M4HDR;
     if (h->magic != SA_M4_MAGIC || h->bootgen != boot) {
         h->magic = 0; dsb();
         h->serial = 2u; h->drum_serial = 0; h->r5 = h->r6 = h->r7 = 0;
     }
-    if (an) {
-        for (u32 i = 0; i < AN4_N; i++) {
-            u32 w = a->e[i].word, f = flags_of(w) & AN_ON ? flags_of(w) & (AN_ON | AN_SYNC) : 0u;
-            put_line(&TAB[i], a->e[i].handle, f, glide_of(w));
-        }
-        h->serial += 2u;
-        a->pub = a->serial; a->pub_m7gen = gen; a->pub_boot = boot;
-    }
-#if DRUMS_BUILT
-    if (dk) {
-        for (u32 i = 0; i < DK4_N; i++) put_knobs(&KTAB[i], d->e[i].handle, d->e[i].word, d->e[i].v0, d->e[i].v1);
-        h->drum_serial += 2u;
-        d->pub = d->serial; d->pub_m7gen = gen; d->pub_boot = boot;
-    }
-#endif
+    for (u32 i = 0; i < DK4_N; i++) put_knobs(&KTAB[i], d->e[i].handle, d->e[i].word, d->e[i].v0, d->e[i].v1);
+    h->drum_serial += 2u;
+    d->pub = d->serial; d->pub_m7gen = gen; d->pub_boot = boot;
     h->m7gen = gen; h->bootgen = boot; dsb();
     h->magic = SA_M4_MAGIC; dsb();
     unlock(p);
+#endif
 }
 
-/* ---- registry keys: a reviewed allow-list, all or nothing --------------------------------------
- * Both keys must be empty after stock's builder (test_keys runs it), carry no immediate in either core, fall only
- * in stock's key-range tests as their default case (test_keys), and be below claim()'s (m4_step.c) lowest, so the
- * order of the two claims does not matter. If either is taken, nothing is written, the Analog keys stay off and the
- * black box says so. The registry is rebuilt every boot: our descriptors are checked, not a flag remembered. */
-static const char SYNC_TITLE[] = "Sync", GLIDE_TITLE[] = "Glide", NO_TOKEN[] = "";
+/* ---- registry keys -----------------------------------------------------------------------------------------------
+ * N2 (BE4.40): our four oscillator keys get their descriptors inside stock's one registry build (REG_BUILD_SITE's wrapper),
+ * so they have their XML tokens before any project or preset is read. All four must be empty after stock's builder (the
+ * reviewed allow-list: test_keys runs stock's builder, decodes stock's key-range tests and scans both cores for
+ * immediates); if any is taken, none is written, the keys stay stock's and the black box says which (keys= TAKEN:bits).
+ * A descriptor (32 B): +0 key, +2 type, +4 title, +8 labels and +0xC their count (a list, type 7), +0x10 / +0x14 the range,
+ * +0x18 the XML token. Type and Sync are lists as stock's Poly Mode (0x2E); Shape an integer in [0, 127] as stock's Shift
+ * (0x1AD, type 2); Glide 0..1000 shown as a percentage as stock's Pulse Width (0xC5, type 10). */
+static const char T_TYPE[] = "Type", T_SHAPE[] = "Shape", T_SYNC[] = "Sync", T_GLIDE[] = "Glide";
+static const char K_TYPE[] = "bento_osc_type", K_SHAPE[] = "bento_shape", K_SYNC[] = "bento_sync", K_GLIDE[] = "bento_glide";
+static const char *const TYPE_LABELS[2] = {"Wavetable", "Analog"};
 static const char *const SYNC_LABELS[2] = {"Off", "On"};
+typedef struct { u16 key; u8 type; const char *title; const char *const *labels; u32 n; u32 lo, hi; const char *token; } Desc;
+static const Desc NP_KEYS[4] = {
+    {S_KEY_OSC_TYPE, 7, T_TYPE, TYPE_LABELS, 2, 0, 0, K_TYPE},
+    {S_KEY_OSC_SHAPE, 2, T_SHAPE, 0, 0, 0, AN_SHAPE_MAX, K_SHAPE},
+    {S_KEY_OSC_SYNC, 7, T_SYNC, SYNC_LABELS, 2, 0, 0, K_SYNC},
+    {S_KEY_OSC_GLIDE, 10, T_GLIDE, 0, 0, 0, AN_GLIDE_MAX, K_GLIDE},
+};
+#define NP_N (sizeof(NP_KEYS) / sizeof(NP_KEYS[0]))
+static volatile u8 *desc_of(u32 r, u32 key) { return (volatile u8 *)(r + key * 32u); }
+static int np_mine(u32 r) {
+    for (u32 i = 0; i < NP_N; i++) {
+        volatile u8 *k = desc_of(r, NP_KEYS[i].key);
+        if (H(k, 0) != NP_KEYS[i].key || W(k, 4) != (u32)NP_KEYS[i].title || W(k, 24) != (u32)NP_KEYS[i].token) return 0;
+    }
+    return 1;
+}
+/* N2: after stock's REG_BUILD (the wrapper in build.py), in model init. */
+__attribute__((used, retain)) void np_keys(void) {
+    volatile An4 *a = an4();
+    a->keys_gen = boot_gen();
+    if (!ANALOG_ON) { a->keys = 0; return; }
+    u32 r = REGISTRY;
+    if (!r) { a->keys = 0x200u; return; }
+    if (np_mine(r)) { a->keys = 1; return; }
+    u32 taken = 0;
+    for (u32 i = 0; i < NP_N; i++) if (H(desc_of(r, NP_KEYS[i].key), 0)) taken |= 1u << i;
+    if (taken) { a->keys = 0x100u | taken; return; }
+    for (u32 i = 0; i < NP_N; i++) {
+        const Desc *s = &NP_KEYS[i];
+        volatile u8 *k = desc_of(r, s->key);
+        for (u32 j = 0; j < 8; j++) W(k, j * 4u) = 0;
+        B(k, 2) = s->type; W(k, 4) = (u32)s->title; W(k, 8) = (u32)s->labels; W(k, 12) = s->n;
+        W(k, 16) = s->lo; W(k, 20) = s->hi; W(k, 24) = (u32)s->token;
+    }
+    for (u32 i = 0; i < NP_N; i++) H(desc_of(r, NP_KEYS[i].key), 0) = (u16)NP_KEYS[i].key;   /* the keys last: all or none */
+    a->keys = 1;
+}
+static int np_ok(void) { return ANALOG_ON && an4()->keys == 1u; }
 #if DRUMS_BUILT
 /* S6c-2: the drum keys, KEY_DR + i for knob i (all seven or none), type 2 (an integer in [lo, hi], as stock's Shift
  * 0x1AD), titled with the Kick's knob names; DK4's keys word says which one was taken, if any. Reviewed: empty after
@@ -525,124 +437,157 @@ static int drum_keys(void) {
     return 1;
 }
 #endif
-static int synth_keys(void) {
-#if DRUMS_BUILT
-    if (DRUMS_ON) drum_keys();
-#endif
-    if (!ANALOG_ON) return 0;
-    volatile An4 *a = an4();
-    u32 r = REGISTRY;
-    if (!r) return 0;
-    volatile u8 *sync = (volatile u8 *)(r + SYNC_KEY * 32u), *glide = (volatile u8 *)(r + GLIDE_KEY * 32u);
-    if (H(sync, 0) == SYNC_KEY && W(sync, 4) == (u32)SYNC_TITLE && H(glide, 0) == GLIDE_KEY && W(glide, 4) == (u32)GLIDE_TITLE)
-        return 1;
-    if (H(sync, 0) || H(glide, 0)) { a->keys = 0x100u | (H(sync, 0) ? 1u : 0u) | (H(glide, 0) ? 2u : 0u); return 0; }
-    for (u32 j = 0; j < 8; j++) { W(sync, j * 4u) = 0; W(glide, j * 4u) = 0; }
-    B(sync, 2) = 7; W(sync, 4) = (u32)SYNC_TITLE; W(sync, 8) = (u32)SYNC_LABELS; W(sync, 12) = 2;   /* a list, as claim() */
-    B(glide, 2) = 10; W(glide, 4) = (u32)GLIDE_TITLE; W(glide, 16) = 0; W(glide, 20) = AN_GLIDE_MAX;   /* numeric, as Pulse Width */
-    W(glide, 24) = (u32)NO_TOKEN;
-    H(sync, 0) = (u16)SYNC_KEY; H(glide, 0) = (u16)GLIDE_KEY;
-    a->keys = 1;
-    return 1;
-}
 
-/* ---- the selected track ------------------------------------------------------------------------ */
+#define TYPE_WT_OSC 6u                                 /* a Wavetable oscillator object (WT1 / WT2: the track's first two type-6 children) */
+static u32 obj_type(void *object) { return ((u32 (*)(void *))W((void *)W(object, 0), 0))(object); }
+/* ---- the selected track and an oscillator's Type -------------------------------------------------------------------- */
 static u32 sel_track(void) { return FN(S_GET_PROPERTY, u32 (*)(void *, u32))((u8 *)MODEL + 4, S_KEY_SEL_TRACK); }
 static u32 track_handle(u32 track) {
     u32 h = 0;
     return FN(S_FIND_TRACK, u32 (*)(void *, u32, u32 *))(MODEL, track, &h) ? h : 0u;
 }
-static u32 handle_type(u32 h) {
+static void *resolve(u32 h) {
     void *obj = 0;
-    if (!h || !FN(S_RESOLVE_OBJECT, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) || !obj) return 0xFFu;
-    return ((u32 (*)(void *))W((void *)W(obj, 0), 0))(obj);
+    return h && FN(S_RESOLVE_OBJECT, u32 (*)(void *, u32, void **))((void *)W(MODEL, 0), h, &obj) ? obj : 0;
 }
-static u32 current(void) { return track_handle(sel_track()); }
-static int analog(u32 h) { return lookup(h, 0) != 0; }
-
-/* ---- A5: the instrument menu -------------------------------------------------------------------
- * Our action is stock's Wavetable action (0x08150BD6: {0x42, 0, 6, track}, then {0x16} up the view tree) plus the
- * flag. The swap is done when UI_POST returns (rc23 handles: UI_POST calls each parent's slot 0x30; the root view's,
- * 0x081702F4, calls the model command handler 0x08141EA4 directly, whose case 0x42 is the instrument replace
- * 0x0813F730: STORE_REMOVE (H3 drops the old entry), then STORE_CREATE (a new handle, H1)). So the flag goes on the
- * track's handle right then; if that is not a Wavetable, nothing is marked and menu_miss counts it (a device item).
- * BE4.22 (Jeff's decision 7): a new object stock made is a new instrument and starts as a plain Analog (Sync Off,
- * Glide 0); only if the track kept its object (the same handle after UI_POST) do its Sync and Glide stay (review N7).
- * menu_same counts that case: it is also what a deferred swap would look like (device evidence, review rc23 I3). */
-__attribute__((used, retain)) u32 an_menu_event(void *view, void *ev) {
-    u32 code = H(ev, 0);
-    volatile An4 *a = an4();
-    if (code == S_ACT_ANALOG) {
-        u32 track = sel_track(), h0 = track_handle(track), g0 = 0, f0 = lookup(h0, &g0);
-        u32 set[5] = {0x42u, 0, 6u, track, 0}, nav[5] = {0x16u, 0, 0, 0, 0};
-        FN(S_UI_POST, void (*)(void *, void *))(view, set);
-        u32 h = track_handle(track);
-        if (h != h0) f0 = g0 = 0;                                 /* a new instrument: nothing carried */
-        else a->menu_same++;
-        if (handle_type(h) == S_TYPE_WAVETABLE) { mark(h, AN_ON | (f0 & AN_SYNC), f0 ? g0 : 0u); a->menus++; publish(a); }
-        else a->menu_miss++;
-        FN(S_UI_POST, void (*)(void *, void *))(view, nav);
-        FN(S_PROJECT_TOUCH, void (*)(void *))(MODEL);
-        return 0;
-    }
-    if (code >= S_ACT_INST_FIRST && code <= S_ACT_WAVETABLE) {   /* stock replaces the instrument: not Analog any more */
-        mark(current(), 0, 0);                                    /* (also if stock keeps the object: Wavetable again) */
-        publish(a);
-    }
-    return FN(S_MENU_HANDLER, u32 (*)(void *, void *))(view, ev);
+/* A property of any object of the live project (a track or a child), as the page reads it: stock's CONTEXT_GET (its generic
+ * path, the store get). 0 when it cannot be read. */
+static u32 prop(u32 h, u32 key, u32 *out) {
+    u32 ctx = h;
+    *out = 0;
+    return h && FN(S_CONTEXT_GET, u32 (*)(void *, u32 *, u32, u32 *))(MODEL, &ctx, key, out);
 }
+/* Analog only when Type is exactly 1 (stock stores what a file says, unclamped). */
+static int analog_osc(u32 h) { u32 t = 0; return np_ok() && prop(h, S_KEY_OSC_TYPE, &t) && t == 1u; }
 
-/* ---- A6: the Wavetable page's slot keys -------------------------------------------------------- */
+/* ---- the Wavetable page's oscillator rows --------------------------------------------------------------------------
+ * The page keeps 8 keys per row at view + SYNTH_VIEW_KEYS (16 B a row: row 0 = WT1, row 1 = WT2) and each row's object at
+ * view + SYNTH_VIEW_HANDLES; stock's row bind (SYNTH_ROW_BIND) rereads the shown row's keys on every call and binds each
+ * slot to the row's object (keys above 0xDA: the row's own handle), so a row whose keys we rewrite is shown with them by
+ * SYNTH_ROW_SHOW (docs/plan-native-props.md P0 T5, measured on stock's page). Stock's rows 0 / 1 are {Level, Pitch, Position,
+ * 0, 0, 0, 0, 0} (the flash table A6 copies). Ours, per Type (slots 5..7 stay free for the FM sprint: Sub FM, Bit Depth,
+ * FM 1>2):
+ *   Wavetable: Level, Pitch, Position, Type
+ *   Analog:    Level, Pitch, Shape, Type, then Glide (OSC1) / Sync (OSC2, only with OSC1 Analog too: the sync master is
+ *              our OSC1 kernel; a Wavetable master is not built, docs/plan-native-props.md 3.3 rule 4)
+ * Only slots stock leaves empty get our keys, and slot 2 only while it is stock's key there. */
+#define ROW_BYTES 16u
+static volatile u16 *osc_row_keys(void *view, u32 row) { return (volatile u16 *)((u8 *)view + S_SYNTH_VIEW_KEYS + row * ROW_BYTES); }
+static u32 row_handle(void *view, u32 row) { return W(view, S_SYNTH_VIEW_HANDLES + 4u * row); }
+static void want_row(const u16 *stock, u32 row, int me, int osc1, u16 *k) {
+    for (u32 i = 0; i < 8u; i++) k[i] = stock[i];
+    if (!k[3]) k[3] = (u16)S_KEY_OSC_TYPE;
+    if (!me) return;
+    if (k[2]) k[2] = (u16)S_KEY_OSC_SHAPE;
+    if (!k[4]) k[4] = row == 0u ? (u16)S_KEY_OSC_GLIDE : osc1 ? (u16)S_KEY_OSC_SYNC : 0u;
+}
+/* The view's two oscillator rows as they should be for the oscillators' Types now: 1 = rewritten. stock: the page's own key
+ * table (A6's source). */
+static int fix_rows(void *view, const u16 *stock) {
+    int a0 = analog_osc(row_handle(view, 0)), a1 = analog_osc(row_handle(view, 1)), changed = 0;
+    for (u32 row = 0; row < 2u; row++) {
+        u16 k[8];
+        want_row(stock + row * 8u, row, row ? a1 : a0, a0, k);
+        volatile u16 *v = osc_row_keys(view, row);
+        for (u32 i = 0; i < 8u; i++) if (v[i] != k[i]) { v[i] = k[i]; changed = 1; }
+    }
+    return changed;
+}
+/* A6: the page builder's bl memcpy(view + SYNTH_VIEW_KEYS, the Wavetable page's key table, 0xB0). The row handles may still
+ * name the previous page's objects here: the tick puts the rows right on its next pass (fix_rows) either way. */
 __attribute__((used, retain)) void *an_page_keys(void *dst, const void *src, u32 n) {
     void *r = FN(S_M4_MEMCPY, void *(*)(void *, const void *, u32))(dst, src, n);
-    if (n >= 24u && analog(current()) && synth_keys()) {
-        volatile u16 *k = (volatile u16 *)dst;
-        if (!k[3]) k[3] = (u16)GLIDE_KEY;                     /* WT1's 4th slot */
-        if (!k[11]) k[11] = (u16)SYNC_KEY;                    /* WT2's 4th slot */
+    if (np_ok() && n >= 2u * ROW_BYTES) {
+        volatile An4 *a = an4();
+        a->src = (u32)src;
+        a->page_rows++;
+        a->last_h[0] = a->last_h[1] = 0;     /* a new page: its pane texts were set before its rows had objects (page_tick) */
+        fix_rows((u8 *)dst - S_SYNTH_VIEW_KEYS, (const u16 *)src);
     }
     return r;
 }
-
-/* ---- X3: value reads of our keys (the wrapper only calls this for them) ------------------------
- * For the selected track: stock asks for these two only while the synth page shows it. */
-__attribute__((used, retain)) u32 an_context(void *model, void *ctx, u32 key, u32 *out) {
-    (void)model; (void)ctx;
-    u32 glide = 0, f = lookup(current(), &glide);
-    *out = !f ? 0u : key == SYNC_KEY ? ((f & AN_SYNC) ? 1u : 0u) : glide;
-    return 1;
+/* Is this view the Wavetable page (its first row an oscillator, type 6, of a Wavetable track)? */
+static int wt_page(void *view) {
+    u32 h = row_handle(view, 0);
+    return h && FN(S_OBJ_TYPE, u32 (*)(void *, u32 *))(MODEL, &h) == TYPE_WT_OSC;
 }
 
-/* ---- A9: encoder edits on the synth page ------------------------------------------------------- */
-__attribute__((used, retain)) u32 an_view_event(void *view, void *ev) {
-    u32 key = H(ev, 8);
-    if (H(ev, 0) == S_EV_ENCODER && (key == SYNC_KEY || key == GLIDE_KEY)) {
-        u32 h = current(), glide = 0, f = lookup(h, &glide);
-        if (f) {
-            int v = (int)W(ev, 12);
-            u32 flags = f;
-            if (key == SYNC_KEY) flags = v ? (flags | AN_SYNC) : (flags & ~AN_SYNC);
-            else glide = (u32)(v < 0 ? 0 : v > (int)AN_GLIDE_MAX ? (int)AN_GLIDE_MAX : v);   /* stored as it comes */
-            u32 old_g = 0, old_f = lookup(h, &old_g);
-            if (flags != old_f || glide != old_g) {
-                volatile An4 *a = an4();
-                mark(h, flags, glide); a->edits++; publish(a);
-            }
-            FN(S_PROJECT_TOUCH, void (*)(void *))(MODEL);
+/* ---- A7: pane texts of an Analog oscillator -------------------------------------------------------------------------
+ * Which pane a text is for: the slot's offset in the synth view (its first word is the view's class): WT1's "No WAV" label
+ * 0x3114 and its "Double-tap to load WAV" hint 0x37BC, WT2's 0x3474 / 0x3A9C (stock's page builder 0x0815FED4 and row
+ * refresh 0x0815F758; measured, p0/probe2.py). */
+static const u32 PANE_SLOTS[2][2] = {{S_VIEW_NOWAV_LABEL, 0x37BCu}, {S_VIEW_NOWAV_LABEL + 0x360u, 0x3A9Cu}};
+static int pane_of(void *slot, void **view) {
+    for (u32 o = 0; o < 2u; o++)
+        for (u32 j = 0; j < 2u; j++) {
+            u8 *v = (u8 *)slot - PANE_SLOTS[o][j];
+            if ((u32)slot > PANE_SLOTS[o][j] && W(v, 0) == S_SYNTH_VIEW_TICK_SLOT) { *view = v; return (int)o; }
         }
-        return 0;                                             /* never forwarded to the model */
-    }
-    return FN(S_SYNTH_VIEW_EVENT, u32 (*)(void *, void *))(view, ev);
+    return -1;
 }
-
-/* ---- A7: pane texts ---------------------------------------------------------------------------- */
 __attribute__((used, retain)) void an_pane_text(void *slot, const char *text) {
-    if (analog(current())) text = (u32)text == S_STR_NO_WAV ? "Analog" : "Saw > Square > Pulse";
+    void *view = 0;
+    int o = np_ok() ? pane_of(slot, &view) : -1;
+    if (o >= 0 && wt_page(view) && analog_osc(row_handle(view, (u32)o)))
+        text = (u32)text == S_STR_NO_WAV ? "Analog" : "Analog oscillator (Shape)";
     FN(S_SLOT_TITLE, void (*)(void *, const char *))(slot, text);
 }
 
-/* ---- the CPU indicator (D3) ---------------------------------------------------------------------
- * The M7's LOAD counters (D0L: blocks seen, permille sum, blocks over 100 %; d0_publish cleans them about every
- * 0.68 s, a save restarts them), differenced every 500 ms in an_tick. It shows the load, it limits nothing. */
+/* ---- an oscillator that just became Analog gets its other settings again ------------------------------------------------
+ * The M7 keeps an oscillator's Shape / Sync / Glide only while it is Analog (in the oscillator's kernel area, which stock's
+ * wavetable render owns otherwise: docs/plan-native-props.md 3.3 rule 1, P0). A stock push (project load, preset, menu
+ * create, paste) sends Type first and then the rest (the template's order); an edit of Type alone does not, so the tick
+ * sends them: SET_PROPERTY(engine, track, key, value, index) as stock's own edit does (MODEL_CHILD_EDIT 0x08132C5C). */
+static u32 child_index(void *track, u32 h, u32 *index) {
+    u32 n = W(track, S_NODE_CHILD_N), k = 0;
+    for (u32 c = 0; c < n && c < 0x244u; c++) {
+        void *ch = (void *)W(track, S_NODE_CHILDREN + 4u * c);
+        if (!ch || obj_type(ch) != TYPE_WT_OSC) continue;
+        if (W(ch, 0x10) == h) { *index = k; return 1; }
+        k++;
+    }
+    return 0;
+}
+static void resend(u32 h) {
+    u32 th = track_handle(sel_track()), index = 0;
+    void *t = resolve(th);
+    if (!t || !child_index(t, h, &index) || index > 1u) return;
+    static const u16 KEYS[3] = {S_KEY_OSC_SHAPE, S_KEY_OSC_SYNC, S_KEY_OSC_GLIDE};
+    for (u32 i = 0; i < 3u; i++) {
+        u32 v = 0;
+        if (!prop(h, KEYS[i], &v)) continue;
+        FN(S_SET_PROPERTY, void (*)(u32, u32, u32, u32, u32, u32, u32))(*(volatile u32 *)S_ENGINE_PTR, th, KEYS[i], v, index, 0, 0);
+    }
+    bump(&an4()->resends);
+}
+/* The tick's pass over the synth page: rows for the Types now (and SYNTH_ROW_SHOW when one changed), and a resend for an
+ * oscillator the page saw turn Analog. */
+static void page_tick(volatile An4 *a, void *view) {
+    if (!np_ok() || !view || !a->src || !wt_page(view)) return;
+    u32 panes = 0;
+    for (u32 row = 0; row < 2u; row++) {
+        u32 h = row_handle(view, row), t = 0;
+        prop(h, S_KEY_OSC_TYPE, &t);
+        if (h == a->last_h[row] && a->last_t[row] != 1u && t == 1u) resend(h);
+        /* the pane's texts (A7) are for another Type: the page was built (stock set them before the rows had objects), or
+         * the Type changed; stock's own row refresh only runs for the shown row (SYNTH_ROW_SHOW) */
+        if (h != a->last_h[row] ? t == 1u : (a->last_t[row] == 1u) != (t == 1u)) panes |= 1u << row;
+        a->last_h[row] = h; a->last_t[row] = t;
+    }
+    if (fix_rows(view, (const u16 *)a->src)) {
+        a->heals++;
+        FN(S_SYNTH_ROW_SHOW, void (*)(void *))(view);
+    }
+    for (u32 row = 0; row < 2u; row++)
+        if (panes & (1u << row)) {                       /* stock's "child changed": that row refreshed, the shown row bound */
+            u32 ev[4] = {0xC3u, row_handle(view, row), 0, 0};
+            FN(S_SYNTH_VIEW_NOTIFY, u32 (*)(void *, void *))(view, ev);
+        }
+}
+
+/* ---- the CPU indicator (D3) ---------------------------------------------------------------------------------------
+ * The M7's LOAD counters (D0L: blocks seen, permille sum, blocks over 100 %; d0_publish cleans them about every 0.68 s, a
+ * save restarts them), differenced every 500 ms in an_tick. It shows the load, it limits nothing. */
 static void cpu_update(volatile An4 *a, u32 now) {
     if (now - a->cpu_t < 500u) return;
     a->cpu_t = now;
@@ -670,22 +615,32 @@ static void dec(Out *o, u32 v) {
     char r[11]; for (u32 i = 0; i < n; i++) r[i] = t[n - 1u - i];
     r[n] = 0; puts_(o, r);
 }
-/* A10: the synth view's tick (view, flags): WT1's "No WAV" label (view + S_VIEW_NOWAV_LABEL, the widget stock's page
- * builder titles, 0x0815FF5E) reads "Analog CPU 63%", "!" after a block over budget in the last 2 s. SLOT_TITLE
- * copies the text and marks the label only when it changed. Then stock's tick. */
+/* A10: the synth view's tick (view, flags). The rows and the resend (page_tick), then, at most 4 times a second, the first
+ * Analog oscillator's "No WAV" label (view + VIEW_NOWAV_LABEL, WT2's 0x360 further) reads "Analog CPU 63%", " !" after a
+ * block over budget in the last 2 s ("Analog (DSP off)" before the M7 has taken the synth area). SLOT_TITLE copies the text
+ * and marks the label only when it changed. Then stock's tick. */
 __attribute__((used, retain)) void an_view_tick(void *view, void *flags) {
     volatile An4 *a = an4();
     u32 now = TICK_MS;
-    if (view && now - a->label_t >= 250u && (a->label_t = now, analog(current()))) {   /* 4 times a second at most */
-        char text[32]; u32 len = 0;
-        Out o = {text, &len, sizeof(text) - 1u};
-        if (!ready()) puts_(&o, "Analog (DSP off)");
-        else {
-            puts_(&o, "Analog CPU "); dec(&o, (a->cpu_pm + 5u) / 10u); puts_(&o, "%");
-            if (a->over_t && now - a->over_t < 2000u) puts_(&o, " !");
+    if (ANALOG_ON && view) page_tick(a, view);
+    if (ANALOG_ON && view && now - a->label_t >= 250u && np_ok() && a->src && wt_page(view)) {
+        a->label_t = now;
+        int o = analog_osc(row_handle(view, 0)) ? 0 : analog_osc(row_handle(view, 1)) ? 1 : -1;
+        if (a->label_v == (u32)view && a->label_o && a->label_o != (u32)(o + 1))   /* that oscillator is not Analog now */
+            FN(S_SLOT_TITLE, void (*)(void *, const char *))((u8 *)view + S_VIEW_NOWAV_LABEL + 0x360u * (a->label_o - 1u),
+                                                             (const char *)S_STR_NO_WAV);
+        a->label_v = (u32)view; a->label_o = (u32)(o + 1);
+        if (o >= 0) {
+            char text[32]; u32 len = 0;
+            Out out = {text, &len, sizeof(text) - 1u};
+            if (!ready()) puts_(&out, "Analog (DSP off)");
+            else {
+                puts_(&out, "Analog CPU "); dec(&out, (a->cpu_pm + 5u) / 10u); puts_(&out, "%");
+                if (a->over_t && now - a->over_t < 2000u) puts_(&out, " !");
+            }
+            text[len] = 0;
+            FN(S_SLOT_TITLE, void (*)(void *, const char *))((u8 *)view + S_VIEW_NOWAV_LABEL + 0x360u * (u32)o, text);
         }
-        text[len] = 0;
-        FN(S_SLOT_TITLE, void (*)(void *, const char *))((u8 *)view + S_VIEW_NOWAV_LABEL, text);
     }
     FN(S_SYNTH_VIEW_TICK, void (*)(void *, void *))(view, flags);
 }
@@ -853,14 +808,12 @@ __attribute__((used, retain)) void dr_view_tick(void *view, void *flags) {
 }
 #endif
 
-/* ---- X1 / X2: project and preset XML ----------------------------------------------------------- */
-static const char AT_ON[] = "bento_analog", AT_SYNC[] = "bento_analog_sync", AT_GLIDE[] = "bento_analog_glide";
+#if DRUMS_BUILT
+/* ---- X1 / X2: project and preset XML (the drums' only: Analog's settings are stock properties since BE4.40) ---------- */
 static void attr(void *params, const char *name, u32 v) {
     void *a = FN(S_XML_ADD, void *(*)(void *, const char *))(params, name);
     if (a) FN(S_XML_SET_U32, void (*)(void *, u32))(a, v);
 }
-static u32 obj_type(void *object) { return ((u32 (*)(void *))W((void *)W(object, 0), 0))(object); }
-#if DRUMS_BUILT
 /* S6c-2 (D5 / D7 / D8 XML): a pad with a knob entry gets bento_drum_engine (the engine id, 1 = Kick) and bento_drum_k1 ..
  * bento_drum_k7 (knob i + 1, in the engine's units) on its params element. Pads (children of a track node) are written
  * and read by the same writer / reader as instruments; stock ignores attributes it does not know and drops them on its
@@ -879,26 +832,11 @@ static void dr_save(void *object, void *params) {
     for (u32 j = 0; j < DRUM_KEYS_N; j++) attr(params, AT_DR_K[j], v[j]);
     bump(&d->saves);
 }
-#endif
-__attribute__((used, retain)) void an_save(void *object, void *params) {
-    if (!object || !params) return;
-#if DRUMS_BUILT
-    if (DRUMS_ON) dr_save(object, params);
-#endif
-    if (!ANALOG_ON) return;
-    u32 glide = 0, f = lookup(W(object, 0x10), &glide);       /* the object's handle (RESOLVE_OBJECT) */
-    if (!f || obj_type(object) != S_TYPE_WAVETABLE) return;   /* Wavetables only */
-    attr(params, AT_ON, 1u);
-    attr(params, AT_SYNC, (f & AN_SYNC) ? 1u : 0u);
-    attr(params, AT_GLIDE, glide);
-    bump(&an4()->saves);
-}
 static u32 get(void *params, const char *name, u32 dflt) {
     u32 v = 0;
     void *a = FN(S_XML_FIND, void *(*)(void *, const char *))(params, name);
     return a && !FN(S_XML_GET_U32, int (*)(void *, u32 *))(a, &v) ? v : dflt;
 }
-#if DRUMS_BUILT
 /* A pad read from a project or preset: its knobs (each clamped to the engine's range, a missing one at its default), or,
  * without bento_drum_engine (or with an engine this build has not), no entry (a stale one is cleared). */
 static void dr_load(void *params, void *object) {
@@ -918,28 +856,15 @@ static void dr_load(void *params, void *object) {
     dk_mark(h, g->id, v);
     bump(&dk4()->loads);
 }
-#endif
-/* Every instrument stock reads (project or preset), at any time: AN4 needs no M7, so nothing is lost before the M7
- * has taken the synth area; an_tick publishes it then. */
+__attribute__((used, retain)) void an_save(void *object, void *params) {
+    if (!object || !params) return;
+    if (DRUMS_ON) dr_save(object, params);
+}
 __attribute__((used, retain)) void an_load(void *node, void *object) {
     if (!node || !object) return;
-    u32 h = W(object, 0x10);
     void *params = FN(S_XML_CHILD, void *(*)(void *, const char *))(node, "params");
-#if DRUMS_BUILT
     if (DRUMS_ON) dr_load(params, object);
-#endif
-    if (!ANALOG_ON) return;
-    if (!params || get(params, AT_ON, 0) != 1u) { if (analog(h)) mark(h, 0, 0); return; }
-    u32 sync = get(params, AT_SYNC, 0), glide = get(params, AT_GLIDE, 0);
-    mark(h, AN_ON | (sync ? AN_SYNC : 0u), glide);
-    bump(&an4()->loads);
 }
-
-/* ---- X6: the UI tick and the black box line ----------------------------------------------------
- * A new boot (the config line's generation moved) restarts the per-boot counters; the handle counters (carried,
- * dropped, forgot) run from the table's cold start, so H1's work at boot, before this first tick, shows. Entries
- * from an earlier boot are H1's (an_forget, here too: they would only take slots). */
-#if DRUMS_BUILT
 #define DSTATS ((volatile SaDrumStats *)SA(SA_DSTATS))
 /* The drums' share of the blocks they rendered in over the last 500 ms (the M7's stats: cycles >> 4 summed, blocks). */
 static void drum_cpu(volatile Dk4 *d) {                     /* in step with cpu_update's 500 ms */
@@ -949,14 +874,18 @@ static void drum_cpu(volatile Dk4 *d) {                     /* in step with cpu_
     d->d_blocks = blocks; d->d_sum = sum;
 }
 #endif
+
+/* ---- X6: the UI tick and the black box lines -------------------------------------------------------------------------
+ * A new boot (the config line's generation moved) restarts the per-boot counters (np_keys' answer is this boot's already:
+ * it runs in model init, before the first tick). */
 __attribute__((used, retain)) void an_tick(void) {
-    if (!ANALOG_ON && !DRUMS_ON) return;
     volatile An4 *a = an4();
     u32 now = TICK_MS, g = boot_gen();
-    if (g && g != a->gen) {                         /* (S6c-2: also with Analog off: the CPU readout's state is here) */
+    if (g && g != a->gen) {
         u32 p = lock();
-        a->gen = g; a->keys = 0;
-        a->menus = a->edits = a->saves = a->loads = a->full = a->evicted = a->menu_miss = a->menu_same = a->over = a->cpu_ok = 0;
+        a->gen = g; a->src = 0;
+        a->heals = a->resends = a->page_rows = a->over = a->cpu_ok = 0;
+        a->last_h[0] = a->last_h[1] = a->last_t[0] = a->last_t[1] = 0;
 #if DRUMS_BUILT
         volatile Dk4 *d = dk4();
         d->gen = g; d->keys = 0; d->d_ok = 0;
@@ -965,8 +894,10 @@ __attribute__((used, retain)) void an_tick(void) {
 #endif
         unlock(p);
     }
-    an_forget();                                    /* (both tables) */
-    synth_keys();
+#if DRUMS_BUILT
+    an_forget();
+    if (DRUMS_ON) drum_keys();
+#endif
     u32 t0 = a->cpu_t;
     cpu_update(a, now);
 #if DRUMS_BUILT
@@ -978,11 +909,11 @@ __attribute__((used, retain)) void an_tick(void) {
 }
 
 static void field(Out *o, const char *name, u32 v) { puts_(o, name); dec(o, v); }
-#if !defined(BE_OMIT_DRUMS) && !defined(BE_NO_DRUMS)
-/* S6c: the DRUMS line, from the M7's drum stats lines (cleaned after each block with a drum voice): the hook's average
- * and peak share of the 1,280,000-cycle block, the share histogram, and what the voices did. S6c-2: then the page's
- * counters (DK4): keys, Kick pages shown, knob edits, XML saves / loads, pads with knobs, capacity, and the handle hooks
- * (carried: pads of a cloned track, dups: a pad copied by stock's child copy, dropped, forgot, clone_skips). */
+#if DRUMS_BUILT
+/* S6c: the DRUMS line, from the M7's drum stats lines (cleaned after each block with a drum voice): the hook's average and
+ * peak share of the 1,280,000-cycle block, the share histogram, and what the voices did. S6c-2: then the page's counters
+ * (DK4): keys, Kick pages shown, knob edits, XML saves / loads, pads with knobs, capacity, and the handle hooks (carried: pads
+ * of a cloned track, dups: a pad copied by stock's child copy, dropped, forgot, clone_skips). */
 static void drums_ui(Out *o) {
     volatile Dk4 *d = dk4();
     u32 n = 0;
@@ -1013,17 +944,33 @@ static void drums_line(Out *o) {
     puts_(o, "\r\n");
 }
 #endif
+/* The live project's Analog oscillators (Wavetable tracks' type-6 children whose Type is 1), for the black box. */
+static u32 count_oscs(void) {
+    void *store = (void *)W(MODEL, 0);
+    u32 n = 0;
+    if (!store || !np_ok()) return 0;
+    u32 objs = W(store, S_STORE_COUNT);
+    for (u32 i = 0; i < objs && i < 12u; i++) {
+        void *o = (void *)W(store, 4u * i);
+        if (!o || obj_type(o) != S_TYPE_WAVETABLE) continue;
+        u32 k = W(o, S_NODE_CHILD_N);
+        for (u32 c = 0; c < k && c < 0x244u; c++) {
+            void *ch = (void *)W(o, S_NODE_CHILDREN + 4u * c);
+            if (ch && obj_type(ch) == TYPE_WT_OSC && analog_osc(W(ch, 0x10))) n++;
+        }
+    }
+    return n;
+}
 __attribute__((used, retain)) void an_print(char *buf, u32 *len, u32 max) {
     Out o = {buf, len, max};
-#if !defined(BE_OMIT_DRUMS) && !defined(BE_NO_DRUMS)
-    drums_line(&o);
+#if DRUMS_BUILT
+    if (DRUMS_ON) drums_line(&o);
 #endif
     if (!ANALOG_ON) return;
     volatile An4 *a = an4();
     volatile SaM7 *m = M7HDR;
-    u32 take = SYNTH_TAKE, n = 0;
+    u32 take = SYNTH_TAKE;
     if ((take >> 24) != SYNTH_TAKE_TAG) take = 0;              /* never written since the slice was new */
-    for (u32 i = 0; i < AN4_N; i++) n += (flags_of(a->e[i].word) & AN_ON) ? 1u : 0u;
     puts_(&o, "ANALOG");
     if (!ready()) {
         puts_(&o, " area not taken");
@@ -1034,8 +981,8 @@ __attribute__((used, retain)) void an_print(char *buf, u32 *len, u32 max) {
         if ((take >> 8) & 0xFFFFu) field(&o, " region_only_takes=", (take >> 8) & 0xFFFFu);
     }
     puts_(&o, " keys="); puts_(&o, a->keys == 1u ? "ok" : a->keys ? "TAKEN" : "-");
-    if (a->keys > 1u) field(&o, ":", a->keys & 3u);
-    field(&o, " tracks=", n);
+    if (a->keys > 1u) field(&o, ":", a->keys & 0x3FFu);
+    field(&o, " oscs=", count_oscs());
     if (ready()) {
         /* M7 stats line (cleaned by the M7 after each block): average and peak share of the 1,280,000-cycle block */
         volatile SaStats *s = STATS;
@@ -1048,14 +995,9 @@ __attribute__((used, retain)) void an_print(char *buf, u32 *len, u32 max) {
         field(&o, " 30+=", s->hist[3]);
         field(&o, " osc_peak=", s->osc_peak); field(&o, " voices_peak=", s->voices_peak);
         field(&o, " renders=", s->renders); field(&o, " n_max=", s->n_max); field(&o, " sync_skipped=", s->sync_skipped);
-        field(&o, " misses=", s->misses);
-        field(&o, " | handle seen=", m->handle_seen); field(&o, " ok=", m->handle_ok);
+        field(&o, " props=", s->props); field(&o, " roots=", s->misses);
     }
     field(&o, " | load_pm=", a->cpu_pm); field(&o, " over_with_analog=", a->over);
-    field(&o, " | ui menus=", a->menus); field(&o, " edits=", a->edits); field(&o, " saves=", a->saves);
-    field(&o, " loads=", a->loads); field(&o, " full=", a->full); field(&o, " evicted=", a->evicted);
-    field(&o, " menu_miss=", a->menu_miss); field(&o, " menu_same=", a->menu_same);
-    field(&o, " | handles ctr=", HANDLE_CTR); field(&o, " carried=", a->carried); field(&o, " dropped=", a->dropped);
-    field(&o, " forgot=", a->forgot);
+    field(&o, " | ui page_rows=", a->page_rows); field(&o, " heals=", a->heals); field(&o, " resends=", a->resends);
     puts_(&o, "\r\n");
 }

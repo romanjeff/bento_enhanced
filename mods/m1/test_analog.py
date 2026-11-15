@@ -4,10 +4,12 @@
     python test_analog.py <stock bento1.bin> <m1 build dir>
 
 The built image runs in Unicorn (Cortex-M7 with its FPU): stock's Wavetable oscillator constructor and note
-start, stock's helpers (pitch, level, smoothing, mixing) called by our hook, our two trampolines behind stock's
-own vtable words, and the DSP ELF at its real placement. The synth area holds what the M4 would have written
-(synth_shared.h: M7 header, M4 header, one table line), the pool counters say the reservation is held, and the
-LOAD ring index moves once per block, as stock's render does.
+start, stock's helpers (pitch, level, smoothing, mixing) called by our hook, our three trampolines behind stock's
+own vtable words, and the DSP ELF at its real placement. BE4.40: an oscillator's Type, Shape, Sync and Glide reach it as
+set_property messages ({0x3E, .., handle +8, key +0xC, value +0x10, index +0x14}, SET_PROPERTY's layout) through its
+class's slot 8 (N3), as stock's root sends them (WT_ROOT_PROPERTY, run in Props and Voice); no M4 table. The synth area
+holds the M7 header, the pool counters say the reservation is held, and the LOAD ring index moves once per block, as
+stock's render does.
 
 T1 (the oscillator): pitch (note 60 -> 261.63 Hz), saw / square / 8 % pulse by Position, level 0 is silent,
 hard sync, glide and its decay, NaN guards, 64 / 256-frame blocks, a non-Analog oscillator goes to stock's
@@ -31,6 +33,7 @@ BUILD = Path(sys.argv[2])
 S = from_build(BUILD, Path(sys.argv[1]).read_bytes())
 MAN = json.loads((BUILD / "manifest.json").read_text())
 IMG = (BUILD / "bento1.bin").read_bytes()
+STOCK_IMG = Path(sys.argv[1]).read_bytes()
 del sys.argv[1:3]
 HAVE = "analog" not in MAN.get("omitted", []) and "dsp_symbols" in MAN
 DSP = {k: int(v, 16) for k, v in MAN.get("dsp_symbols", {}).items()}
@@ -43,7 +46,10 @@ HEAP = 0x24010000            # harness: voices, buffers, roots  # addr-ok: harne
 SYNTH_BYTES = 0x8000
 SA = S.REGION - SYNTH_BYTES if HAVE else 0
 M7_MAGIC, M4_MAGIC = 0x37534542, 0x34534542
-SA_M7, SA_M4, SA_STATS, SA_TAB, SA_RUN = 0x0, 0x20, 0x40, 0x200, 0x400
+SA_M7, SA_M4, SA_STATS, SA_RUN = 0x0, 0x20, 0x40, 0x400
+# our oscillator keys (docs/plan-native-props.md 3.1), typed: Type, Shape, Sync, Glide
+K_TYPE, K_SHAPE, K_SYNC, K_GLIDE = 0x1C0, 0x1A7, 0x1AB, 0x1B7
+PROPS_AT = 0xB4             # AnProps in the kernel area: {u8 type, shape, sync, bits; u16 glide, subfm, fm12, spare}
 AN_MAGIC = 0x4F4C4E41
 CYCCNT = 0xE0001004
 FRAMES = 128
@@ -101,6 +107,7 @@ class Rig:
         u.hook_add(UC_HOOK_CODE, self.hook)
         u.hook_add(UC_HOOK_MEM_READ, self.cyc, begin=CYCCNT, end=CYCCNT + 3)
         self.heap = HEAP
+        self.voices = {}                                             # handle -> its voices (the M4's track)
         # the reservation is held: stock's pool counters say the pool ends at the synth area
         self.w32(S.POOL_CUR_RAM, SA - 0x100000); self.w32(S.POOL_LEFT_RAM, 0x100000)
         u.mem_write(SA, struct.pack("<4I", M7_MAGIC, 1, 1, 0xC000))
@@ -151,13 +158,27 @@ class Rig:
             raise AssertionError(f"{e} at pc {pc:#x} ({bytes(u.mem_read(pc, 4)).hex()})")
         return u.reg_read(UC_ARM_REG_R0), self.n - n0
 
-    # ---- what the M4 publishes (m4_synth.c put)
-    def table(self, line, handle, flags, glide=0):
-        a = SA + SA_TAB + 32 * line
-        s = (self.r32(a) + 2) & ~1
-        self.u.mem_write(a, struct.pack("<8I", s, handle, flags, glide, 0, 0, 0, s))
-        self.serial += 2
-        self.w32(SA + SA_M4 + 12, self.serial)
+    # ---- what stock forwards (BE4.40: the oscillators' own properties, through each one's slot 8)
+    def prop(self, osc, key, value, handle=0, index=0):
+        """One set_property message into an oscillator's slot 8 (our N3 trampoline, then stock's for other keys)."""
+        m = self.alloc(0x20)
+        self.u.mem_write(m, struct.pack("<BBhIIIIhh", 0x3E, 0, 0, 0, handle, key, value & 0xFFFFFFFF, index, 0))
+        slot8 = self.r32(self.r32(osc) + 0x20)
+        return self.call(slot8 & ~1, osc, m)[0]
+    def root_prop(self, root, key, value, index):
+        """The same message through stock's Wavetable root (WT_ROOT_PROPERTY): every voice's oscillator[index]."""
+        m = self.alloc(0x20)
+        self.u.mem_write(m, struct.pack("<BBhIIIIhh", 0x3E, 0, 0, 0, self.r32(root + S.ROOT_HANDLE), key, value & 0xFFFFFFFF, index, 0))
+        self.call(S.WT_ROOT_PROPERTY, root, m)
+    def table(self, line, handle, flags, glide=0, root=None):
+        """BE4.31's table line, as the properties stock now sends: both oscillators' Type (flags & 1), WT2's Sync (flags &
+        2), WT1's Glide; Type first, as stock's push sends them (template order)."""
+        for k, osc_i, v in ((K_TYPE, 0, flags & 1), (K_TYPE, 1, flags & 1), (K_SYNC, 1, 1 if flags & 2 else 0), (K_GLIDE, 0, glide)):
+            if root:
+                self.root_prop(root, k, v, osc_i)
+            else:
+                for vo in self.voices.get(handle, ()):
+                    self.prop(self.osc(vo, osc_i), k, v, handle, osc_i)
 
     def block(self):
         self.idx += 1
@@ -170,6 +191,8 @@ class Rig:
         for o in (S.VOICE_WT1, S.VOICE_WT2):
             self.call(S.WT_OSC_CTOR, v + o)
             self.w32(v + o + 0x18, self.nowav)
+        self.w32(v + 0x178, v + S.VOICE_WT1); self.w32(v + 0x17C, v + S.VOICE_WT2)   # as stock's root ctor (Voice checks it)
+        self.voices.setdefault(handle, []).append(v)
         return root, v
 
     def note(self, v, note):
@@ -195,7 +218,30 @@ class Rig:
         return list(struct.unpack(f"<{n}f", self.u.mem_read(od, 4 * n))), counts
 
     def osc(self, v, i): return v + (S.VOICE_WT1, S.VOICE_WT2)[i]
-    def shape(self, v, i, s): self.wf(self.osc(v, i) + 0x2C, s)      # Position's base source (osc ctor: osc+0x28, amount 1)
+    def tabled(self, osc):
+        """A real wavetable on the oscillator (a sine in every frame and mip level, rc27 f0verify's): stock's render asks
+        the object at osc+0x18 (its vtable slot 0x20) for the table."""
+        if not getattr(self, "tab", None):
+            self.tab = 0x60000000                                        # addr-ok: harness
+            self.u.mem_map(self.tab, 0x400000)
+            import array
+            a = array.array("f", bytes(4 * 0x100000))
+            for dd, off in ((1, 0), (2, 0x80000), (4, 0xC0000), (8, 0xE0000), (16, 0xF0000), (32, 0xF8000), (64, 0xFC000)):
+                L = 2048 // dd
+                wave = array.array("f", [math.sin(2 * math.pi * k / L) for k in range(L)])
+                for f in range(256):
+                    a[off + f * L: off + (f + 1) * L] = wave
+            self.u.mem_write(self.tab, a.tobytes())
+            obj = self.alloc(0x60); stub = obj + 0x40
+            self.u.mem_write(stub, bytes.fromhex("0148186001207047") + struct.pack("<I", self.tab))   # ldr r0,=tab; str r0,[r3]; movs r0,#1; bx lr
+            self.u.mem_write(obj, struct.pack("<I", obj + 8)); self.u.mem_write(obj + 8 + 0x20, struct.pack("<I", stub | 1))
+            self.tabobj = obj
+        self.w32(osc + 0x18, self.tabobj)
+    def shape(self, v, i, s):
+        """BE4.40: Shape (0..127) for the kernel's shape s (0 saw, 0.5 square, 1 an 8 % pulse): 48 + 80 s, then 88 + 78 (s - 1/2)."""
+        self.prop(self.osc(v, i), K_SHAPE, round(48 + 80 * s) if s <= 0.5 else round(88 + 78 * (s - 0.5)))
+    def settings(self, v, i):
+        return struct.unpack("<BBBBHHHH", self.u.mem_read(self.osc(v, i) + S.OSC_KERNEL + PROPS_AT, 12))
     def level(self, v, i, l): self.wf(self.osc(v, i) + 0xF4, l)      # Level's base source (osc+0xF0, amount 0.91)
     def state(self, v, i):
         a = self.osc(v, i) + S.OSC_KERNEL
@@ -369,35 +415,40 @@ class Oscillator(unittest.TestCase):
         r.render(root, v); r.block()                            # the sub follows at the next block's entry
         self.assertAlmostEqual(r.rf(v + S.VOICE_SUB + 4), base, delta=1e-6, msg="the sub is back on stock's base")
 
-    def test_a_root_stock_reuses_for_another_track_follows_its_new_handle(self):
+    def test_a_root_stock_reuses_starts_its_glide_memory_again(self):
         """Review B1: stock frees a root by setting its key to 0xFFFFFF00 (0x08059C28) and gives a new track the first
-        free root with its handle (0x08059C66), with no table change on the M4. The new track has no Analog line."""
-        r = Rig(); root, v = r.voice(0x10); r.table(0, 0x10, 1); r.note(v, 60)
-        for _ in range(3):
-            out, _ = r.render(root, v, oscs=(0,)); r.block()
-        self.assertGreater(max(map(abs, out)), 0.1, "Analog while the root is handle 0x10's")
-        r.w32(root + S.ROOT_HANDLE, 0xFFFFFF00); r.block()
+        free root with its handle (0x08059C66). BE4.40: Analog belongs to the oscillators (their properties), so only the
+        root's glide line (the track's last note) is the root's, and it starts again for the new handle."""
+        r = Rig(); root, v = r.voice(0x10); r.table(0, 0x10, 1, glide=500); r.note(v, 48)
+        r.render(root, v); r.block(); r.render(root, v); r.block()
+        misses = r.r32(SA + SA_STATS + 52)
         r.w32(root + S.ROOT_HANDLE, 0x20)
-        r.track_pcs = True
-        for _ in range(3):
-            out, _ = r.render(root, v, oscs=(0,)); r.block()
-        self.assertIn(S.WT_OSC_RENDER, r.pcs, "stock's render for the plain Wavetable track")
-        self.assertEqual(out, [0.0] * FRAMES, "its (empty) table, not our saw")
-        r.table(1, 0x20, 1)                                     # the M4 marks the new track Analog: it is
-        r.pcs.clear()
-        out, _ = r.render(root, v, oscs=(0,)); r.block(); out, _ = r.render(root, v, oscs=(0,)); r.block()
-        self.assertNotIn(S.WT_OSC_RENDER, r.pcs)
+        r.note(v, 60)
+        r.render(root, v); r.block()
+        self.assertEqual(r.r32(SA + SA_STATS + 52), misses + 1, "the line refilled for the new handle")
+        self.assertEqual(r.state(v, 0)["glide"], 0.0, "no slide from the old track's note")
 
-    def test_a_resets_leftover_run_state_is_not_used(self):
-        """Review N2: the header and the run state survive a reset in SDRAM. With the pool stock's again, an
-        oscillator render must not take the last boot's voice pointer for its own."""
-        r = Rig(); root, v = r.voice(0x21); r.table(0, 0x21, 1); r.note(v, 60)
+    def test_area_not_ours_is_silent_and_keeps_the_state(self):
+        """Review N2 / BE4.40: the header and run state survive a reset in SDRAM; with the pool stock's again an Analog
+        oscillator renders nothing for that block (not stock's render: that would take our state for its history) and its
+        state and settings stay; a Wavetable oscillator is stock's as always."""
+        r = Rig(); root, v = r.voice(0x21); r.table(0, 0x21, 1); r.shape(v, 0, 0.5); r.note(v, 60)
         r.render(root, v, oscs=(0,)); r.block()
+        before = bytes(r.u.mem_read(r.osc(v, 0) + S.OSC_KERNEL, 0xC0))
         r.w32(S.POOL_LEFT_RAM, 0x100000 + 0xC000)               # stock's startup restored the counters: not taken
         r.track_pcs = True
-        osc = r.osc(v, 0); out, od = r.buf(FRAMES); scr, _ = r.buf(FRAMES)
-        ret, _ = r.call(r.r32(r.r32(osc)) & ~1, osc, scr, out)  # slot 0 without an_enter first, as after a reset
-        self.assertIn(S.WT_OSC_RENDER, r.pcs, "stock's render, not ours")
+        out, _ = r.render(root, v, oscs=(0,))
+        self.assertNotIn(S.WT_OSC_RENDER, r.pcs, "not stock's render")
+        self.assertEqual(out, [0.0] * FRAMES)
+        self.assertEqual(bytes(r.u.mem_read(r.osc(v, 0) + S.OSC_KERNEL, 0xC0)), before, "state and settings kept")
+        self.assertEqual(r.settings(v, 0)[:2], (1, 88))
+
+    def test_one_glide_line_per_root(self):
+        r = Rig(); a, va = r.voice(0x10); b, vb = r.voice(0x20)
+        r.table(0, 0x10, 1); r.table(1, 0x20, 1); r.note(va, 60); r.note(vb, 64)
+        for _ in range(4):
+            r.render(a, va); r.render(b, vb); r.block()
+        self.assertEqual(r.r32(SA + SA_STATS + 52), 2, "one line per root (upstream's one-entry cache missed on every lookup)")
 
     def test_hard_sync_resets_the_slave_at_the_masters_wraps(self):
         """Sync on: WT2 (a fifth up) restarts at each of WT1's wraps, so the voice repeats at WT1's period."""
@@ -434,32 +485,121 @@ class Oscillator(unittest.TestCase):
         self.assertEqual(r.r32(SA + SA_STATS + 24), 2, "a 64-frame block syncs")
 
     def test_a_non_analog_oscillator_goes_to_stocks_render(self):
-        r = Rig(); root, v = r.voice(0x33); r.note(v, 60)       # no table line: not Analog
+        r = Rig(); root, v = r.voice(0x33); r.note(v, 60)       # no Type: not Analog
         r.track_pcs = True
         out, _ = r.render(root, v, oscs=(0,))
         self.assertIn(S.WT_OSC_RENDER, r.pcs, "stock's render ran")
         self.assertEqual(out, [0.0] * FRAMES, "no table loaded: stock renders nothing")
         self.assertNotEqual(r.state(v, 0)["magic"], AN_MAGIC, "the kernel state is not ours")
 
-    def test_area_not_ours_means_native(self):
-        r = Rig(); root, v = r.voice(0x22); r.table(0, 0x22, 1); r.note(v, 60)
-        r.w32(S.POOL_LEFT_RAM, 0x100000 + 0x4000)               # the pool does not end at our area: not taken
-        r.track_pcs = True
-        out, _ = r.render(root, v, oscs=(0,))
-        self.assertIn(S.WT_OSC_RENDER, r.pcs)
-        self.assertEqual(r.r32(SA + SA_RUN), 0, "nothing written into an area that is not ours")
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class Props(unittest.TestCase):
+    """BE4.40 N3: the oscillator's own settings, as stock's set_property delivers them, per oscillator."""
+    def test_settings_are_clamped_where_they_are_stored(self):
+        """Stock never range-checks (a file is read raw, an edit forwarded raw: test_native_props), so an_prop clamps."""
+        r = Rig(); root, v = r.voice(0x61)
+        o = r.osc(v, 0)
+        r.prop(o, K_TYPE, 1)                                     # (slot 8 returns nothing: the effects are checked)
+        self.assertEqual(r.settings(v, 0)[:5], (1, 48, 0, 0, 0), "Analog: Shape at its default (saw), the rest 0")
+        for key, val, want, at in ((K_SHAPE, 1000, 127, 1), (K_SHAPE, -5, 0, 1), (K_SHAPE, 77, 77, 1), (K_GLIDE, 5000, 1000, 4),
+                                   (K_GLIDE, -1, 0, 4), (K_GLIDE, 640, 640, 4), (K_SYNC, 7, 0, 2), (K_SYNC, 1, 1, 2), (K_SYNC, -1, 0, 2)):
+            with self.subTest(key=hex(key), value=val):
+                r.prop(o, key, val)
+                self.assertEqual(r.settings(v, 0)[at], want)
 
-    def test_root_cache_refills_only_when_the_m4_serial_moves(self):
-        r = Rig(); a, va = r.voice(0x10); b, vb = r.voice(0x20)
-        r.table(0, 0x10, 1); r.table(1, 0x20, 1); r.note(va, 60); r.note(vb, 64)
-        for _ in range(4):
-            r.render(a, va); r.render(b, vb); r.block()
-        misses = r.r32(SA + SA_STATS + 52)
-        self.assertEqual(misses, 2, "one refill per root (upstream's one-entry cache missed on every lookup)")
-        r.table(1, 0x20, 0)
-        out, _ = r.render(b, vb); r.block()
-        self.assertEqual(r.r32(SA + SA_STATS + 52), 3)
-        self.assertEqual(r.r32(SA + 0x1C), 1, "handle check: root+0x0C matched a table line")
+    def test_type_is_analog_only_when_exactly_1(self):
+        r = Rig(); root, v = r.voice(0x62)
+        o = r.osc(v, 1)
+        hist = bytes(range(0xC0))                                  # stock's wavetable history in the kernel area
+        r.u.mem_write(o + S.OSC_KERNEL, hist)
+        for t in (0, 2, -7, 0x101):
+            r.prop(o, K_TYPE, t)
+            self.assertNotEqual(r.state(v, 1)["magic"], AN_MAGIC, f"Type {t}: Wavetable")
+        r.prop(o, K_SHAPE, 100); r.prop(o, K_GLIDE, 9)
+        self.assertEqual(bytes(r.u.mem_read(o + S.OSC_KERNEL, 0xC0)), hist, "a Wavetable oscillator's area is stock's: untouched")
+        r.prop(o, 0xC9, 640)                                     # a stock key goes on to stock's slot 8
+        r.prop(o, K_TYPE, 1)
+        self.assertEqual((r.state(v, 1)["magic"], r.settings(v, 1)[:2]), (AN_MAGIC, (1, 48)))
+
+    def test_leaving_analog_zeroes_the_whole_area(self):
+        """Stock's render then finds a zero history (review N1), our settings included."""
+        r = Rig(); root, v = r.voice(0x63); r.table(0, 0x63, 3, glide=300); r.shape(v, 1, 1.0); r.note(v, 60)
+        for _ in range(3):
+            r.render(root, v, oscs=(0, 1)); r.block()
+        r.prop(r.osc(v, 1), K_TYPE, 0)
+        self.assertEqual(bytes(r.u.mem_read(r.osc(v, 1) + S.OSC_KERNEL, 0xC0)), bytes(0xC0))
+        self.assertEqual(r.state(v, 0)["magic"], AN_MAGIC, "WT1 is still Analog")
+        r.track_pcs = True
+        r.render(root, v, oscs=(1,))
+        self.assertIn(S.WT_OSC_RENDER, r.pcs, "WT2 is stock's again")
+
+    def test_a_repeated_type_keeps_the_running_state(self):
+        """A push repeats Type 1 (a preset, a load): the phase and settings stay."""
+        r = Rig(); root, v = r.voice(0x64); r.table(0, 0x64, 1); r.shape(v, 0, 0.5); r.note(v, 60)
+        for _ in range(3):
+            r.render(root, v, oscs=(0,)); r.block()
+        ph = r.state(v, 0)["phase"]
+        r.prop(r.osc(v, 0), K_TYPE, 1)
+        self.assertEqual((r.state(v, 0)["phase"], r.settings(v, 0)[1]), (ph, 88))
+
+    def test_stocks_root_sends_each_key_to_the_right_oscillator(self):
+        """WT_ROOT_PROPERTY with index 0 / 1 reaches every voice's WT1 / WT2 only (index 2, the sub, neither)."""
+        r = Rig()
+        pool = [0xC5F10000]                                   # harness bump allocator for the 10 voices  # addr-ok: harness
+        def alloc(uc, a, size, _):
+            n = uc.reg_read(UC_ARM_REG_R2); p = pool[0]; pool[0] += (n + 31) & ~31
+            uc.mem_write(p, bytes(n)); uc.reg_write(UC_ARM_REG_R0, p); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        r.u.hook_add(UC_HOOK_CODE, alloc, begin=S.NAMED_ALLOC, end=S.NAMED_ALLOC)
+        root = r.alloc(0x2F0); r.call(S.WT_ROOT_CTOR, root); r.w32(root + S.ROOT_HANDLE, 0x77)
+        voices = [r.r32(root + 0x14 + 4 * i) for i in range(10)]
+        r.root_prop(root, K_TYPE, 1, 1); r.root_prop(root, K_SHAPE, 100, 1); r.root_prop(root, K_SHAPE, 20, 0)
+        r.root_prop(root, K_TYPE, 1, 2)
+        for vo in voices:
+            self.assertNotEqual(r.state(vo, 0)["magic"], AN_MAGIC, "WT1 not Analog")
+            self.assertEqual((r.state(vo, 1)["magic"], r.settings(vo, 1)[:2]), (AN_MAGIC, (1, 100)), "WT2: Type and Shape")
+        r.root_prop(root, K_TYPE, 1, 0); r.root_prop(root, K_GLIDE, 250, 0)
+        self.assertEqual([r.settings(vo, 0)[4] for vo in voices], [250] * 10)
+        self.assertEqual(r.r32(SA + SA_STATS + 16), 5 * 10, "props: every message of ours a WT oscillator took (the sub is another class)")
+
+    def test_sync_needs_both_oscillators_analog(self):
+        """A Wavetable OSC1 is no sync master (docs/plan-native-props.md 3.3 rule 4: not built): an Analog OSC2 with Sync
+        On runs free."""
+        r = Rig(); root, v = r.voice(0x65); r.note(v, 48)
+        r.prop(r.osc(v, 1), K_TYPE, 1); r.prop(r.osc(v, 1), K_SYNC, 1)
+        xs = []
+        for _ in range(8):
+            out, _ = r.render(root, v, oscs=(0, 1)); xs += out; r.block()
+        self.assertEqual(r.state(v, 1)["events"], bytes([255]) * 128, "no master wrote wraps")
+        self.assertGreater(max(map(abs, xs[256:])), 0.1, "WT2 plays")
+
+    def test_a_wavetable_osc1_next_to_an_analog_osc2_is_stocks_bit_for_bit(self):
+        """Plan 3.3, the test that matters most: in a mixed voice the Wavetable oscillator (a real table loaded) renders
+        exactly as on stock 1.6.8, and its kernel area ends identical."""
+        def run(stock):
+            r = Rig(img=STOCK_IMG) if stock else Rig()
+            root, v = r.voice(0x51)
+            r.tabled(r.osc(v, 0)); r.level(v, 0, 1.0); r.level(v, 1, 1.0)
+            if not stock:
+                r.prop(r.osc(v, 1), K_TYPE, 1, 0x51, 1); r.prop(r.osc(v, 1), K_SHAPE, 88, 0x51, 1)
+            r.note(v, 60)
+            outs = []
+            for _ in range(10):
+                if not stock:
+                    r.call(DSP["an_enter"], root, v)
+                for i in (0, 1):
+                    osc = r.osc(v, i)
+                    out, od = r.buf(FRAMES); scr, _ = r.buf(FRAMES)
+                    r.call(r.r32(r.r32(osc)) & ~1, osc, scr, out)
+                    if i == 0:
+                        outs += list(struct.unpack(f"<{FRAMES}f", r.u.mem_read(od, 4 * FRAMES)))
+                r.block()
+            return outs, bytes(r.u.mem_read(r.osc(v, 0) + S.OSC_KERNEL, 0xC0 + 0x24)), r
+        ours, ka, ra = run(False)
+        stock, kb, _ = run(True)
+        self.assertGreater(max(map(abs, stock)), 0.1, "control: stock's WT1 plays its table")
+        self.assertEqual(ours, stock)
+        self.assertEqual(ka, kb, "WT1's kernel area and stock's fields after it")
+        self.assertEqual(ra.state(ra.voices[0x51][0], 1)["magic"], AN_MAGIC, "WT2 was Analog")
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
@@ -550,9 +690,9 @@ class Voice(unittest.TestCase):
         r = self.r
         v = self.voices[0]
         r.note(v, 60)
-        r.table(0, 0x4242, 0)
+        r.table(0, 0x4242, 0, root=self.root)
         _, _, native = self.render_voice(v); r.block()
-        r.table(0, 0x4242, 1)
+        r.table(0, 0x4242, 1, root=self.root)                  # stock's root sends Type to every voice's WT1 / WT2
         counts, outs = [], []
         for _ in range(8):
             mix, out, c = self.render_voice(v); r.block(); counts.append(c); outs += out
