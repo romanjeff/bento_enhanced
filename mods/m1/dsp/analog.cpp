@@ -98,16 +98,28 @@ struct Run {                       /* the hooks' running state, M7 private (two 
     u32 idx, r1, voice, r3;
     Root *root;
     u32 cyc, oscs, voices;
-    u32 victim, r9, r10, r11, r12, r13, r14, r15;
+    u32 victim;
+    u32 fmtag;                     /* P3 (docs/plan-p3-fm-bits.md 3.3): which FM buffer holds this voice-block's signal
+                                    * (AN_FMTAG_A the sub's copy, AN_FMTAG_B OSC1's); 0 at every an_enter that names a voice,
+                                    * meaningful only while voice is the voice rendering. P3 Q1: cleared, never set */
+    u32 inc_sub;                   /* P3: buffer A's sub increment (float bits), for the golden checks */
+    u32 r11, r12, r13, r14, r15;
 };
 static_assert(sizeof(Run) == 64, "two lines");
+#define AN_FMTAG_A 1u
+#define AN_FMTAG_B 2u
 static_assert(sizeof(SaStats) == 64 && sizeof(SaM7) == 32 && sizeof(SaM4) == 32, "line layout");
 #define RUN ((Run *)SA(SA_RUN))
 static_assert(S_PROBE_SCRATCH + 0x100u <= SYNTH_AREA, "the M7's price-check scratch stays below the synth area");
 #define ROOTS ((Root *)SA(SA_ANCACHE))
 #define M7HDR ((volatile SaM7 *)SA(SA_M7))
 #define STATS ((volatile SaStats *)SA(SA_STATS))
-static_assert(SA_RUN + sizeof(Run) <= SA_ANCACHE && SA_ANCACHE + SA_ANCACHE_N * sizeof(Root) <= SA_UI, "layout");
+static_assert(SA_RUN + sizeof(Run) <= SA_ANCACHE && SA_ANCACHE + SA_ANCACHE_N * sizeof(Root) <= SA_FMBUF, "layout");
+/* P3: the FM buffers end where the drum knob table starts; the FM stats line sits after the drum stats, inside what the M7
+ * zeroes at its take (+0x40..+0x200, m7_polyat.c synth_take) */
+static_assert(SA_FMBUF_A + 4u * AN_FM_FRAMES == SA_FMBUF_B && SA_FMBUF_B + 4u * AN_FM_FRAMES == SA_DKTAB, "FM buffers A, B");
+static_assert(sizeof(SaFmStats) == 32 && SA_DSTATS + sizeof(SaDrumStats) <= SA_FMSTATS && SA_FMSTATS + sizeof(SaFmStats) <= 0x200u,
+              "FM stats line");
 
 static inline void dsb() { __asm volatile("dsb" ::: "memory"); }
 static inline void clean(u32 a, u32 n) {
@@ -133,6 +145,7 @@ static void reset(AnOsc *g) {
     for (u32 i = 0; i < AN_EVENTS; i++) g->events[i] = (u8)AN_NO_EVENT;
     g->note = NO_NOTE; g->glide = 0.f; g->sub_applied = 0.f; g->sub_written = 0.f;
     g->mphase = g->mphase_lo = 0; g->mrestart = g->mlive = 0; g->mshape = (u16)AN_NO_SHAPE; g->msnap = 0;
+    g->msub = g->m12 = 0;
 }
 /* the whole kernel area to zero: stock's render then starts from a zero history (review note N1) */
 static void forget(void *osc) {
@@ -166,13 +179,21 @@ static void sub_follow(AnOsc *g, u8 *v, float want) {
 /* N3, the oscillator's set property (r0 osc, r1 the message): 1 = one of our keys (stock's own slot 8 has no case for
  * them and would only return), 0 = stock's. Type 1 makes the oscillator Analog (a fresh state, default settings: the push
  * and the M4's resend bring the real ones after it); any other Type ends it now, before stock's render can read our state
- * as its history (WT1 gives the sub oscillator its glide offset back first). Shape, Sync and Glide are kept only while
- * the oscillator is Analog (the area is stock's history otherwise), clamped to their ranges. Runs in the M7's synth
- * message loop, between renders. */
+ * as its history (WT1 gives the sub oscillator its glide offset back first). Shape, Sync, Glide and (P3) Sub FM, Bit Depth
+ * and FM 1>2 are kept only while the oscillator is Analog (the area is stock's history otherwise), clamped to their ranges.
+ * P3 OD4: the two lists play what stock's widget shows for a value it has no label for (a hand-edited file): Sync any
+ * value but 0 is On, Bit Depth past its last label (or negative) is 4, the widget's last entry (M: test_synth_ui); the type-10
+ * amounts clamp to 0..1000 while the widget shows the raw value (as Glide). Runs in the M7's synth message loop, between
+ * renders. */
+static int ours(u32 key) {
+    return key == S_KEY_OSC_TYPE || key == S_KEY_OSC_SHAPE || key == S_KEY_OSC_SYNC || key == S_KEY_OSC_GLIDE ||
+           key == S_KEY_OSC_SUBFM || key == S_KEY_OSC_BITS || key == S_KEY_OSC_FM12;
+}
+static u16 amount(int v) { return (u16)(v < 0 ? 0 : v > (int)AN_FM_MAX ? AN_FM_MAX : (u32)v); }
 extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
     u32 key = *(volatile u16 *)((u8 *)msg + MSG_KEY);
     int v = (int)W(msg, MSG_VALUE);
-    if (key != S_KEY_OSC_TYPE && key != S_KEY_OSC_SHAPE && key != S_KEY_OSC_SYNC && key != S_KEY_OSC_GLIDE) return 0;
+    if (!ours(key)) return 0;
     AnOsc *g = state(osc);
     AnProps *p = props(osc);
     if (key == S_KEY_OSC_TYPE) {
@@ -189,8 +210,11 @@ extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
         }
     } else if (is_analog(osc)) {
         if (key == S_KEY_OSC_SHAPE) p->shape = (u8)(v < 0 ? 0 : v > (int)AN_SHAPE_MAX ? AN_SHAPE_MAX : (u32)v);
-        else if (key == S_KEY_OSC_SYNC) p->sync = v == 1 ? 1u : 0u;
-        else p->glide = (u16)(v < 0 ? 0 : v > (int)AN_GLIDE_MAX ? AN_GLIDE_MAX : (u32)v);
+        else if (key == S_KEY_OSC_SYNC) p->sync = v != 0 ? 1u : 0u;
+        else if (key == S_KEY_OSC_GLIDE) p->glide = (u16)(v < 0 ? 0 : v > (int)AN_GLIDE_MAX ? AN_GLIDE_MAX : (u32)v);
+        else if (key == S_KEY_OSC_SUBFM) p->subfm = amount(v);
+        else if (key == S_KEY_OSC_FM12) p->fm12 = amount(v);
+        else p->bits = (u8)((u32)v <= AN_BITS_MAX ? (u32)v : AN_BITS_MAX);
     }
     if (area_ok()) STATS->props++;
     return 1;
@@ -277,6 +301,7 @@ extern "C" __attribute__((used)) void an_enter(void *root, void *voice) {
     void *o1 = v + S_VOICE_WT1, *o2 = v + S_VOICE_WT2;
     int a1 = is_analog(o1), a2 = is_analog(o2);
     r->voice = (u32)voice; r->root = 0;
+    r->fmtag = 0;                                             /* P3: no FM buffer is this voice's yet (before any return) */
     if (!a1 && !a2) { r->cyc += CYCCNT - c0; return; }
     r->voices++;
     if (a1) {
@@ -428,6 +453,7 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     if ((silent && !master) || n > 1024u || n > W(scratch, S_BUF_CAPACITY)) {
         if (msync) an_master(self, minc, 0, n);               /* the master's phase moves on */
         self->mshape = (u16)AN_NO_SHAPE;                      /* heard again: from its Shape then, no ramp */
+        self->msub = self->m12 = 0;                           /* (P3: and from its FM amounts) */
         r->cyc += CYCCNT - c0;
         return 1;
     }
@@ -436,6 +462,7 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
 #if AN_E3
     if (silent) {                                             /* a silent master: only the wraps for WT2 */
         self->mshape = (u16)AN_NO_SHAPE;
+        self->msub = self->m12 = 0;
         for (u32 off = 0; off < n; off += AN_EVENTS)
             an_track(self, inc, off ? g->events : slave->events, n - off < AN_EVENTS ? n - off : AN_EVENTS);
         r->cyc += CYCCNT - c0;

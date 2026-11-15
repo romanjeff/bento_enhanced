@@ -76,11 +76,25 @@ typedef struct {
     unsigned shape_mods;      /* BE4.40 J4: Analog renders whose Shape was moved by modulation routed to Position */
 } SaStats;                    /* 64 bytes: blocks +0, sum16 +4, peak +8, osc_peak +12, n_max +20, sync_skipped +24,
                                  hist +28, voices_peak +44, renders +48, misses +52, synced +56, shape_mods +60 */
+/* +0x0100 M7 FM stats, one line (P3, docs/plan-p3-fm-bits.md 3.3: SaStats has no free word; M7 writes and cleans after each
+ * block, as SA_STATS, M4 reads: an_print's fm= / bits= / fmx=). +0x0100..+0x0200 was undefined; the M7 zeroes +0x40..+0x200
+ * when it takes the area (m7_polyat.c synth_take), so a build whose DSP does not count yet reads 0 (P3 Q1: nothing counts) */
+#define SA_FMSTATS 0x0100u
+typedef struct {
+    unsigned fm;              /* Analog renders with FM (Sub FM or FM 1>2) */
+    unsigned bits;            /* Analog renders crushed (Bit Depth not Full) */
+    unsigned fm_skipped;      /* renders with FM set but n > AN_FM_FRAMES (the modulator buffers): rendered without it */
+    unsigned fm_missed;       /* OSC2 renders that wanted OSC1's signal (FM 1>2) but buffer B was not valid this voice-block */
+    unsigned r4, r5, r6, r7;
+} SaFmStats;                  /* 32 bytes: fm +0, bits +4, fm_skipped +8, fm_missed +12 */
 /* +0x0400 M7 private: the DSP's running state (two lines) */
 #define SA_RUN 0x0400u
 /* +0x0200 (BE4.21..BE4.31: the M4's Analog track table, published; unused since BE4.40, when an oscillator's Type, Shape,
  * Sync and Glide became stock properties that reach the M7 as set_property messages: docs/plan-native-props.md) */
 #define AN_GLIDE_MAX 1000u                                  /* Glide 0..1000 = 0..2 s, stock's encoder units */
+#define AN_FM_MAX 1000u                                     /* P3: Sub FM, FM 1>2 0..1000 (0..100.0 % of the knob; the FM
+                                                               sprint plays index 8 (v / 1000)^2) */
+#define AN_BITS_MAX 3u                                      /* P3: Bit Depth 0 Full, 1 12, 2 8, 3 4 bits (the list's labels) */
 #define AN_SHAPE_MAX 127u                                   /* Shape 0..127 (4.40: saw > square > pulse; sine and triangle
                                                                below the saw come with the FM sprint) */
 #define AN_SHAPE_SAW_END 48u                                /* 0..48 plays one saw (dsp/analog.cpp an_shape), */
@@ -92,8 +106,14 @@ typedef struct {
  * glide coefficient cache */
 #define SA_ANCACHE 0x0600u
 #define SA_ANCACHE_N 16u
-/* +0x0800 M4 only: synth UI state (2 KB, unused since the review: the M4's state is in AN4) */
-#define SA_UI 0x0800u
+/* +0x0800 M7 private (P3, docs/plan-p3-fm-bits.md 3.3): the FM modulator buffers of the voice-block being rendered, two x
+ * AN_FM_FRAMES floats in increment units: A (+0x800) the sub oscillator's copy, B (+0xC00) OSC1's crushed pre-Level signal.
+ * Valid only while the run state's voice is that voice and its fmtag bit says so (dsp/analog.cpp). The M4 never reads or
+ * writes it (SA_UI, the M4's synth UI state, unused since the review: the M4's state is in AN4) */
+#define SA_FMBUF 0x0800u
+#define AN_FM_FRAMES 256u                                   /* one buffer: 2N, the device's oscillator block */
+#define SA_FMBUF_A SA_FMBUF
+#define SA_FMBUF_B (SA_FMBUF + 4u * AN_FM_FRAMES)
 /* +0x0080 drum stats, four 32 B lines (M7 writes and cleans after each block with a drum voice, M4 reads) */
 #define SA_DSTATS 0x0080u
 typedef struct {

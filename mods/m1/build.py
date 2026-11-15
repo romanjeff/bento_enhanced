@@ -312,6 +312,7 @@ GROUP_NAMES = {
                "PROP_TEMPLATE", "PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B", "PROP_TEMPLATE_CMP_A", "PROP_TEMPLATE_CMP_B",
                "PROP_TEMPLATE_LAST", "REG_BUILD_SITE", "REG_BUILD", "WT_OSC_PROP_SLOT", "WT_OSC_PROPERTY",
                "KEY_OSC_TYPE", "KEY_OSC_SHAPE", "KEY_OSC_SYNC", "KEY_OSC_GLIDE",
+               "KEY_OSC_SUBFM", "KEY_OSC_BITS", "KEY_OSC_FM12",   # P3 Q1 (docs/plan-p3-fm-bits.md 2.1): Sub FM, Bit Depth, FM 1>2
                # BE4.40 mixed sync (docs/plan-be440-sync-identity.md Track S): S1 the oscillator's slot 2 (note start)
                "WT_OSC_NOTE_SLOT", "WT_NOTE_START",
                # BE4.40 identity (docs/plan-be440-sync-identity.md track I): T0 the strings and their one literal each, T1 the
@@ -1707,9 +1708,11 @@ def m7_dsp(base_img, patch, sources, out, inc):
 
 # BE4.40 N1 (docs/plan-native-props.md 3.1 / 3.2): our oscillator keys, appended to the type-6 run of stock's property
 # template in this order (Type first: stock's push sends a child's properties in template order, and the M7 keeps the
-# others only once the oscillator is Analog), with their defaults (Shape 48 = saw, NP6). Keys left for the FM sprint:
-# Bit Depth 0x1A4, Sub FM 0x18B, FM 1>2 0x132 (0x300 + 3 = 0x303, padded to 0x304).
-NP_TEMPLATE_KEYS = (("KEY_OSC_TYPE", 0), ("KEY_OSC_SHAPE", 48), ("KEY_OSC_SYNC", 0), ("KEY_OSC_GLIDE", 0))
+# others only once the oscillator is Analog), with their defaults (Shape 48 = saw, NP6). P3 Q1 (docs/plan-p3-fm-bits.md
+# 3.1): Sub FM 0x18B, Bit Depth 0x1A4 and FM 1>2 0x132 after Glide, all 0 (no FM, Full): 0x2FC + 7 = 0x303, padded to
+# 0x304 with one type-0xFF entry, the first kit that ships one (test_native_props: no reader path makes a type-0xFF object).
+NP_TEMPLATE_KEYS = (("KEY_OSC_TYPE", 0), ("KEY_OSC_SHAPE", 48), ("KEY_OSC_SYNC", 0), ("KEY_OSC_GLIDE", 0),
+                    ("KEY_OSC_SUBFM", 0), ("KEY_OSC_BITS", 0), ("KEY_OSC_FM12", 0))
 NP_OSC_TYPE = 6                       # the Wavetable oscillator objects' template type (WT1 / WT2)
 NP_PAD_TYPE = 0xFF                    # pad entries (an encodable count): no object type stock reads or makes (test_native_props)
 

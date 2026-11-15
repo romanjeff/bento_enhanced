@@ -810,6 +810,16 @@ REVIEWED = {
     'KEY_OSC_SYNC': dict(value=0x1ab, evidence="BE4.40: as KEY_OSC_SHAPE (0x18C..0x1B6 only for 0xFFFFFFF1; test_keys)"),
     'KEY_OSC_GLIDE': dict(value=0x1b7, evidence="BE4.40 (BE4.21..BE4.31's Glide key): empty, no immediate in either core, no key-range "
                           "test covers it (M7 0x08059990 takes 0x18C..0x1B6, one below it; test_keys), not a MODEL_CHILD_EDIT special case"),
+    # P3 Q1 (docs/plan-p3-fm-bits.md 2.1): the three keys BE4.40's test_keys kept clean as FM_NEXT
+    'KEY_OSC_SUBFM': dict(value=0x18b, evidence="P3 Q1: Track FX's 0x18B (S6c-2 keyscan): empty after stock's builder, no movw / mov.w / "
+                          "cmp.w immediate in either core, below claim()'s 0x1C1, not a MODEL_CHILD_EDIT special case, one below the M7 "
+                          "range 0x18C..0x1B6 (test_keys since BE4.40 as FM_NEXT, since P3 in ALLOW['analog'])"),
+    'KEY_OSC_BITS': dict(value=0x1a4, evidence="P3 Q1: the third drum allow-list key S6c-2 left unclaimed (with 0x1A7 / 0x1AB): as "
+                         "KEY_OSC_SHAPE, its one range test M7 0x08059990 (0x18C..0x1B6) stores only for the object 0xFFFFFFF1 (the "
+                         "reverb) (test_keys)"),
+    'KEY_OSC_FM12': dict(value=0x132, evidence="P3 Q1: Track FX's 0x132 (S6c-2 keyscan): as KEY_OSC_SUBFM; between the selected "
+                         "track 0x131 and cell 0x133, which stock loads by number, but no instruction loads or compares 0x132 itself "
+                         "(test_keys; device checklist item 3 watches both neighbours)"),
     'PROP_TEMPLATE': dict(value=0x8199254, evidence="0x2FC entries {u8 type, u8 0, u16 key, u32 default}, one contiguous run per type (type "
                           "6 = entries 154..160: 0x03, 0xC4, 0xC7, 0xC9, 0x23, 0x26, 0x81); referenced only through the literals "
                           "PROP_TEMPLATE_LIT_A / _B (rc32 verif stat.py); 0x0819AA34, its end, starts a separate 5-key list (0x1A9, "
@@ -835,6 +845,19 @@ REVIEWED = {
     'WT_ENGINE_INIT': dict(value=0x807f180, evidence="(root): called once per root at 0x08058BD0 after WT_ROOT_CTOR's caller (S); "
                            "connects each voice's modulation (pitch gets a root source) and leaves osc+0x108 = 2.0 on WT1 / WT2 "
                            "(M: impl_SM pprobe.py; plan-analog-fm F0 verdict). Tests only (the device-shaped rig)"),
+    'ENGINE_CTOR': dict(value=0x805b300, evidence="(engine r0): the M7 engine's constructor, called once at 0x0808E752 on a 0x15C20-byte "
+                        "allocation; ends with memset(engine+0x8CB2, 0, 0x1F2) and the key flags 0x05 / 0x27 / 0x31 = 1 (strb at "
+                        "0x0805B634..3C), the table H_INPUT_SITE's 0x3E case tests at 0x08059A40 (S; M: test_analog Props runs its "
+                        "body with every call but memset stubbed). Tests only (P3 OD7)"),
+    'CELL_TYPE_OF': dict(value=0x8131168, evidence="(name) -> type: strcmp over a 48 x 12 B table of {u8 type, .., name +4} (its RAM "
+                         "address the literal at +0x38), 0 for none or a null name; the reader's five callers (0x08131500, 0x081315DC, "
+                         "0x081316EA, 0x0813171C, 0x081317AE: each after the element's 'type' attribute) skip 0 and create the type "
+                         "otherwise (CHILD_CREATE / STORE_CREATE). Tests only (P3 Q1: no name maps to the pad type 0xFF)"),
+    'PATCH_READ': dict(value=0x813163c, evidence="(path r0, buf r1, n r2, store r3) -> ok: push.w {r4-r10,lr}; the store clear "
+                       "0x0812E576, DOC_READ (0x08131668), then document / session / version and the cells, each through CELL_TYPE_OF "
+                       "and INST_LOAD (0x08131770, 0x081317D8); its two callers are the preset code's (0x08129A32, and 0x08129E94 "
+                       "after 'Importing patch %s'). The preset writer is PROJECT_WRITE itself on the preset store (+0x330), to "
+                       "'patch.xml' (0x081299AC) (S). Tests only (P3 Q1: the preset file round trip)"),
     'WT_ROOT_PROPERTY': dict(value=0x807bc20, evidence="(root r0, msg r1 {0x3E, 0, 0, 0, handle +8, key +0xC, value +0x10, index +0x14}): "
                              "index <= 2 -> every voice's oscillator[index] slot 8 (voice +0x178 / +0x17C / +0x180: WT1 / WT2 / sub); "
                              "reached from the synth message loop 0x0807AC60 case 0x3E (rc32 natprops m7.py, verif t4.py)"),

@@ -508,6 +508,98 @@ The order puts the zero-risk plumbing (Q1) and the separable features (Q2, Q3) b
 commit can ship on its own. Close call: Q3 could come after FM. It stays before, because the FM loop has to generate
 the sine/triangle terms anyway, and testing it against a finished LOW regime is easier.
 
+### Q1 as built (2026-11-15, working tree on c8d5bdb; build ~/bento/out/m1-p3q1)
+
+Decisions applied: OD2 one 7-key group, OD3 hide, OD4 lists match the widget + accept the type-10 display, OD7 test
+added, OD9 SA_LAYOUT stays 2. Nothing in the DSP reads the new values: Q1 plays exactly as BE4.40, with the new amounts
+at 0 and with them set (Sub FM 700, Bit Depth 2, FM 1>2 333: M, P3Identity `test_q1_plays_no_amount`).
+
+What was built:
+- **Base table** (facts.py REVIEWED + expected_values.py, stock_168.py regenerated; the rerun on HEAD reproduced the
+  committed table byte for byte first, M): `KEY_OSC_SUBFM` 0x18B, `KEY_OSC_BITS` 0x1A4, `KEY_OSC_FM12` 0x132, and three
+  test-only entries: `ENGINE_CTOR` 0x0805B300 (the M7 engine ctor, the only writer of engine+0x8CB2 by immediate, S),
+  `CELL_TYPE_OF` 0x08131168 (the reader's name -> type), `PATCH_READ` 0x0813163C (the preset import's reader).
+- **M4** (m4_synth.c): `NP_KEYS[7]` (Sub FM type 10 0..1000, Bit Depth type 7 `Full/12/8/4`, FM 1>2 type 10 0..1000);
+  `want_row` slots 5/6 on both Analog rows, slot 7 on row 1 only while OSC1 is Analog (uses `osc1`); `resend` 6 keys;
+  `an_print` prints `fm= bits= fmx=<skipped>/<missed>` from SA_FMSTATS (the M4 half of S3, done now: cheap).
+- **Template** (build.py): the 3 keys after Glide, default 0; `np_template_n` = **0x304, 1 pad** (M, manifest).
+- **M7** (dsp/analog.cpp, analog.h): `an_prop` takes the 3 keys, clamps `subfm`/`fm12` to 0..1000 and
+  `bits = (u32)v <= 3 ? v : 3`, Sync `v != 0` (OD4); `AnOsc` + `msub`, `m12` (176 / 180 B), cleared by `reset()`, by
+  `forget()` and on both silent paths (skip and E3 master); `Run.fmtag` / `Run.inc_sub` replace r9 / r10, fmtag cleared
+  right after `r->voice` (before the `!a1 && !a2` return). Nothing sets fmtag or writes SA_FMSTATS yet.
+- **synth_shared.h**: `SA_FMSTATS` (+0x100, 32 B `SaFmStats`; inside the range synth_take already zeroes, +0x40..+0x200,
+  S), `SA_FMBUF` (+0x800, replaces the unused SA_UI) with `SA_FMBUF_A/B`, `AN_FM_FRAMES` 256, `AN_FM_MAX`, `AN_BITS_MAX`;
+  layout static_asserts in analog.cpp (the C++ side; the header is also C).
+
+Measured (M unless marked):
+- Sizes: image **0x188F78** (BE4.40 0x188DF8, +384 B), **17,340 B** under PROVEN_MAX 0x18D334. DSP **9,828 B** (+120),
+  26,780 B free in the window. Synth UI 14,606 B (+382). AnOsc 176 / 180 B.
+- Cost: `Cost` at n = 256: saw 13,195 (BE4.40 13,192), mixed 19,843, saw+sync 15,788, mixed+sync 22,183. P3Identity:
+  54 cases, worst +0.07 % (silent sync master, 61,485 vs 61,445), total +0.02 % (M1 budget +2 %).
+- **P3Identity** (test_analog, 9 tests, 54 cases): each case replayed on this build and on ~/bento/out/m1-be440 (its own
+  image and manifest DSP symbols; BE_REF overrides the path), the same pushes on both. Byte-identical: every output
+  sample, the whole voice afterwards (0xB88 B: both oscillators with kernel areas, the sub), the non-cycle stats words,
+  mixed sync's master wraps. Cases, each in Rig() and Rig(dev=True): free-running Shape pairs over 45..127; Cost's square
+  with Shape modulation; both-Analog sync (incl. a silent master, a slave gap, note 120, n = 512); mixed sync with vibrato
+  and a new note; Shape modulation (1/512-held, free and synced); glide (Q0 must drop the dev glide case); OSC1 Analog
+  next to a Wavetable OSC2; Voice's path (stock's root ctor, the settings through WT_ROOT_PROPERTY, voice 0 rendered
+  through the root's vtable word 0x48 into tramp_voice, mix and output compared). The new keys are pushed at 0 in all of
+  these; **`test_q1_plays_no_amount`** repeats 7 of them (free, sync, silent master, glide, OSC2 Wavetable, root voice,
+  mixed; both rigs) with Sub FM 700, Bit Depth 2, FM 1>2 333 pushed to both builds, the voice compared with only those
+  settings bytes masked, and a control that this build stored them. Q2 / Q5 / Q6 turn those into their expected-change
+  cases. Control: a one-ulp change of one sample fails the comparison, a one-ulp change of WT1's level source changes
+  the output, and the replay is deterministic.
+  A representative set, not every Cost / Voice / Sync case of 6.2: the Sync class's mixed-sync state tests (retrigger,
+  WTOscReset off, Sync toggled mid-note, two voices per track, no-WAV master) are not replayed against BE4.40; they keep
+  their own assertions on this build. Cost's cases run through `Rig.table` there; here through the push (same keys).
+- **OD7** (test_analog Props): the full ENGINE_CTOR does not run offline (it faults at 0x08064FF8 on boot state it
+  expects), so its body runs with every call stubbed but memset: the flag table is 0x05 / 0x27 / 0x31 only (M under that
+  stub; confirms the static reading). The built image's H_INPUT_SITE with each of the 7 keys x {0, 1, 1000, 5000, -3,
+  0x7FFFFFFF} x index 0/1 on a track handle: one BUS_POST to engine+0x7190 with the message unchanged, never BUS_POST_KEY
+  (control: key 0x05 is broadcast to 0xFFFFFFFE). The posted message through WT_ROOT_PROPERTY reaches `an_prop` on all 10
+  voices. Not run: stock's mailbox drain between BUS_POST and the root (key-generic, I).
+- **OD4 widget texts** (were I, now M, test_synth_ui): type 10 shows value/10 as a percentage: 0 `0.0%`, 1 `0.1%`, 500
+  `50.0%`, 1000 `100.0%`, **5000 `500.0%`, -3 `-0.3%`**. Bit Depth 0..3 show their labels, **7 and -1 show `4`** (so the
+  M7's 3 matches).
+- **Type 0xFF hazard** (test_native_props `Hazard`): CHILD_CREATE(0xFF) fails on stock and succeeds on P3 (one property,
+  key 0). The reader's name table (48 x 12 B {u32 type, name, label}, at the literal CELL_TYPE_OF+0x38) holds types
+  0..47, none 0xFF; each name through CELL_TYPE_OF gives its type, unknown/empty names give 0. A project with unknown,
+  empty, typeless and numeric cell types, an unknown element and an injected track loads with no type-0xFF create
+  (STORE_CREATE / CHILD_CREATE logged) and the real cells intact.
+- **BE4.40 opens a P3 project** (test_native_props): its 4 keys load with their values, its arrays have no P3 key, and its
+  re-save keeps `bento_shape` and drops `bento_subfm`, `bento_bits`, `bento_fm12` (release note / checklist item 10).
+  Stock 1.6.8 and BE4.22 open it too (existing tests, now with 7 tokens).
+- Push order Type, Shape, Sync, Glide, Sub FM, Bit Depth, FM 1>2; writer/reader round trip, clone, child-dup,
+  STORE_COPY_ALL, STORE_CLONE_H keep all 7 (values chosen off their defaults); out-of-range loads stay raw (Bit Depth 7 /
+  -1, Sub FM 5000 / -3, FM 1>2 99999); the M7 clamps them (test_analog).
+- test_keys: the 7 keys empty, not claimed, no immediate in either core; Bit Depth is the third key in the one native-store
+  range (0x18C..0x1B6, reverb handle only); **no key-range test covers 0x18B or 0x132** (new assertion); taken Sub FM gives
+  `0x110` and writes none of the 7; test_synth_ui: the page then shows stock's rows (`keys=TAKEN:272`).
+- Mutations (6.6's Q1 ones plus three of Q1's own), each built from a scratch copy and run against its suite; all 7 red:
+  resend KEYS back to 3 (test_synth_ui, 1 failure); slot 7 shown while OSC1 is Wavetable (4); an out-of-range Bit Depth
+  played as Full (test_analog, 3); fmtag not cleared (2); fmtag cleared after the `!a1 && !a2` return (1); the skip
+  path's clear changed to `msub = m12 = 1` (P3Identity sync, 2: the voice bytes differ; this was first reported as "msub
+  not reset", which it is not: see below); Sync back to `v == 1` (3).
+- Q1 review mutations (same method; scratch mut2.sh): an_osc's Shape plus `subfm * 0.01`, times 0.5 when `bits`, times
+  0.5 when `fm12` (each red: 14 failures, all `test_q1_plays_no_amount`; with the amounts at 0 they were green);
+  **the skip path's msub / m12 clear deleted** (red, 2: `Props.test_the_silent_paths_zero_the_fm_ramp_memory`, which
+  writes them by hand before each block: skip and n > 1024); the E3 silent master's clear deleted (red, 1, same test);
+  `reset()`'s clear deleted: **green, an equivalent mutation**: reset() runs only right after forget() has zeroed the
+  whole area, so its clear is unobservable (kept for when a caller resets without forgetting).
+
+Found during Q1 (corrections to this plan):
+- **Preset file: only the reader half is offline.** PATCH_READ (0x0813163C, called after "Importing patch %s") reads
+  `<document><session><cell ...>` (the first cell's type picks the track: 6 -> wttrack 0x12, 7 -> grtrack 0x13) through the
+  same CELL_TYPE_OF + CHILD_CREATE + INST_LOAD path, and keeps all 7 values (M, `test_the_preset_reader_keeps_them`). The
+  writer is not found: the preset code's `patch.xml` write (0x081299AC) is PROJECT_WRITE, which writes `<track>` elements,
+  and PATCH_READ returns 0 on that form (M). So the preset file's writer, and the format it really writes, stay
+  device-only (I; checklist item 10 stays).
+- 3.3 / OD7 say "root+0x8CB2"; it is **engine+0x8CB2** (the M7 engine object, r0 of H_INPUT_SITE; S).
+- 6.1's `cover == [SHAPE, SYNC, BITS]`: the test sorts by key, so it is `[BITS 0x1A4, SHAPE 0x1A7, SYNC 0x1AB]`.
+- **wsl/test_m1.sh does not run test_native_props.py** (not in its list or NEEDS map), the suite that carries most of 3.1 /
+  3.2. Q1 ran it explicitly (all suites were run by name, not through the script, which also picks the newest out dir).
+- The kit still labels itself BE4.40 (build.py version); the BE4.41 label is Q7's.
+
 ---
 
 ## 8. Device checklist (BE4.41; BE4.40's own checklist runs first, as it is not flashed yet)

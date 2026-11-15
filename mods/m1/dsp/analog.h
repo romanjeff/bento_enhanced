@@ -44,19 +44,23 @@ struct AnOsc {
     unsigned char mrestart, mlive;
     unsigned short mshape;            /* Shape modulation (J4): the Shape the last block ended on x AN_SHAPE_Q, AN_NO_SHAPE none */
     unsigned msnap;
+    /* P3 (docs/plan-p3-fm-bits.md 3.3, 4.4): the FM amounts the last block ended on (0..1000; the FM sprint ramps from them
+     * over the next block): msub the Sub FM, m12 FM 1>2 (OSC2's). 0 after reset / forget and on the silent skip (heard again:
+     * no ramp). P3 Q1: kept 0, nothing renders with FM yet */
+    unsigned short msub, m12;
 };
-static_assert(sizeof(AnOsc) == 172, "Analog state: 172 bytes at oscillator +0x10C");
+static_assert(sizeof(AnOsc) == 176, "Analog state: 176 bytes at oscillator +0x10C (4 left below AnProps)");
 static_assert(sizeof(AnOsc) <= AN_PROPS_OFF, "Analog state must stay below the oscillator's settings (AnProps)");
 
 /* An oscillator's settings, as stock's set_property delivered them (N3: dsp/analog.cpp an_prop), each clamped when stored.
- * Bytes left for the FM / Bit Depth sprint: bits (2 bits used), subfm and fm12 (0..1000). */
+ * P3 Q1: bits, subfm and fm12 are stored (and so reach the M7 with every push, edit and resend); nothing plays them yet. */
 struct AnProps {
     unsigned char type;               /* 1 = Analog (a value of exactly 1; anything else is Wavetable) */
     unsigned char shape;              /* 0..AN_SHAPE_MAX */
     unsigned char sync;               /* 0 / 1 (WT2's: the slave) */
-    unsigned char bits;               /* (FM sprint: Bit Depth) */
+    unsigned char bits;               /* Bit Depth 0..AN_BITS_MAX: Full, 12, 8, 4 */
     unsigned short glide;             /* 0..AN_GLIDE_MAX (WT1's: the voice's) */
-    unsigned short subfm, fm12;       /* (FM sprint) */
+    unsigned short subfm, fm12;       /* Sub FM, FM 1>2 0..AN_FM_MAX (fm12 is OSC2's; WT1's copy is kept but never read) */
     unsigned short spare;
 };
 static_assert(sizeof(AnProps) == 12, "settings: 12 bytes");

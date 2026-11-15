@@ -25,8 +25,11 @@ BE4.40 (docs/plan-be440-sync-identity.md): Device pins the device-shaped rig (Ri
 stock's engine init and voice path (B1); Sync covers chunked sync at 2N and mixed sync (a Wavetable OSC1 as the master,
 Track S) against WT1's real cycle starts; Golden checks an_master against the exact phase; ShapeMod is Track M (J4).
 Note starts go through the oscillator class's slot 2, as stock's voice note start calls them.
+P3 Q1 (docs/plan-p3-fm-bits.md 2.4, 3.3, 6.1, 6.2): Props stores Sub FM, Bit Depth and FM 1>2 and runs stock's M7 engine input
+(H_INPUT_SITE) with all seven keys (OD7); P3Identity replays the identity set on this build and on the BE4.40 reference build
+(BE_REF, default ~/bento/out/m1-be440: its image and its manifest's DSP symbols) and compares them byte for byte.
 """
-import json, math, random, struct, sys, unittest
+import json, math, os, random, struct, sys, unittest
 from fractions import Fraction
 from pathlib import Path
 from unicorn import Uc, UcError, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ
@@ -42,6 +45,12 @@ STOCK_IMG = Path(sys.argv[1]).read_bytes()
 del sys.argv[1:3]
 HAVE = "analog" not in MAN.get("omitted", []) and "analog" not in MAN.get("disabled", []) and "dsp_symbols" in MAN
 DSP = {k: int(v, 16) for k, v in MAN.get("dsp_symbols", {}).items()}
+# P3 Q1 (6.2): the BE4.40 reference build the identity set is replayed on (its own image and DSP symbols)
+REF = Path(os.environ.get("BE_REF", str(Path.home() / "bento" / "out" / "m1-be440")))
+REF_OK = (REF / "bento1.bin").exists() and (REF / "manifest.json").exists()
+REF_MAN = json.loads((REF / "manifest.json").read_text()) if REF_OK else {}
+REF_IMG = (REF / "bento1.bin").read_bytes() if REF_OK else b""
+REF_DSP = {k: int(v, 16) for k, v in REF_MAN.get("dsp_symbols", {}).items()}
 
 BASE = 0x08040000
 SENT = 0x20000100            # harness return pad  # addr-ok: harness
@@ -52,8 +61,11 @@ SYNTH_BYTES = 0x8000
 SA = S.REGION - SYNTH_BYTES if HAVE else 0
 M7_MAGIC, M4_MAGIC = 0x37534542, 0x34534542
 SA_M7, SA_M4, SA_STATS, SA_RUN = 0x0, 0x20, 0x40, 0x400
-# our oscillator keys (docs/plan-native-props.md 3.1), typed: Type, Shape, Sync, Glide
+# our oscillator keys (docs/plan-native-props.md 3.1), typed: Type, Shape, Sync, Glide; P3 Q1: Sub FM, Bit Depth, FM 1>2
 K_TYPE, K_SHAPE, K_SYNC, K_GLIDE = 0x1C0, 0x1A7, 0x1AB, 0x1B7
+K_SUBFM, K_BITS, K_FM12 = 0x18B, 0x1A4, 0x132
+MSUB_AT = 172               # AnOsc.msub, m12 (u16 each; P3 3.3)
+RUN_FMTAG = 36              # Run.fmtag (u32, P3 3.3: the run state's word 9)
 PROPS_AT = 0xB4             # AnProps in the kernel area: {u8 type, shape, sync, bits; u16 glide, subfm, fm12, spare}
 AN_MAGIC = 0x4F4C4E41
 CYCCNT = 0xE0001004
@@ -117,8 +129,9 @@ class F64:
 class Rig:
     """One M7 with the built image; Analog state as the M4 would have published it. dev: the device's shape (DEV_*): every
     oscillator's rate divider 2 (as stock's engine init leaves it: Device checks it against the real init) and 2N frames."""
-    def __init__(self, img=IMG, dev=False):
+    def __init__(self, img=IMG, dev=False, dsp=None):
         self.dev = dev
+        self.dsp = dsp or DSP                                        # the build's DSP symbols (P3Identity: BE4.40's for its image)
         self.frames = DEV_FRAMES if dev else FRAMES
         self.rate = DEV_RATE if dev else 48000
         u = self.u = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
@@ -240,7 +253,7 @@ class Rig:
         """an_enter, then each oscillator's slot 0 through stock's vtable word (our trampoline). (samples, counts)"""
         n = n or self.frames
         out, od = self.buf(n); scr, _ = self.buf(n)
-        _, c0 = self.call(DSP["an_enter"], root, v)
+        _, c0 = self.call(self.dsp["an_enter"], root, v)
         counts, rets = [c0], []
         for i in oscs:
             osc = v + (S.VOICE_WT1, S.VOICE_WT2)[i]
@@ -362,7 +375,7 @@ class Mixed:
         if not stock:
             if not hasattr(r, "slaves"):
                 r.slaves = {}
-                r.u.hook_add(UC_HOOK_CODE, self._slave, begin=DSP["an_render"], end=DSP["an_render"], user_data=r)
+                r.u.hook_add(UC_HOOK_CODE, self._slave, begin=r.dsp["an_render"], end=r.dsp["an_render"], user_data=r)
             r.slaves[self.o2 + S.OSC_KERNEL] = self
     @staticmethod
     def _slave(u, a, size, r):
@@ -384,7 +397,7 @@ class Mixed:
         if pm is not None:
             self.pitch(pm)
         if not self.stock:
-            r.call(DSP["an_enter"], self.root, self.v)
+            r.call(r.dsp["an_enter"], self.root, self.v)
         cs = []
         for o, (b, d) in ((self.o1, self.b1), (self.o2, self.b2)):
             r.u.mem_write(d, bytes(4 * self.fr)); r.u.mem_write(b, struct.pack("<2I", self.fr, self.fr))
@@ -927,16 +940,156 @@ class Sync(unittest.TestCase):
 class Props(unittest.TestCase):
     """BE4.40 N3: the oscillator's own settings, as stock's set_property delivers them, per oscillator."""
     def test_settings_are_clamped_where_they_are_stored(self):
-        """Stock never range-checks (a file is read raw, an edit forwarded raw: test_native_props), so an_prop clamps."""
+        """Stock never range-checks (a file is read raw, an edit forwarded raw: test_native_props), so an_prop clamps. P3 Q1
+        (OD4, plan 6.7): the lists play what stock's widget shows for a value it has no label for (test_synth_ui pins the
+        widget): Sync any value but 0 is On (BE4.40: only 1 was), Bit Depth past 3 (and negative) is 4 bits (3); the type-10
+        amounts clamp to 0..1000."""
         r = Rig(); root, v = r.voice(0x61)
         o = r.osc(v, 0)
         r.prop(o, K_TYPE, 1)                                     # (slot 8 returns nothing: the effects are checked)
-        self.assertEqual(r.settings(v, 0)[:5], (1, 48, 0, 0, 0), "Analog: Shape at its default (saw), the rest 0")
+        self.assertEqual(r.settings(v, 0)[:7], (1, 48, 0, 0, 0, 0, 0), "Analog: Shape at its default (saw), the rest 0")
+        # settings(): (type, shape, sync, bits, glide, subfm, fm12, spare)
         for key, val, want, at in ((K_SHAPE, 1000, 127, 1), (K_SHAPE, -5, 0, 1), (K_SHAPE, 77, 77, 1), (K_GLIDE, 5000, 1000, 4),
-                                   (K_GLIDE, -1, 0, 4), (K_GLIDE, 640, 640, 4), (K_SYNC, 7, 0, 2), (K_SYNC, 1, 1, 2), (K_SYNC, -1, 0, 2)):
+                                   (K_GLIDE, -1, 0, 4), (K_GLIDE, 640, 640, 4), (K_SYNC, 7, 1, 2), (K_SYNC, 0, 0, 2),
+                                   (K_SYNC, 1, 1, 2), (K_SYNC, -1, 1, 2), (K_SYNC, 0x10000, 1, 2),
+                                   (K_BITS, 0, 0, 3), (K_BITS, 1, 1, 3), (K_BITS, 2, 2, 3), (K_BITS, 3, 3, 3), (K_BITS, 7, 3, 3),
+                                   (K_BITS, -1, 3, 3), (K_BITS, 0x7FFFFFFF, 3, 3),
+                                   (K_SUBFM, 1000, 1000, 5), (K_SUBFM, 5000, 1000, 5), (K_SUBFM, -3, 0, 5), (K_SUBFM, 437, 437, 5),
+                                   (K_FM12, 1000, 1000, 6), (K_FM12, 99999, 1000, 6), (K_FM12, -1, 0, 6), (K_FM12, 1, 1, 6)):
             with self.subTest(key=hex(key), value=val):
                 r.prop(o, key, val)
                 self.assertEqual(r.settings(v, 0)[at], want)
+        self.assertEqual(r.settings(v, 0)[7], 0, "the spare halfword stays 0")
+
+    def test_the_fm_keys_are_ours_and_kept_only_while_analog(self):
+        """P3 Q1: an_prop takes the three new keys (slot 8 returns 1: stock's own slot 8 never sees them), stores nothing for
+        a Wavetable oscillator (its kernel area is stock's history), and a fresh Analog state starts them at 0, with the
+        AnOsc ramp memory msub / m12 (P3 3.3) at 0; leaving Analog zeroes them with the area."""
+        r = Rig(); root, v = r.voice(0x6A)
+        o = r.osc(v, 1)
+        hist = bytes(range(0xC0))
+        r.u.mem_write(o + S.OSC_KERNEL, hist)
+        props = lambda: r.r32(SA + SA_STATS + 16)              # (slot 8 returns nothing: the props count says whose it was)
+        for k in (K_SUBFM, K_BITS, K_FM12):
+            n0 = props(); r.prop(o, k, 3)
+            self.assertEqual(props() - n0, 1, f"{k:#x}: ours")
+        self.assertEqual(bytes(r.u.mem_read(o + S.OSC_KERNEL, 0xC0)), hist, "Wavetable: untouched")
+        n0 = props(); r.prop(o, 0xC9, 3)
+        self.assertEqual(props(), n0, "control: a stock key is stock's")
+        r.prop(o, K_TYPE, 1)
+        self.assertEqual(r.settings(v, 1)[3:7], (0, 0, 0, 0), "fresh: Bit Depth Full, Glide 0, no FM")
+        self.assertEqual(struct.unpack("<HH", r.u.mem_read(o + S.OSC_KERNEL + MSUB_AT, 4)), (0, 0), "msub, m12")
+        for k, val in ((K_SUBFM, 900), (K_BITS, 2), (K_FM12, 250)):
+            r.prop(o, k, val)
+        self.assertEqual(r.settings(v, 1)[3:7], (2, 0, 900, 250))
+        r.prop(o, K_TYPE, 0)
+        self.assertEqual(bytes(r.u.mem_read(o + S.OSC_KERNEL, 0xC0)), bytes(0xC0))
+
+    def test_the_silent_paths_zero_the_fm_ramp_memory(self):
+        """P3 6.4 (Q1 review): msub / m12 read 0 after each path that renders nothing, so an oscillator heard again starts
+        from its amounts, no ramp: the silent skip (Level 0, not a master), a block past 1024 frames, and (E3) a silent sync
+        master that only tracks its phase. Nothing writes them in Q1, so they are set by hand before every block. reset()'s
+        own clear has no case: it runs only right after forget has zeroed the whole area (Type 1 on a non-Analog
+        oscillator), so no test can see it (M: the mutation removing it is equivalent)."""
+        msub = lambda r, o: struct.unpack("<HH", r.u.mem_read(o + S.OSC_KERNEL + MSUB_AT, 4))
+        for name, which, sync, lv, n in (("skip", 1, 0, (1.0, 0.0), None), ("n > 1024", 1, 0, (1.0, 1.0), 2048),
+                                         ("E3 silent master", 0, 1, (0.0, 1.0), None)):
+            with self.subTest(case=name):
+                r = Rig(); root, v = r.voice(0x6C)
+                for i in (0, 1):
+                    r.prop(r.osc(v, i), K_TYPE, 1)
+                r.prop(r.osc(v, 1), K_SYNC, sync)
+                r.note(v, 60)
+                for i in (0, 1):
+                    r.level(v, i, lv[i])
+                o, other = r.osc(v, which), r.osc(v, 1 - which)
+                for b in range(4):                               # (Level's smoother settles in the first block)
+                    for x in (o, other):
+                        r.u.mem_write(x + S.OSC_KERNEL + MSUB_AT, struct.pack("<HH", 123, 456))
+                    self.assertEqual(msub(r, o), (123, 456), "control: written where AnOsc keeps them")
+                    r.render(root, v, n, (0, 1)); r.block()
+                self.assertEqual(msub(r, o), (0, 0), f"{name}: msub, m12 after the block")
+                if n is None:                                    # P3 Q1 only: the playing path keeps them (Q2 ramps them)
+                    self.assertEqual(msub(r, other), (123, 456), f"{name}: control, the oscillator that played")
+
+    def test_an_enter_clears_the_fm_tag_for_every_voice(self):
+        """P3 3.3 (review R11): Run.fmtag is 0 after an_enter names a voice, before its `no Analog oscillator` return as after
+        the full path, so a voice never sees another voice's FM buffers. (P3 Q1: nothing sets it yet; this pins the clear.)"""
+        r = Rig(); root, v = r.voice(0x6B)
+        for analog in (0, 1):
+            with self.subTest(analog=analog):
+                r.prop(r.osc(v, 0), K_TYPE, analog)
+                r.w32(SA + SA_RUN + RUN_FMTAG, 3)
+                r.call(DSP["an_enter"], root, v)
+                self.assertEqual((r.r32(SA + SA_RUN + 8), r.r32(SA + SA_RUN + RUN_FMTAG)), (v, 0), "Run.voice, Run.fmtag")
+
+    def test_stocks_m7_input_delivers_every_key_of_ours_intact(self):
+        """P3 OD7 (plan 6.1, risk 'the M7 key-flag path never run'): the M7's engine input (H_INPUT_SITE, run here on the built
+        image) takes a set_property (0x3E) of a key below 0x1F2 through its broadcast-flag test, the byte engine + 0x8CB2 +
+        key (0x08059A40: set -> a copy to the object 0xFFFFFFFE), then posts it to the track's mailbox (BUS_POST, engine +
+        0x7190). The flag table is what the engine's constructor leaves (ENGINE_CTOR's body run here, its calls stubbed but
+        the memset: 0x05, 0x27 and 0x31 only, M). Each of our seven keys, at its extremes, an oscillator's track handle and
+        either index: posted once, unchanged, never broadcast; and the posted message, through stock's root
+        (WT_ROOT_PROPERTY), reaches an_prop for that oscillator."""
+        r = Rig()
+        eng = r.alloc(0x15C20)
+        r.u.mem_write(eng + 0x8CB2, b"\xAA" * 0x1F2)          # not zero before the ctor: its memset is seen
+        md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
+        body = list(md.disasm(IMG[S.ENGINE_CTOR - BASE:S.ENGINE_CTOR - BASE + 0x400], S.ENGINE_CTOR))
+        end = next(i.address for i in body if i.mnemonic == "pop.w" and "pc" in i.op_str)
+        calls = [(i.address, int(i.op_str[1:], 16)) for i in body if i.address < end and i.mnemonic == "bl"]
+        clear = [a for a, t in calls if t == calls[-1][1]]       # the memset the flag table's clear calls (the body's last bl)
+        def skip(u, a, size, _):
+            u.reg_write(UC_ARM_REG_R0, 0); u.reg_write(UC_ARM_REG_PC, (a + 4) | 1)
+        hooks = [r.u.hook_add(UC_HOOK_CODE, skip, begin=a, end=a) for a, t in calls if a not in clear]
+        r.call(S.ENGINE_CTOR, eng)
+        for h in hooks:
+            r.u.hook_del(h)
+        flags = bytes(r.u.mem_read(eng + 0x8CB2, 0x1F2))
+        self.assertEqual([k for k, b in enumerate(flags) if b], [0x05, 0x27, 0x31], "the constructor's flagged keys")
+        keys = (K_TYPE, K_SHAPE, K_SYNC, K_GLIDE, K_SUBFM, K_BITS, K_FM12)
+        self.assertTrue(all(k < 0x1F2 and not flags[k] for k in keys), "none of ours is flagged")
+        posts, casts = [], []
+        def post(u, a, size, _):
+            posts.append((u.reg_read(UC_ARM_REG_R0), u.reg_read(UC_ARM_REG_R1), bytes(u.mem_read(u.reg_read(UC_ARM_REG_R1), 0x18))))
+            u.reg_write(UC_ARM_REG_PC, u.reg_read(UC_ARM_REG_LR))
+        def cast(u, a, size, _):
+            casts.append(u.reg_read(UC_ARM_REG_R2)); u.reg_write(UC_ARM_REG_PC, u.reg_read(UC_ARM_REG_LR))
+        r.u.hook_add(UC_HOOK_CODE, post, begin=S.BUS_POST, end=S.BUS_POST)
+        r.u.hook_add(UC_HOOK_CODE, cast, begin=S.BUS_POST_KEY, end=S.BUS_POST_KEY)
+        def send(key, value, index, handle=0x4D):
+            m = r.alloc(0x20)
+            r.u.mem_write(m, struct.pack("<BBhIIIIhh", 0x3E, 0, 0, 0, handle, key, value & 0xFFFFFFFF, index, 0))
+            posts.clear(); casts.clear()
+            r.call(S.H_INPUT_SITE, eng, m)
+            return m
+        send(0x05, 1, 0)
+        self.assertEqual((casts, len(posts)), ([0xFFFFFFFE], 1), "control: a flagged key is also broadcast (the hook sees it)")
+        pool_alloc(r)
+        root = r.alloc(0x2F0); r.call(S.WT_ROOT_CTOR, root); r.w32(root + S.ROOT_HANDLE, 0x4D)
+        v = r.r32(root + 0x14)
+        delivered = 0
+        for key in keys:
+            for value in (0, 1, 1000, 5000, -3, 0x7FFFFFFF):
+                for index in (0, 1):
+                    with self.subTest(key=hex(key), value=value, index=index):
+                        m = send(key, value, index)
+                        self.assertEqual(casts, [], "not broadcast")
+                        self.assertEqual(len(posts), 1, "posted once")
+                        bus, msg, raw = posts[0]
+                        self.assertEqual((bus, msg), (eng + 0x7190, m), "the track mailbox, this message")
+                        self.assertEqual(raw, struct.pack("<BBhIIIIhh", 0x3E, 0, 0, 0, 0x4D, key, value & 0xFFFFFFFF, index, 0)[:0x18],
+                                         "unchanged")
+                        if value == 1 and key != K_TYPE:
+                            r.root_prop(root, K_TYPE, 1, index)
+                            n0 = r.r32(SA + SA_STATS + 16)
+                            r.call(S.WT_ROOT_PROPERTY, root, msg)
+                            self.assertEqual(r.r32(SA + SA_STATS + 16) - n0, 10, "an_prop took it on all ten voices")
+                            delivered += 1
+        self.assertEqual(delivered, 12, "the six non-Type keys, both indexes, through stock's root")
+        at = {K_SHAPE: 1, K_SYNC: 2, K_BITS: 3, K_GLIDE: 4, K_SUBFM: 5, K_FM12: 6}
+        self.assertEqual([r.settings(v, i)[at[k]] for i in (0, 1) for k in (K_SHAPE, K_SYNC, K_BITS, K_GLIDE, K_SUBFM, K_FM12)],
+                         [1] * 12, "the value 1 of each key, in each oscillator of the voice")
 
     def test_type_is_analog_only_when_exactly_1(self):
         r = Rig(); root, v = r.voice(0x62)
@@ -1453,6 +1606,247 @@ class Cost(unittest.TestCase):
             rows.append(f"note {note}: off {per[0]} on {per[1]} (+{per[1] - per[0]}; stock WT1 {w1})")
             self.assertLess(per[1], self.DEV_BOUND, f"note {note}")
         print("\n  mixed sync, WT2 render per voice-block (instructions, n=256): " + "; ".join(rows), file=sys.stderr)
+
+
+def f32le(xs): return struct.pack(f"<{len(xs)}f", *xs)
+
+
+# the identity set's stats words (SaStats): osc_peak, n_max, sync_skipped, voices_peak, renders, misses, synced, shape_mods
+# (blocks / sum16 / peak are cycle figures; props counts our keys, three more of them on P3)
+ID_STATS = (3, 5, 6, 11, 12, 13, 14, 15)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class P3Identity(unittest.TestCase):
+    """P3 M1 / 6.2 (docs/plan-p3-fm-bits.md, review R17): with every FM amount 0 and Bit Depth Full, this build plays the
+    identity set exactly as BE4.40. Each case runs twice from the same start, on this build's image and on the BE4.40
+    reference build's (BE_REF: its image with its own DSP symbols, replayed: no stored capture), with the same calls in the
+    same order, our three new keys pushed at 0 on both (BE4.40's an_prop does not know them: stock's slot 8 ignores them).
+    Compared byte for byte: every output sample, the whole voice afterwards (both oscillators with their kernel areas, the
+    sub), the stats words that are not cycles, and for mixed sync the master's wraps. The set is representative of the Cost, Voice,
+    Sync, Shape-mod and Glide cases with Shape >= 45 (whole and 1/512-modulated), each in Rig() and Rig(dev=True) (plan, Q1
+    as built, lists what it leaves out); glide also in the dev rig until Q0 (OD1) changes the dev rig's glide on purpose.
+    test_q1_plays_no_amount repeats part of it with the three amounts set: stored, not played. Instructions: this build
+    within +2 % of BE4.40 per case (M1).
+    test_the_harness_goes_red is the control: a one-ulp change of one sample, and of one input, are both seen."""
+    @classmethod
+    def setUpClass(cls):
+        if not REF_OK:
+            raise unittest.SkipTest(f"no BE4.40 reference build at {REF} (BE_REF)")
+        cls.costs = []
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls, "costs", None):
+            worst = max(cls.costs, key=lambda c: c[1] / c[2])
+            print(f"\n  P3Identity: {len(cls.costs)} cases, instructions this build / BE4.40: worst {worst[1] / worst[2]:.4f} "
+                  f"({worst[0]}: {worst[1]} / {worst[2]}), total {sum(c[1] for c in cls.costs) / sum(c[2] for c in cls.costs):.4f}",
+                  file=sys.stderr)
+
+    AMOUNTS = (700, 2, 333)            # Sub FM 70 %, Bit Depth 2 (8 bits), FM 1>2 33.3 %: test_q1_plays_no_amount
+    # the kernel-area bytes of P3's three settings (AnProps bits, subfm, fm12): stored on this build, never on BE4.40
+    P3_BYTES = (PROPS_AT + 3, PROPS_AT + 6, PROPS_AT + 7, PROPS_AT + 8, PROPS_AT + 9)
+
+    @staticmethod
+    def push(r, osc, handle, index, vals, p3=(0, 0, 0)):
+        """A push as stock sends it: Type first, then the rest in template order; P3's three (Sub FM, Bit Depth, FM 1>2) at
+        p3, by default 0 (no FM, Full)."""
+        for k, v in zip((K_TYPE, K_SHAPE, K_SYNC, K_GLIDE, K_SUBFM, K_BITS, K_FM12), tuple(vals) + tuple(p3)):
+            r.prop(osc, k, v, handle, index)
+
+    @classmethod
+    def masked(cls, voice, oscs):
+        """The voice's bytes with P3's settings bytes of the Analog oscillators oscs zeroed (test_q1_plays_no_amount)."""
+        b = bytearray(voice)
+        for i in oscs:
+            for at in cls.P3_BYTES:
+                b[(S.VOICE_WT1, S.VOICE_WT2)[i] + S.OSC_KERNEL + at] = 0
+        return bytes(b)
+
+    def voice_case(self, r, shape=(48, 48), sync=0, glide=0, notes=None, blocks=8, levels=None, mod=None, n=None, level0=1.0,
+                   types=(1, 1), p3=(0, 0, 0)):
+        root, v = r.voice(0x5A)
+        for i in (0, 1):
+            self.push(r, r.osc(v, i), 0x5A, i, (types[i], shape[i], sync if i else 0, glide if i == 0 else 0), p3)
+        r.stored = [r.settings(v, i) for i in (0, 1)]
+        r.w32(r.osc(v, 1) + 0x0C, 7000)                          # WT2 a fifth up
+        r.level(v, 0, level0); r.level(v, 1, 1.0)
+        srcs = [route(r, r.osc(v, i), 0, 1.0) for i in (0, 1)] if mod else []
+        notes = notes or {0: 60}
+        out, cyc = [], 0
+        for b in range(blocks):
+            if b in notes:
+                r.note(v, notes[b])
+            for i, l in enumerate(levels(b) if levels else ()):
+                r.level(v, i, l)
+            for i, src in enumerate(srcs):
+                r.wf(src + 4, mod(b, i))
+            xs, c = r.render(root, v, n, (0, 1)); out += xs; cyc += sum(c); r.block()
+        st = struct.unpack("<16I", r.u.mem_read(SA + SA_STATS, 64))
+        return f32le(out), bytes(r.u.mem_read(v, 0xB88)), [st[i] for i in ID_STATS], cyc
+
+    def root_case(self, r, p3=(0, 0, 0), blocks=8):
+        """Voice's path (T2): stock's root ctor builds the ten voices; the table line and P3's three reach them through
+        stock's root (WT_ROOT_PROPERTY); voice 0 renders through the root's vtable word 0x48 (stock's per-voice render into
+        our tramp_voice). Both the voice's mix and its output are compared."""
+        pool = [0xC5F10000]                                   # harness bump allocator for the 10 voices  # addr-ok: harness
+        def alloc(uc, a, size, _):
+            k = uc.reg_read(UC_ARM_REG_R2); p = pool[0]; pool[0] += (k + 31) & ~31
+            uc.mem_write(p, bytes(k)); uc.reg_write(UC_ARM_REG_R0, p); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        r.u.hook_add(UC_HOOK_CODE, alloc, begin=S.NAMED_ALLOC, end=S.NAMED_ALLOC)
+        root = r.alloc(0x2F0)
+        r.call(S.WT_ROOT_CTOR, root)
+        r.w32(root + S.ROOT_HANDLE, 0x4242)
+        voices = [r.r32(root + 0x14 + 4 * i) for i in range(10)]
+        for vo in voices:
+            for o in (S.VOICE_WT1, S.VOICE_WT2):
+                r.w32(vo + o + 0x18, r.nowav)
+        v = voices[0]
+        r.note(v, 60)
+        r.table(0, 0x4242, 1, root=root)
+        for k, x in zip((K_SUBFM, K_BITS, K_FM12), p3):
+            for i in (0, 1):
+                r.root_prop(root, k, x, i)
+        r.stored = [r.settings(v, i) for i in (0, 1)]
+        n = r.frames
+        out, cyc = [], 0
+        for b in range(blocks):
+            o, od = r.buf(n); scr, _ = r.buf(n); mix, md = r.buf(n)
+            _, c = r.call(r.r32(r.r32(root) + 0x48) & ~1, root, v, 0, scr, sargs=(o, 0, mix))
+            out += struct.unpack(f"<{n}f", r.u.mem_read(md, 4 * n)) + struct.unpack(f"<{n}f", r.u.mem_read(od, 4 * n))
+            cyc += c; r.block()
+        st = struct.unpack("<16I", r.u.mem_read(SA + SA_STATS, 64))
+        return f32le(out), bytes(r.u.mem_read(v, 0xB88)), [st[i] for i in ID_STATS], cyc
+
+    def mixed_case(self, r, shape=48, blocks=24, p3=(0, 0, 0)):
+        m = Mixed(r=r, shape=shape, frames=r.frames)
+        for k, x in zip((K_GLIDE, K_SUBFM, K_BITS, K_FM12), (0,) + tuple(p3)):
+            m.prop(k, x)
+        r.stored = [r.settings(m.v, i) for i in (0, 1)]
+        m.note(60)
+        cyc = 0
+        for b in range(blocks):
+            if b == 12:
+                m.note(64)
+            m.block((1 / 12) * math.sin(b / 4)); cyc += m.counts[-1][1]
+        st = struct.unpack("<16I", r.u.mem_read(SA + SA_STATS, 64))
+        return f32le(m.x1 + m.x2), bytes(r.u.mem_read(m.v, 0xB88)) + f32le(m.wr), [st[i] for i in ID_STATS], cyc
+
+    def check(self, name, run, dev, mask=()):
+        """mask: the Analog oscillators whose P3 settings bytes (stored on this build, not on BE4.40) the voice leaves out."""
+        a = run(Rig(dev=dev))
+        b = run(Rig(img=REF_IMG, dev=dev, dsp=REF_DSP))
+        self.assertGreater(max(abs(x) for x in struct.unpack(f"<{len(b[0]) // 4}f", b[0])), 0.05, f"{name}: control, it plays")
+        same(self, a[0], b[0], f"{name}: the output")
+        same(self, self.masked(a[1], mask), self.masked(b[1], mask),
+             f"{name}: the voice (both oscillators, their kernel areas, the sub)")
+        self.assertEqual(a[2], b[2], f"{name}: the stats words")
+        self.costs.append((name, a[3], b[3]))
+        self.assertLessEqual(a[3], b[3] * 1.02, f"{name}: instructions {a[3]} vs BE4.40's {b[3]} (M1: +2 %)")
+
+    def test_free_running_shapes(self):
+        """Cost / Voice: both oscillators Analog, Shape pairs across 45..127 (the saw plateau's new edge 45, the anchors);
+        and Cost's square with Shape modulation (a constant 0.1 on Position)."""
+        for dev in (False, True):
+            for shape in ((45, 127), (48, 88), (64, 100), (88, 48), (100, 64), (127, 45)):
+                with self.subTest(dev=dev, shape=shape):
+                    self.check(f"free {shape} dev={dev}", lambda r: self.voice_case(r, shape=shape), dev)
+            with self.subTest(dev=dev, case="square + shape mod"):
+                self.check(f"square+shape mod dev={dev}",
+                           lambda r: self.voice_case(r, shape=(88, 88), mod=lambda b, i: 0.1, blocks=6), dev)
+
+    def test_osc2_wavetable(self):
+        """OSC1 Analog next to a Wavetable OSC2 (stock's render with no WAV: silent; its kernel area, stock's history, compared)."""
+        for dev in (False, True):
+            with self.subTest(dev=dev):
+                self.check(f"osc2 wavetable dev={dev}", lambda r: self.voice_case(r, shape=(64, 48), types=(1, 0)), dev)
+
+    def test_through_stocks_root(self):
+        """Voice (T2): stock's root ctor, root property and per-voice render (vtable 0x48), both oscillators Analog."""
+        for dev in (False, True):
+            with self.subTest(dev=dev):
+                self.check(f"root voice dev={dev}", lambda r: self.root_case(r), dev)
+
+    def test_both_analog_sync(self):
+        """Sync: WT1 the master; WT1 silent (E3: it only tracks its phase); WT2 silent for some blocks (the skip path, which
+        P3 makes reset msub / m12 too); a 2 x 2N block (sync skipped and counted)."""
+        cases = (("sync", dict(shape=(48, 48), sync=1)), ("sync shapes", dict(shape=(70, 100), sync=1)),
+                 ("sync silent master", dict(shape=(48, 88), sync=1, level0=0.0)),
+                 ("sync note 120", dict(shape=(48, 48), sync=1, notes={0: 120})),
+                 ("sync slave gap", dict(shape=(100, 48), sync=1, levels=lambda b: (1.0, 0.0 if 3 <= b < 6 else 1.0))))
+        for dev in (False, True):
+            for name, kw in cases:
+                with self.subTest(dev=dev, case=name):
+                    self.check(f"{name} dev={dev}", lambda r: self.voice_case(r, **kw), dev)
+        for dev in (False, True):
+            with self.subTest(dev=dev, case="sync n=512"):
+                self.check(f"sync n=512 dev={dev}",
+                           lambda r: self.voice_case(r, shape=(48, 48), sync=1, n=2 * DEV_FRAMES, blocks=4), dev)
+
+    def test_mixed_sync(self):
+        """Sync (Track S): WT1 Wavetable with a table and vibrato, WT2 Analog synced to it, a new note mid-way."""
+        for dev in (False, True):
+            for shape in (48, 100):
+                with self.subTest(dev=dev, shape=shape):
+                    self.check(f"mixed {shape} dev={dev}", lambda r: self.mixed_case(r, shape), dev)
+
+    def test_shape_modulation(self):
+        """Shape-mod (J4): an LFO on each oscillator's Position, the Shape held to 1/512 of a step, ramped over each block;
+        it stays at or above 48 here (P3 Q3 changes what plays below 45)."""
+        mod = lambda b, i: 0.15 * math.sin(b / 2 + i) + 0.05
+        for dev in (False, True):
+            for name, kw in (("mod", dict(shape=(100, 70))), ("mod sync", dict(shape=(90, 110), sync=1))):
+                with self.subTest(dev=dev, case=name):
+                    self.check(f"{name} dev={dev}", lambda r: self.voice_case(r, mod=mod, blocks=10, **kw), dev)
+
+    def test_glide(self):
+        """Glide: Glide 300 (0.6 s) from the track's last note, a slide up and one down. The dev rig too, until Q0 (OD1)
+        corrects the dev rig's glide time on purpose (then Rig() only, plan 6.2)."""
+        for dev in (False, True):
+            with self.subTest(dev=dev):
+                self.check(f"glide dev={dev}", lambda r: self.voice_case(r, shape=(48, 64), glide=300, notes={0: 60, 3: 67, 7: 55},
+                                                                     blocks=11), dev)
+
+    def test_q1_plays_no_amount(self):
+        """P3 Q1 (review): the new settings are stored and play nothing yet. Sub FM 700, Bit Depth 2 (8 bits) and FM 1>2 333
+        on every Analog oscillator, pushed alike to both builds (BE4.40's slot 8 ignores the keys), and this build still
+        plays BE4.40 byte for byte; only the stored settings bytes differ (masked). Control: this build stored them. Q2 (Sub
+        FM), Q5 (FM 1>2) and Q6 (Bit Depth) turn these into their expected-change cases."""
+        p3 = self.AMOUNTS
+        cases = (("free", lambda r: self.voice_case(r, shape=(48, 88), p3=p3), (0, 1)),
+                 ("sync", lambda r: self.voice_case(r, shape=(70, 100), sync=1, p3=p3), (0, 1)),
+                 ("sync silent master", lambda r: self.voice_case(r, shape=(48, 88), sync=1, level0=0.0, p3=p3), (0, 1)),
+                 ("glide", lambda r: self.voice_case(r, shape=(48, 64), glide=300, notes={0: 60, 3: 67, 7: 55}, blocks=11,
+                                                     p3=p3), (0, 1)),
+                 ("osc2 wavetable", lambda r: self.voice_case(r, shape=(64, 48), types=(1, 0), p3=p3), (0,)),
+                 ("root voice", lambda r: self.root_case(r, p3=p3), (0, 1)),
+                 ("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,)))
+        for dev in (False, True):
+            for name, run, oscs in cases:
+                with self.subTest(dev=dev, case=name):
+                    def stored(r, run=run, oscs=oscs, name=name):
+                        x = run(r)
+                        if r.dsp is DSP:
+                            for i in oscs:
+                                s = r.stored[i]
+                                self.assertEqual((s[3], s[5], s[6]), (2, 700, 333),
+                                                 f"{name}: control, OSC{i + 1}'s Bit Depth, Sub FM, FM 1>2 as stored")
+                        return x
+                    self.check(f"amounts {name} dev={dev}", stored, dev, mask=oscs)
+
+    def test_the_harness_goes_red(self):
+        """The control (plan 6.2): the comparison fails on a one-ulp change of one output sample, and the replay itself
+        sees a one-ulp change of one input (WT1's level source 1.0 -> the next float32 up) in its output."""
+        a = self.voice_case(Rig(img=REF_IMG, dsp=REF_DSP))
+        bad = bytearray(a[0]); w = struct.unpack_from("<I", bad, 400)[0]; struct.pack_into("<I", bad, 400, w + 1)
+        with self.assertRaises(AssertionError):
+            same(self, bytes(bad), a[0], "one ulp")
+        up = 1.0 + 2.0 ** -23                                   # the next float32 above 1.0
+        self.assertEqual(f32(up), up)
+        b = self.voice_case(Rig(img=REF_IMG, dsp=REF_DSP), level0=up)
+        self.assertNotEqual(a[0], b[0], "an input one ulp off changes the output")
+        c = self.voice_case(Rig(img=REF_IMG, dsp=REF_DSP))
+        self.assertEqual(a, c, "and the replay is deterministic")
 
 
 if __name__ == "__main__":

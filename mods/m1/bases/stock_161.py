@@ -669,6 +669,9 @@ SYMS = dict(
     WT_OSC_PROPERTY=code(None, note="M7 Wavetable oscillator set property (osc, msg): keys 0x03, 0xC4..0xCC, the rest ignored", status='absent'),
     WT_OSC_NOTE_SLOT=data(None, note="M7 Wavetable oscillator class slot 2: note start (osc, ?, &note) (BE4.40 mixed sync site)", status='absent'),
     WT_ENGINE_INIT=code(None, note="M7 Wavetable engine init (root): connects the voices' modulation, rate divider osc+0x108 = 2; tests", status='absent'),
+    ENGINE_CTOR=code(None, note="M7 engine constructor (engine): its key-flag table engine+0x8CB2 (one byte per key below 0x1F2); tests", status='absent'),
+    CELL_TYPE_OF=code(None, note="M4 project reader: a type name (<cell type=...>, <track type=...>) -> object type, 0 unknown; tests", status='absent'),
+    PATCH_READ=code(None, note="M4 preset (patch) file reader (path, buf, n, store) -> ok, as PROJECT_READ; tests", status='absent'),
     WT_ROOT_PROPERTY=code(None, note="M7 Wavetable root: set property (root, msg {0x3E, handle, key, value, index}) to each voice's oscillator[index]; tests", status='absent'),
     SET_PROPERTY=code(None, note="(engine, track handle, key, value, [sp] index, 0, 0): post a set_property (0x3E) to the M7", status='absent'),
     MODEL_CHILD_EDIT=code(None, note="the model's 0xD0 edit (model, ev {0xD0, child handle, key, value}): store, index in its run, SET_PROPERTY, touch; tests", status='absent'),
@@ -694,6 +697,9 @@ SYMS = dict(
     KEY_OSC_SHAPE=key(None, note="Analog oscillator Shape 0..127, our native key (1.6.8 only)"),
     KEY_OSC_SYNC=key(None, note="Analog OSC2 hard Sync, our native key (1.6.8 only)"),
     KEY_OSC_GLIDE=key(None, note="Analog Glide 0..1000, our native key (1.6.8 only)"),
+    KEY_OSC_SUBFM=key(None, note="Analog Sub FM 0..1000 (P3), our native key (1.6.8 only)"),
+    KEY_OSC_BITS=key(None, note="Analog Bit Depth Full / 12 / 8 / 4 (P3), our native key (1.6.8 only)"),
+    KEY_OSC_FM12=key(None, note="Analog FM 1>2 0..1000 (P3, OSC2's), our native key (1.6.8 only)"),
     # BE4.40 identity (docs/plan-be440-sync-identity.md track I, 1.6.8 only): the Wavetable page's oscillator panes, their
     # titles and the stock strings renamed OSC1 / OSC2. Absent here (the analog group is not built on 1.6.1).
     STR_PREFIX_OSC1=data(None, note="'WT1: ' (8-byte slot): the synth page's row 0 prefix, the OSC1 pane title's (T0: 'OSC1: ')", status='absent'),
