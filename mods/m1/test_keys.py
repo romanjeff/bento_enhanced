@@ -247,7 +247,7 @@ class SynthKeys(unittest.TestCase):
         got = self.build()
         self.assertEqual(got[S.KEY_OSC_TYPE], (S.KEY_OSC_TYPE, 7, "Type", 2, 0, 0, "bento_osc_type", ["Wavetable", "Analog"]))
         self.assertEqual(got[S.KEY_OSC_SHAPE], (S.KEY_OSC_SHAPE, 2, "Shape", 0, 0, 127, "bento_shape", []), "an integer 0..127, as stock's Shift")
-        self.assertEqual(got[S.KEY_OSC_SYNC], (S.KEY_OSC_SYNC, 7, "Sync", 2, 0, 0, "bento_sync", ["Off", "On"]))
+        self.assertEqual(got[S.KEY_OSC_SYNC], (S.KEY_OSC_SYNC, 7, "Sync 1>2", 2, 0, 0, "bento_sync", ["Off", "On"]))
         self.assertEqual(got[S.KEY_OSC_GLIDE], (S.KEY_OSC_GLIDE, 10, "Glide", 0, 0, 1000, "bento_glide", []), "0..1000, as stock's Pulse Width")
         self.assertEqual(got["state"], 1, "keys ok")
         stock = registry()[2]

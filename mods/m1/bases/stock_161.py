@@ -667,6 +667,8 @@ SYMS = dict(
     REG_BUILD_SITE=code(None, note="model init: bl REG_BUILD, the registry builder's only call (N2 site)", status='absent'),
     WT_OSC_PROP_SLOT=data(None, note="M7 Wavetable oscillator class slot 8: set property (osc, msg) (N3 site)", status='absent'),
     WT_OSC_PROPERTY=code(None, note="M7 Wavetable oscillator set property (osc, msg): keys 0x03, 0xC4..0xCC, the rest ignored", status='absent'),
+    WT_OSC_NOTE_SLOT=data(None, note="M7 Wavetable oscillator class slot 2: note start (osc, ?, &note) (BE4.40 mixed sync site)", status='absent'),
+    WT_ENGINE_INIT=code(None, note="M7 Wavetable engine init (root): connects the voices' modulation, rate divider osc+0x108 = 2; tests", status='absent'),
     WT_ROOT_PROPERTY=code(None, note="M7 Wavetable root: set property (root, msg {0x3E, handle, key, value, index}) to each voice's oscillator[index]; tests", status='absent'),
     SET_PROPERTY=code(None, note="(engine, track handle, key, value, [sp] index, 0, 0): post a set_property (0x3E) to the M7", status='absent'),
     MODEL_CHILD_EDIT=code(None, note="the model's 0xD0 edit (model, ev {0xD0, child handle, key, value}): store, index in its run, SET_PROPERTY, touch; tests", status='absent'),

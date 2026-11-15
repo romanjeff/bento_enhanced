@@ -45,8 +45,7 @@ TYPE, SHAPE, SYNC, GLIDE = 0x1C0, 0x1A7, 0x1AB, 0x1B7        # our keys (plan 3.
 LEVEL, PITCH, POSITION = 0xC4, 0x03, 0xC9                    # stock's oscillator row (plan 3.4)
 WT_ROW = [LEVEL, PITCH, POSITION, TYPE, 0, 0, 0, 0]           # a Wavetable oscillator: stock's row, Type in the free 4th slot
 AN_ROW1 = [LEVEL, PITCH, SHAPE, TYPE, GLIDE, 0, 0, 0]         # OSC1 Analog: Shape for Position, Glide
-AN_ROW2 = [LEVEL, PITCH, SHAPE, TYPE, SYNC, 0, 0, 0]          # OSC2 Analog with OSC1 Analog: Sync
-AN_ROW2_ALONE = [LEVEL, PITCH, SHAPE, TYPE, 0, 0, 0, 0]       # OSC2 Analog under a Wavetable OSC1: no Sync (rule 4)
+AN_ROW2 = [LEVEL, PITCH, SHAPE, TYPE, SYNC, 0, 0, 0]          # OSC2 Analog: Sync 1>2, whatever OSC1's Type (BE4.40 J1)
 WT_CHILDREN = bytes.fromhex("0606080a0a09090b0b0c0d")           # a Wavetable track's children (stock's list)
 # stock 1.6.8's synth page, measured here on stock's code (rc33 implA p0/t5.py, probe2.py and this suite's runs):
 SLOT0, SLOT_STRIDE = 0x70, 0x468   # the row's 8 encoder widgets: view + SLOT0 + SLOT_STRIDE * slot
@@ -270,7 +269,7 @@ class Rows(unittest.TestCase):
         self.assertEqual([r.wtitle(i) for i in range(3)], ["Level", "Pitch", "Position"])
 
     def test_rows_per_type_for_each_oscillator(self):
-        cases = {(0, 0): (WT_ROW, WT_ROW), (1, 0): (AN_ROW1, WT_ROW), (0, 1): (WT_ROW, AN_ROW2_ALONE), (1, 1): (AN_ROW1, AN_ROW2)}
+        cases = {(0, 0): (WT_ROW, WT_ROW), (1, 0): (AN_ROW1, WT_ROW), (0, 1): (WT_ROW, AN_ROW2), (1, 1): (AN_ROW1, AN_ROW2)}
         for types, want in cases.items():
             with self.subTest(types=types):
                 r = Rig(types=types); r.tick()
@@ -285,22 +284,29 @@ class Rows(unittest.TestCase):
         self.assertEqual([r.wtitle(i) for i in range(5)], ["Level", "Pitch", "Shape", "Type", "Glide"])
         self.assertEqual([r.wvalue(i) for i in (2, 3, 4)], ["48", "Analog", "0.0%"], "Shape 48 (saw), Glide 0")
         r.show_row(1)
-        self.assertEqual([r.wtitle(i) for i in range(5)], ["Level", "Pitch", "Shape", "Type", "Sync"])
+        self.assertEqual([r.wtitle(i) for i in range(5)], ["Level", "Pitch", "Shape", "Type", "Sync 1>2"], "J5")
         self.assertEqual(r.wvalue(4), "Off")
         r = Rig(); r.tick()
         self.assertEqual((r.wtitle(3), r.wvalue(3), r.wtitle(4)), ("Type", "Wavetable", ""))
 
-    def test_sync_only_when_both_oscillators_are_analog(self):
-        """Plan 3.3 rule 4: with Analog OSC1 and Wavetable OSC2 Sync is inert and hidden. The build also hides it under a
-        Wavetable OSC1 (the M7's sync master is our OSC1 kernel only: dsp/analog.cpp, sync needs both Analog)."""
-        for types in ((1, 0), (0, 1), (0, 0)):
+    def test_sync_whenever_osc2_is_analog(self):
+        """BE4.40 J1 (docs/plan-be440-sync-identity.md Track S): OSC2's Sync 1>2 shows whenever OSC2 is Analog, under a
+        Wavetable OSC1 (mixed sync) as under an Analog one; with OSC2 Wavetable it stays hidden (the reverse case is not
+        built), and never on OSC1's row."""
+        for types in ((1, 0), (0, 0)):
             with self.subTest(types=types):
                 r = Rig(types=types); r.tick()
                 self.assertNotIn(SYNC, r.rows()[0] + r.rows()[1])
                 r.show_row(1)
                 self.assertNotIn(SYNC, [k for k, _ in r.widgets()])
-        r = Rig(types=(1, 1)); r.tick()
-        self.assertEqual(r.rows()[1][4], SYNC)
+        for types in ((0, 1), (1, 1)):
+            with self.subTest(types=types):
+                r = Rig(types=types); r.tick()
+                self.assertEqual(r.rows()[1][4], SYNC)
+                self.assertNotIn(SYNC, r.rows()[0])
+                r.show_row(1)
+                self.assertEqual(r.widgets()[4], (SYNC, r.h2), "bound to OSC2")
+                self.assertEqual(r.wtitle(4), "Sync 1>2")
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
@@ -318,7 +324,7 @@ class Heal(unittest.TestCase):
         r.edit(r.h2, TYPE, 1); r.tick()
         self.assertEqual(r.rows(), [AN_ROW1, AN_ROW2])
         r.edit(r.h1, TYPE, 0); r.tick()
-        self.assertEqual(r.rows(), [WT_ROW, AN_ROW2_ALONE], "OSC1 back to Wavetable: Sync goes from OSC2's row too")
+        self.assertEqual(r.rows(), [WT_ROW, AN_ROW2], "OSC1 back to Wavetable: OSC2's row keeps Sync 1>2 (J1)")
         self.assertEqual(r.widgets()[:5], [(LEVEL, r.h1), (PITCH, r.h1), (POSITION, r.h1), (TYPE, r.h1), (0, 0)],
                          "stock's Position back on WT1's slot 2, slot 4 empty")
         self.assertIn(" heals=3 ", r.black_box(), "three repairs (the A6 copy's own fix is not counted)")

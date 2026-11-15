@@ -137,6 +137,55 @@ extern "C" void an_track(AnOsc *o, float inc, unsigned char *events, unsigned n)
     o->delayed = 0.f;
 }
 
+/* BE4.40 mixed sync: WT1 (a Wavetable oscillator, stock's render) as the master of an Analog WT2. The master's phase is
+ * o->mphase:mphase_lo, a 64-bit fraction of a cycle, advanced by inc's exact value (an_inc64): stock's own phase is exactly
+ * the sum of rate / 2048 from 0 at a note start (M, wf/sync kstate.py), so the copy never drifts (plan fix 3: no truncation).
+ * Its wraps are placed analytically into events (0..254 where in the sample, as an_track writes them): a few operations per
+ * wrap, not per sample. The last sample's wrap is decided by the exact phase, so a wrap on a chunk edge is neither lost
+ * nor doubled. events 0: only the phase moves (WT2 silent). n <= AN_EVENTS (an_osc chunks a longer block).
+ * After the designer's prototype (wf/sync apply_proto.py an_master, measured against an exact model in mtest.py). */
+static inline unsigned char ev_byte(float wrap) {
+    int f = (int)(wrap * 254.f + .5f);
+    return (unsigned char)(f < 0 ? 0 : f > 254 ? 254 : f);
+}
+static inline float q64f(unsigned long long x) {    /* a 64-bit fraction (2^64 = 1) as a float, no library helper */
+    return (float)(unsigned)(x >> 32) * (1.f / 4294967296.f) + (float)(unsigned)x * (1.f / 4294967296.f / 4294967296.f);
+}
+extern "C" void an_master(AnOsc *o, float inc, unsigned char *events, unsigned n) {
+    if (!(inc > 0.f)) inc = 0.f;
+    if (inc > .45f) inc = .45f;
+    unsigned long long q = an_inc64(inc), p = ((unsigned long long)o->mphase << 32) | o->mphase_lo;
+    unsigned long long pe = p + (unsigned long long)n * q;  /* the phase after these n samples, exactly (mod one cycle) */
+    if (events && n) {
+        unsigned *ew = (unsigned *)events;
+        for (unsigned i = 0; i < (n + 3u) / 4u; i++) ew[i] = 0xFFFFFFFFu;
+        if (o->mrestart) events[0] = 0;                   /* the master restarted at the note start: so does the slave */
+        if (q) {
+            float rinc = 1.f / inc, t0 = (p ? q64f(0ull - p) : 1.f) * rinc;
+            for (unsigned j = 0; ; j++) {
+                float tw = t0 + (float)j * rinc;
+                unsigned i = (unsigned)tw;
+                float fr = tw - (float)i;
+                if (fr == 0.f && i) { i--; fr = 1.f; }
+                if (i >= n) break;
+                events[i] = ev_byte(fr);
+            }
+            /* the chunk's edge, exactly: a float time within rounding of it may name the wrong side (the next chunk
+             * starts from the exact phase, so a wrong side here would lose a wrap or give one twice). At most one wrap
+             * per sample and none in two neighbouring samples (inc <= 0.45). */
+            unsigned long long pl = pe - q;               /* the phase before the last sample */
+            if (pe < pl) events[n - 1u] = ev_byte(q64f(0ull - pl) * rinc);
+            else if (n > 1u && events[n - 1u] != AN_NO_EVENT) {
+                events[n - 1u] = AN_NO_EVENT;             /* not in the last sample: the next chunk's, or ... */
+                if (pl < q) events[n - 2u] = ev_byte(q64f(0ull - (pl - q)) * rinc);   /* ... the end of the one before */
+            }
+        }
+    }
+    o->mrestart = 0;
+    o->mphase = (unsigned)(pe >> 32);
+    o->mphase_lo = (unsigned)pe;
+}
+
 /* inc: cycles per sample. shape 0..1. master: write this oscillator's wraps into events; slave: reset at
  * the events (n <= AN_EVENTS when either is set). */
 extern "C" void an_render(AnOsc *o, float inc, float shape, float *out, unsigned n, unsigned char *events, int role) {

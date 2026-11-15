@@ -67,14 +67,15 @@ typedef struct {
     unsigned osc_peak;        /* most oscillators rendered in one block */
     unsigned props;           /* BE4.40: set-property messages of our keys an oscillator took (N3, dsp/analog.cpp an_prop) */
     unsigned n_max;           /* the largest frame count seen */
-    unsigned sync_skipped;    /* oscillator renders with sync skipped because n > SYNC_FRAMES */
+    unsigned sync_skipped;    /* oscillator renders with both-Analog sync skipped because n > AN_SYNC_FRAMES (256: 2N) */
     unsigned hist[4];         /* Analog's share of the block: < 5, 5-15, 15-30, 30+ % */
     unsigned voices_peak;     /* most voice entries in one block */
     unsigned renders;         /* oscillator renders (all) */
     unsigned misses;          /* per-root glide line refills (BE4.40: the glide's last note per root only) */
-    unsigned r14, r15;
+    unsigned synced;          /* BE4.40: oscillator renders with hard sync engaged (master or slave; both Analog or mixed) */
+    unsigned shape_mods;      /* BE4.40 J4: Analog renders whose Shape was moved by modulation routed to Position */
 } SaStats;                    /* 64 bytes: blocks +0, sum16 +4, peak +8, osc_peak +12, n_max +20, sync_skipped +24,
-                                 hist +28, voices_peak +44, renders +48, misses +52 */
+                                 hist +28, voices_peak +44, renders +48, misses +52, synced +56, shape_mods +60 */
 /* +0x0400 M7 private: the DSP's running state (two lines) */
 #define SA_RUN 0x0400u
 /* +0x0200 (BE4.21..BE4.31: the M4's Analog track table, published; unused since BE4.40, when an oscillator's Type, Shape,

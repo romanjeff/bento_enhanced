@@ -58,6 +58,43 @@ Wavetable.
 Cost (verifier, device domain, M): synced WT2 +2.3k instructions per voice-block at note 60, +4.6k at note 120. 80
 voices with high masters come to about 370k of the 1.28M-cycle block (I). This goes to the device CPU check, not a cap.
 
+### Track S: M results (built, 2026-11-14)
+
+Built as designed, with the verifiers' fixes 1-4. Rig: `test_analog` `Rig(dev=True)` (divider 2, 2N = 256 frames),
+pinned to stock's engine init `WT_ENGINE_INIT` 0x0807F180 and to stock's voice path (`Device`: vt[19] sizing, the post
+chain's decimation to N, 261.63 Hz at 48 kHz). Wraps and errors below are in 96 kHz oscillator samples.
+
+| Item | As built | Evidence |
+|---|---|---|
+| B1 before | 7bde5a0: `sync_skipped` on 48 of 48 renders (osc rig), 80 of 80 (voice path); both new Device tests fail | M |
+| Chunking | per 128-frame chunk; both Analog: chunk 0's wraps in WT2's events, chunk 1's in WT1's own (WT1 is never a slave), so AnOsc keeps one events[128]; > 256 frames: free, counted. Mixed: `an_master` per chunk, no limit | M: 256 = 2 x 128 within 1e-6 (both), wraps and phase exact (mixed) |
+| Phase copy | 64-bit fraction (`mphase`:`mphase_lo`), advanced by the float's exact value (`an_inc64`, no helper): no truncation at any rate above 0.04 Hz (fix 3, wider phase rather than rounding) | M: Golden, 8 rates 20 Hz..21 kHz x steady / walk / vibrato x 400 chunks: phase bit-exact, no missing or extra wrap, each within 1/254 |
+| Chunk edge | the last sample's wrap decided from the exact phase (a float time within rounding of the edge would lose a wrap or give it twice) | M: Golden edges (wrap on the edge, the sample before, +-1 LSB) |
+| Rate | `rate_of(o1, pitch_oct(o1))`: the copy advances by exactly n x stock's +0x1E8 / 2048 | M: 384 cases note x fine x octave x pitch mod, 0 differ |
+| Note start | S1: slot 2 0x080ACBBC -> `tramp_note` (an_note, then `b.w WT_NOTE_START`); acts only when WT2 is Analog with Sync 1 (fix 2); WTOscReset off: no restart, the copy is re-seeded | M; S (stock's note start bytes unchanged after it) |
+| Seeding | on engage (Sync on, WT2 -> Analog, Reset-off note): (idx << (64 - log2 len)) + (frac << (32 - log2 len)), minus this block's advance (WT1 renders first) | M |
+| AnOsc | 156 -> **168 B** (+8 phase, +4 flags; limit 180, FM's +4 still fits) | static_assert |
+
+Alignment (worst |wrap - WT1 cycle start|, M, `impl_SM/meas.py`): notes 24..108 0.0016-0.0038; octave -2..+2
+0.0017-0.0036; vibrato +-1 st 0.0020; slide -1 oct -> 0 0.0019; retrigger / new note 0.0018 / 0.0019, restarts at
+frames 0, 4864, 9728 only; Sync on mid-note 0.0019, no restart; WT2 -> Analog mid-note 0.0019; **WTOscReset off
+0.0019** (was 17.3 smp: now seeded); 4 s notes at 12 / 24: 0.0020 (no drift); No WAV note 48: period 733.878 smp
+(stock's pitch table, 12-TET 733.873). Remaining (accepted): WT1 level 1 -> 0 -> 1, 273 smp until the next note.
+
+WT1 bit-identical to stock with WT2 synced (output and its 0x1F0 B object, vibrato and a new note) (M). Unchanged
+from 7bde5a0, bit for bit (M, `impl_SM/ident.py`): free Analog oscillators in every regime at n = 128 and 256,
+both-Analog sync at n = 128, glide, a mixed voice with Sync off.
+
+Cost, instructions per voice-block at n = 256 (M, test_analog Cost): WT2's render next to stock's WT1, Sync off -> on:
+note 24 6454 -> 8791 (+2337), note 60 6460 -> 8855 (+2395), note 96 6502 -> 9188 (+2686), note 120 6658 -> 10262
+(+3604); stock's WT1 render 7092 at note 60. Both Analog, all hooks: saw 13076, saw + sync 15651 (+2575), mixed + sync
+22046, saw + sync at note 120 16580. `an_master`(128): at most 1930. Code: DSP 7000 -> 8864 B (default build; 14924 B
+with drums, of the 36 KB window); synth UI 10806 -> 10858 B; writes 100 -> 101. Black box: `synced=` counts synced
+renders. Not measured on the device: n_max, the CPU check.
+
+M4: `want_row` shows Sync on OSC2's row whenever OSC2 is Analog (the `osc1` argument kept, unused, so `fix_rows` is
+untouched); the Sync descriptor title is "Sync 1>2" (J5); `an_print` prints `synced=` and `shape_mods=`.
+
 ## Track M: Shape modulation (M7, J4)
 
 On an Analog oscillator, the modulation sum that stock applies to the Position parameter (key 0xC9, destination
@@ -67,6 +104,19 @@ osc's Position param object, the same helper the master rate uses for pitch): re
 subtract the unmodulated base, and add it to Shape. Wavetable oscillators are untouched (bit-identical). Must show:
 LFO -> Position on an Analog osc moves the pulse width (M), with no modulation the output is bit-identical to today,
 the cost per block, and the black box counts it.
+
+### Track M: M results (built, 2026-11-14)
+
+| Item | As built | Evidence |
+|---|---|---|
+| Source | stock's Position parameter (osc+0x30): PARAM_VALUE 0x080A09A0 sums amount x source+4 over the slots in its order bytes (+0x28) and clamps; slot 0 is the knob (the ctor's source at osc+0x28, value = key 0xC9 / 256), slots 1..4 the routed sources (PARAM_CONNECT 0x080A0920 via the osc class's slot 10 0x08081B60, key 0xC9) | S; M (routing reaches slot 2, order [0, 2]) |
+| Rule | effective Shape = clamp(Shape + 127 x (sum over slots 1..4), 0..127); Position's 1.0 (frames 0..255) = Shape's 127 | M |
+| Deviation | the plan says "PARAM_VALUE minus the base". Built: the same sum without slot 0, unclamped. PARAM_VALUE clamps base + modulation to -1..1, so a Position knob left anywhere (hidden on an Analog page) would bend the modulation's range; this way it does not | M: knob at 200 gives the same output as no knob |
+| Pulse width | Square (88) + 0.2: duty 0.226 as computed (+-0.01); an LFO sweeps the duty over 0.2+; amount x source as stock; clamps at 0 and 127 bit-equal to Shape 0 / 127 | M (ShapeMod) |
+| Bit identity | none routed, a source at 0, the knob alone: Shape as stored, bit for bit (a whole Shape through the float an_shape gives the integer version's results) | M; and unchanged from 7bde5a0 (ident.py) |
+| Wavetable osc | untouched: Position modulation on a Wavetable osc is stock's, output and object | M |
+| Cost (n = 256, one Analog osc render) | none routed 8357 (7bde5a0 8307: +50 incl. the sync checks); one source at 0 8378; one moving 8390; four 8452 | M (impl_SM/jcost.py) |
+| Black box | `shape_mods=` counts renders whose Shape was moved | M |
 
 ## Track I: identity (M4)
 
