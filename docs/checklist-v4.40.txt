@@ -1,0 +1,155 @@
+bento_enhanced v4.40: Analog as an oscillator Type, mixed sync, Shape modulation, OSC identity (stock 1.6.8)
+=========================================================================================================
+
+Kit: flash\bento_enhanced-v4.40   boot label BE4.40
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.40.txt)
+
+Plans: docs\plan-native-props.md (P1: Analog is a native property of each Wavetable oscillator) and
+docs\plan-be440-sync-identity.md (mixed sync, Shape modulation, the OSC1 / OSC2 identity). Everything below was
+measured in the emulator only. Nothing in this kit has run on a device.
+
+In this image (new since BE4.22, the last kit run on the device):
+  - The instrument menu is stock's again: 8 entries, no "Analog". An Analog sound is a Wavetable track whose
+    oscillator has Type = Analog. Each oscillator has its own Type, so OSC1 Analog with OSC2 Wavetable is normal.
+  - Rows on the Wavetable page (slot 1 = the first knob of a row):
+      OSC1 Wavetable : Level, Pitch, Position, Type
+      OSC1 Analog    : Level, Pitch, Shape, Type, Glide
+      OSC2 Wavetable : Level, Pitch, Position, Type
+      OSC2 Analog    : Level, Pitch, Shape, Type, Sync 1>2
+    Row 3's WTOscReset is hidden while BOTH oscillators are Analog.
+  - Sync 1>2 (on OSC2 whenever OSC2 is Analog): OSC2 restarts on every cycle of OSC1. It now works with OSC1 Wavetable
+    (mixed sync, even with no WAV on OSC1) as well as with OSC1 Analog. On BE4.22 both-Analog sync never engaged on the
+    device (bug B1: the device renders 256-frame blocks), and this kit fixes that.
+  - Shape (0..127): 0..48 saw, 48..88 saw morphs to square, 88..127 the square narrows to an 8% pulse. Its value
+    reads "Saw", "Saw>Sq 40%", "Square", "Pulse 30%". Sine and triangle are not in this kit.
+  - Shape modulation: on an Analog oscillator, whatever is routed to "OSC1: Position" (or "OSC2: Position") moves
+    Shape instead. An LFO there gives PWM.
+  - Names: the panes read "OSC1: ..." / "OSC2: ..." on every Wavetable track (they were "WT1: " / "WT2: "). The mod
+    destinations read "OSC1: Position", "OSC2: Level" and so on, to match.
+  - An Analog oscillator's pane shows a Shape dial (saw / square / pulse glyphs, the nearest one lit) instead of a
+    wavetable. Its title reads "OSC1: Analog". On the first Analog oscillator it adds "DSP nn%" (the audio core's
+    total load, refreshed while you play) and "OVER" after a block went over budget. A WAV still loaded on an
+    Analog oscillator shows as "(WAV kept)" or "+WAV".
+  - A double-tap on an Analog pane no longer opens the WAV browser.
+  - Saved in the project as bento_osc_type / bento_shape / bento_sync / bento_glide on each oscillator. Stock 1.6.8
+    ignores them and plays plain Wavetable.
+NOT in it: the drum synth (BE4.50+; this image leaves drums out), Sub FM, Bit Depth, FM 1>2 (P3), sine / triangle,
+the reverse sync (Analog OSC1 master, Wavetable OSC2: hidden), migration of BE4.22 .. BE4.31 Analog projects (decision
+NP3: none: they open as plain Wavetable tracks).
+
+Offline measured cost: a synced Analog OSC2 adds about 2.3k instructions per voice-block at note 60, and up to about
+7.2k at the top of the range. The worst case is 80 synced voices at about 570k of the 1.28M-cycle block (inferred):
+section 7 checks it.
+
+0. Gate
+[ ] Flash this kit ONLY after docs\checklist-v4.22.txt has passed on this unit. If BE4.22 is not done: stop and bring
+    its results first. (v4.30 / v4.31 were drum kits and are not needed.)
+[ ] Back up the whole SD card on the computer (a folder copy of every file). Section 9 restores it.
+[ ] Work on copies only. ON THE COMPUTER, copy the project folder SPACED to a NEW folder SPACED_40. On the Bento make
+    a new empty project AN_A (sections 2-6). From here on load SPACED_40 only, never SPACED.
+
+1. Boot and black box
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.40.
+[ ] Load AN_A, save. BENTO_SAVES.log: "firmware BE4.40"; an ANALOG line with keys=ok and "| ui page_rows= heals=
+    resends= dials= browse_blocked=". If keys= is not "ok": stop and bring the log.
+[ ] RAMCHK quiet ("top changed=0"), no "!!!", AUDIO rising.
+[ ] The instrument menu (new track): 8 entries, no "Analog". Photo if it is anything else.
+
+2. Type, rows and names (AN_A, track 1 = a new Wavetable track)
+[ ] Both panes are titled "OSC1: <wav or No WAV>" / "OSC2: ...". OSC1's row reads Level, Pitch, Position, Type =
+    Wavetable. Photo of the page, please.
+[ ] OSC1 Type -> Analog: the row becomes Level, Pitch, Shape, Type, Glide at once (within a moment); the pane shows
+    the dial; the title reads "OSC1: Analog  DSP nn%". It plays a saw. OSC2 (still Wavetable) still plays its
+    wavetable: both are heard together (P1's "mixed").
+[ ] OSC2 Type -> Analog: OSC2's row reads Level, Pitch, Shape, Type, Sync 1>2. "DSP nn%" stays on OSC1's title only.
+    Row 3 no longer shows WTOscReset (both Analog). OSC1 back to Wavetable: WTOscReset comes back; Sync 1>2 stays on
+    OSC2.
+[ ] The "DSP nn%" figure changes while you play (hold a chord, it rises) without touching anything. Write down idle /
+    one note / a big chord. Does "OVER" ever show? (It should not with a few voices.)
+[ ] Shape on an Analog OSC1: 0 / 48 / 68 / 88 / 108 / 127. The value reads Saw / Saw / Saw>Sq 50% / Square /
+    Pulse nn% (about 28) / Pulse 8%, the sound goes saw -> hollow square -> thin pulse, and the dial's lit glyph follows (saw
+    lit at the low end, square around 78..97, pulse at the top; none lit in between is expected). Photo at 68.
+[ ] Turn Shape quickly back and forth: the dial follows without flicker or leftovers on the pane.
+[ ] Switch rows (OSC1 row, OSC2 row, back) with Shape at 64: the value shows "Saw>Sq 40%" at once, never "64" for a
+    moment.
+[ ] Mod destinations: open the mod matrix / assign list for the track: the destinations read "OSC1: Position",
+    "OSC1: Level", "OSC2: ..." (not "WT1: ..."). Is there another list (MIDI CC / assign) that still says "WT1: Pitch"?
+    If yes, write down where (the review found a second name table left stock).
+[ ] A double-tap on the Analog OSC1 pane: the WAV browser does NOT open. On a Wavetable pane it still does. Write down
+    which gesture (double-tap, or press-and-hold) opens the browser on a Wavetable pane.
+[ ] Rapid Type switching: flip OSC1 Wavetable / Analog 10 times quickly, then OSC2. The rows and titles always
+    end up right (no Shape on a Wavetable row, no Position on an Analog row), no leftover dial on a Wavetable pane, no
+    crash.
+
+3. A WAV kept (AN_A, track 2 = a new Wavetable track)
+[ ] Load a WAV on OSC1 (the browser). Set its Position to some frame. Type -> Analog: the title reads "OSC1: Analog
+    +WAV  DSP nn%" (or "(WAV kept)"), it plays the saw. The title fits on the pane (not cut off). Type -> Wavetable:
+    the WAV plays again at its old Position, the title is the WAV's name, no dial is left on the pane, and OSC2's
+    wavetable drawing is still there.
+[ ] With OSC1 Analog on track 1 and a Wavetable OSC1 on track 2: switch between the two tracks a few times. Track 2's
+    pane never shows the dial.
+
+4. Sync 1>2 (AN_A, track 3)
+[ ] Both Analog: OSC1 Shape 0, OSC2 Shape 0, OSC2 Pitch up +7..+19 st, Sync 1>2 On. Play a held note and sweep OSC2's
+    Pitch: the classic sync sweep (the pitch stays OSC1's, the timbre moves). Sync Off: two detuned saws. (On BE4.22
+    this did nothing: B1.)
+[ ] Mixed: OSC1 Wavetable with a WAV (a simple wave), OSC2 Analog, Sync On, same sweep: the same sync sound, pitched
+    at OSC1. Then OSC1 Level 0: OSC2 alone still sounds synced (the silent-master patch).
+[ ] Mixed with No WAV on OSC1 (a fresh oscillator): OSC2 synced, sweep OSC2 Pitch: still synced at OSC1's pitch.
+[ ] Sync on mid-note: hold a note with Sync Off, turn it On while holding: it locks at once (no wobble that lasts
+    until the next note). On, Off, On again within one note: the same.
+[ ] OSC2 Type Wavetable -> Analog while holding a note with Sync On: OSC2 comes in synced.
+[ ] OSC1 Level by an LFO or envelope to 0 and back (mixed, Sync On): OSC2 stays locked (no drift while OSC1 is
+    silent).
+[ ] Retrigger the same note fast, legato, a new note: each attack sounds the same (OSC2 restarts with OSC1).
+[ ] Save, then the ANALOG line: n_max=256 (the device's block; write down what it says), sync_skipped=0, synced= above
+    0.
+
+5. Shape modulation (AN_A, track 4: OSC1 Analog)
+[ ] Route an LFO to "OSC1: Position" (2 Hz, medium depth), OSC1 Shape 68: the timbre sweeps saw <-> square. Shape 100:
+    the pulse width sweeps (PWM). Listen at 2 Hz and at 8 Hz for zipper noise or clicks (the shape steps every 32
+    samples; offline it is smooth to the ear: bring a recording if not).
+[ ] Depth 0, or the LFO removed: the sound is the plain Shape again. The Position knob itself is not on the Analog
+    page and does nothing.
+[ ] Save: the ANALOG line's shape_mods= above 0.
+[ ] The same LFO route on a Wavetable OSC1: it moves the wavetable Position, as on stock.
+
+6. Save, load, copy (P1)
+[ ] AN_A: save, power cycle, load: every track's Type, Shape, Sync, Glide are as set; tracks sound the same.
+[ ] project.xml of AN_A on a computer: the oscillators carry bento_osc_type="1" (Analog ones), bento_shape,
+    bento_sync, bento_glide.
+[ ] Preset: save track 3 as a preset, load it on a new track: both Analog, Sync On, the Shapes kept.
+[ ] Track copy / paste and track duplicate: the copy keeps Type and every Analog control; changing the copy's Shape
+    leaves the original alone.
+[ ] No stock parameter moves: on track 1, turn each of Type, Shape, Glide, Sync; then look at Level, Pitch, Position,
+    the filter and the envelopes: none changed.
+[ ] A Type other than 0 / 1 cannot be made from the page. If an Analog oscillator ever plays as Wavetable or the other
+    way round after a load / preset / copy, write down how.
+
+7. CPU (SPACED_40)
+[ ] Load SPACED_40. Play it 30 s, save: write down LOAD avg / bins / over-budget, the ANALOG line, and the DSP figure
+    on an Analog title (reference).
+[ ] Add a Wavetable track, OSC1 Wavetable (a WAV), OSC2 Analog Sync On. Play SPACED_40 plus chords on that track:
+    3, 6, 10 notes held, then a high sweep of OSC1's Pitch (+2 oct) with all held. For each: the DSP figure, OVER or
+    not, save, LOAD avg / over-budget, the ANALOG line's avg_cyc / peak_cyc / voices_peak. Listen for glitches.
+[ ] No reset, no freeze at any point.
+
+8. Regression
+[ ] An External track's note-0 pad still sends note 0 (BE4.22 section 2, first two items).
+[ ] BE4.10 core items: curves, trigger conditions, a retrigger, live poly AT out of an External track, the hold
+    shortcuts, strike velocity.
+[ ] A plain Wavetable track (both Wavetable) sounds and behaves exactly as on stock: browser, Position, WTOscReset.
+
+9. Rollback
+[ ] 03_RESTORE_STOCK (stock 1.6.8): AN_A loads, every track plays as plain Wavetable (Analog oscillators play their
+    WAV or nothing), no crash. Do not save there unless you mean to (stock drops the bento_* attributes).
+[ ] v4.22 (flash\bento_enhanced-v4.22): AN_A loads with no crash (plain Wavetable, as stock).
+[ ] Back to BE4.40 if you continue; restore the card backup from section 0 at the end.
+
+Bring back: BENTO_SAVES.log (every save's ANALOG line, the LOAD / AUDIO lines of section 7), BENTO_CRASHES.log if
+any, the photos (sections 1, 2), the DSP figures, AN_A's project.xml, and notes for every item that did not match
+(section 2's name list and browser gesture either way).
