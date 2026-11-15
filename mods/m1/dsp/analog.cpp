@@ -17,8 +17,10 @@
  *     WT2's events then WT1's; a longer block renders free-running and is counted);
  *   - mixed sync (Track S, J1): a Wavetable WT1 is the master of an Analog WT2 with Sync on. WT2 keeps its own exact copy of
  *     WT1's phase (stock's own pitch formula on WT1's fields, restarted by WT1's note start through slot 2), seeded from
- *     stock's phase when sync engages mid-note; stock's WT1 is never written;
- *   - Shape modulation (Track M, J4): on an Analog oscillator the sources routed to its Position parameter move Shape.
+ *     stock's phase when sync engages mid-note or stock's kernel runs again after a freeze; stock's WT1 is never written
+ *     (PARAM_VALUE's cache store is undone, wt1_oct);
+ *   - Shape modulation (Track M, J4): on an Analog oscillator the sources routed to its Position parameter move Shape,
+ *     ramped over the block (a step every AN_RAMP frames, each with its correction: an_reshape).
  * Four vtable words point at build.py's trampolines (in this window, before this ELF):
  *   A1  Wavetable root slot 18 (voice render): an_enter(root, voice), then stock's render
  *   A2  Wavetable oscillator slot 0 (render): an_osc(osc, scratch, out) != 0 means handled, else stock
@@ -77,6 +79,7 @@ typedef unsigned char u8;
  * amount s0), which rebuilds the order; the osc class's slot 10 0x08081B60 routes key 0xC9 to Position, osc+0x30) (S) */
 #define PARAM_ORDER 0x28u
 #define PARAM_COUNT 0x30u
+#define PARAM_CACHE 0x3Cu          /* PARAM_VALUE stores its result here (0x080A0A52 vstr s0, [r0, #0x3c]) (S) */
 #define SUB_DETUNE 0x04u           /* the sub oscillator's octave offset, reread by its render each block */
 #define VOICE_OSC1 0x178u          /* the voice's oscillator pointers (stock's root ctor: WT1, WT2, sub; rc33 p0/probe3.py) */
 #define VOICE_OSC2 0x17Cu
@@ -129,7 +132,7 @@ static void reset(AnOsc *g) {
     g->magic = AN_MAGIC; g->phase = 0.f; g->delayed = 0.f;
     for (u32 i = 0; i < AN_EVENTS; i++) g->events[i] = (u8)AN_NO_EVENT;
     g->note = NO_NOTE; g->glide = 0.f; g->sub_applied = 0.f; g->sub_written = 0.f;
-    g->mphase = g->mphase_lo = 0; g->mrestart = g->mlive = 0; g->mspare[0] = g->mspare[1] = 0;
+    g->mphase = g->mphase_lo = 0; g->mrestart = g->mlive = 0; g->mshape = (u16)AN_NO_SHAPE; g->msnap = 0;
 }
 /* the whole kernel area to zero: stock's render then starts from a zero history (review note N1) */
 static void forget(void *osc) {
@@ -305,6 +308,17 @@ static float pitch_oct(void *osc) {
     return oct + FN(S_NOTE_OCT, float (*)(void *))(&note);
 }
 static float rate_of(void *osc, float oct) { return FN(S_OCT_RATIO, float (*)(float))(oct) / 23.4375f / F(osc, OSC_RATE_DIV); }
+/* WT1's pitch, for the master: PARAM_VALUE caches its result in the parameter (+0x3C, so WT1 +0xAC). With a table, stock's
+ * render wrote the same value this block already (WT1 renders first); with no WAV its render returns before its pitch code
+ * and never writes it, so the store is undone: stock's WT1 stays stock's, byte for byte (M: rev_m7_2 probe.py, test_analog
+ * Sync test_wt1_is_stocks_bit_for_bit_with_wt2_synced, no-WAV case). Rather than a copy of PARAM_VALUE: stock's own
+ * function, so the rate stays stock's bit for bit (test_the_master_rate_is_stocks). */
+static float wt1_oct(void *o1) {
+    u32 keep = W(o1, OSC_PITCH_PARAM + PARAM_CACHE);
+    float oct = pitch_oct(o1);
+    W(o1, OSC_PITCH_PARAM + PARAM_CACHE) = keep;
+    return oct;
+}
 
 /* S1, slot 2: the oscillator's note start (osc, ?, &note), before stock's. WT1 Wavetable starting a note with WTOscReset on
  * restarts stock's phase (its kernel reset zeroes index and fraction), so an Analog WT2 synced to it restarts its copy, and
@@ -318,7 +332,7 @@ extern "C" __attribute__((used)) void an_note(void *osc) {
     void *o2 = v + S_VOICE_WT2;
     if (!is_analog(o2) || props(o2)->sync != 1u) return;
     AnOsc *s = state(o2);
-    if (*(volatile u8 *)((u8 *)osc + OSC_RESET_FLAG)) { s->mphase = s->mphase_lo = 0; s->mrestart = 1; s->mlive = 1; }
+    if (*(volatile u8 *)((u8 *)osc + OSC_RESET_FLAG)) { s->mphase = s->mphase_lo = 0; s->mrestart = 1; s->mlive = AN_LIVE_NEW; }
     else s->mlive = 0;
 }
 /* Mixed sync engages mid-note (Sync turned on, WT2 just Analog, WTOscReset off): the copy takes stock's own phase, read from
@@ -327,12 +341,25 @@ extern "C" __attribute__((used)) void an_note(void *osc) {
 static void seed(AnOsc *s, void *o1, float minc, u32 n) {
     u32 len = W(o1, OSC_KLEN), idx = W(o1, OSC_KIDX);
     float frac = F(o1, OSC_KFRAC);
-    s->mrestart = 0; s->mlive = 1;
+    s->mrestart = 0; s->mlive = AN_LIVE_NEW;
     if (len < 32u || len > 2048u || (len & (len - 1u)) || idx >= len || !(frac >= 0.f && frac < 1.f)) return;
     u32 k = 31u - (u32)__builtin_clz(len);
     unsigned long long p = ((unsigned long long)idx << (64u - k)) + ((unsigned long long)(u32)(frac * 4294967296.f) << (32u - k));
     p -= (unsigned long long)n * an_inc64(minc > .45f ? .45f : minc);
     s->mphase = (u32)(p >> 32); s->mphase_lo = (u32)p;
+}
+/* Review M7 (rev_m7_1 m2.py): stock's kernel stops while WT1 is at level 0 with its smoother at rest (0x08081D22..38: an
+ * envelope or LFO on OSC1 Level can clamp it to 0) and while it has no WAV (0x08081C64); the copy runs on through that (the
+ * classic patch, OSC1 at 0 or with no WAV, keeps its wraps), but when the kernel runs again it is at its own phase. A
+ * digest of WT1's kernel phase after WT1's render, each block: unchanged = frozen; changed after frozen = running again,
+ * so the copy is seeded from it. A changed digest after a note start is no resume (an_note: AN_LIVE_NEW takes a fresh one);
+ * a running kernel that happens to keep its digest (a whole number of table cycles per block) only gives one extra seed,
+ * which is stock's phase anyway. */
+static void watch(AnOsc *s, void *o1, float minc, u32 n) {
+    u32 d = W(o1, OSC_KIDX) * 0x9E3779B1u ^ W(o1, OSC_KFRAC) ^ W(o1, OSC_KLEN) << 20;
+    if (s->mlive == AN_LIVE_FROZEN && d != s->msnap) seed(s, o1, minc, n);
+    s->mlive = s->mlive == AN_LIVE_NEW || d != s->msnap ? AN_LIVE_RUNS : AN_LIVE_FROZEN;
+    s->msnap = d;
 }
 static float glide_coef(Root *e, u32 glide, u32 n) {
     /* 0..1000 = 0..2 s to a thousandth of the interval: coef = 0.001 ^ (n / (s * 48000)) = 2 ^ (-9.9658 n / (s * 48000)) */
@@ -380,8 +407,9 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     int msync = which == 1 && !a1 && props(osc)->sync == 1u;
     float minc = 0.f;
     if (msync) {
-        minc = rate_of(o1, pitch_oct(o1)) * (1.f / 2048.f);
+        minc = rate_of(o1, wt1_oct(o1)) * (1.f / 2048.f);
         if (!self->mlive) seed(self, o1, minc, n);
+        watch(self, o1, minc, n);
     } else if (which == 1) {
         self->mlive = 0; self->mrestart = 0;                  /* the next engage seeds; no stale restart (plan fix 2) */
     }
@@ -399,15 +427,15 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
      * than the scratch buffer is rendered as silence rather than written past it (stock's are 2 x 128 frames) */
     if ((silent && !master) || n > 1024u || n > W(scratch, S_BUF_CAPACITY)) {
         if (msync) an_master(self, minc, 0, n);               /* the master's phase moves on */
+        self->mshape = (u16)AN_NO_SHAPE;                      /* heard again: from its Shape then, no ramp */
         r->cyc += CYCCNT - c0;
         return 1;
     }
     float inc = rate * (1.f / 2048.f);                        /* a 2048-sample cycle at the native rate */
-    if (role != AN_FREE) STATS->synced++;                     /* the black box's synced= */
-    /* B1: sync in chunks of AN_EVENTS frames, each with its own events: both Analog, chunk c's wraps are in WT2's events
-     * (c = 0) or WT1's own (c = 1, unused otherwise: WT1 is never a slave); mixed, WT2's, made just before the chunk */
+    if (role != AN_FREE) STATS->synced++;                     /* the black box's synced= (B1: sync in chunks, below) */
 #if AN_E3
     if (silent) {                                             /* a silent master: only the wraps for WT2 */
+        self->mshape = (u16)AN_NO_SHAPE;
         for (u32 off = 0; off < n; off += AN_EVENTS)
             an_track(self, inc, off ? g->events : slave->events, n - off < AN_EVENTS ? n - off : AN_EVENTS);
         r->cyc += CYCCNT - c0;
@@ -415,26 +443,40 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     }
 #endif
     /* J4 (Track M): the modulation routed to Position moves Shape, Position's full range (1.0, frames 0..255) onto Shape's
-     * (0..127); none routed: Shape as stored, bit for bit */
+     * (0..127), held to 1/AN_SHAPE_Q of a step; none routed: Shape as stored, bit for bit */
     float shape = (float)props(osc)->shape;
     float pm = param_mod((u8 *)osc + OSC_POSITION_PARAM);
     if (pm != 0.f) {
         shape += pm * (float)AN_SHAPE_MAX;
         shape = !(shape > 0.f) ? 0.f : shape > (float)AN_SHAPE_MAX ? (float)AN_SHAPE_MAX : shape;
+        shape = (float)(u32)(shape * (float)AN_SHAPE_Q + .5f) * (1.f / (float)AN_SHAPE_Q);
         STATS->shape_mods++;                                  /* the black box's shape_mods= */
     }
-    float k_shape = an_shape(shape);
+    /* Review M7 (rev_m7_1 m7.py: a step once per block, 375 Hz, a bare pulse edge at the block start): a Shape that changed
+     * since the last block (modulation, or the knob) ramps there over this block, a step every AN_RAMP frames, each step's
+     * jump corrected (an_reshape); the last part plays the new Shape exactly. Unchanged: one shape, as before. */
+    u32 sq = (u32)(shape * (float)AN_SHAPE_Q), sq0 = self->mshape;
+    self->mshape = (u16)sq;
+    float k1 = an_shape(shape);
+    int ramp = sq0 != AN_NO_SHAPE && sq0 != sq;
+    float k0 = ramp ? an_shape((float)sq0 * (1.f / (float)AN_SHAPE_Q)) : k1, kp = k0;
+    u32 step = ramp ? AN_RAMP : role == AN_FREE ? n : AN_EVENTS;
+    u32 parts = step ? (n + step - 1u) / step : 0u;
     float *s = FN(S_SCRATCH_PTR, float *(*)(void *))(scratch);
     FN(S_SCRATCH_SIZE, void (*)(void *, u32))(scratch, n);
-    if (role == AN_FREE) {
-        an_render(self, inc, k_shape, s, n, slave->events, AN_FREE);
-    } else {
-        for (u32 off = 0; off < n; off += AN_EVENTS) {
-            u32 m = n - off < AN_EVENTS ? n - off : AN_EVENTS;
-            u8 *ev = msync ? self->events : off ? g->events : slave->events;
-            if (msync) an_master(self, minc, ev, m);
-            an_render(self, inc, k_shape, s + off, m, ev, role);
+    for (u32 j = 0, off = 0; j < parts; j++, off += step) {
+        u32 m = n - off < step ? n - off : step, co = off % AN_EVENTS;
+        u8 *ev = slave->events;                               /* (unused by AN_FREE) */
+        if (role != AN_FREE) {
+            /* sync chunks of AN_EVENTS frames, each with its own events: both Analog, chunk 0's wraps are in WT2's events,
+             * chunk 1's in WT1's own (unused otherwise: WT1 is never a slave); mixed, WT2's, made at the chunk's start */
+            ev = (msync ? self->events : off >= AN_EVENTS ? g->events : slave->events) + co;
+            if (msync && !co) an_master(self, minc, self->events, n - off < AN_EVENTS ? n - off : AN_EVENTS);
         }
+        float k = !ramp || j + 1u == parts ? k1 : k0 + (k1 - k0) * ((float)(j + 1u) / (float)parts);
+        if (k != kp) an_reshape(self, kp, k);
+        kp = k;
+        an_render(self, inc, k, s + off, m, ev, role);
     }
     if (!silent) {
         FN(S_SMOOTH_APPLY, void (*)(void *, float *, u32, u32))((u8 *)osc + OSC_SMOOTH, s, 0, n);

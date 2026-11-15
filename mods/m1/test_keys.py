@@ -24,7 +24,7 @@ MAN = json.loads((Path(sys.argv[2]) / "manifest.json").read_text())
 del sys.argv[1:3]
 # S6a (T6): the synth keys. The plan's allow-list (docs/plan-synths-168.md section 5), typed here: Analog (in this
 # image when the group is), the drums' ten (S6c) and Track FX's nineteen (later) must be clean too.
-ANALOG = "analog" not in MAN.get("omitted", []) and "synth.np_keys" in MAN.get("m4_symbols", {})
+ANALOG = "analog" not in MAN.get("omitted", []) and "analog" not in MAN.get("disabled", []) and "synth.np_keys" in MAN.get("m4_symbols", {})
 # (Track FX's 19 are picked and reviewed in its own sprint; 0x19A, for one, is stock's Freeze.)
 # S6c-2: the drums claim seven contiguous keys of the plan's ten (0x1AE..0x1B4, one range test in the X3 wrapper); outside
 # 0x18C..0x1B6 no clean key is left but Track FX's 0x132 / 0x18B, which the Analog FM plan takes.

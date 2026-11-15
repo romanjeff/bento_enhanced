@@ -24,7 +24,7 @@ STOCK = Path(sys.argv[1]).read_bytes()
 IMG = (Path(sys.argv[2]) / "bento1.bin").read_bytes()
 MAN = json.loads((Path(sys.argv[2]) / "manifest.json").read_text())
 del sys.argv[1:3]
-HAVE = "analog" not in MAN.get("omitted", []) and "synth.an_save" in MAN.get("m4_symbols", {})
+HAVE = "analog" not in MAN.get("omitted", []) and "analog" not in MAN.get("disabled", []) and "synth.an_save" in MAN.get("m4_symbols", {})
 SYM = {k[6:]: int(v, 16) for k, v in MAN.get("m4_symbols", {}).items() if k.startswith("synth.")}
 
 BASE = 0x08040000

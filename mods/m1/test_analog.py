@@ -40,7 +40,7 @@ MAN = json.loads((BUILD / "manifest.json").read_text())
 IMG = (BUILD / "bento1.bin").read_bytes()
 STOCK_IMG = Path(sys.argv[1]).read_bytes()
 del sys.argv[1:3]
-HAVE = "analog" not in MAN.get("omitted", []) and "dsp_symbols" in MAN
+HAVE = "analog" not in MAN.get("omitted", []) and "analog" not in MAN.get("disabled", []) and "dsp_symbols" in MAN
 DSP = {k: int(v, 16) for k, v in MAN.get("dsp_symbols", {}).items()}
 
 BASE = 0x08040000
@@ -67,6 +67,17 @@ DEV_RATE = 48000 * DEV_M     # the oscillators' sample rate on the device
 
 
 def f32(x): return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def same(tc, a, b, msg="equal"):
+    """Two long sample lists (or bytes) equal; else fail naming the first difference (assertEqual's difflib on thousands of
+    floats effectively never returns: review M7)."""
+    a, b = list(a), list(b)
+    if a == b:
+        return
+    i = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+    at = lambda xs: xs[i] if i < len(xs) else "(end)"
+    tc.fail(f"{msg}: lengths {len(a)} / {len(b)}, first difference at {i}: {at(a)!r} / {at(b)!r}")
 
 
 class F64:
@@ -717,7 +728,8 @@ class Sync(unittest.TestCase):
             m.note(60)
             for _ in range(DEV_FRAMES * 12 // m.fr): m.block((1 / 12) * math.sin((m.t // DEV_FRAMES) / 3))   # per 2N
         self.assertGreater(len(ma.wr), 5)
-        self.assertEqual((ma.wr, ma.mphase()), (mb.wr, mb.mphase()), "mixed: the same wraps and phase")
+        same(self, ma.wr, mb.wr, "mixed: the same wraps")
+        self.assertEqual(ma.mphase(), mb.mphase(), "mixed: the same phase")
         for a_, b_, what in ((ma.x1, mb.x1, "stock's WT1 (its own per-call smoother)"), (ma.x2, mb.x2, "WT2")):
             self.assertLess(max(abs(x - y) for x, y in zip(a_, b_)), 1e-6, what)
 
@@ -745,19 +757,32 @@ class Sync(unittest.TestCase):
         pitch modulation: stock's own formula on WT1's fields, bit for bit (a firmware change to it would show here)."""
         m = Mixed(); m.note(60)
         m.block()
-        bad = []
+        bad, seeded, checked = [], 0, 0
         for note in (0, 24, 48, 60, 69, 96, 120, 127):
             for fine in (0, 1, -12000, 49999):
                 for octv in (-2.0, 0.0, 1.5):
                     for pm in (0.0, 1 / 12, -0.7, 2.0):
                         m.r.w32(m.o1 + 0x0C, fine & 0xFFFFFFFF); m.r.wf(m.o1 + 4, octv)
                         m.r.w32(m.o1 + 0x10, note)               # (stock's note start writes +0x10; no restart here)
-                        p0 = m.mphase(); m.block(pm)
+                        kern = lambda: (m.r.r32(m.o1 + 0x1D0), m.r.rf(m.o1 + 0x1CC), m.r.r32(m.o1 + 0x1E0))
+                        p0 = m.mphase(); live = m.r.u.mem_read(m.o2 + S.OSC_KERNEL + 165, 1)[0]; k0 = kern(); m.block(pm)
                         rate = m.r.rf(m.o1 + 0x1E8)
                         q = int(Fraction(f32(min(rate / 2048, f32(0.45)))) * 2 ** 64)
-                        if (m.mphase() - p0) % 2 ** 64 != (m.fr * q) % 2 ** 64:
+                        if live == 3 and kern() != k0 and kern()[0] < kern()[2]:
+                            # stock's kernel was still the last block (far above its note start's mip, rate / D over
+                            # about 32 here, it steps whole table cycles per block: M) and moves now: the copy is seeded
+                            # from it, so this block ends at stock's phase rather than the formula's (unless stock's index
+                            # is out of its table, as it gets there: M, idx -69; seed() then keeps the copy)
+                            idx, frac, ln = kern()
+                            seeded += 1
+                            if abs((m.mphase() / 2 ** 64 - (idx + frac) / ln + 0.5) % 1 - 0.5) > 1e-6:
+                                bad.append(("seed", note, fine, octv, pm))
+                        elif (m.mphase() - p0) % 2 ** 64 != (m.fr * q) % 2 ** 64:
                             bad.append((note, fine, octv, pm))
+                        else:
+                            checked += 1
         self.assertEqual(bad, [], "the copy's rate is stock's")
+        self.assertGreater(checked, 300, f"the formula checked in most blocks ({seeded} after a frozen kernel)")
 
     def test_retrigger_and_a_new_note_restart_master_and_slave(self):
         """Slot 2 (stock's note start, our hook first): a same-note retrigger and a new note restart the copy with stock's WT1,
@@ -792,6 +817,42 @@ class Sync(unittest.TestCase):
         for _ in range(20): m.block()
         m.aligned(self, t1, msg="Sync on mid-note")
         self.assertEqual(m.starts, [])
+
+    def test_sync_off_and_on_again_mid_note_is_seeded(self):
+        """Review M7: Sync on, off, on again within one note: the second engage seeds again (the copy did not move while
+        Sync was off), no restart."""
+        m = Mixed(); m.note(60)
+        for _ in range(10): m.block()
+        m.prop(K_SYNC, 0)
+        for _ in range(7): m.block()
+        t1 = m.t; m.prop(K_SYNC, 1)
+        for _ in range(15): m.block()
+        m.aligned(self, t1, msg="Sync on again")
+        self.assertEqual(m.starts, [0], "only the note start's restart")
+
+    def test_stocks_kernel_running_again_reseeds_the_copy(self):
+        """Review M7: stock's WT1 kernel stops at level 0 (smoother at rest) and with no WAV; the copy runs on, and when the
+        kernel runs again (level back; a WAV loaded mid-note) the copy takes its phase. A level 0 that stays (the classic
+        patch) keeps the copy free-running at OSC1's pitch."""
+        m = Mixed(); m.note(60)
+        for _ in range(10): m.block()
+        m.r.level(m.v, 0, 0.0)
+        for _ in range(8): m.block()
+        self.assertEqual(m.r.u.mem_read(m.o2 + S.OSC_KERNEL + 165, 1)[0], 3, "mlive: stock's kernel frozen")
+        t1 = m.t; m.r.level(m.v, 0, 1.0)
+        for _ in range(25): m.block()
+        m.aligned(self, t1 + 800, msg="WT1 level 0 for 8 blocks, back")   # (WT1's smoother: its cycles show from ~800)
+        self.assertEqual(m.starts, [0])
+        m = Mixed(table=False); m.note(60)
+        for _ in range(10): m.block()
+        t1 = m.t; m.r.tabled(m.o1)
+        for _ in range(25): m.block()
+        m.aligned(self, t1, msg="a WAV loaded mid-note")
+        m = Mixed(); m.r.level(m.v, 0, 0.0); m.note(48)
+        for _ in range(40): m.block()
+        self.assertEqual(max(map(abs, m.x1)), 0.0, "WT1 silent")
+        ws = m.wr[1:]
+        self.assertAlmostEqual((ws[-1] - ws[0]) / (len(ws) - 1), DEV_RATE / (440 * 2 ** ((48 - 69) / 12)), delta=0.01)
 
     def test_wt2_turned_analog_mid_note_is_seeded(self):
         """WT2 Wavetable -> Analog (Sync on) mid-note: the copy starts from stock's WT1 phase, not 0."""
@@ -828,8 +889,8 @@ class Sync(unittest.TestCase):
     def test_wt1_is_stocks_bit_for_bit_with_wt2_synced(self):
         """Plan 3.3: WT1's output and its whole 0x1F0-byte object are stock 1.6.8's, with WT2 Analog synced to it, through
         vibrato and a new note (2N, divider 2)."""
-        def run(stock):
-            m = Mixed(stock=stock); m.note(60)
+        def run(stock, table=True):
+            m = Mixed(stock=stock, table=table); m.note(60)
             for b in range(25): m.block((1 / 12) * math.sin(b / 5))
             m.note(64)
             for b in range(25): m.block(0.1)
@@ -837,9 +898,15 @@ class Sync(unittest.TestCase):
         a, ka, ma = run(False)
         b, kb, _ = run(True)
         self.assertGreater(max(map(abs, b)), 0.1, "control: stock's WT1 plays its table")
-        self.assertEqual(a, b)
-        self.assertEqual(ka, kb, "WT1's object")
+        same(self, a, b, "WT1's output")
+        same(self, ka, kb, "WT1's object")
         self.assertGreater(len(ma.wr), 20, "WT2 was synced")
+        # review M7: with no WAV stock's render never reaches PARAM_VALUE on WT1's pitch, so the master's call to it must not
+        # leave its cached value in WT1 (+0xAC)
+        a, ka, ma = run(False, table=False)
+        b, kb, _ = run(True, table=False)
+        same(self, ka, kb, "WT1's object, no WAV")
+        self.assertGreater(len(ma.wr), 20, "WT2 was synced (no WAV)")
 
     def test_two_voices_keep_their_own_masters(self):
         """Two mixed voices of one track (one rig, its stats shared): each slave follows its own WT1."""
@@ -948,8 +1015,8 @@ class Props(unittest.TestCase):
         ours, ka, r = run(False)
         stock, kb, _ = run(True)
         self.assertGreater(max(map(abs, stock)), 0.1)
-        self.assertEqual(ours, stock)
-        self.assertEqual(ka, kb, "WT2's object, its kernel area included")
+        same(self, ours, stock, "WT2's output")
+        same(self, ka, kb, "WT2's object, its kernel area included")
         self.assertEqual(stat(r, 14), 0, "nothing synced")
 
     def test_a_wavetable_osc1_next_to_an_analog_osc2_is_stocks_bit_for_bit(self):
@@ -977,8 +1044,8 @@ class Props(unittest.TestCase):
         ours, ka, ra = run(False)
         stock, kb, _ = run(True)
         self.assertGreater(max(map(abs, stock)), 0.1, "control: stock's WT1 plays its table")
-        self.assertEqual(ours, stock)
-        self.assertEqual(ka, kb, "WT1's kernel area and stock's fields after it")
+        same(self, ours, stock, "WT1's output")
+        same(self, ka, kb, "WT1's kernel area and stock's fields after it")
         self.assertEqual(ra.state(ra.voices[0x51][0], 1)["magic"], AN_MAGIC, "WT2 was Analog")
 
 
@@ -1080,7 +1147,11 @@ class Golden(unittest.TestCase):
         n, M = 128, 2 ** 64
         for inc in (f32(261.63 / DEV_RATE), f32(0.3), f32(0.0123456)):
             q = int(Fraction(inc) * M)
-            for p in ((-n * q) % M, (-n * q + 1) % M, (-n * q - 1) % M, (-(n - 1) * q) % M, (-(n - 1) * q + 1) % M, 0):
+            # (the last four, review M7: the wrap 1 .. 2^40 units after the start of the last sample, where the float time
+            # puts it in the sample before: it must not be there too)
+            for p in ((-n * q) % M, (-n * q + 1) % M, (-n * q - 1) % M, (-(n - 1) * q) % M, (-(n - 1) * q + 1) % M, 0,
+                      (-(n - 1) * q - 1) % M, (-(n - 1) * q - 2 ** 20) % M, (-(n - 1) * q - 2 ** 30) % M,
+                      (-(n - 1) * q - 2 ** 40) % M):
                 with self.subTest(inc=inc, p=hex(p)):
                     got, gp, _ = self.master(r, st, ev, inc, n, p=p)
                     want, wp = self.master_model(p, q, n)
@@ -1161,18 +1232,96 @@ class ShapeMod(unittest.TestCase):
         self.assertAlmostEqual(duty(up[2048:], P60), w, delta=0.01)
         self.assertEqual(stat(r, 15), 32, "shape_mods: every render")
         half, _ = self.run_(88, 0.1, amount=2.0)
-        self.assertEqual(half, up, "amount x source")
+        same(self, half, up, "amount x source")
         top, _ = self.run_(88, 5.0)
         pulse, _ = self.run_(127)
-        self.assertEqual(top, pulse, "clamped at 127")
+        same(self, top, pulse, "clamped at 127")
         low, _ = self.run_(20, -1.0)
         saw, _ = self.run_(0)
-        self.assertEqual(low, saw, "clamped at 0")
+        same(self, low, saw, "clamped at 0")
 
     def test_an_lfo_sweeps_the_width_over_time(self):
         xs, _ = self.run_(100, lambda b: 0.2 * math.sin(2 * math.pi * b / 32), blocks=64)
         d = [duty(xs[i:i + 4 * DEV_FRAMES], P60) for i in range(0, len(xs) - 4 * DEV_FRAMES, 2 * DEV_FRAMES)]
         self.assertGreater(max(d) - min(d), 0.2, f"the width follows the LFO: {min(d):.2f}..{max(d):.2f}")
+
+    def test_a_shape_change_ramps_over_the_block(self):
+        """Review M7: a Shape that moved since the last block ramps over this one, AN_RAMP (32) frames a step, each step's jump
+        corrected (an_reshape), the last part at the new Shape: the oscillator's state after every block is that of the
+        kernel driven that way directly, bit for bit (the modulated Shape held to 1/512 of a step), and its output that
+        kernel's times the level (the smoother settled)."""
+        r = Rig(dev=True); root, v = r.voice(0x74); r.table(0, 0x74, 1); r.note(v, 48); o = r.osc(v, 0)
+        r.prop(o, K_SHAPE, 100); src = route(r, o, 0, 1.0)
+        st = o + S.OSC_KERNEL
+        ref = r.alloc(172); out = r.alloc(4 * DEV_FRAMES); ev = r.alloc(128)
+        r.u.mem_write(ev, bytes([255]) * 128)
+        fma = lambda a, b, c: f32(float(Fraction(a) * Fraction(b) + Fraction(c)))   # (clang contracts a * b + c)
+        def k_of(sh):
+            if not sh > 48: return 0.0
+            if sh <= 88: return f32(f32(sh - 48) * f32(0.5 / 40))
+            return fma(f32(min(sh, 127.0) - 88), f32(0.5 / 39), 0.5)
+        ramps = 0
+        for b in range(16):
+            x = f32(0.2 * math.sin(b / 2)) if b else 0.0
+            r.wf(src + 4, x)
+            ph, dl = struct.unpack("<ff", r.u.mem_read(st + 4, 8)); sq0 = struct.unpack("<H", r.u.mem_read(st + 166, 2))[0]
+            xs, _ = r.render(root, v, oscs=(0,)); r.block()
+            inc = f32(r.rf(o + 0x1E8) * f32(1 / 2048))
+            sh = 100.0
+            if x:
+                sh = fma(x, 127.0, 100.0); sh = min(max(sh, 0.0), 127.0)
+                sh = f32(float(int(fma(sh, 512.0, 0.5))) * f32(1 / 512))
+            k1 = k_of(sh); sq = int(f32(sh * 512.0))
+            self.assertEqual(struct.unpack("<H", r.u.mem_read(st + 166, 2))[0], sq, f"block {b}: mshape")
+            r.u.mem_write(ref, struct.pack("<Iff", AN_MAGIC, ph, dl))
+            parts = [(0, DEV_FRAMES, k1)]
+            if sq0 != 0xFFFF and sq0 != sq:
+                ramps += 1
+                k0 = k_of(f32(sq0 * f32(1 / 512))); P = DEV_FRAMES // 32
+                parts = [(32 * j, 32, k1 if j + 1 == P else fma(f32(k1 - k0), f32((j + 1) / P), k0)) for j in range(P)]
+                kp = k0
+            else:
+                kp = k1
+            for off, n, k in parts:
+                if k != kp:
+                    r.call(DSP["an_reshape"], ref, fargs=(kp, k))
+                kp = k
+                r.call(DSP["an_render"], ref, out + 4 * off, n, ev, sargs=(0,), fargs=(inc, k))
+            self.assertEqual(r.u.mem_read(ref + 4, 8), r.u.mem_read(st + 4, 8), f"block {b}: phase and delayed")
+            want = struct.unpack(f"<{DEV_FRAMES}f", r.u.mem_read(out, 4 * DEV_FRAMES))
+            if b >= 4:
+                g = sum(x * y for x, y in zip(xs, want)) / sum(y * y for y in want)
+                err = max(abs(x - g * y) for x, y in zip(xs, want))
+                self.assertLess(err, 1e-5, f"block {b}: the output is the ramped kernel's (gain {g:.6f})")
+        self.assertGreater(ramps, 10)
+
+    def test_the_ramp_is_close_to_a_per_sample_one(self):
+        """Review M7 (fix_m7 zip.py): Shape under an 8 Hz LFO (saw to square, Shape 68 +- 19), the kernel stepped once per
+        block (before the fix) and per AN_RAMP frames, each against a step every sample: the ramp's error is a fraction."""
+        r = Rig(); N = 256
+        def an_shape(sh):
+            return 0.0 if not sh > 48 else (sh - 48) * (0.5 / 40) if sh <= 88 else 0.5 + (min(sh, 127) - 88) * (0.5 / 39)
+        def run(step):
+            st = r.alloc(172); out = r.alloc(4 * N); ev = r.alloc(128)
+            r.u.mem_write(st, struct.pack("<Iff", AN_MAGIC, 0.0, 0.0)); r.u.mem_write(ev, bytes([255]) * 128)
+            xs, kp = [], None
+            for b in range(24):
+                k1 = f32(an_shape(68 + 127 * 0.15 * math.sin(2 * math.pi * 8 * b * N / DEV_RATE)))
+                k0 = k1 if kp is None else kp
+                P = N // step if step else 1
+                cur = k0 if step else k1
+                for j in range(P):
+                    k = k1 if j + 1 == P else f32(k0 + (k1 - k0) * ((j + 1) / P))
+                    if step and k != cur:
+                        r.call(DSP["an_reshape"], st, fargs=(cur, k))
+                    cur = k
+                    r.call(DSP["an_render"], st, out + 4 * j * (N // P), N // P, ev, sargs=(0,), fargs=(f32(130.81 / DEV_RATE), k))
+                kp = k1
+                xs += struct.unpack(f"<{N}f", r.u.mem_read(out, 4 * N))
+            return xs
+        ref, ramp, step = run(1), run(32), run(0)
+        rms = lambda x: math.sqrt(sum((a - b) ** 2 for a, b in zip(x[N:], ref[N:])) / (len(x) - N))
+        self.assertLess(rms(ramp), rms(step) / 5, f"ramp {rms(ramp):.2e}, a step per block {rms(step):.2e}")
 
     def test_no_modulation_is_bit_identical(self):
         """No source routed, a routed source at 0, and the Position knob at any value: Shape as stored, bit for bit, and
@@ -1180,8 +1329,8 @@ class ShapeMod(unittest.TestCase):
         plain, r0 = self.run_(70)
         zero, r1 = self.run_(70, 0.0)
         knob, _ = self.run_(70, 0.0, base=200)
-        self.assertEqual(plain, zero)
-        self.assertEqual(plain, knob, "the knob alone does not move Shape")
+        same(self, plain, zero, "a routed source at 0")
+        same(self, plain, knob, "the knob alone does not move Shape")
         self.assertEqual((stat(r0, 15), stat(r1, 15)), (0, 0))
 
     def test_a_wavetable_oscillator_is_untouched(self):
@@ -1199,7 +1348,9 @@ class ShapeMod(unittest.TestCase):
                 r.call(r.r32(r.r32(o)) & ~1, o, scr, out)
                 outs += struct.unpack(f"<{DEV_FRAMES}f", r.u.mem_read(od, 4 * DEV_FRAMES)); r.block()
             return outs, bytes(r.u.mem_read(o, 0x1F0))
-        self.assertEqual(run(False), run(True))
+        (a, ka), (b, kb) = run(False), run(True)
+        same(self, a, b, "the output")
+        same(self, ka, kb, "the object")
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")

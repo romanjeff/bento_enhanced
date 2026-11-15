@@ -38,6 +38,14 @@ struct Shape {
     float inc, rinc, blend, width, dc;
 };
 
+inline void set_shape(Shape &k, float shape) {
+    if (!(shape >= 0.f)) shape = 0.f;
+    if (shape > 1.f) shape = 1.f;
+    k.blend = shape * 2.f > 1.f ? 1.f : shape * 2.f;
+    k.width = .5f - (shape > .5f ? shape - .5f : 0.f) * .84f;
+    k.dc = 2.f * k.width - 1.f;
+}
+
 inline float recip(const Shape &k, float x) {      /* x / inc */
 #if AN_E2
     return x * k.rinc;
@@ -138,11 +146,15 @@ extern "C" void an_track(AnOsc *o, float inc, unsigned char *events, unsigned n)
 }
 
 /* BE4.40 mixed sync: WT1 (a Wavetable oscillator, stock's render) as the master of an Analog WT2. The master's phase is
- * o->mphase:mphase_lo, a 64-bit fraction of a cycle, advanced by inc's exact value (an_inc64): stock's own phase is exactly
- * the sum of rate / 2048 from 0 at a note start (M, wf/sync kstate.py), so the copy never drifts (plan fix 3: no truncation).
+ * o->mphase:mphase_lo, a 64-bit fraction of a cycle, advanced by inc's exact value (an_inc64): stock's own phase is the sum
+ * of rate / 2048 from 0 at a note start (M, wf/sync kstate.py), exactly while stock's per-sample step rate / D is at least
+ * 0.5 (no truncation, plan fix 3). Below that (a note under about 23 Hz at D 1, or pitch modulated down more than about 0.3
+ * octave at D > 1: D is chosen at the note start) stock's reader rounds its f32 fraction (0x08050E6A) and the copy differs
+ * by that rounding: M, rev_m7_1 m8.py, 1.1e-6 smp after 8 s at note 12 (I: under 1e-3 smp an hour).
  * Its wraps are placed analytically into events (0..254 where in the sample, as an_track writes them): a few operations per
  * wrap, not per sample. The last sample's wrap is decided by the exact phase, so a wrap on a chunk edge is neither lost
- * nor doubled. events 0: only the phase moves (WT2 silent). n <= AN_EVENTS (an_osc chunks a longer block).
+ * nor doubled (M: Golden test_master_edges). events 0: only the phase moves (WT2 silent). n <= AN_EVENTS (an_osc chunks a
+ * longer block).
  * After the designer's prototype (wf/sync apply_proto.py an_master, measured against an exact model in mtest.py). */
 static inline unsigned char ev_byte(float wrap) {
     int f = (int)(wrap * 254.f + .5f);
@@ -174,7 +186,10 @@ extern "C" void an_master(AnOsc *o, float inc, unsigned char *events, unsigned n
              * starts from the exact phase, so a wrong side here would lose a wrap or give one twice). At most one wrap
              * per sample and none in two neighbouring samples (inc <= 0.45). */
             unsigned long long pl = pe - q;               /* the phase before the last sample */
-            if (pe < pl) events[n - 1u] = ev_byte(q64f(0ull - pl) * rinc);
+            if (pe < pl) {                                /* in the last sample; the float time may also have put it a hair */
+                events[n - 1u] = ev_byte(q64f(0ull - pl) * rinc);    /* early, at the end of the one before (fixed: */
+                if (n > 1u) events[n - 2u] = AN_NO_EVENT;           /* rev_m7_1 m10.py, 442 of 4000; a restart is at 0, */
+            }                                                       /* and with p 0 no wrap is before sample 2) */
             else if (n > 1u && events[n - 1u] != AN_NO_EVENT) {
                 events[n - 1u] = AN_NO_EVENT;             /* not in the last sample: the next chunk's, or ... */
                 if (pl < q) events[n - 2u] = ev_byte(q64f(0ull - (pl - q)) * rinc);   /* ... the end of the one before */
@@ -192,14 +207,21 @@ extern "C" void an_render(AnOsc *o, float inc, float shape, float *out, unsigned
     Shape k;
     if (!(inc > 0.f)) inc = 0.f;
     if (inc > .45f) inc = .45f;
-    if (!(shape >= 0.f)) shape = 0.f;
-    if (shape > 1.f) shape = 1.f;
     k.inc = inc;
     k.rinc = inc > 0.f ? 1.f / inc : 0.f;
-    k.blend = shape * 2.f > 1.f ? 1.f : shape * 2.f;
-    k.width = .5f - (shape > .5f ? shape - .5f : 0.f) * .84f;
-    k.dc = 2.f * k.width - 1.f;
+    set_shape(k, shape);
     if (role == AN_MASTER && events) by_regime<MASTER>(*o, k, out, n, events);
     else if (role == AN_SLAVE && events) by_regime<SLAVE>(*o, k, out, n, events);
     else by_regime<FREE>(*o, k, out, n, events);
+}
+
+/* BE4.40 Shape modulation (J4): the shape changes between two an_render calls (from -> to) at the current phase. The
+ * waveform steps there by wave_to(p) - wave_from(p) (a pulse edge too, where the width moved past p); this is that step's
+ * correction at fraction 0 of the next sample (edge(0, jump): half of it now, none in the one after), added to the sample
+ * already in `delayed`. The MIXED form is every regime's waveform (blend 0 / 1 give the saw's / the pulse's). */
+extern "C" void an_reshape(AnOsc *o, float from, float to) {
+    Shape a, b;
+    set_shape(a, from); set_shape(b, to);
+    float p = o->phase;
+    o->delayed += .5f * (wave<MIXED>(p, b) - wave<MIXED>(p, a));
 }

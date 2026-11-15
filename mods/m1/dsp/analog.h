@@ -18,6 +18,10 @@
 #define AN_AREA 0xC0u                 /* the native kernel area: +0x10C .. +0x1CC */
 #define AN_PROPS_OFF 0xB4u            /* AnProps at its top: +0x1C0 .. +0x1CC (AnOsc must end below it) */
 enum { AN_FREE = 0, AN_MASTER = 1, AN_SLAVE = 2 };
+enum { AN_LIVE_NEW = 1, AN_LIVE_RUNS = 2, AN_LIVE_FROZEN = 3 };   /* AnOsc.mlive while the copy is WT1's */
+#define AN_SHAPE_Q 512u               /* a modulated Shape is held to 1/512 of a step (a whole Shape is exact) */
+#define AN_NO_SHAPE 0xFFFFu
+#define AN_RAMP 32u                   /* a Shape change ramps over its block in steps of AN_RAMP frames */
 
 struct AnOsc {
     unsigned magic;
@@ -32,12 +36,16 @@ struct AnOsc {
     float glide, sub_applied, sub_written;
     /* BE4.40 mixed sync (WT1 Wavetable, WT2 Analog), in WT2's state: WT1's cycle phase as a 64-bit fraction (mphase the
      * high word: 2^32 = one cycle; mphase_lo below it), exact for any float rate (plan fix 3); mrestart: WT1's note start
-     * restarted it (the slave restarts with it at frame 0 of the next block); mlive: the phase is WT1's (set at a note start
-     * with Sync on, cleared while mixed sync is off: the next engage seeds it from stock's phase, plan fix 2) */
+     * restarted it (the slave restarts with it at frame 0 of the next block); mlive: 0 the copy is not WT1's (cleared while
+     * mixed sync is off: the next engage seeds it from stock's phase, plan fix 2), else AN_LIVE_*: stock's kernel watched
+     * through msnap, a digest of WT1's kernel phase after WT1's render (unchanged over a block: stock's kernel did not run,
+     * at level 0 or with no WAV, and the copy runs on; changed again after that: it runs again, the copy is seeded from it) */
     unsigned mphase, mphase_lo;
-    unsigned char mrestart, mlive, mspare[2];
+    unsigned char mrestart, mlive;
+    unsigned short mshape;            /* Shape modulation (J4): the Shape the last block ended on x AN_SHAPE_Q, AN_NO_SHAPE none */
+    unsigned msnap;
 };
-static_assert(sizeof(AnOsc) == 168, "Analog state: 168 bytes at oscillator +0x10C");
+static_assert(sizeof(AnOsc) == 172, "Analog state: 172 bytes at oscillator +0x10C");
 static_assert(sizeof(AnOsc) <= AN_PROPS_OFF, "Analog state must stay below the oscillator's settings (AnProps)");
 
 /* An oscillator's settings, as stock's set_property delivered them (N3: dsp/analog.cpp an_prop), each clamped when stored.
@@ -69,5 +77,6 @@ static inline unsigned long long an_inc64(float x) {
 extern "C" void an_render(AnOsc *o, float inc, float shape, float *out, unsigned n, unsigned char *events, int role);
 extern "C" void an_track(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_master(AnOsc *o, float inc, unsigned char *events, unsigned n);
+extern "C" void an_reshape(AnOsc *o, float from, float to);
 
 #endif
