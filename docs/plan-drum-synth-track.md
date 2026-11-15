@@ -340,26 +340,28 @@ Analog.
 
 ## 7. Sprints
 
+Kit numbers moved up by 0.1 on 2026-11-14: BE4.40 is the native-props / mixed sync / Analog identity kit (Jeff).
+
 | Sprint | Kit | Content | Exit (offline) | Device check |
 |---|---|---|---|---|
 | **S7-0 gates** | none | RE and emulation only: (1) Pack with `""`; (2) the empty-pad tap: page or browser, and where it is decided; (3) cmd 9 `""` through pcmStreamer: silent or a message; (4) slice room for 128 DK4 entries; (5) pad-grid label draw; the 0x4E sender; any M7→M4 use of desc+4 [VFY: (6) the receiver of note-off message 0x1C (0x080951EA). First do the stock device check on an unloaded pad (section 0), which may settle 1-3 and 5 with no RE] | each gate answered with an address and a run, or a fallback chosen; the GO confirmed or turned into NO-GO in this file | none |
 | **S7-1 M7** | (internal) | binder + provider; D1 by provider pointer; per-pad cells + re-strike; carrier detector removed; Loop ignored; 128 knob lines | test_drums green incl. the new groups and mutants; the Kick golden unchanged; stock sample pads bit-identical | none on its own: it needs S7-2 to make pads |
-| **S7-2 M4 track** | **BE4.40** | menu cell 9 + action; builder; DT4 + H1-H4; `bento_drumtrack`; publish filter; drop browser / Unload / Rename; carriers and name match removed | test_drum_ui green; the XML round trips across firmware; Pack fix if gate 1 needs it | make a Drum Synth track; 16 Kicks play from the sequencer; conditions, retrigs, choke, mute, sends; re-strike on fast rolls (no click, no double ring); save, power cycle, reload; open on stock 1.6.8 (silent, no crash); Pack; the DRUMS line |
-| **S7-3 page** | BE4.41 | engine key (reviewed); three rows per engine table; pane title; envelope defaults; Poly Mode gone | page tests per engine (with the engines not yet built shown as blank rows); key review in test_keys | every row on the device; turning Engine; stock keys act; no sample controls anywhere on a drum pad |
-| **S7-4 engines + CPU** | BE4.50 | Snare, Clap, HiHat, Tom (old S6d); efficiency pass; per-engine budgets | golden per engine vs host DaisySP; Cost within budget; cell-size asserts | each engine by ear; LOAD with a busy kit on SPACED; the DRUMS histogram |
+| **S7-2 M4 track** | **BE4.50** | menu cell 9 + action; builder; DT4 + H1-H4; `bento_drumtrack`; publish filter; drop browser / Unload / Rename; carriers and name match removed | test_drum_ui green; the XML round trips across firmware; Pack fix if gate 1 needs it | make a Drum Synth track; 16 Kicks play from the sequencer; conditions, retrigs, choke, mute, sends; re-strike on fast rolls (no click, no double ring); save, power cycle, reload; open on stock 1.6.8 (silent, no crash); Pack; the DRUMS line |
+| **S7-3 page** | BE4.51 | engine key (reviewed); three rows per engine table; pane title; envelope defaults; Poly Mode gone | page tests per engine (with the engines not yet built shown as blank rows); key review in test_keys | every row on the device; turning Engine; stock keys act; no sample controls anywhere on a drum pad |
+| **S7-4 engines + CPU** | BE4.60 | Snare, Clap, HiHat, Tom (old S6d); efficiency pass; per-engine budgets | golden per engine vs host DaisySP; Cost within budget; cell-size asserts | each engine by ear; LOAD with a busy kit on SPACED; the DRUMS histogram |
 
-Each kit gets its checklist (`docs/checklist-v4.40.txt` and on), as before. Nothing is flashed until the
+Each kit gets its checklist (`docs/checklist-v4.50.txt` and on), as before. Nothing is flashed until the
 previous kit's checklist has passed.
 
 ## 8. Open decisions for Jeff
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
-| D-S7-1 | Default engines on a new track | all Kick; or a kit layout (Kick, Snare, Clap, HiHat, Toms ...) | kit layout, once S7-4's engines exist; all Kick in BE4.40 |
+| D-S7-1 | Default engines on a new track | all Kick; or a kit layout (Kick, Snare, Clap, HiHat, Toms ...) | kit layout, once S7-4's engines exist; all Kick in BE4.50 |
 | D-S7-2 | Row 3 | keep stock's envelope / LFO row (defaults A 0, S full); or a drum row (one Decay, LFO rate / depth only) | keep stock's: it is tested parity, and one table changes it later |
 | D-S7-3 | Knob memory across an engine change | one shared set of 7 values; or per-engine values per pad | shared: fewer bytes and XML attributes; reset to the engine's defaults on change |
 | D-S7-4 | A sample arriving on a drum pad by a path we did not block | it plays as a sample (publish filter `""`); or it is ignored and the synth plays | play it as a sample: nothing is silently ignored |
-| D-S7-5 | Pad-grid labels | blank for BE4.40; or find and hook the label draw | decide after gate 5 |
+| D-S7-5 | Pad-grid labels | blank for BE4.50; or find and hook the label draw | decide after gate 5 |
 
 ## 9. Why not a genuinely new track type
 
