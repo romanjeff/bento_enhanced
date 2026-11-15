@@ -662,6 +662,17 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 
 ---
 
+## Decisions (Jeff, 2026-11-15)
+- **OD1 = (a):** the glide fix ships in BE4.41 as sprint Q0. Release note: glides now take the set time (twice BE4.40's).
+- **OD10 = (a):** Sub FM uses a DC-free Square (subtract 1 - 2*pw); exactness tested up to that constant.
+- **OD11 = (b), not the recommendation:** true b-bit two's-complement grid. `q = clamp(rint(x*S), -S, S-1) / S`,
+  S = 2^(b-1): exactly 2^b levels (4-bit: -8..+7 in steps of 1/8), the top clips asymmetrically. The golden model
+  and the 6.3 crush cases use this grid; the BLEP overshoot above 1 clips at (S-1)/S.
+- **OD5:** any master wrap (either direction) resets the slave; a backward slave resets to p = 1 (one edge).
+- Taken as recommended (not asked): OD2 one 7-key group, OD3 hide, OD4 as recommended, OD6 plateaus
+  sine 0..2 / triangle 22..26 / saw 45..48, OD7 add the test, OD8 one kit BE4.41, OD9 keep SA_LAYOUT 2, CPU gate
+  1.3 x the specialised voice at 2N.
+
 ## Open decisions for Jeff (new ones only)
 
 | # | Question | Options | Recommendation |
