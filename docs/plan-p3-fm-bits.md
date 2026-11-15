@@ -323,20 +323,36 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
   on the saw plateau). A BE4.40 project with Shape < 45 now plays sine or triangle (no migration, as decided).
 
 ### 4.7 Bit Depth
-- A post-pass after the part loop and before `S_SMOOTH_APPLY` (after analog.cpp:480, before :482), over s[0..n). Skipped
-  for Full.
+- A post-pass after the part loop and before `S_SMOOTH_APPLY` (as built: `an_crush` in analog_kernel.cpp, called from
+  an_osc right after the part loop), over s[0..n). Skipped for Full.
 - **True b-bit two's-complement grid (OD11 = (b), Jeff 2026-11-15; replaces the draft's mid-tread):**
   `q = clamp(__builtin_rintf(x * S), -S, S - 1) * (1/S)`, with S = 2^(b-1): 2048, 128 and 8 for 12, 8 and 4 bits.
   - Exactly 2^b levels (4-bit: -8..+7, steps of 1/8). The top clips at (S-1)/S, the bottom at -1: asymmetric by one
     step, so a full-scale signal gains a small DC and some even-order distortion (accepted: that is the "strict 4-bit"
     grit OD11 chose). The BLEP overshoot above 1 clips at (S-1)/S too; below -1 it clips at -1.
+  - **Found in Q2 (M): the top clip is not only overshoot.** The kernel's pulse is DC-free, `(p < w ? 1 : -1) - dc` with
+    dc = 2w - 1, so its high is 2 - 2w: 1.26 at Shape 100, 1.84 at Shape 127. Every Shape above 88 drives s well past +1,
+    and every Bit Depth (12 bits included) clips that high to (S-1)/S. At Shape 127 the pulse goes from 1.84 / -0.16 to
+    0.9995 / -0.16 (12 bits) or 0.875 / -0.125 (4 bits): 4.7 to 6 dB less peak to peak (I: arithmetic on those levels) and no longer DC-free. The kernel never goes
+    below -1 (M: lowest sample -1.000000 over saw, square, pulse, synced, notes 60..115), so the bottom clip is never
+    reached by a real block. **And under FM 1>2 (Q6, BD1: B is the crushed s):** the clipped pulse has a mean, so OSC1 at
+    any Bit Depth with Shape > 88 detunes OSC2 by kin * mean(B) = I * inc1 * mean(q) (I: arithmetic on the clipped
+    levels, BLEP ignored): mean(q) = -0.067 at Shape 127 / 12 bits, -0.045 at 127 / 4 bits, -0.096 at Shape 100 /
+    12 bits, so at I = 8 OSC2's mean increment moves by about -0.4 to -0.8 x inc1. Full has mean 0, so the detune
+    switches on with Bit Depth: the hazard OD10 removed for the Square sub. Open: **OD12**, to be answered before Q6.
   - **Use `__builtin_rintf`, not `rintf`.** The DSP build uses -ffreestanding -fno-builtin -nostdlib, so plain `rintf`
-    compiles to an unresolved `bl`. `__builtin_rintf` inlines to VRINTX.F32 (M: q.cpp compiled with the project flags,
-    compile_dsp's `common`, build.py:668-672). Add `rintf` to DSP_REFUSED_SYMBOLS (build.py:653); check_dsp_elf already
-    refuses any undefined symbol (build.py:711-713, S), so this only names the cause.
+    compiles to a `bl`. `__builtin_rintf` inlines to VRINTX.F32 (M: q.cpp compiled with the project flags, compile_dsp's
+    `common`). As built (M, Q2): lld itself refuses a plain `rintf` (undefined symbol: compiler_rt has none), but zig's
+    compiler_rt **defines** most of the rest of the float libm family under these flags (Q2 review: fmaxf 78 B, floorf
+    140, sqrtf 292, roundf 148, truncf 72, expf 364, sinf 1360, all link with rc 0), so a plain call links a software
+    routine with no undefined symbol and check_dsp_elf's undefined-symbol refusal never fires. The refusal that holds is
+    by name: `DSP_REFUSED_LIBM` (build.py), the whole family (rint, round, fmin/fmax, floor/ceil/trunc, sqrt, fabs,
+    fmod, sin/cos/tan and their hyperbolic and arc forms, exp/log/pow, with f / l / no suffix), checked before the
+    undefined-symbol check. Load-bearing; tested (BitDepth.test_the_dsp_links_no_libm).
   - **The clamp has the same hazard:** plain `fminf`/`fmaxf` are library calls under -fno-builtin. Write it with two
     ternaries (VCMP + VSEL, or a branch) or `__builtin_fminf`/`__builtin_fmaxf` (VMINNM/VMAXNM on FPv5: I, check the
-    disassembly), and add `fminf`/`fmaxf` to DSP_REFUSED_SYMBOLS next to `rintf`.
+    disassembly). As built (M, disassembly): the builtins, which give VMAXNM + VMINNM (2 instructions a sample; the
+    ternaries gave VCMP + VMRS + VSEL twice, 6); plain `fminf`/`fmaxf` are refused by DSP_REFUSED_LIBM (above).
   - rint rounds half to even, so a sample exactly on a half step rounds to the even level (I: the golden model must use
     numpy's `rint`, which does the same).
   - The golden model and the 6.3 crush cases use this grid.
@@ -487,6 +503,8 @@ not mirrored; the slave reset under di < 0 done as p = 0 (double edge); FM 1>2 r
 played as Full; the pulse's DC term dropped in the FM loop; `rintf` instead of `__builtin_rintf` (link or DSP_REFUSED
 fails); Q2 (OD11, Q0 review): the Bit Depth clamp missing (OD11 (a) mid-tread), and its top clamped at S instead of
 S - 1; at least one 6.3 crush case drives s past +1 (BLEP overshoot at full level) and one to -1, so both turn red.
+(Q2 as built: real blocks pass the top at every b, the DC-free pulse above Shape 88, but the BE4.40 kernel's minimum is
+exactly -1, so the bottom clamp is covered on an_crush's crafted probe only; Q3 and Q5 re-measure the lowest sample.)
 
 ### 6.7 Existing tests that encode BE4.40 behaviour (edit as reviewed changes, each with its new value)
 | Test | Today | After | Sprint |
@@ -657,6 +675,118 @@ Found during Q1 (corrections to this plan):
   3.2. Q1 ran it explicitly (all suites were run by name, not through the script, which also picks the newest out dir).
 - The kit still labels itself BE4.40 (build.py version); the BE4.41 label is Q7's.
 
+### Q2 as built (2026-11-15, working tree on b90d90e; build ~/bento/out/m1-p3q2)
+
+OD11 = (b) as decided; OD4 (Bit Depth past 3 plays 4 bits) was already stored by Q1 and now plays.
+
+What was built:
+- **M7 kernel** (dsp/analog_kernel.cpp, -O2): `an_crush(s, n, bits)`, extern "C" so the tests call it directly. It runs
+  `q = fminf(fmaxf(rintf(x S), -S), S - 1) * (1/S)` with the `__builtin_` forms, S = 2048 / 128 / 8 for bits 1 / 2 / 3
+  (and anything above 3), and leaves the block alone for bits 0. Disassembly (M): VMUL, VRINTX, VMAXNM, VMINNM, VMUL per
+  sample, unrolled x4 by clang; no call, no VDIV.
+- **M7 hook** (dsp/analog.cpp an_osc): `if (bits) { an_crush(s, n, bits); FMSTATS->bits++; }` right after the part loop
+  and before `if (!silent) SMOOTH_APPLY + MIX`. That is the point where Q6 writes B (BD1), and it is also reached by a
+  silent OSC1 once E3 (a) lets it through. Today a silent oscillator returns earlier (skip or E3 master), so it is not
+  crushed or counted. `finish()` cleans the SA_FMSTATS line next to SA_STATS.
+- **build.py**: `DSP_REFUSED_LIBM`, the libm name family (float, double, long double forms; review: compiler_rt links
+  most of them silently), checked in check_dsp_elf before the undefined-symbol check.
+- **p3_golden.py** is committed with Q2 (it was untracked through Q1; test_analog imports it).
+- synth_shared.h / analog.h: comments only (SaFmStats.bits counts since Q2; AnProps.bits plays).
+
+Tests (test_analog; golden = p3_golden.py, written independently from the plan text, used unchanged):
+- **`BitDepth.test_an_crush_is_the_golden_grid`**: an_crush on the M7, settings 1/2/3, each run on the golden probe
+  (every tie, -0.0, a value that rounds to -0.0, x S from -S - 3 to S + 3), on a sweep over -1.3..1.3 (20,001 points) and
+  on 16,384 random samples. The result must equal `crush_bits` (the uint32 patterns) bit for bit. Every golden mutant
+  differs on the probe, both clips are reached, and the sweep has exactly 2^b levels. Setting 0 leaves the block alone.
+- **`BitDepth.test_the_amounts_cases_crush_and_nothing_else`** (the expected change from the Q1 open note): the same 7
+  cases as `test_q1_plays_no_amount` (free, sync, silent sync master, glide, OSC2 Wavetable, root voice, mixed), run in
+  Rig() and Rig(dev=True) with Sub FM 700, Bit Depth 2 and FM 1>2 333, plus the free case at Bit Depth 1, 3, 7 and -1
+  (22 cases). Each case runs 3 times on this build: crushed, Full, and Full with the golden crush injected at Level's
+  input. `level_taps` hooks stock's SMOOTH_APPLY only when it is called from the DSP window.
+  - Every Level-input block = `crush_bits(Full block)`, tolerance 0.
+  - Output, voice (P3 settings bytes masked) and stats of the crushed run = the injected run, byte for byte.
+  - The output differs from Full.
+  - `bits=` = the number of crushed renders; a Full run writes nothing to SA_FMSTATS.
+  The reference is this build at Full rather than BE4.40, so the dev glide case is in too, and identity at Full stays
+  P3Identity's job.
+- **`BitDepth.test_real_blocks_reach_the_top_clip`**: real kernel blocks (Shapes 127/100/48/88/70, free and synced, notes
+  60..115) go past the top at every b. The lowest sample is -1.000000 (M), so the bottom tie is never passed.
+- **Reviewed edits (expected changes, no tolerance loosened):**
+  - `P3Identity.AMOUNTS` (700, 2, 333) -> **(700, 0, 333)**: Bit Depth left the "plays nothing" cases.
+  - `test_q1_plays_no_amount` and `test_glide_dev_is_the_expected_change`: the stored-value control now expects
+    (bits, subfm, fm12) = **(0, 700, 333)**; Bit Depth 2's stored control moved into the new test.
+  - `test_the_silent_paths_zero_the_fm_ramp_memory`: the "oscillator that played keeps msub/m12 (123, 456)" control is
+    **unchanged**, because Q2 writes neither field. Only its comment is corrected: it said "Q2 ramps them", but the ramps
+    are Q5's and Q6's (4.4, row Q5).
+
+Measured (M):
+- Sizes: image **0x188F78** (unchanged: M4 untouched; the DSP window lies inside the image's zero gap), 17,340 B under
+  PROVEN_MAX 0x18D334. DSP **10,172 B**: +336 on Q0's 9,836 and +464 on BE4.40's 9,708, so P3 has used 464 B of its 14 KB
+  ceiling. an_crush is 352 B, literal pool included (0x080D2650..0x080D27B0). The ternary clamp, VCMP + VMRS + VSEL
+  twice, was 464 B and cost 4 instructions more per sample (6 against VMAXNM + VMINNM's 2). Leaving out the x4 unroll would save about 230 B at about +2
+  instructions per sample (I). Kept unrolled: close call, CPU over size.
+- Cost, off: `Cost` at n = 256 is saw 13,214 (Q0 13,195, +19), mixed 19,862, saw+sync 15,803, mixed+sync 22,198. The +19
+  is the bits load and test per oscillator plus the SA_FMSTATS clean per block. P3Identity: 53 cases, worst **+0.26 %**
+  (free (127, 45) Rig(): 65,852 vs 65,680), total +0.12 % (M1 +2 %).
+- Cost, on: at most **8.56 instructions per crushed sample** including the call (free, Bit Depth 2, Rig(): 85,593 vs
+  68,057 over 2,048 samples), so about 2.2 k per oscillator per 2N block on the device (I: 256 x 8.56).
+- Mutations (scratch p3/q2/mut.sh, each built from a copy and run through the whole of test_analog; logs in p3/q2/mut/):
+  every one is red or refused at build time.
+  - Crush after SMOOTH_APPLY (BD1 placement): 23 failures.
+  - No clamp (OD11 (a)): 24.
+  - Top clamped at S: 24.
+  - Bottom clamp alone missing: 9, **all in the an_crush probe test**; no voice-path case can see it.
+  - Ties away from zero: 4, probe only.
+  - Truncation: 32.
+  - Symmetric clip: 21.
+  - 12- and 4-bit S swapped: 14.
+  - Only the first half of the block crushed: 23.
+  - Slave not crushed: 6.
+  - Crush skipped for Bit Depth 2 at n = 128: 7.
+  - Out-of-range Bit Depth played as Full: 7.
+  - `bits=` not counted: 23.
+  - `rintf` for `__builtin_rintf`: the build is refused by ld.lld "undefined symbol: rintf", before check_dsp_elf runs.
+  - `fmaxf` for `__builtin_fmaxf`: refused by **DSP_REFUSED_LIBM** "libm routines ['fmaxf'] linked".
+- Full suite (wsl/test_m1.sh, O=~/bento/out/m1-p3q2) green; test_analog 80 tests (Q0 74 + 3, + 3 from the review).
+
+Found during Q2 (corrections to this plan):
+- **The top clip is not only BLEP overshoot (4.7, OD11).** The DC-free pulse peaks at 2 - 2w (1.84 at Shape 127), so with
+  any Bit Depth every Shape above 88 is clipped hard. Even 12 bits takes a Shape-127 pulse from 1.84 / -0.16 to
+  0.9995 / -0.16 (M: real blocks). Under (a) mid-tread with no clamp, 12 and 8 bits would have been transparent there.
+  The clipped pulse is no longer DC-free, so once Q6 writes B from the crushed s (BD1) it also detunes OSC2 under FM 1>2
+  (I * inc1 * mean(q), about -0.4 to -0.8 x inc1 at I = 8: 4.7). **Open for Jeff: OD12** (options and recommendation in
+  the table; needed before Q6). Q2 ships (a), accept, and its tests pin it.
+- **6.6's "one crush case to -1" cannot be met by a real block:** the BE4.40 kernel's minimum is exactly -1 (the
+  square's low), so a missing bottom clamp alone is visible only on crafted input (the an_crush probe). Q3's triangle and
+  sine, and Q5's FM, may change this. test_real_blocks_reach_the_top_clip prints the lowest sample.
+- **4.7's "check_dsp_elf already refuses any undefined symbol, so this only names the cause" was half true** (4.7 now
+  corrected). `rintf` fails at the link (lld), so DSP_REFUSED_LIBM never sees it. A plain `fmaxf` **links**: zig's
+  compiler_rt defines it, and most of the float libm family (review, M: floorf, sqrtf, roundf, truncf, expf, sinf too),
+  so only a refusal by name stops it. Load-bearing; widened to the family and tested.
+
+Review fixes (two reviews, 2026-11-15; rebuilt clean into ~/bento/out/m1-p3q2, sizes unchanged: image 0x188F78, DSP
+10,172 B, an_crush unchanged):
+- **OD12** (pulse clip and its FM 1>2 detune) added to the open-decisions table and to 4.7; needed before Q6.
+- **p3_golden.py committed** with Q2 (one commit, as the sprint rule says; the reviewer's "model first, own commit" is
+  not taken: the model's file is unchanged since it was written, which is what that history would show).
+- **DSP_REFUSED_LIBM widened** to the libm family; the message names compiler_rt.
+- **New tests** (test_analog 77 -> 80):
+  - `BitDepth.test_each_oscillator_crushes_at_its_own_depth`: OSC1 / OSC2 at (12, 4), (Full, 8), (8, Full) bits, free
+    and synced, both rigs; Full with each oscillator's own golden crush injected (level_taps now passes the oscillator,
+    from SMOOTH_APPLY's r0 = osc + 0xF8) plays the crushed build byte for byte; bits= counts only crushed renders.
+    voice_case takes a per-oscillator p3 pair.
+  - `BitDepth.test_the_fm_stats_line_is_cleaned_with_the_stats`: DCCMVAC writes hooked; the SA_FMSTATS line is cleaned
+    once per finished block, next to SA_STATS, each time with that block's bits= (2, 4, .. 14 over 8 blocks).
+  - `BitDepth.test_the_dsp_links_no_libm`: the regex refuses 22 libm names; check_dsp_elf passes the shipped ELF and
+    refuses it with one .strtab name changed to fmaxf; an_crush's disassembly has VRINTX / VMAXNM / VMINNM, no BL, no VDIV.
+  - The crushed runs now assert the whole SA_FMSTATS line, (0, renders, 0, 0, 0, 0, 0, 0), not only bits=.
+- **Mutations the review found green, now red** (scratch p3/q2/fix/mut.sh, logs there):
+  - Extra `fm++` with the bits count: 34 failures, 1 error.
+  - finish()'s SA_FMSTATS clean removed: 1 (the clean test).
+  - DSP_REFUSED_LIBM disabled plus plain fmaxf: 1 (the libm test).
+  - OSC1's Bit Depth for both: 14, 12 of them in the new per-oscillator test. OSC2's for both: 14 (12).
+  - Plain fmaxf and plain floorf (compiler_rt links both): build refused by DSP_REFUSED_LIBM.
+
 ---
 
 ## 8. Device checklist (BE4.41; BE4.40's own checklist runs first, as it is not flashed yet)
@@ -745,6 +875,7 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 | OD9 | SA_LAYOUT with the new SA_FMSTATS line | keep 2; bump to 3 | **Keep 2**. The change only adds a region at an undefined offset, and both cores ship in one image (I). Bump it only if you want a mismatched-core boot to say so explicitly. |
 | OD10 | DC of the Square sub as an FM modulator | (a) DC-free (subtract 1 - 2*pw, the prototype's `dcfree`); (b) raw (bit-exact copy, the carrier detunes with PW and depth: +3.2*inc_sub at I = 8, PW 30 %) | **(a) DC-free**. Turning Sub FM up should not change the pitch centre, and PW then shapes the timbre only. Exactness is still tested, up to the known DC constant. (b) is the analog-linear-FM behaviour, if you want it as a feature. |
 | OD11 | Bit Depth grid | (a) mid-tread, S = 2^(b-1): 2^b + 1 levels, symmetric, no clip; (b) true b-bit two's complement, clamped to [-S, S-1] | **(a)** (superseded: Jeff chose (b), Decisions above; 4.7). It has no DC and no top clip, and at 12/8 bits the extra level is inaudible. At 4 bits it is 17 levels instead of 16, so the label is nominal. Choose (b) if you want a stricter "4-bit" grit with an asymmetric top clip. |
+| OD12 | Bit Depth's clip of the DC-free pulse (Q2, 4.7) | Every Bit Depth, 12 bits too, clips the pulse's high (2 - 2w, 1.84 at Shape 127) for Shape > 88: 4.7 to 6 dB less peak to peak, and no longer DC-free, so under FM 1>2 (B = crushed s, BD1) OSC1 detunes OSC2 by I * inc1 * mean(q) (about -0.4 to -0.8 x inc1 at I = 8). (a) accept the clip as grit; then Q6 either subtracts B's mean (known only per block, or from the clipped levels) or accepts the detune as a feature. (b) crush `s + dc`, then subtract dc (the pulse's own range sits on the grid's [-1, 1)): B stays nearly DC-free and 12 / 8 bits nearly transparent (the +1 high still loses one step: 0.9995 at 12 bits, 0.875 at 4), but the dc must follow a Shape ramp part by part (the kernel knows it per part) and the output is offset from the grid by dc. (c) no clamp above S - 1: more than 2^b levels, so it is OD11 (a) again, not a variant | **(b)**, to be confirmed. It keeps OD11 (b)'s grid for the signal the grid was meant for, keeps B DC-free as OD10 chose for the sub, and costs one add and one subtract per sample (the dc per part is already computed). (a) with a mean subtracted in Q6 is the fallback. Q2 ships (a) as built, pinned by its tests; the answer is needed before Q6 writes B. |
 | CPU gate | (not a new decision; FD6 restated) | | The draft's 27.5 k was tighter than FD6. The plan now uses FD6 faithfully: 1.3 x the specialised voice at 2N (~31 k, I), measured in Q5. Say so if you want the tighter target instead. |
 
 ---

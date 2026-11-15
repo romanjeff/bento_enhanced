@@ -215,6 +215,19 @@ extern "C" void an_render(AnOsc *o, float inc, float shape, float *out, unsigned
     else by_regime<FREE>(*o, k, out, n, events);
 }
 
+/* P3 Q2 Bit Depth (docs/plan-p3-fm-bits.md 4.7, OD11 = (b)): a true b-bit two's-complement grid on the block, in place,
+ *   q = clamp(rint(x S), -S, S - 1) / S,   S = 2^(b-1): bits 1 -> 12 (2048), 2 -> 8 (128), 3 (and past it, OD4) -> 4 (8).
+ * Exactly 2^b levels; the top clips at (S-1)/S, the bottom at -1. S is a power of two, so x S and q / S are exact and the
+ * result is p3_golden.crush bit for bit (sign of zero included). rint is VRINTX (round half to even, FPSCR's RN):
+ * __builtin_rintf, since plain rintf is a library call under -fno-builtin (build.py refuses it by name, as fminf / fmaxf:
+ * the clamp is two compares). bits 0 (Full): untouched (an_osc does not call it then). */
+extern "C" void an_crush(float *s, unsigned n, unsigned bits) {
+    if (!bits) return;
+    float S = bits == 1u ? 2048.f : bits == 2u ? 128.f : 8.f;
+    float r = bits == 1u ? 1.f / 2048.f : bits == 2u ? 1.f / 128.f : 1.f / 8.f, lo = -S, hi = S - 1.f;
+    for (unsigned i = 0; i < n; i++) s[i] = __builtin_fminf(__builtin_fmaxf(__builtin_rintf(s[i] * S), lo), hi) * r;
+}
+
 /* BE4.40 Shape modulation (J4): the shape changes between two an_render calls (from -> to) at the current phase. The
  * waveform steps there by wave_to(p) - wave_from(p) (a pulse edge too, where the width moved past p); this is that step's
  * correction at fraction 0 of the next sample (edge(0, jump): half of it now, none in the one after), added to the sample

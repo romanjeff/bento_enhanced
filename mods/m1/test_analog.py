@@ -28,15 +28,21 @@ Note starts go through the oscillator class's slot 2, as stock's voice note star
 P3 Q1 (docs/plan-p3-fm-bits.md 2.4, 3.3, 6.1, 6.2): Props stores Sub FM, Bit Depth and FM 1>2 and runs stock's M7 engine input
 (H_INPUT_SITE) with all seven keys (OD7); P3Identity replays the identity set on this build and on the BE4.40 reference build
 (BE_REF, default ~/bento/out/m1-be440: its image and its manifest's DSP symbols) and compares them byte for byte.
+P3 Q2 (plan 4.7, OD11): BitDepth checks an_crush against p3_golden.py (numpy) bit for bit, and in the voice path takes the
+block at Level's input (stock's SMOOTH_APPLY, called from the DSP) to prove the crush is the golden grid on the
+oscillator's own signal and the only change.
 """
 import json, math, os, random, struct, sys, unittest
 from fractions import Fraction
 from pathlib import Path
-from unicorn import Uc, UcError, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ
+from unicorn import Uc, UcError, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
 from unicorn.arm_const import *
 from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB, CS_MODE_MCLASS
+import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bases import from_build
+import p3_golden as G                                            # P3's independent golden model (plan 6.3; Q2: Bit Depth)
+import build                                                     # Q2: check_dsp_elf, DSP_REFUSED_LIBM
 BUILD = Path(sys.argv[2])
 S = from_build(BUILD, Path(sys.argv[1]).read_bytes())
 MAN = json.loads((BUILD / "manifest.json").read_text())
@@ -65,6 +71,7 @@ SA_M7, SA_M4, SA_STATS, SA_RUN = 0x0, 0x20, 0x40, 0x400
 K_TYPE, K_SHAPE, K_SYNC, K_GLIDE = 0x1C0, 0x1A7, 0x1AB, 0x1B7
 K_SUBFM, K_BITS, K_FM12 = 0x18B, 0x1A4, 0x132
 MSUB_AT = 172               # AnOsc.msub, m12 (u16 each; P3 3.3)
+SA_FMSTATS = 0x100          # SaFmStats {fm, bits, fm_skipped, fm_missed, ..} (P3 3.3; Q2 counts bits)
 RUN_FMTAG = 36              # Run.fmtag (u32, P3 3.3: the run state's word 9)
 PROPS_AT = 0xB4             # AnProps in the kernel area: {u8 type, shape, sync, bits; u16 glide, subfm, fm12, spare}
 AN_MAGIC = 0x4F4C4E41
@@ -1046,7 +1053,7 @@ class Props(unittest.TestCase):
                     self.assertEqual(msub(r, o), (123, 456), "control: written where AnOsc keeps them")
                     r.render(root, v, n, (0, 1)); r.block()
                 self.assertEqual(msub(r, o), (0, 0), f"{name}: msub, m12 after the block")
-                if n is None:                                    # P3 Q1 only: the playing path keeps them (Q2 ramps them)
+                if n is None:                                    # P3 Q1 / Q2: the playing path keeps them (Q5 / Q6 ramp them)
                     self.assertEqual(msub(r, other), (123, 456), f"{name}: control, the oscillator that played")
 
     def test_an_enter_clears_the_fm_tag_for_every_voice(self):
@@ -1680,7 +1687,9 @@ class P3Identity(unittest.TestCase):
                   f"({worst[0]}: {worst[1]} / {worst[2]}), total {sum(c[1] for c in cls.costs) / sum(c[2] for c in cls.costs):.4f}",
                   file=sys.stderr)
 
-    AMOUNTS = (700, 2, 333)            # Sub FM 70 %, Bit Depth 2 (8 bits), FM 1>2 33.3 %: test_q1_plays_no_amount
+    # Sub FM 70 %, Bit Depth Full, FM 1>2 33.3 %: test_q1_plays_no_amount. P3 Q2: Bit Depth 2 (8 bits) was in it through Q1;
+    # it plays since Q2, so it left this tuple for BitDepth.test_the_amounts_cases_crush_and_nothing_else (same cases)
+    AMOUNTS = (700, 0, 333)
     # the kernel-area bytes of P3's three settings (AnProps bits, subfm, fm12): stored on this build, never on BE4.40
     P3_BYTES = (PROPS_AT + 3, PROPS_AT + 6, PROPS_AT + 7, PROPS_AT + 8, PROPS_AT + 9)
 
@@ -1702,9 +1711,12 @@ class P3Identity(unittest.TestCase):
 
     def voice_case(self, r, shape=(48, 48), sync=0, glide=0, notes=None, blocks=8, levels=None, mod=None, n=None, level0=1.0,
                    types=(1, 1), p3=(0, 0, 0)):
+        """p3: P3's three for both oscillators, or a pair of them (OSC1's, OSC2's: BitDepth's per-oscillator cases)."""
         root, v = r.voice(0x5A)
+        r.v = v                                                  # level_taps tells the oscillators apart by it
+        pp = p3 if isinstance(p3[0], tuple) else (p3, p3)
         for i in (0, 1):
-            self.push(r, r.osc(v, i), 0x5A, i, (types[i], shape[i], sync if i else 0, glide if i == 0 else 0), p3)
+            self.push(r, r.osc(v, i), 0x5A, i, (types[i], shape[i], sync if i else 0, glide if i == 0 else 0), pp[i])
         r.stored = [r.settings(v, i) for i in (0, 1)]
         r.w32(r.osc(v, 1) + 0x0C, 7000)                          # WT2 a fifth up
         r.level(v, 0, level0); r.level(v, 1, 1.0)
@@ -1850,7 +1862,8 @@ class P3Identity(unittest.TestCase):
         (block 7, 67 -> 55, +1 octave, then 4 decays) WT1's glide is (0.001 ^ (2N / (0.6 s * 96 kHz))) ^ 4 on this build
         and the square of that, twice as far gone, on BE4.40 (ln to 4 x 5e-5: stock's exp2 table, as in
         Oscillator.test_glide_takes_the_set_time_on_the_device). Q1's amounts control, on this build alone: the same case
-        with the three amounts set plays it byte for byte (stored, not played; the settings bytes masked)."""
+        with Sub FM and FM 1>2 set plays it byte for byte (stored, not played; the settings bytes masked). Q2: Bit Depth
+        plays now, so it is Full here (AMOUNTS); its dev glide case is in BitDepth.test_the_amounts_cases_crush_and_nothing_else."""
         rp = Rig(dev=True)
         runs = [self.voice_case(Rig(dev=True), **self.GLIDE),
                 self.voice_case(Rig(img=REF_IMG, dev=True, dsp=REF_DSP), **self.GLIDE),
@@ -1858,7 +1871,7 @@ class P3Identity(unittest.TestCase):
         (a, va, sa, ca), (b, vb, sb, cb), (p, vp, sp, _) = runs
         for i in (0, 1):
             s = rp.stored[i]
-            self.assertEqual((s[3], s[5], s[6]), (2, 700, 333), f"control, OSC{i + 1}'s Bit Depth, Sub FM, FM 1>2 as stored")
+            self.assertEqual((s[3], s[5], s[6]), (0, 700, 333), f"control, OSC{i + 1}'s Bit Depth, Sub FM, FM 1>2 as stored")
         same(self, p, a, "amounts set: the output")
         same(self, self.masked(vp, (0, 1)), self.masked(va, (0, 1)), "amounts set: the voice")
         self.assertEqual(sp, sa, "amounts set: the stats words")
@@ -1877,12 +1890,13 @@ class P3Identity(unittest.TestCase):
         self.assertLessEqual(ca, cb * 1.02, f"instructions {ca} vs BE4.40's {cb} (M1: +2 %)")
 
     def test_q1_plays_no_amount(self):
-        """P3 Q1 (review): the new settings are stored and play nothing yet. Sub FM 700, Bit Depth 2 (8 bits) and FM 1>2 333
-        on every Analog oscillator, pushed alike to both builds (BE4.40's slot 8 ignores the keys), and this build still
-        plays BE4.40 byte for byte; only the stored settings bytes differ (masked). Control: this build stored them. Glide
-        in Rig() only since Q0 (OD1: the dev rig's glide time changed on purpose; its amounts control is in
-        test_glide_dev_is_the_expected_change). Q2 (Bit Depth), Q5 (Sub FM) and Q6 (FM 1>2) turn these into their
-        expected-change cases (plan 7)."""
+        """P3 Q1 (review): the new settings are stored and play nothing yet. Sub FM 700 and FM 1>2 333 on every Analog
+        oscillator, pushed alike to both builds (BE4.40's slot 8 ignores the keys), and this build still plays BE4.40 byte
+        for byte; only the stored settings bytes differ (masked). Control: this build stored them. Glide in Rig() only
+        since Q0 (OD1: the dev rig's glide time changed on purpose; its amounts control is in
+        test_glide_dev_is_the_expected_change). Q2 made Bit Depth's part its expected change: Bit Depth 2 left AMOUNTS,
+        and the same seven cases with it, in both rigs, are BitDepth.test_the_amounts_cases_crush_and_nothing_else. Q5
+        (Sub FM) and Q6 (FM 1>2) turn the rest into theirs (plan 7)."""
         p3 = self.AMOUNTS
         cases = (("free", lambda r: self.voice_case(r, shape=(48, 88), p3=p3), (0, 1)),
                  ("sync", lambda r: self.voice_case(r, shape=(70, 100), sync=1, p3=p3), (0, 1)),
@@ -1901,7 +1915,7 @@ class P3Identity(unittest.TestCase):
                         if r.dsp is DSP:
                             for i in oscs:
                                 s = r.stored[i]
-                                self.assertEqual((s[3], s[5], s[6]), (2, 700, 333),
+                                self.assertEqual((s[3], s[5], s[6]), (0, 700, 333),
                                                  f"{name}: control, OSC{i + 1}'s Bit Depth, Sub FM, FM 1>2 as stored")
                         return x
                     self.check(f"amounts {name} dev={dev}", stored, dev, mask=oscs)
@@ -1919,6 +1933,246 @@ class P3Identity(unittest.TestCase):
         self.assertNotEqual(a[0], b[0], "an input one ulp off changes the output")
         c = self.voice_case(Rig(img=REF_IMG, dsp=REF_DSP))
         self.assertEqual(a, c, "and the replay is deterministic")
+
+
+OSC_SMOOTH = 0xF8           # the oscillator's level smoother (analog.cpp OSC_SMOOTH): SMOOTH_APPLY's r0
+
+
+def level_taps(r, inject=None):
+    """P3 Q2: every block our DSP hands to Level (stock's SMOOTH_APPLY (smoother, s, 0, n) called from the DSP window; stock's
+    own Wavetable render calls it too, from its own code, and is left out), as float32 arrays in call order. inject(x, i) -> y:
+    y is written over s before Level runs (the golden crush, put where the build's crush is); i is the oscillator (0 OSC1,
+    1 OSC2, by r0 = osc + OSC_SMOOTH against r.v, which voice_case sets; None where r has no r.v)."""
+    got, lo, hi = [], S.M7_DSP, S.M7_DSP_LIMIT
+    def h(uc, a, size, _):
+        if not lo <= (uc.reg_read(UC_ARM_REG_LR) & ~1) < hi:
+            return
+        p, n = uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R3)
+        x = np.frombuffer(bytes(uc.mem_read(p, 4 * n)), dtype="<f4").copy()
+        got.append(x)
+        if inject:
+            osc, v = uc.reg_read(UC_ARM_REG_R0) - OSC_SMOOTH, getattr(r, "v", None)
+            i = None if v is None else next((k for k in (0, 1) if osc == r.osc(v, k)), "?")
+            uc.mem_write(p, np.asarray(inject(x, i), dtype="<f4").tobytes())
+    r.u.hook_add(UC_HOOK_CODE, h, begin=S.SMOOTH_APPLY, end=S.SMOOTH_APPLY)
+    return got
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class BitDepth(unittest.TestCase):
+    """P3 Q2 (docs/plan-p3-fm-bits.md 4.7, OD11 = (b), 6.3, 6.6): Bit Depth 12 / 8 / 4 is a two's-complement grid,
+    q = clamp(rint(x S), -S, S - 1) / S, S = 2^(b-1), on the oscillator's 96 kHz block after the kernel and before Level.
+    Checked against p3_golden.py (numpy, written from the plan alone) with tolerance 0: the same float32 input gives the
+    same float32 q in every bit (S a power of two: the model's own argument), so the comparison is crush_bits ==, sign of
+    zero included. Two levels: an_crush called on crafted blocks (every tie, -0.0, past +1 and below -1: the golden probe,
+    which separates every wrong grid the model names), and the voice path, where the block at Level's input is taken with
+    Bit Depth set and with it Full (level_taps). Placement and 'nothing else': the build with Full and the golden crush
+    injected at Level's input plays the crushed build byte for byte (output, voice, stats)."""
+
+    def crush_on_m7(self, x, bits):
+        r = Rig()
+        p = r.alloc(4 * len(x))
+        r.u.mem_write(p, np.asarray(x, dtype="<f4").tobytes())
+        _, c = r.call(DSP["an_crush"], p, len(x), bits)
+        return np.frombuffer(bytes(r.u.mem_read(p, 4 * len(x))), dtype="<f4").copy(), c
+
+    def test_an_crush_is_the_golden_grid(self):
+        """Settings 1 / 2 / 3 (12 / 8 / 4 bits; an_prop clamps anything past 3 to 3, OD4): the golden probe, a sweep over
+        -1.3..1.3 (every level and both clips), random blocks of 4 x 4096 (normal, sd 0.7); bit for bit. Each of the
+        model's wrong grids (mid-tread without the clamp, the top clamped at S, roundf, truncation, a symmetric clip) differs
+        from it on the probe (so on this build's output), and the levels are exactly 2^b. Setting 0 leaves the block
+        alone."""
+        rng = np.random.default_rng(1404)
+        for bits in (1, 2, 3):
+            b = G.bits_of(bits)
+            for name, x in (("probe", G.probe(b)), ("sweep", np.linspace(-1.3, 1.3, 20001)),
+                            ("random", rng.standard_normal(4 * 4096) * 0.7)):
+                with self.subTest(bits=bits, case=name):
+                    x = np.asarray(x, dtype=np.float32).astype(np.float64)
+                    q, _ = self.crush_on_m7(x, bits)
+                    self.assertTrue(np.array_equal(q.view(np.uint32), G.crush_bits(x, b)),
+                                    f"{b}-bit: {int(np.sum(q.view(np.uint32) != G.crush_bits(x, b)))} samples differ")
+                    if name == "probe":
+                        for m, k in G.discriminates(x, b).items():
+                            self.assertGreater(k, 0, f"{b}-bit probe separates {m}")
+                        top, bot = G.check_clip(x, q, b)
+                        self.assertGreater(top, 0); self.assertGreater(bot, 0)
+                    if name == "sweep":
+                        self.assertEqual(G.check_levels(q, b), 1 << b)
+        x = G.probe(8)
+        q, _ = self.crush_on_m7(x, 0)
+        self.assertTrue(np.array_equal(q.view(np.uint32), x.astype(np.float32).view(np.uint32)), "Full: untouched")
+
+    # the amounts cases (P3Identity.test_q1_plays_no_amount's seven), here with Bit Depth set
+    push = staticmethod(P3Identity.push)
+    masked = P3Identity.masked
+    voice_case, root_case, mixed_case, GLIDE = P3Identity.voice_case, P3Identity.root_case, P3Identity.mixed_case, P3Identity.GLIDE
+
+    def cases(self, bits):
+        p3 = (700, bits, 333)
+        return (("free", lambda r: self.voice_case(r, shape=(48, 88), p3=p3), (0, 1)),
+                ("sync", lambda r: self.voice_case(r, shape=(70, 100), sync=1, p3=p3), (0, 1)),
+                ("sync silent master", lambda r: self.voice_case(r, shape=(48, 88), sync=1, level0=0.0, p3=p3), (0, 1)),
+                ("glide", lambda r: self.voice_case(r, **self.GLIDE, p3=p3), (0, 1)),
+                ("osc2 wavetable", lambda r: self.voice_case(r, shape=(64, 48), types=(1, 0), p3=p3), (0,)),
+                ("root voice", lambda r: self.root_case(r, p3=p3), (0, 1)),
+                ("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,)))
+
+    def expected_change(self, name, at, dev, bits, b):
+        """Case `at` three times on this build: crushed (Bit Depth `bits`), Full (the same case, Bit Depth 0), and Full with
+        the golden crush injected at Level's input. Returns (Level-input blocks Full, crushed, instructions crushed, Full)."""
+        _, run, oscs = self.cases(bits)[at]
+        _, full, _ = self.cases(0)[at]
+        rc, rf, ri = Rig(dev=dev), Rig(dev=dev), Rig(dev=dev)
+        tc, tf = level_taps(rc), level_taps(rf)
+        level_taps(ri, inject=lambda x, i: G.crush(x, b))
+        c = run(rc)
+        for i in oscs:
+            self.assertEqual(rc.stored[i][3], min(bits & 0xFFFFFFFF, 3), f"{name}: control, OSC{i + 1}'s Bit Depth as stored")
+        f, inj = full(rf), full(ri)
+        for i in oscs:
+            self.assertEqual(rf.stored[i][3], 0, f"{name}: control, OSC{i + 1} Full in the reference")
+        self.assertEqual(len(tc), len(tf), f"{name}: as many renders reach Level")
+        self.assertGreater(len(tc), 0, f"{name}: control, the case renders")
+        for j, (y, x) in enumerate(zip(tc, tf)):
+            got = y.view(np.uint32)
+            if not np.array_equal(got, G.crush_bits(x.astype(np.float64), b)):
+                k = int(np.flatnonzero(got != G.crush_bits(x.astype(np.float64), b))[0])
+                self.fail(f"{name}: render {j}, sample {k}: {y[k]!r} vs golden {G.crush(x[k:k + 1], b)[0]!r} (in {x[k]!r})")
+        self.assertNotEqual(c[0], f[0], f"{name}: Bit Depth {bits} changes the output")
+        same(self, c[0], inj[0], f"{name}: the output = Full with the golden crush at Level's input")
+        same(self, P3Identity.masked(c[1], oscs), P3Identity.masked(inj[1], oscs), f"{name}: the voice")
+        self.assertEqual(c[2], inj[2], f"{name}: the stats words")
+        n_bits = struct.unpack("<8I", rc.u.mem_read(SA + SA_FMSTATS, 32))
+        self.assertEqual(n_bits, (0, len(tc), 0, 0, 0, 0, 0, 0), f"{name}: bits= counts every crushed render, fm= / fmx= nothing")
+        self.assertEqual(struct.unpack("<8I", rf.u.mem_read(SA + SA_FMSTATS, 32)), (0,) * 8, f"{name}: Full counts nothing")
+        return tf, tc, c[3], f[3]
+
+    def test_the_amounts_cases_crush_and_nothing_else(self):
+        """P3 Q2's expected change (Q1's amounts cases, plan 6.7 / 7): free, sync, a silent sync master (E3: only WT2
+        crushes; Q6 crushes it for B, E3 (a)), glide (both rigs: the reference is this build), OSC2 Wavetable (stock's,
+        untouched), stock's root voice, mixed sync, each in Rig() and Rig(dev=True), with Sub FM 700, Bit Depth 2, FM 1>2
+        333; the free case also at Bit Depth 1, 3 and the out-of-range 7 and -1 (OD4: 4 bits). Each Level-input block is
+        the golden crush of the Full block, bit for bit; the output, the voice and the stats are Full's with the golden crush
+        injected there, byte for byte (so the crush is before Level, on every render, and changes nothing else); bits=
+        counts the crushed renders. Instructions: recorded per case (the crush's cost; not M1's off budget)."""
+        clip, cost = [0, 0], []
+        for dev in (False, True):
+            runs = [(2, at) for at in range(len(self.cases(2)))] + [(bits, 0) for bits in (1, 3, 7, -1)]
+            for bits, at in runs:
+                b, name = G.bits_of(bits), self.cases(bits)[at][0]
+                with self.subTest(dev=dev, case=name, bits=bits):
+                    tf, tc, cc, cf = self.expected_change(f"{name} bits={bits} dev={dev}", at, dev, bits, b)
+                    for x, y in zip(tf, tc):
+                        t, d = G.check_clip(x.astype(np.float64), y.astype(np.float64), b)
+                        clip[0] += t; clip[1] += d
+                    cost.append((f"{name} bits={bits} dev={dev}", cc, cf, sum(len(x) for x in tc)))
+        w = max(cost, key=lambda c: (c[1] - c[2]) / c[3])
+        print(f"\n  BitDepth: {len(cost)} cases, crush cost per crushed sample: worst {(w[1] - w[2]) / w[3]:.2f} instructions "
+              f"({w[0]}: {w[1]} vs Full {w[2]}, {w[3]} samples); clipped samples top {clip[0]}, bottom {clip[1]}", file=sys.stderr)
+        self.assertGreater(clip[0], 0, "a case drives s past the top (the pulse's DC-free high, BLEP overshoot): top at (S-1)/S")
+
+    def test_real_blocks_reach_the_top_clip(self):
+        """6.6 (Q2): a real block past the top, at every b, so a top clamped at S (or no clamp) is seen in the voice path,
+        not only on an_crush's crafted probe: the pulse is DC-free (1 - dc high, 1.84 at Shape 127, 1.26 at 100), so every
+        Shape above 88 drives s past +1 by far more than BLEP overshoot. The bottom: the BE4.40 kernel never goes below -1
+        (M, measured here: min -1.000000, the square's low; a sync reset's BLEP stays inside), so a missing *bottom* clamp
+        alone is invisible on real blocks; its cover is test_an_crush_is_the_golden_grid's probe (x S down to -S - 3).
+        Shapes 127 / 100 / 48 / 88 / 70, free and synced, notes 60..115, Rig(dev=True)."""
+        top, lo = {b: 0 for b in G.BITS}, []
+        for shape, sync, note in ((127, 0, 60), (100, 1, 96), (48, 1, 108), (88, 1, 100), (70, 1, 110), (127, 1, 115)):
+            r = Rig(dev=True)
+            tf = level_taps(r)
+            self.voice_case(r, shape=(shape, shape), sync=sync, notes={0: note}, blocks=6)
+            x = np.concatenate(tf).astype(np.float64)
+            lo.append(x.min())
+            for b in G.BITS:
+                top[b] += int(np.sum(x * G.scale(b) >= G.scale(b) - 0.5))
+        below = {b: int(min(lo) * G.scale(b) < -G.scale(b) - 0.5) for b in G.BITS}
+        print(f"\n  real blocks: past the top per b {top}; lowest sample {min(lo):.6f} (below the bottom tie: {below})",
+              file=sys.stderr)
+        for b in G.BITS:
+            self.assertGreater(top[b], 0, f"{b}-bit: a real block past the top")
+
+    def test_each_oscillator_crushes_at_its_own_depth(self):
+        """Q2 review: OSC1 and OSC2 at different depths (12 / 4 bits, Full / 8, 8 / Full), free and synced, both rigs: the
+        crushed build plays Full with each oscillator's own golden crush injected at its Level input (level_taps tells
+        them apart), byte for byte; bits= counts only the crushed oscillators' renders. So a crush reading the other
+        oscillator's setting (or one setting for both) is seen in an all-Analog voice, not only in the mixed case."""
+        for dev in (False, True):
+            for name, kw in (("free", dict(shape=(48, 88))), ("sync", dict(shape=(70, 100), sync=1))):
+                for bb in ((1, 3), (0, 2), (2, 0)):
+                    with self.subTest(dev=dev, case=name, bits=bb):
+                        gb = [G.bits_of(x) if x else 0 for x in bb]
+                        rc, rf, ri = Rig(dev=dev), Rig(dev=dev), Rig(dev=dev)
+                        tc = level_taps(rc)
+                        hits = []
+                        def inj(x, i):
+                            self.assertIn(i, (0, 1), "level_taps: the oscillator")
+                            hits.append(i)
+                            return G.crush(x, gb[i]) if gb[i] else x
+                        level_taps(ri, inject=inj)
+                        c = self.voice_case(rc, p3=tuple((700, x, 333) for x in bb), **kw)
+                        self.assertEqual([rc.stored[i][3] for i in (0, 1)], list(bb), f"{name}: control, stored per oscillator")
+                        f, d = self.voice_case(rf, p3=(700, 0, 333), **kw), self.voice_case(ri, p3=(700, 0, 333), **kw)
+                        self.assertEqual(len(hits), len(tc)); self.assertEqual(set(hits), {0, 1}, "both oscillators reach Level")
+                        self.assertNotEqual(c[0], f[0], f"{name} {bb}: changes the output")
+                        same(self, c[0], d[0], f"{name} {bb}: the output = Full with each oscillator's golden crush")
+                        same(self, self.masked(c[1], (0, 1)), self.masked(d[1], (0, 1)), f"{name} {bb}: the voice")
+                        self.assertEqual(c[2], d[2], f"{name} {bb}: the stats words")
+                        self.assertEqual(struct.unpack("<8I", rc.u.mem_read(SA + SA_FMSTATS, 32)),
+                                         (0, sum(1 for i in hits if gb[i]), 0, 0, 0, 0, 0, 0), f"{name} {bb}: bits=")
+
+    def test_the_fm_stats_line_is_cleaned_with_the_stats(self):
+        """Q2 review: finish() cleans SA_FMSTATS's line (DCCMVAC) wherever it cleans SA_STATS, after the block's counts, so
+        the M4 reads a fresh bits= on the device (the emulator has no cache: the clean itself is what is checked). Both
+        oscillators at 8 bits, 8 blocks: each clean sees bits= = 2 per finished block."""
+        r = Rig()
+        cleans = []
+        def h(uc, access, a, size, value, _):
+            line = value & 0xFFFFFFFF
+            if line in (SA + SA_STATS, SA + SA_FMSTATS):
+                cleans.append((line, struct.unpack("<I", uc.mem_read(SA + SA_FMSTATS + 4, 4))[0]))
+        r.u.hook_add(UC_HOOK_MEM_WRITE, h, begin=0xE000EF68, end=0xE000EF6B)   # SA_DCCMVAC (synth_shared.h)
+        self.voice_case(r, shape=(48, 88), p3=(0, 2, 0), blocks=8)
+        st = [k for line, k in cleans if line == SA + SA_STATS]
+        fm = [k for line, k in cleans if line == SA + SA_FMSTATS]
+        self.assertEqual(len(st), 7, "the stats line: once per finished block (8 blocks, the last one finishes later)")
+        self.assertEqual(fm, [2 * (j + 1) for j in range(7)], "the FM stats line, after each block's bits= counts")
+
+    def test_the_dsp_links_no_libm(self):
+        """Q2 review (plan 4.7): zig's compiler_rt supplies libm-named routines (fmaxf, floorf, sinf, ..) as software calls
+        that link without an undefined symbol, so build.py's DSP_REFUSED_LIBM is load-bearing. It refuses the family (the
+        names compiler_rt was measured to link, and their double forms), check_dsp_elf refuses this build's own ELF with one
+        symbol renamed to fmaxf, the shipped ELF has none, and an_crush is the inline grid: VRINTX, VMAXNM, VMINNM, no call,
+        no VDIV."""
+        for n in ("rintf", "fminf", "fmaxf", "floorf", "sqrtf", "roundf", "sinf", "truncf", "expf", "floor", "ceilf",
+                  "fabsf", "cosf", "tanhf", "powf", "logf", "log2f", "exp2f", "fmodf", "lroundf", "nearbyintf", "sinhf"):
+            self.assertTrue(build.DSP_REFUSED_LIBM.match(n), f"{n}: refused")
+        e = (BUILD / "dsp.elf").read_bytes()
+        _, syms = build.elf_sections(e)
+        names = {n for n, *_ in syms if n}
+        self.assertIn("an_crush", names)
+        self.assertEqual(sorted(n for n in names if build.DSP_REFUSED_LIBM.match(n)), [], "the shipped ELF: no libm name")
+        origin, limit = S.M7_DSP + build.DSP_TRAMP_BYTES, S.M7_DSP_LIMIT
+        build.check_dsp_elf(e, origin, limit)                    # control: the shipped ELF passes
+        shoff, (shentsize, shnum) = struct.unpack_from("<I", e, 32)[0], struct.unpack_from("<HH", e, 46)
+        secs = [struct.unpack_from("<10I", e, shoff + i * shentsize) for i in range(shnum)]
+        st = secs[next(s for s in secs if s[1] == 2)[6]]           # the symbol table's string table (not .debug_str)
+        at = e.find(b"\0an_crush\0", st[4], st[4] + st[5])
+        self.assertGreaterEqual(at, 0, "an_crush in .strtab")
+        bad = e[:at] + b"\0fmaxf\0\0\0\0" + e[at + 10:]
+        self.assertIn("fmaxf", {n for n, *_ in build.elf_sections(bad)[1]})
+        with self.assertRaises(SystemExit) as cm:
+            build.check_dsp_elf(bad, origin, limit)
+        self.assertIn("fmaxf", str(cm.exception))
+        lo = DSP["an_crush"] & ~1
+        hi = min([a & ~1 for a in DSP.values() if (a & ~1) > lo] + [S.M7_DSP_LIMIT])
+        md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
+        ins = [i.mnemonic for i in md.disasm(IMG[lo - BASE:hi - BASE], lo)]
+        for m in ("vrintx.f32", "vmaxnm.f32", "vminnm.f32"):
+            self.assertIn(m, ins, f"an_crush: {m}")
+        self.assertEqual([m for m in ins if m in ("bl", "blx") or m.startswith("vdiv")], [], "an_crush: no call, no VDIV")
 
 
 if __name__ == "__main__":

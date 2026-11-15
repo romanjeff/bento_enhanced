@@ -653,6 +653,14 @@ DSP_INCLUDES = ("dsp/shim", "dsp/daisysp/Source", "dsp/daisysp/Source/Utility")
 DSP_REFUSED_SYMBOLS = re.compile(r"^(__aeabi_(f|d|u?i2[fd]|u?l2[fd]|c[fd]|u?ldivmod)"          # soft float / double, 64-bit divide
                                  r"|__(add|sub|mul|div|neg|fix|float|extend|trunc|cmp|eq|ne|lt|le|gt|ge|un)\w*[sdt]f2?$)")
 DSP_REFUSED_SECTIONS = (".data", ".bss", ".init_array", ".ARM.extab")
+# P3 Q2 (docs/plan-p3-fm-bits.md 4.7): libm names the DSP must not call. Under -fno-builtin a plain rintf / fmaxf / floorf ..
+# is a call, and zig's compiler_rt defines most of the float family (M, Q2 review: fmaxf 78 B, floorf 140, sqrtf 292, sinf
+# 1360, ..; rintf it lacks, so lld refuses that one), so a typo links a software routine with no undefined symbol. The
+# whole family by name, float and double forms (the soft-double helpers are DSP_REFUSED_SYMBOLS'); before the
+# undefined-symbol refusal, so the message names the cause. __builtin_rintf / __builtin_fmaxf .. inline (VRINTX, VMAXNM).
+DSP_REFUSED_LIBM = re.compile(r"^(rint|nearbyint|l?l?round|l?l?rint|fmin|fmax|floor|ceil|trunc|sqrt|fabs|fmod|remainder|"
+                              r"copysign|frexp|ldexp|modf|hypot|cbrt|a?sinh?|a?cosh?|a?tanh?|atan2|sincos|exp|exp2|expm1|"
+                              r"log|log2|log10|log1p|pow)[fl]?$")
 
 
 def compile_dsp(srcs, ld, out, origin, limit, defines=()):
@@ -708,6 +716,10 @@ def check_dsp_elf(e, origin, limit):
     for n in DSP_REFUSED_SECTIONS:
         if n in secs and secs[n][2]:
             raise SystemExit(f"DSP ELF: section {n} ({secs[n][2]} B) is not allowed (no RAM data, constructors or unwind tables)")
+    libm = sorted({n for n, v, shndx, info in syms if DSP_REFUSED_LIBM.match(n)})
+    if libm:
+        raise SystemExit(f"DSP ELF: libm routines {libm} linked (compiler_rt's software ones, -fno-builtin): "
+                         f"use the __builtin_* forms (VRINTX, VMAXNM ..) or compares")
     und = sorted({n for n, v, shndx, info in syms if n and shndx == 0})
     if und:
         raise SystemExit(f"DSP ELF: undefined symbols {und}")

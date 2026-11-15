@@ -21,7 +21,9 @@
  *     stock's phase when sync engages mid-note or stock's kernel runs again after a freeze; stock's WT1 is never written
  *     (PARAM_VALUE's cache store is undone, wt1_oct);
  *   - Shape modulation (Track M, J4): on an Analog oscillator the sources routed to its Position parameter move Shape,
- *     ramped over the block (a step every AN_RAMP frames, each with its correction: an_reshape).
+ *     ramped over the block (a step every AN_RAMP frames, each with its correction: an_reshape);
+ *   - P3 Q2 Bit Depth (docs/plan-p3-fm-bits.md 4.7, OD11): Full / 12 / 8 / 4 bits per oscillator, a two's-complement
+ *     post-pass on the 96 kHz block before Level (an_crush), counted in SA_FMSTATS (bits=).
  * Four vtable words point at build.py's trampolines (in this window, before this ELF):
  *   A1  Wavetable root slot 18 (voice render): an_enter(root, voice), then stock's render
  *   A2  Wavetable oscillator slot 0 (render): an_osc(osc, scratch, out) != 0 means handled, else stock
@@ -115,6 +117,7 @@ static_assert(S_PROBE_SCRATCH + 0x100u <= SYNTH_AREA, "the M7's price-check scra
 #define ROOTS ((Root *)SA(SA_ANCACHE))
 #define M7HDR ((volatile SaM7 *)SA(SA_M7))
 #define STATS ((volatile SaStats *)SA(SA_STATS))
+#define FMSTATS ((volatile SaFmStats *)SA(SA_FMSTATS))
 static_assert(SA_RUN + sizeof(Run) <= SA_ANCACHE && SA_ANCACHE + SA_ANCACHE_N * sizeof(Root) <= SA_FMBUF, "layout");
 /* P3: the FM buffers end where the drum knob table starts; the FM stats line sits after the drum stats, inside what the M7
  * zeroes at its take (+0x40..+0x200, m7_polyat.c synth_take) */
@@ -263,6 +266,7 @@ static void finish(Run *r) {
         s->hist[pm < 50u ? 0 : pm < 150u ? 1 : pm < 300u ? 2 : 3]++;
         s->renders += r->oscs;
         clean(SA(SA_STATS), sizeof(SaStats));
+        clean(SA(SA_FMSTATS), sizeof(SaFmStats));             /* P3: bits= (Q2), fm= / fmx= (Q5, Q6) */
     }
     r->cyc = r->oscs = r->voices = 0;
 }
@@ -510,6 +514,10 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
         kp = k;
         an_render(self, inc, k, s + off, m, ev, role);
     }
+    /* P3 Q2 Bit Depth (plan 4.7, OD11): a post-pass over the whole block, before Level (SMOOTH_APPLY) and in the 96 kHz
+     * domain ahead of stock's FIR; Full skips it (the loops above are untouched: M1). BD1: OSC1's FM 1>2 buffer B (Q6) is
+     * written from s here, after the crush and before Level, also when OSC1 is silent (E3 (a)). */
+    if (u32 bits = props(osc)->bits) { an_crush(s, n, bits); FMSTATS->bits++; }
     if (!silent) {
         FN(S_SMOOTH_APPLY, void (*)(void *, float *, u32, u32))((u8 *)osc + OSC_SMOOTH, s, 0, n);
         FN(S_MIX_INTO, void (*)(void *, void *))(out, scratch);

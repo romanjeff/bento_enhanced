@@ -53,7 +53,8 @@ static_assert(sizeof(AnOsc) == 176, "Analog state: 176 bytes at oscillator +0x10
 static_assert(sizeof(AnOsc) <= AN_PROPS_OFF, "Analog state must stay below the oscillator's settings (AnProps)");
 
 /* An oscillator's settings, as stock's set_property delivered them (N3: dsp/analog.cpp an_prop), each clamped when stored.
- * P3 Q1: bits, subfm and fm12 are stored (and so reach the M7 with every push, edit and resend); nothing plays them yet. */
+ * P3 Q1: bits, subfm and fm12 are stored (and so reach the M7 with every push, edit and resend). P3 Q2: bits plays (an_crush);
+ * subfm and fm12 play nothing yet. */
 struct AnProps {
     unsigned char type;               /* 1 = Analog (a value of exactly 1; anything else is Wavetable) */
     unsigned char shape;              /* 0..AN_SHAPE_MAX */
@@ -82,5 +83,6 @@ extern "C" void an_render(AnOsc *o, float inc, float shape, float *out, unsigned
 extern "C" void an_track(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_master(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_reshape(AnOsc *o, float from, float to);
+extern "C" void an_crush(float *s, unsigned n, unsigned bits);   /* P3 Q2 Bit Depth: AnProps.bits 1..3, in place */
 
 #endif
