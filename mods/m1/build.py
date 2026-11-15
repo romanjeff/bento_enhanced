@@ -304,14 +304,18 @@ GROUP_NAMES = {
              "HOLD_TAP_TOUCH"),
     "mx": ("EXT_BUILD", "EXT_EVENT", "EV_ENCODER", "MX_BUILD", "MX_ROUTE", "MX_EDIT", "MX_BAR", "MX_EVENT"),
     "analog": ("M7_DSP", "M7_DSP_LIMIT", "DSP_WINDOW_WORDS", "WT_VOICE_VT_SLOT", "WT_VOICE_RENDER", "WT_OSC_VT_SLOT", "WT_OSC_RENDER",
-               "PAGE_KEYS_COPY", "M4_MEMCPY", "PANE_TEXT_1", "PANE_TEXT_2", "PANE_TEXT_3", "PANE_TEXT_4", "PANE_TEXT_5",
+               "PAGE_KEYS_COPY", "M4_MEMCPY", "PANE_TEXT_1", "PANE_TEXT_3", "PANE_TEXT_5",   # A7: the hints (T2: 2 / 4 stock)
                "PANE_TEXT_6", "SLOT_TITLE", "CTRL_INPUT", "EXT_POOL_END", "PROBE_SCRATCH",
                "SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "M7_DATA_END",   # S6a review
                # BE4.40 native properties (docs/plan-native-props.md): N1 the template copy (2 literal words, 3 immediates),
                # N2 the registry build's bl, N3 the oscillator's slot 8 (BE4.22's handle sites and the menu are gone)
                "PROP_TEMPLATE", "PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B", "PROP_TEMPLATE_CMP_A", "PROP_TEMPLATE_CMP_B",
                "PROP_TEMPLATE_LAST", "REG_BUILD_SITE", "REG_BUILD", "WT_OSC_PROP_SLOT", "WT_OSC_PROPERTY",
-               "KEY_OSC_TYPE", "KEY_OSC_SHAPE", "KEY_OSC_SYNC", "KEY_OSC_GLIDE"),
+               "KEY_OSC_TYPE", "KEY_OSC_SHAPE", "KEY_OSC_SYNC", "KEY_OSC_GLIDE",
+               # BE4.40 identity (docs/plan-be440-sync-identity.md track I): T0 the strings and their one literal each, T1 the
+               # title site, D1 the pane paint slot, B1' the 0x3F post
+               "STR_PREFIX_OSC1", "STR_PREFIX_OSC2", "STR_DEST_OSC_FMT", "PREFIX_LIT_OSC1", "PREFIX_LIT_OSC2", "DEST_FMT_LIT",
+               "PANE_TITLE_SITE", "WT_PANE_PAINT_SLOT", "WT_PANE_PAINT", "BROWSE_POST_SITE", "UI_POST"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -1723,8 +1727,9 @@ def np_template(base_img, stock_n):
 
 def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
     """M4: m4_synth.c after the poly AT handlers, its entry table (m4_diag.c calls it) and the wrappers; the Analog sites
-    (BE4.40: N1 the template copy after the code, N2 the registry build, A6, A7, A10) and the drums' (D5, D6, the page tick,
-    X1-X3, H1-H4; only in a drums build since BE4.40)."""
+    (BE4.40: N1 the template copy after the code, N2 the registry build, A6, A7, A10; identity: T0 strings, T1 the pane
+    title, D1 the pane paint, B1' the double-tap's 0x3F) and the drums' (D5, D6, the page tick, X1-X3, H1-H4; only in a drums
+    build since BE4.40)."""
     if BASE + len(img) != SYNTH_UI:
         raise SystemExit(f"synth UI block: the image ends at {BASE + len(img):#x}, not at {SYNTH_UI:#x}")
     e = compile_elf(sources("m4_synth"), "cortex_m4", HERE / "m4_synth.ld", out / "m4_synth.elf", SYNTH_CODE, SYNTH_LIMIT)
@@ -1762,7 +1767,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
         check_branches(c, a, exits, what)
         wrap.extend(c)
         return a
-    n2 = None
+    n2 = t1 = b1 = None
     if an:
         with S.group("analog"):
             # N2: model init's bl REG_BUILD (its only call) -> stock's builder, then np_keys (our four descriptors), r0 kept
@@ -1770,6 +1775,9 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                 raise SystemExit("REG_BUILD_SITE: not the expected bl REG_BUILD")
             n2 = block(f"push {{r4, lr}}; bl {S.REG_BUILD:#x}; mov r4, r0; bl {ss['np_keys']:#x}; mov r0, r4; pop {{r4, pc}}",
                        {S.REG_BUILD, ss["np_keys"]}, "Analog registry build")
+            # T1 / B1' (BE4.40 identity): reached by stock's bl, so sp is still the caller's: the row's handle from its frame
+            t1 = block(f"ldr.w r2, [sp, #0x32c]; b.w {ss['an_pane_title']:#x}", {ss["an_pane_title"]}, "Analog pane title")
+            b1 = block(f"ldr r2, [sp, #0x20]; b.w {ss['an_browse']:#x}", {ss["an_browse"]}, "Analog double-tap 0x3F")
     x1 = x2 = x3 = h1 = None
     if inc("drums"):
         with S.group("drums"):
@@ -1822,12 +1830,33 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
             patch(S.SYNTH_VIEW_TICK_SLOT, struct.pack("<I", ss["an_view_tick"] | 1), S.orig("SYNTH_VIEW_TICK_SLOT"),
                   "Analog: synth page tick: oscillator rows per Type, resend, CPU indicator")
             for site_name, target, fn, why in [("PAGE_KEYS_COPY", "M4_MEMCPY", "an_page_keys", "Wavetable page keys: Type, the Analog rows")] + \
-                    [(f"PANE_TEXT_{i}", "SLOT_TITLE", "an_pane_text", f"Wavetable pane text {i}") for i in range(1, 7)]:
+                    [(f"PANE_TEXT_{i}", "SLOT_TITLE", "an_pane_text", f"Wavetable pane hint {i}") for i in (1, 3, 5, 6)] + \
+                    [("PANE_TITLE_SITE", "SLOT_TITLE", None, "identity T1: an Analog pane's title (shim: the row's handle)"),
+                     ("BROWSE_POST_SITE", "UI_POST", None, "identity B1': no WAV browser from a double-tap on an Analog pane")]:
                 site = getattr(S, site_name)
                 orig = asm(f"bl {getattr(S, target):#x}", site)
                 if S.orig(site_name) != orig:
                     raise SystemExit(f"{site_name}: not the expected bl {target}")
-                patch(site, asm(f"bl {ss[fn]:#x}", site), orig, f"Analog: {why}")
+                to = ss[fn] if fn else t1 if site_name == "PANE_TITLE_SITE" else b1
+                patch(site, asm(f"bl {to:#x}", site), orig, f"Analog: {why}")
+            # T0 (BE4.40 identity, J2): "WT1: " / "WT2: " -> "OSC1: " / "OSC2: " (the page's row prefixes: the pane titles) and
+            # the mod destination format "WT%d: %s" -> "OSC%d: %s", in their own zero-padded slots; each string has one
+            # literal reference (checked), so nothing else of stock's is renamed
+            for site, lit, text in (("STR_PREFIX_OSC1", "PREFIX_LIT_OSC1", b"OSC1: "), ("STR_PREFIX_OSC2", "PREFIX_LIT_OSC2", b"OSC2: "),
+                                    ("STR_DEST_OSC_FMT", "DEST_FMT_LIT", b"OSC%d: %s")):
+                orig = S.orig(site)
+                if S.orig(lit) != struct.pack("<I", getattr(S, site)):
+                    raise SystemExit(f"T0: {lit} does not hold {site}")
+                if len(text) + 1 > len(orig) or orig[orig.index(b"\0"):] != bytes(len(orig) - orig.index(b"\0")):
+                    raise SystemExit(f"T0: '{text.decode()}' does not fit {site}'s zero-padded slot")
+                was = orig.split(b"\0")[0].decode()
+                patch(getattr(S, site), text.ljust(len(orig), b"\0"), orig, f"Analog (identity T0): {was!r} -> {text.decode()!r}",
+                      site=True)                         # (12 bytes: a site all the same, stock's under BE_DISABLE=analog)
+            # D1: the Wavetable pane class's paint slot -> an_wave_paint (the Shape dial on an Analog pane, else stock's paint)
+            if S.orig("WT_PANE_PAINT_SLOT") != struct.pack("<I", S.WT_PANE_PAINT | 1):
+                raise SystemExit("WT_PANE_PAINT_SLOT does not hold stock's WT_PANE_PAINT")
+            patch(S.WT_PANE_PAINT_SLOT, struct.pack("<I", ss["an_wave_paint"] | 1), S.orig("WT_PANE_PAINT_SLOT"),
+                  "Analog (identity D1): Wavetable pane paint -> the Shape dial on an Analog pane")
     if inc("drums"):
         with S.group("drums"):
             for slot, target, fn, why in (("NODE_VT_DESTROY", "NODE_DESTROY", "an_destroy", "Drums: handles (H3): node destroy drops its pads' entries"),
@@ -1857,7 +1886,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
     s4.update({f"synth.{k}": v for k, v in ss.items()})
     s4.update({"synth.np_template": tpl_at if an else 0, "synth.np_template_n": tpl_n})
     if n2 is not None:
-        s4["synth.wrap_reg_build"] = n2
+        s4.update({"synth.wrap_reg_build": n2, "synth.wrap_pane_title": t1, "synth.wrap_browse": b1})
     if inc("drums"):
         s4.update({"synth.wrap_save": x1, "synth.wrap_load": x2, "synth.wrap_context": x3, "synth.wrap_ctor": h1})
     return len(code) + len(tpl_data)

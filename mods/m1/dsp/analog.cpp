@@ -177,10 +177,10 @@ extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
  * Shape sprint adds them, plan-analog-fm 4.5): until then 0..48 plays the saw; 48..88 morphs saw to square, 88..127
  * narrows the square to the pulse (the anchors of plan-analog-fm "Shape control"). */
 static float an_shape(u32 s) {
-    if (s <= 48u) return 0.f;
-    if (s <= 88u) return (float)(s - 48u) * (0.5f / 40.f);
+    if (s <= AN_SHAPE_SAW_END) return 0.f;
+    if (s <= AN_SHAPE_SQUARE) return (float)(s - AN_SHAPE_SAW_END) * (0.5f / (float)(AN_SHAPE_SQUARE - AN_SHAPE_SAW_END));
     if (s > AN_SHAPE_MAX) s = AN_SHAPE_MAX;
-    return 0.5f + (float)(s - 88u) * (0.5f / 39.f);
+    return 0.5f + (float)(s - AN_SHAPE_SQUARE) * (0.5f / (float)(AN_SHAPE_MAX - AN_SHAPE_SQUARE));
 }
 
 /* The block just finished: its figures into the stats lines (only blocks where an Analog voice ran). */

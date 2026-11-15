@@ -90,6 +90,49 @@ and the vtable words). `BE_DISABLE=analog` must stay stock. Budget: about 2 KB o
 Still to look at (M or S recorded in the doc when done): the browser popup's title, Shift functions on the WT page,
 preset / track default names after a WAV load, the "%s: Wavetable" header screen.
 
+### Track I as built (2026-11-14, emulator only, not flashed)
+
+Sites (all in the analog group; facts.py REVIEWED, stock_168 regenerated, `absent` in stock_161; M = test_synth_ui):
+
+| Item | Site | Result |
+|---|---|---|
+| T0 | 0x0818F144 / 0x0818F14C "OSC1: " / "OSC2: ", 0x0818EFD8 "OSC%d: %s" (zero-padded slots; build.py checks each one literal, 0x08161504 / 08, 0x08159C8C) | M: titles "OSC1: ", "OSC2: Vocal Formants"; stock's DEST_NAME run on the image gives "OSC1: Position", "OSC2: Level". The packed "WT1: %s" / "WT2: %s" at 0x0818EAB8 belong to another table (0x081A0D18, users 0x081347D4 / 0x08159408), not DEST_NAME's: left stock (S) |
+| T1 / W1 | bl 0x0815F96C -> shim `ldr.w r2,[sp,#0x32c]; b.w an_pane_title` | S: [sp+0x32C] is the handle stock reads key 0xC9 with next (0x0815F97E). One composer `title_text()` for the hook and the 250 ms tick: "OSC1: Analog", " (WAV kept)", "  DSP 63%", " OVER" (2 s); the longest form within SLOT_TITLE's 31 characters ((WAV kept) > (WAV) > none, two spaces > one). M: the figure moves over ticks with 0 hits on the site |
+| T2 | PANE_TEXT_2 / 4 (the "No WAV" label) stock again; A7 keeps the hints (1 / 3 / 5 / 6): "" on an Analog pane | M: the label's parent 0x2E90 / 0x31F0 is hidden; titles and panes visible up the parent chain |
+| B3 | page_tick: 0xC3 for every row whose handle changed | M: stale handles (6, 5) in a reused view: titles and hints right after one tick |
+| D1 | 0x081B6914 (pane class slot 1) -> an_wave_paint | An Analog pane: stock's paint skipped, the pane rect filled with its own frame background (+0x2DD, 0xF1), the J3 dial, stock's pressed fill (0xF6) / frame kept, then the children (WIDGET_PAINT_KIDS). The title label is outside the pane rect (M: (6,236,632,30) below (11,271,622,142)). One draw: 89,153 instructions, 139 fills (M, emulator; DMA2D time not modelled) |
+| D2 | AN4 cache {view, handle, key, t} per pane | The tick marks the pane's partial byte (+0x32) when the dial is out of date (at most every 33 ms), the full byte (+0x31) when a pane leaves Analog (the root clears the screen on ctx+0, 0x081701F8, S); a hidden pane draws afresh when shown. M: no fill on an unchanged partial repaint |
+| B1' | bl 0x0816108A (UI_POST of 0x3F) -> shim `ldr r2,[sp,#0x20]; b.w an_browse` | Deviation: 0x0814D48C / 0x13B is stock's MIXER_EVENT (the mixer strips' toggle, S), not the oscillator's path. The synth view's 0x7B (ev+8 = the oscillator) on a Wavetable track posts 0xA8 {osc} then 0x3F, which the app turns into its page 0x14 (S). For an Analog oscillator the 0x3F is not posted (the select and the pane's 0x79 / 0x7C press stay stock's, M). The header's 0xEE / 0xEF (-> 0x1D, page 0xD) and the menus' "Load WAV" stay open: explicit loads (W1 shows them) |
+| Y1 | tick, after stock's tick | M: Type 7 / -1 / 0x101 read "Wavetable"; the model keeps the value, no 0xD0 |
+| V1 | tick, after stock's tick (no formatter hook) | M: "Saw", "Saw>Sq 40%", "Square", "Pulse 37%" (blend and width from an_shape / the kernel; AN_SHAPE_SAW_END / AN_SHAPE_SQUARE now in synth_shared.h for both cores, DSP bytes unchanged, M) |
+| H1 | fix_rows, row 2 | M: 0xC6 leaves row 2 only while both are Analog; stock's bind shows an empty slot |
+
+Size: synth UI 10,806 -> 13,728 B; image 0x1880A0 -> **0x188C08** (default), 0x18A5E0 with BE_ENABLE=drums; proven max
+0x18D334 (18,220 B / 11,604 B left). About 2.9 KB, not the 2 KB planned: title_text 756 B, an_wave_paint with the dial
+1,230 B. The 1.6.1 build is byte-identical to v3.72.
+
+Still-to-look-at, recorded:
+- Browser title (S, partial): 0x3F opens page 0x14 through 0x08143D44; the page title generator 0x081435BC picks among
+  "%s: Wavetable" / "%s: Granular" / "%s: WAV %d" by object type (0x08143718..0x08143B70); no oscillator name is in it.
+  The popup's own text is a device check (B1' keeps it from opening on an Analog pane).
+- Shift functions on the WT page (S): the synth view's handler 0x08160F00 has no button (0x73) case: 0x0B / 0x0C, 0x79
+  (row select while +0x117D8), 0x7A, 0x7B (loads, B1'), 0xCD (the header's 0xEE / 0xEF / 0x16 buttons), 0xCF, 0xED,
+  0xEE / 0xEF (load), 0x111 / 0x112. Shift combinations are the controls layer's, not the page's.
+- Preset / track names after a WAV load (S, partial): a WAV reaches the page only as the oscillator's Filename (key 0x81,
+  the title); "UserPatches\Wavetable" is the preset folder (0x08142D6C). Whether a load renames the track or preset is
+  not found statically: device check.
+- "%s: Wavetable" (S): the synth page's header title, chosen by the track's type 0x12 at 0x0814372E (also 0x0814ED10).
+  Per track, not per oscillator: left as is (an Analog oscillator is a property of a Wavetable track).
+
+Tests (WSL emulator): test_synth_ui 51 (identity: Sites, Disabled, Panes, Titles, Indicator, Visibility, Dial,
+ValueTexts, ResetRow, Browse, DestNames), every suite green on the default build; on BE_ENABLE=drums all green except
+test_inst_xml (3) and test_handles (10), which fail identically on 7bde5a0; BE_DISABLE=analog: every new site stock
+(including the 12-byte T0 string: a site, not a block), test_synth_ui Disabled green. PNGs: scratch wf/impl_m4/shots.
+
+Device checks added: the dial redraw on the device's paint (partial / full, no flicker, M4 load while turning Shape);
+which touch is 0x7B (double-tap) and that page 0x14 is the WAV browser; the press highlight on an Analog pane; the
+title fits on the 632 px label with "(WAV kept)" and "OVER"; a Type switch with a WAV loaded leaves no dial behind.
+
 ## Tests
 
 - test_analog: the device-shaped rig (B1); chunked n = 256 equals two 128 renders; mixed sync within 0.01 smp of WT1's
