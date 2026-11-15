@@ -15,7 +15,7 @@ with it.
 |---|---|---|
 | F0 octave bug, tuner "blocking", FD9 | Resolved, there is no octave bug. WT1, WT2 and the sub all render at 2N = 256 frames in a 96 kHz domain (divider 2 at osc+0x108, sub +0xDC = 2), and stock's FIR 0x0807FCC0 decimates. Note 60 plays 261.62 Hz. | M |
 | F0 bug 1 (sync never engages at n = 256) | Fixed in BE4.40 (B1). The render is chunked at AN_EVENTS = 128. Both-Analog sync works up to AN_SYNC_FRAMES = 256, and mixed sync has no limit. | S (M in plan-be440) |
-| F0 bug 2 (glide runs at half the set time) | **Still open.** `glide_coef` (analog.cpp:364-374) computes `0.001^(n/(s*48000))` with n = 2N. The glide tests run in `Rig()` (48 kHz, n = 128), so they cannot see it. | S |
+| F0 bug 2 (glide runs at half the set time) | **Fixed in Q0** (see "Q0 as built"). BE4.40's `glide_coef` computed `0.001^(n/(s*48000))` with n = 2N. The glide tests ran in `Rig()` (48 kHz, n = 128), so they could not see it. | S (M after Q0) |
 | F1 labels, title hook, 2.2, 2.3 | Done a different way in BE4.40 (T0/T1, J2). Not P3 work. | M |
 | AN4 second word, AN43, canary shrink, SaTrack.r4, SA_LAYOUT 3, `bento_analog_fm_*` XML, an_save/an_load, 0x1A8, FD4 | All obsolete. Values are now stock properties (N1/N2/N3). AN4 is the 256 B UI block 'AN50'. Stock's writer writes the tokens on each `<cell>`. | S |
 | Keys | 0x18B Sub FM (both rows), 0x132 FM 1>2 (OSC2 only), 0x1A4 Bit Depth (both rows). All three are empty after stock's REG_BUILD and after BE4.40's N2. None is an immediate in either core, and none is one of `claim()`'s keys. | M (test_keys FM_NEXT) |
@@ -29,7 +29,8 @@ with it.
 
 Still valid from the old plan: three routings and no OSC2 -> OSC1; the FD3 square law with kin = I * inc_mod; the
 through-zero kernel with mirrored BLEPs and one division per edge; the VDIV-hoist watch; the one-shot sub copy; E3 (a
-silent OSC1 still renders when it is a modulator); the mid-tread Bit Depth quantiser in the 96 kHz domain; BD1.
+silent OSC1 still renders when it is a modulator); the Bit Depth quantiser in the 96 kHz domain (its grid is now OD11's
+two's complement, 4.7); BD1.
 
 ---
 
@@ -324,14 +325,21 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
 ### 4.7 Bit Depth
 - A post-pass after the part loop and before `S_SMOOTH_APPLY` (after analog.cpp:480, before :482), over s[0..n). Skipped
   for Full.
-- `q = __builtin_rintf(x * S) * (1/S)`, mid-tread, with S = 2^(b-1): 2048, 128 and 8 for 12, 8 and 4 bits.
+- **True b-bit two's-complement grid (OD11 = (b), Jeff 2026-11-15; replaces the draft's mid-tread):**
+  `q = clamp(__builtin_rintf(x * S), -S, S - 1) * (1/S)`, with S = 2^(b-1): 2048, 128 and 8 for 12, 8 and 4 bits.
+  - Exactly 2^b levels (4-bit: -8..+7, steps of 1/8). The top clips at (S-1)/S, the bottom at -1: asymmetric by one
+    step, so a full-scale signal gains a small DC and some even-order distortion (accepted: that is the "strict 4-bit"
+    grit OD11 chose). The BLEP overshoot above 1 clips at (S-1)/S too; below -1 it clips at -1.
   - **Use `__builtin_rintf`, not `rintf`.** The DSP build uses -ffreestanding -fno-builtin -nostdlib, so plain `rintf`
     compiles to an unresolved `bl`. `__builtin_rintf` inlines to VRINTX.F32 (M: q.cpp compiled with the project flags,
-    build.py:666-669). Add `rintf` to DSP_REFUSED.
-  - Mid-tread at S = 2^(b-1) gives 2^b + 1 levels (17 at "4-bit": -8..+8), plus a few more from BLEP overshoot above 1.
-    It is symmetric, has no DC and does not clip. A true two's-complement b-bit grid would clamp to [-S, S-1] and clip
-    the top. OD11 asks which one; the recommendation is mid-tread.
-- The overshoot above 1 is kept, not clipped (I: the overshoot is small, and clipping would add asymmetric distortion).
+    compile_dsp's `common`, build.py:668-672). Add `rintf` to DSP_REFUSED_SYMBOLS (build.py:653); check_dsp_elf already
+    refuses any undefined symbol (build.py:711-713, S), so this only names the cause.
+  - **The clamp has the same hazard:** plain `fminf`/`fmaxf` are library calls under -fno-builtin. Write it with two
+    ternaries (VCMP + VSEL, or a branch) or `__builtin_fminf`/`__builtin_fmaxf` (VMINNM/VMAXNM on FPv5: I, check the
+    disassembly), and add `fminf`/`fmaxf` to DSP_REFUSED_SYMBOLS next to `rintf`.
+  - rint rounds half to even, so a sample exactly on a half step rounds to the even level (I: the golden model must use
+    numpy's `rint`, which does the same).
+  - The golden model and the 6.3 crush cases use this grid.
 - The crush runs in the 96 kHz domain ahead of the FIR, so the decimator partly removes its images above 24 kHz (I).
 - BD1: B is written from the quantised s, before Level.
 - Because it is a post-pass, the non-FM loops stay untouched (M1).
@@ -425,7 +433,7 @@ How the CPU gate is derived:
 ### 6.3 Independent host golden model (`p3_golden.py`, numpy, float64, shares no C code)
 - It reimplements the sub waves from stock's formulas (with the DC-free Square, OD10); the through-zero phase with
   mirrored polyBLEP/BLAMP; the slave reset rule for di <= 0 (4.3); the index law I = 8(v/1000)^2, the ramp and the
-  clamp; the events; and the mid-tread quantiser.
+  clamp; the events; and the clamped two's-complement quantiser (OD11, 4.7).
 - Compared with the emulator sample by sample, max error <= 1e-5 (float32 vs float64), for: Sub FM with sine, saw,
   square and noise subs; FM 1>2 and both routes together; a sync master and slave with FM (including di < 0 at the
   reset); mixed sync with Sub FM; each Bit Depth; Shape 0, 12, 24, 36 and 47.
@@ -477,7 +485,8 @@ return; a linear index instead of the square law; the clamp missing; the per-blo
 not mirrored; the slave reset under di < 0 done as p = 0 (double edge); FM 1>2 read from props(o1); resend KEYS back to
 3; slot 7 shown while OSC1 is Wavetable; an_shape's plateau centred on 48 (shifts 49..51); an out-of-range Bit Depth
 played as Full; the pulse's DC term dropped in the FM loop; `rintf` instead of `__builtin_rintf` (link or DSP_REFUSED
-fails).
+fails); Q2 (OD11, Q0 review): the Bit Depth clamp missing (OD11 (a) mid-tread), and its top clamped at S instead of
+S - 1; at least one 6.3 crush case drives s past +1 (BLEP overshoot at full level) and one to -1, so both turn red.
 
 ### 6.7 Existing tests that encode BE4.40 behaviour (edit as reviewed changes, each with its new value)
 | Test | Today | After | Sprint |
@@ -495,7 +504,7 @@ fails).
 
 | # | Sprint | Work | Offline exit |
 |---|---|---|---|
-| Q0 | Glide fix (if OD1 = in P3) | `glide_coef`: `s * 48000 * F(osc,0x108)` (2 on the device). The coef cache key is unchanged (n is already in it). Add the Rig(dev=True) glide-time test. | The 6.4 glide test is red at HEAD and green after; Rig() glide outputs bit-identical |
+| Q0 | Glide fix (if OD1 = in P3) | `glide_coef`: `s * 48000 * F(osc,0x108)` (2 on the device). The coef cache key is unchanged (n is already in it; that covers the divider only because a root's vt[19] sets both its 2N and its divider, I: see Q0 as built). Add the Rig(dev=True) glide-time test. | The 6.4 glide test is red at HEAD and green after; Rig() glide outputs bit-identical |
 | Q1 | Keys, storage, harness; no sound | template keys + pad; `NP_KEYS` 7 keys; `want_row` slots 5..7 + the hidden rule; `resend` with 6 keys; `an_prop` stores (+ OD4 Sync line); AnOsc +4 B; SA_FMBUF, SA_FMSTATS and the tag in synth_shared.h; fmtag clear in an_enter; **P3Identity harness** (second build dir, capture/replay, one-ulp control); type-0xFF tests; BE4.40-opens-P3 test; preset round trip if the entry is found; 6.7 Q1 edits | 6.1 green; 6.2 identity green; manifest template_n 0x304 |
 | Q2 | Bit Depth | post-pass quantiser (`__builtin_rintf`, DSP_REFUSED `rintf`), `bits=` stat | golden 6.3 crush cases; identity at Full; BD placement mutations |
 | Q3 | Five shapes | an_shape map, set_shape for k < 0, LOW regime x 3, `wave_any`, sinq THD measured, V1 text, five-glyph dial, 6.7 Q3 edits | identity 45..127; golden sine/tri/blends; click test; UI snapshots; DSP size logged against the 14 KB ceiling |
@@ -507,6 +516,54 @@ fails).
 The order puts the zero-risk plumbing (Q1) and the separable features (Q2, Q3) before the hard DSP (Q5, Q6), so each
 commit can ship on its own. Close call: Q3 could come after FM. It stays before, because the FM loop has to generate
 the sine/triangle terms anyway, and testing it against a finished LOW regime is easier.
+
+### Q0 as built (2026-11-15, working tree on 03dc6d3; build ~/bento/out/m1-p3q0)
+
+OD1 = (a). What was built:
+- **M7** (dsp/analog.cpp): `glide_coef(e, glide, n, div)` = `S_EXP2(-9.965784 * n / (s * 48000 * div))`, div =
+  `F(osc, OSC_RATE_DIV)` (osc+0x108) of WT1, the oscillator that decays the voice's glide. In Rig() div is 1.0 and
+  `* 1.f` is exact (no -ffast-math in the DSP flags, S), so Rig() is bit-identical. The cache key stays (glide, n): the
+  root's vt[19] factor sets both the 2N and the divider, so a root's n implies its div (I; plan row Q0's "n is already
+  in it" is true only through that).
+- **test_analog**: `Oscillator.test_glide_takes_the_set_time_on_the_device` (6.4): Rig(dev=True), divider 2 asserted,
+  Glide 500 from note 48 to 60; |glide| <= 0.001 of the interval first at **block 375** = 1.000 s (bound 1 s +- 1 block),
+  and one block's ln(coef) within 5e-5 of exact. **HEAD: block 188 = 0.501 s, red** (M, ~/bento/out/m1-p3q0-head).
+  The loop reuses one pair of buffers: Rig.render allocates two per call, and the harness heap runs out before ~375
+  dev blocks (M: UC_ERR_WRITE_UNMAPPED).
+- **P3Identity**: `test_glide` runs Rig() only; `test_q1_plays_no_amount` skips its dev glide case (both cases dropped,
+  not loosened). New `test_glide_dev_is_the_expected_change` replays the dropped case on both builds: blocks 0..2
+  byte-identical, the first difference in block 3 (WT1 decays after its own render, so WT2 hears it first), WT1's glide
+  after the last slide (+1 octave, 4 decays) = c^4 on this build and c^8 on BE4.40, c = 0.001^(2N / (0.6 s * 96 kHz)),
+  ln to 4 x 5e-5; stats words equal; instructions +2 %. HEAD: red (no difference). It also carries the dropped dev
+  case's Q1 amounts control, on this build alone: the case with Sub FM 700, Bit Depth 2, FM 1>2 333 plays the case
+  without them byte for byte (output, voice with the settings bytes masked, stats; the stored values checked).
+- **Review (Q0)**: `Oscillator.test_glide_coef_follows_the_block_length`: one root, Glide 500, the block length 128,
+  128, 64, 64, 32, 128 mid-slide; each block's ln(decay) = n ln(0.001) / 48000 to 5e-5. It guards the (glide, n) key,
+  which no test saw before (a key without n was green on the first Q0 tree: the reviewer's mutation G). The divider is not tested
+  apart from n: a root's divider changing under the same n is not a device state (vt[19], I), so a test of it would pin
+  a design the key does not claim.
+- The tolerance 5e-5 on ln(coef) is stock's exp2 table near 2^0, measured first: 1.1e-5..2.6e-5 at Glide 50, 300, 500,
+  1000 (M; relative 0.01 %..0.14 %). The existing Rig() glide test's tolerances are unchanged.
+
+Measured (M):
+- Sizes: image **0x188F78** (Q1's, unchanged: M4 untouched), 17,340 B under PROVEN_MAX 0x18D334. DSP **9,836 B** (+8 on
+  Q1, +128 on BE4.40's 9,708 of P3's 14 KB ceiling), 26,772 B free in the window.
+- Cost: `Cost` tables identical to Q1 (n = 256: saw 13,195, mixed 19,843, saw+sync 15,788, mixed+sync 22,183; they play
+  no glide). The coef is computed only on a cache miss (one VMUL and one load more). P3Identity: **53 cases** (Q1's 54,
+  minus the two dev glide cases, plus the expected-change case), worst +0.07 % (silent sync master, as Q1), total
+  +0.02 %; the changed dev glide case 181,860 vs BE4.40's 181,743 (+0.06 %).
+- Mutations (scratch p3/q0/mut.sh, built from a copy, test_analog): div replaced by 2.f (red, 3: the Rig() glide
+  tests `test_glide_starts_...`, `P3Identity.test_glide`, `test_q1_plays_no_amount`); `* div` deleted, the HEAD form
+  (red, 2: the two new tests). Review round (scratch p3/q0/mutr.sh): the cache key without n (red, 1:
+  `test_glide_coef_follows_the_block_length`, 3 subtests); a dev-only glide change gated on Bit Depth 2 stored (red, 1:
+  the expected-change test's amounts control). Reviewer's own set (p3/Q0/mutr2.log): a dev-only rate error of 0.3 % is
+  red in the expected-change test only, 0.15 % is green in every test: the dev glide tests resolve about 0.3 %, over a
+  floor of stock's exp2 table (0.14 % at Glide 500).
+- Full suite (wsl/test_m1.sh, O=~/bento/out/m1-p3q0) green; test_analog 74 tests. Since Q1 the script honours O= and
+  runs test_native_props (Q1's finding is fixed); test_drums / test_drum_ui are not run (drums omitted on 1.6.8, as before).
+
+**Release note (BE4.41):** Glide now takes the time it is set to (Glide 50 % = 1 s to the new note). BE4.40 and earlier
+glided twice as fast on the device; projects with Glide set will slide more slowly (no migration).
 
 ### Q1 as built (2026-11-15, working tree on c8d5bdb; build ~/bento/out/m1-p3q1)
 
@@ -619,7 +676,7 @@ Found during Q1 (corrections to this plan):
    glyphs light.
 10. Save, reload, copy/paste a track, save and load a preset **file**: all three values are kept. Stock 1.6.8 opens the
     project. BE4.40 opens it too, and drops the three values on its next save (expected).
-11. If Q0 shipped: Glide 50 % = 1 s (stopwatch or tuner).
+11. Glide 50 % = 1 s (stopwatch or tuner; Q0 shipped). BE4.40 took 0.5 s for the same setting.
 12. CPU: an 8-voice chord with full FM, then the same on several tracks. Record DSP %, `peak`, `voices_peak`, `fm=` and
     `bits=`, with no `OVER`.
 13. An old BE4.40 project with Shape < 45 now plays sine or triangle (expected; no migration).
@@ -687,7 +744,7 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 | OD8 | Kit label | BE4.41 for all of P3; or BE4.41 (Q0-Q3) + BE4.42 (FM) | **One kit, BE4.41**. Each sprint is committed, so it can still be split if FM slips. |
 | OD9 | SA_LAYOUT with the new SA_FMSTATS line | keep 2; bump to 3 | **Keep 2**. The change only adds a region at an undefined offset, and both cores ship in one image (I). Bump it only if you want a mismatched-core boot to say so explicitly. |
 | OD10 | DC of the Square sub as an FM modulator | (a) DC-free (subtract 1 - 2*pw, the prototype's `dcfree`); (b) raw (bit-exact copy, the carrier detunes with PW and depth: +3.2*inc_sub at I = 8, PW 30 %) | **(a) DC-free**. Turning Sub FM up should not change the pitch centre, and PW then shapes the timbre only. Exactness is still tested, up to the known DC constant. (b) is the analog-linear-FM behaviour, if you want it as a feature. |
-| OD11 | Bit Depth grid | (a) mid-tread, S = 2^(b-1): 2^b + 1 levels, symmetric, no clip; (b) true b-bit two's complement, clamped to [-S, S-1] | **(a)**. It has no DC and no top clip, and at 12/8 bits the extra level is inaudible. At 4 bits it is 17 levels instead of 16, so the label is nominal. Choose (b) if you want a stricter "4-bit" grit with an asymmetric top clip. |
+| OD11 | Bit Depth grid | (a) mid-tread, S = 2^(b-1): 2^b + 1 levels, symmetric, no clip; (b) true b-bit two's complement, clamped to [-S, S-1] | **(a)** (superseded: Jeff chose (b), Decisions above; 4.7). It has no DC and no top clip, and at 12/8 bits the extra level is inaudible. At 4 bits it is 17 levels instead of 16, so the label is nominal. Choose (b) if you want a stricter "4-bit" grit with an asymmetric top clip. |
 | CPU gate | (not a new decision; FD6 restated) | | The draft's 27.5 k was tighter than FD6. The plan now uses FD6 faithfully: 1.3 x the specialised voice at 2N (~31 k, I), measured in Q5. Say so if you want the tighter target instead. |
 
 ---

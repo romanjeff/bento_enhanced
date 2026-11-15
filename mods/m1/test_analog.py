@@ -517,6 +517,43 @@ class Oscillator(unittest.TestCase):
         self.assertEqual(sub, r.state(v, 0)["sub"], "the sub oscillator got what the voice entered with")
         self.assertLess(sub, 0.0)
 
+    def test_glide_takes_the_set_time_on_the_device(self):
+        """P3 Q0 (OD1, plan 6.4; F0 bug 2): in the device's shape (2N = 256 frames per block in a 96 kHz domain, divider 2
+        at osc+0x108) Glide 500 (1 s) is down to 0.001 of the interval after 1 s of output, +- 1 block: block k = 375 of
+        128 output frames (k * 2N / 96 kHz). BE4.40 counted the 2N frames at 48 kHz and got there at ~188 (half the time)."""
+        r = Rig(dev=True); root, v = r.voice(0x77); r.table(0, 0x77, 1, glide=500); r.note(v, 48)
+        self.assertEqual(r.rf(r.osc(v, 0) + 0x108), float(DEV_M), "the device's divider")
+        r.render(root, v, oscs=(0,)); r.block()
+        r.note(v, 60)
+        o1 = r.osc(v, 0); slot0 = r.r32(r.r32(o1)) & ~1
+        (out, _), (scr, _) = r.buf(DEV_FRAMES), r.buf(DEV_FRAMES)   # render()'s calls, its buffers reused (~400 blocks)
+        k, g = 0, -1.0
+        while k < 400 and abs(g) > 0.001:
+            r.call(r.dsp["an_enter"], root, v); r.call(slot0, o1, scr, out); r.block(); k += 1
+            g = r.state(v, 0)["glide"]
+        exact = 0.001 ** (1 / (500 * 0.002 * DEV_RATE))       # per 96 kHz sample: 0.001 after 1 s
+        self.assertAlmostEqual(k * DEV_FRAMES / DEV_RATE, 1.0, delta=DEV_FRAMES / DEV_RATE,
+                               msg=f"reached 0.001 of the interval after {k} blocks (1 s = 375)")
+        self.assertLess(abs(math.log(abs(g)) / k - DEV_FRAMES * math.log(exact)), 5e-5,
+                        "one block's decay is 0.001 ^ (2N / (s * 48000 * 2)): ln of it to 5e-5, stock's exp2 table near 2^0 "
+                        "(measured 1.1e-5..2.6e-5 at Glide 50..1000)")
+
+    def test_glide_coef_follows_the_block_length(self):
+        """P3 Q0 (review): the root's coef cache (AN_E5) is keyed on (glide, n). One root, Glide 500 held, the block
+        length changed mid-slide (128, 64, 32, back to 128): each block decays by 0.001 ^ (n / (1 s * 48000)) for its own
+        n (ln to 5e-5, stock's exp2 table). A key without n reuses the 128-frame coef. The divider is not in the key: a
+        root's vt[19] sets both its 2N and its divider (plan Q0 as built, I)."""
+        r = Rig(); root, v = r.voice(0x77); r.table(0, 0x77, 1, glide=500); r.note(v, 48)
+        r.render(root, v, oscs=(0,)); r.block()
+        r.note(v, 60)
+        g = [-1.0]
+        for n in (128, 128, 64, 64, 32, 128):
+            r.render(root, v, n, oscs=(0,)); r.block()
+            g.append(r.state(v, 0)["glide"])
+            with self.subTest(block=len(g) - 1, n=n):
+                self.assertLess(abs(math.log(g[-1] / g[-2]) - n * math.log(0.001) / 48000), 5e-5,
+                                f"block of {n}: decay {g[-1] / g[-2]}")
+
     def test_no_glide_without_glide_time(self):
         self.r.render(self.root, self.v); self.r.block()
         self.r.note(self.v, 67)
@@ -1625,9 +1662,9 @@ class P3Identity(unittest.TestCase):
     Compared byte for byte: every output sample, the whole voice afterwards (both oscillators with their kernel areas, the
     sub), the stats words that are not cycles, and for mixed sync the master's wraps. The set is representative of the Cost, Voice,
     Sync, Shape-mod and Glide cases with Shape >= 45 (whole and 1/512-modulated), each in Rig() and Rig(dev=True) (plan, Q1
-    as built, lists what it leaves out); glide also in the dev rig until Q0 (OD1) changes the dev rig's glide on purpose.
-    test_q1_plays_no_amount repeats part of it with the three amounts set: stored, not played. Instructions: this build
-    within +2 % of BE4.40 per case (M1).
+    as built, lists what it leaves out); glide in Rig() only: Q0 (OD1) changed the dev rig's glide time on purpose, and
+    test_glide_dev_is_the_expected_change pins that difference instead. test_q1_plays_no_amount repeats part of it with
+    the three amounts set: stored, not played. Instructions: this build within +2 % of BE4.40 per case (M1).
     test_the_harness_goes_red is the control: a one-ulp change of one sample, and of one input, are both seen."""
     @classmethod
     def setUpClass(cls):
@@ -1799,30 +1836,65 @@ class P3Identity(unittest.TestCase):
                 with self.subTest(dev=dev, case=name):
                     self.check(f"{name} dev={dev}", lambda r: self.voice_case(r, mod=mod, blocks=10, **kw), dev)
 
+    GLIDE = dict(shape=(48, 64), glide=300, notes={0: 60, 3: 67, 7: 55}, blocks=11)
+
     def test_glide(self):
-        """Glide: Glide 300 (0.6 s) from the track's last note, a slide up and one down. The dev rig too, until Q0 (OD1)
-        corrects the dev rig's glide time on purpose (then Rig() only, plan 6.2)."""
-        for dev in (False, True):
-            with self.subTest(dev=dev):
-                self.check(f"glide dev={dev}", lambda r: self.voice_case(r, shape=(48, 64), glide=300, notes={0: 60, 3: 67, 7: 55},
-                                                                     blocks=11), dev)
+        """Glide: Glide 300 (0.6 s) from the track's last note, a slide up and one down; Rig() only (plan 6.2): Q0 (OD1)
+        changed the dev rig's glide time on purpose (test_glide_dev_is_the_expected_change)."""
+        self.check("glide dev=False", lambda r: self.voice_case(r, **self.GLIDE), False)
+
+    def test_glide_dev_is_the_expected_change(self):
+        """P3 Q0 (OD1, plan 1 M1 / 6.2): the dropped identity case, as the change it now is. The same glide case in
+        Rig(dev=True) on both builds: the blocks before the first slide (0..2) are byte-identical, the first difference is
+        in block 3 (WT1 decays its glide after its own render, so WT2 is the first to hear it), and after the last slide
+        (block 7, 67 -> 55, +1 octave, then 4 decays) WT1's glide is (0.001 ^ (2N / (0.6 s * 96 kHz))) ^ 4 on this build
+        and the square of that, twice as far gone, on BE4.40 (ln to 4 x 5e-5: stock's exp2 table, as in
+        Oscillator.test_glide_takes_the_set_time_on_the_device). Q1's amounts control, on this build alone: the same case
+        with the three amounts set plays it byte for byte (stored, not played; the settings bytes masked)."""
+        rp = Rig(dev=True)
+        runs = [self.voice_case(Rig(dev=True), **self.GLIDE),
+                self.voice_case(Rig(img=REF_IMG, dev=True, dsp=REF_DSP), **self.GLIDE),
+                self.voice_case(rp, **self.GLIDE, p3=self.AMOUNTS)]
+        (a, va, sa, ca), (b, vb, sb, cb), (p, vp, sp, _) = runs
+        for i in (0, 1):
+            s = rp.stored[i]
+            self.assertEqual((s[3], s[5], s[6]), (2, 700, 333), f"control, OSC{i + 1}'s Bit Depth, Sub FM, FM 1>2 as stored")
+        same(self, p, a, "amounts set: the output")
+        same(self, self.masked(vp, (0, 1)), self.masked(va, (0, 1)), "amounts set: the voice")
+        self.assertEqual(sp, sa, "amounts set: the stats words")
+        block = 4 * DEV_FRAMES
+        same(self, a[:3 * block], b[:3 * block], "blocks 0..2 (no slide yet)")
+        first = next((i for i in range(0, len(a), 4) if a[i:i + 4] != b[i:i + 4]), None)
+        self.assertIsNotNone(first, "the dev rig's glide differs from BE4.40's (OD1)")
+        self.assertEqual(first // block, 3, "the first difference is in the first slide's block")
+        at = S.VOICE_WT1 + S.OSC_KERNEL + 144                     # AnOsc glide (Rig.state)
+        g = [struct.unpack_from("<f", x, at)[0] for x in (va, vb)]
+        ln_c = math.log(0.001) * DEV_FRAMES / (300 * 0.002 * DEV_RATE)   # one block's decay, exact
+        self.assertAlmostEqual(math.log(g[0]), 4 * ln_c, delta=4 * 5e-5, msg=f"this build: {g[0]} vs {math.exp(4 * ln_c)}")
+        self.assertAlmostEqual(math.log(g[1]), 8 * ln_c, delta=4 * 5e-5, msg=f"BE4.40: {g[1]} vs {math.exp(8 * ln_c)}")
+        self.assertEqual(sa, sb, "the stats words")
+        self.costs.append(("glide dev=True (changed)", ca, cb))
+        self.assertLessEqual(ca, cb * 1.02, f"instructions {ca} vs BE4.40's {cb} (M1: +2 %)")
 
     def test_q1_plays_no_amount(self):
         """P3 Q1 (review): the new settings are stored and play nothing yet. Sub FM 700, Bit Depth 2 (8 bits) and FM 1>2 333
         on every Analog oscillator, pushed alike to both builds (BE4.40's slot 8 ignores the keys), and this build still
-        plays BE4.40 byte for byte; only the stored settings bytes differ (masked). Control: this build stored them. Q2 (Sub
-        FM), Q5 (FM 1>2) and Q6 (Bit Depth) turn these into their expected-change cases."""
+        plays BE4.40 byte for byte; only the stored settings bytes differ (masked). Control: this build stored them. Glide
+        in Rig() only since Q0 (OD1: the dev rig's glide time changed on purpose; its amounts control is in
+        test_glide_dev_is_the_expected_change). Q2 (Bit Depth), Q5 (Sub FM) and Q6 (FM 1>2) turn these into their
+        expected-change cases (plan 7)."""
         p3 = self.AMOUNTS
         cases = (("free", lambda r: self.voice_case(r, shape=(48, 88), p3=p3), (0, 1)),
                  ("sync", lambda r: self.voice_case(r, shape=(70, 100), sync=1, p3=p3), (0, 1)),
                  ("sync silent master", lambda r: self.voice_case(r, shape=(48, 88), sync=1, level0=0.0, p3=p3), (0, 1)),
-                 ("glide", lambda r: self.voice_case(r, shape=(48, 64), glide=300, notes={0: 60, 3: 67, 7: 55}, blocks=11,
-                                                     p3=p3), (0, 1)),
+                 ("glide", lambda r: self.voice_case(r, **self.GLIDE, p3=p3), (0, 1)),
                  ("osc2 wavetable", lambda r: self.voice_case(r, shape=(64, 48), types=(1, 0), p3=p3), (0,)),
                  ("root voice", lambda r: self.root_case(r, p3=p3), (0, 1)),
                  ("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,)))
         for dev in (False, True):
             for name, run, oscs in cases:
+                if dev and name == "glide":
+                    continue                                    # Q0: the dev rig's glide is an expected change (above)
                 with self.subTest(dev=dev, case=name):
                     def stored(r, run=run, oscs=oscs, name=name):
                         x = run(r)

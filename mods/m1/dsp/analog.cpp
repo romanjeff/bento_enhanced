@@ -9,7 +9,8 @@
  *     class's slot 8, where an_prop (N3) keeps it in the oscillator itself (AnProps, analog.h). No table of the M4's, no
  *     handles, no serial: the BE4.21..BE4.31 per-root handle cache is gone. Values are clamped here (stock never checks a
  *     range: a project file is read raw), and Type is Analog only when it is exactly 1;
- *   - glide's "previous note" is per track (a per-root line, refilled when root+0x0C changes: stock reuses roots);
+ *   - glide's "previous note" is per track (a per-root line, refilled when root+0x0C changes: stock reuses roots); its time
+ *     counts the oscillator's own rate (P3 Q0: the divider at osc+0x108, 2 at the device's 2N; BE4.40 glided twice as fast);
  *   - the glide offset on the sub oscillator follows stock's own rewrites of that field and is taken back when WT1 stops
  *     being Analog;
  *   - hard sync at the device's block (BE4.40 B1, docs/plan-be440-sync-identity.md): stock renders Wavetable oscillators at
@@ -386,14 +387,18 @@ static void watch(AnOsc *s, void *o1, float minc, u32 n) {
     s->mlive = s->mlive == AN_LIVE_NEW || d != s->msnap ? AN_LIVE_RUNS : AN_LIVE_FROZEN;
     s->msnap = d;
 }
-static float glide_coef(Root *e, u32 glide, u32 n) {
-    /* 0..1000 = 0..2 s to a thousandth of the interval: coef = 0.001 ^ (n / (s * 48000)) = 2 ^ (-9.9658 n / (s * 48000)) */
+static float glide_coef(Root *e, u32 glide, u32 n, float div) {
+    /* 0..1000 = 0..2 s to a thousandth of the interval: coef = 0.001 ^ (n / (s * 48000 * div)) = 2 ^ (-9.9658 n / (s * 48000
+     * div)). n counts the oscillator's samples and div (osc+0x108) is their rate over 48 kHz: 2 on the device (2N frames in
+     * the 96 kHz domain, stock's engine init 0x0807F180), 1 in Rig(), where * 1.f is exact (P3 Q0, F0 bug 2: BE4.40 left
+     * div out and glided in half the set time on the device). The key stays (glide, n): the root's vt[19] factor sets both
+     * the 2N and the divider, so a root's n implies its div (I). */
     u32 key = (glide << 16) | n;
 #if AN_E5
     if (e && e->coef_key == key) return e->coef;
 #endif
     float s = (float)glide * .002f;
-    float c = FN(S_EXP2, float (*)(float))(-9.965784f * (float)n / (s * 48000.f));
+    float c = FN(S_EXP2, float (*)(float))(-9.965784f * (float)n / (s * 48000.f * div));
     if (e) { e->coef = c; e->coef_key = key; }
     return c;
 }
@@ -441,7 +446,7 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     if (n > STATS->n_max) STATS->n_max = n;
     u32 glide = props(o1)->glide;
     if (which == 0 && g->glide != 0.f && n <= 1024u) {        /* glide decays once per block, in WT1 */
-        g->glide *= glide ? glide_coef(r->voice == (u32)v ? r->root : 0, glide, n) : 0.f;
+        g->glide *= glide ? glide_coef(r->voice == (u32)v ? r->root : 0, glide, n, F(osc, OSC_RATE_DIV)) : 0.f;
         if (g->glide < .0005f && g->glide > -.0005f) g->glide = 0.f;
     }
     r->oscs++;
