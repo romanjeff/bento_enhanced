@@ -88,6 +88,8 @@ extern "C" void an_render(AnOsc *o, float inc, float shape, float *out, unsigned
 extern "C" void an_track(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_master(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_reshape(AnOsc *o, float from, float to);
-extern "C" void an_crush(float *s, unsigned n, unsigned bits);   /* P3 Q2 Bit Depth: AnProps.bits 1..3, in place */
+extern "C" void an_crush(float *s, unsigned n, unsigned bits, float dc);   /* P3 Q2 Bit Depth: AnProps.bits 1..3, in
+                                                                           * place; Q2b (OD12): on x + dc, dc taken off */
+extern "C" float an_dc(float shape);  /* P3 Q2b: the kernel's DC term at shape (the pulse's 2 width - 1), the part's dc */
 
 #endif

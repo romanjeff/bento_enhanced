@@ -5,7 +5,8 @@
 
 Written from the plan text only (4.6, 4.7, OD6, OD11, OD4), before and without reading the DSP sources. Later sprints add
 the sub waves (OD10), the through-zero FM phase and the slave reset rule (4.3, OD5) here. Q2's part is the Bit Depth
-quantiser, Q3's the shapes below the saw (after the Bit Depth notes).
+quantiser, Q3's the shapes below the saw (after the Bit Depth notes). Q2b extends the quantiser with OD12's dc (written
+from OD12's decision text, quoted below; the kernel's an_crush was already built, so this part is not "before the DSP").
 
 Bit Depth (Q2; 4.7, OD11 = (b), Jeff 2026-11-15): a true b-bit two's-complement grid on the oscillator's 96 kHz block s,
     q = clamp(rint(x * S), -S, S - 1) / S,   S = 2^(b-1): 2048, 128, 8 for b = 12, 8, 4
@@ -36,6 +37,23 @@ top clamped at S, plus round half away from zero (C `roundf`), truncation and a 
 the samples where a case's block separates each one from the correct q; a crush case is useful only if its count is > 0.
 To catch the missing bottom clamp a block needs x * S < -S - 0.5 strictly (at exactly -S - 0.5 the tie goes to the even
 -S, which is in range); to catch the top at S it needs x * S >= S - 0.5.
+
+Bit Depth about the pulse's DC (Q2b; OD12 = (b), Jeff 2026-11-15: "crush s + dc, then subtract dc, so the DC-free pulse
+sits on the grid's range; B stays DC-free; dc follows a Shape ramp part by part"). A spec change, so the model changes:
+    q = clamp(rint((x + dc) * S), -S, S - 1) / S - dc
+- dc is the kernel's DC term of the part the sample belongs to (the pulse's 2 w - 1, w its width; 0 for the saw, the square
+  and below the saw). It is a float32 value the caller supplies, a scalar or one per sample (a ramp's parts); the model
+  does not derive it from Shape (4.7 / OD12 do not fix the kernel's arithmetic; the caller pins that).
+- x + dc and the final - dc are float32 operations, each rounded once (I: the M7 holds s and dc as float32). The model adds
+  in float64 and rounds to float32: for two float32 operands that equals the float32 add / subtract (double rounding is
+  innocuous at 53 >= 2 * 24 + 2 bits, Figueroa 1995). (x + dc) * S, the clamp and the level / S stay exact (S a power of 2).
+- dc 0 is Q2's crush in every bit, sign of zero included: the add of a zero dc and the subtract of it are the identity (a
+  -0.0 input stays -0.0; plain float arithmetic would give -0.0 + 0.0 = +0.0). So every Q2 result stands where dc is 0.
+- For one dc: q + dc takes at most 2^b values, exactly 2^b on a sweep of x + dc over [-1.3, 1.3]; q itself is 2^b values
+  dc off the grid (`levels(q, b, dc)` takes dc back off, within the subtract's rounding: |q + dc - k/S| <= 2^-24 since
+  |k/S - dc| < 2). The clip acts on x + dc: (S-1)/S - dc at the top, -1 - dc at the bottom.
+- Mutations (6.6, Q2b): `mutants(x, b, dc)` adds OD12's wrong forms: dc not added (Q2's crush on the DC-free pulse,
+  OD12 (a)), dc added but not subtracted, the sign of dc flipped (subtracted first, added after).
 
 Shapes 0..48 (Q3; 4.6, OD6 as recommended): written before Q3's kernel, from the plan and test_analog's BE4.40 model().
 - Map: kcoord(Shape) -> k, linear between the knots (0, -1) (2, -1) (22, -0.5) (26, -0.5) (45, 0) (48, 0): plateaus sine
@@ -109,45 +127,74 @@ def _x(x, f32):
     return x
 
 
-def crush(x, b, f32=True):
-    """The crushed block (float64 array; every value is an exact float32). b None (Full) returns x unchanged.
-    f32: round x to float32 first, as the M7 holds s; pass False only to study a float64 signal on its own."""
+def _f32(v): return np.asarray(v, dtype=np.float64).astype(np.float32).astype(np.float64)
+
+
+def _dc(dc, shape):
+    """dc as a float64 array of x's shape; it must be finite float32 values (the kernel's)."""
+    d = np.broadcast_to(np.asarray(dc, dtype=np.float64), shape)
+    if not np.all(np.isfinite(d)): raise ValueError("non-finite dc")
+    if not np.array_equal(d, _f32(d)): raise ValueError("dc must be float32 values (the kernel's own)")
+    return d
+
+
+def _on(x, d, f32):
+    """x + dc as the M7 adds it: one float32 rounding; a zero dc is the identity (sign of zero kept)."""
+    y = x + d
+    if f32: y = _f32(y)
+    return np.where(d == 0, x, y)
+
+
+def crush(x, b, f32=True, dc=0.0):
+    """The crushed block (float64 array; every value is an exact float32). b None (Full) returns x unchanged (any dc).
+    f32: round x to float32 first, as the M7 holds s; pass False only to study a float64 signal on its own.
+    dc (Q2b, OD12): the part's DC term, a float32 scalar or one per sample: the grid acts on x + dc, and dc comes off after."""
     x = _x(x, f32)
     if b is None: return x.copy()
-    S = scale(b)
-    return np.clip(np.rint(x * S), -S, S - 1) / S
+    S = scale(b); d = _dc(dc, x.shape)
+    g = np.clip(np.rint(_on(x, d, f32) * S), -S, S - 1) / S
+    out = g - d
+    if f32: out = _f32(out)
+    return np.where(d == 0, g, out)
 
 
-def crush_bits(x, b):
+def crush_bits(x, b, dc=0.0):
     """crush() as the uint32 IEEE patterns of its float32 values: for byte-for-byte checks (sign of zero included)."""
-    return crush(x, b).astype(np.float32).view(np.uint32)
+    return crush(x, b, dc=dc).astype(np.float32).view(np.uint32)
 
 
-def levels(q, b):
-    """Grid indices k = q * S (int64). Raises if any value is off the grid or outside -S..S-1."""
-    S = scale(b); k = np.asarray(q, dtype=np.float64) * S
-    if not np.all(k == np.rint(k)): raise AssertionError(f"{b}-bit: {int(np.sum(k != np.rint(k)))} values off the 1/{S:g} grid")
-    if k.size and (k.min() < -S or k.max() > S - 1):
-        raise AssertionError(f"{b}-bit: index range {k.min():g}..{k.max():g} outside {-S:g}..{S - 1:g}")
-    return k.astype(np.int64)
+def levels(q, b, dc=0.0):
+    """Grid indices k = (q + dc) * S (int64). Raises if any value is off the grid (beyond the subtract's rounding when dc is
+    not 0: |q + dc - k/S| <= 2^-24) or outside -S..S-1."""
+    S = scale(b); q = np.asarray(q, dtype=np.float64); d = _dc(dc, q.shape)
+    k = (q + d) * S; kr = np.rint(k)
+    off = np.abs(k - kr) > np.where(d == 0, 0.0, 2.0 ** -24 * S)
+    if np.any(off): raise AssertionError(f"{b}-bit: {int(np.sum(off))} values off the 1/{S:g} grid")
+    if k.size and (kr.min() < -S or kr.max() > S - 1):
+        raise AssertionError(f"{b}-bit: index range {kr.min():g}..{kr.max():g} outside {-S:g}..{S - 1:g}")
+    return kr.astype(np.int64)
 
 
-def check_levels(q, b):
-    """On-grid, in range, and at most 2^b distinct values. Returns the distinct-level count."""
-    n = int(np.unique(levels(q, b)).size)
-    if n > 1 << b: raise AssertionError(f"{b}-bit: {n} levels > {1 << b}")   # unreachable after levels(); kept as the stated rule
+def check_levels(q, b, dc=0.0):
+    """On-grid (about dc), in range, and at most 2^b distinct values; dc must be one value (a constant-dc part), since a
+    ramp's parts each have their own 2^b. Returns the distinct-level count (of q itself)."""
+    if np.ndim(dc): raise ValueError("check_levels: one dc (a constant-dc part)")
+    levels(q, b, dc)
+    n = int(np.unique(np.asarray(q, dtype=np.float64)).size)
+    if n > 1 << b: raise AssertionError(f"{b}-bit: {n} levels > {1 << b}")
     return n
 
 
-def check_clip(x, q, b, f32=True):
-    """The asymmetric clip: every x * S >= S - 0.5 gives (S-1)/S, every x * S <= -S - 0.5 gives -1, and +1.0 never
-    appears. Returns (n_top, n_bottom), the clipped sample counts, so a case can assert it reached each side."""
-    x = _x(x, f32); q = np.asarray(q, dtype=np.float64); S = scale(b)
-    top, bot = x * S >= S - 0.5, x * S <= -S - 0.5
-    if np.any(q >= 1.0): raise AssertionError(f"{b}-bit: +1.0 in the output (top clamped at S, not S - 1)")
-    if not np.all(q[top] == (S - 1) / S): raise AssertionError(f"{b}-bit: top not clipped at (S-1)/S")
-    if not np.all(q[bot] == -1.0): raise AssertionError(f"{b}-bit: bottom not clipped at -1")
-    if np.any(q < -1.0): raise AssertionError(f"{b}-bit: output below -1 (bottom clamp missing)")
+def check_clip(x, q, b, f32=True, dc=0.0):
+    """The asymmetric clip of x + dc: every (x + dc) * S >= S - 0.5 gives (S-1)/S - dc, every one <= -S - 0.5 gives -1 - dc,
+    and (q + dc) = +1.0 never appears. Returns (n_top, n_bottom), the clipped sample counts, so a case can assert it reached
+    each side."""
+    x = _x(x, f32); q = np.asarray(q, dtype=np.float64); S = scale(b); d = _dc(dc, x.shape)
+    y = _on(x, d, f32); k = levels(q, b, d)
+    top, bot = y * S >= S - 0.5, y * S <= -S - 0.5
+    if np.any(k >= S): raise AssertionError(f"{b}-bit: +1.0 in the output (top clamped at S, not S - 1)")
+    if not np.all(k[top] == S - 1): raise AssertionError(f"{b}-bit: top not clipped at (S-1)/S")
+    if not np.all(k[bot] == -S): raise AssertionError(f"{b}-bit: bottom not clipped at -1")
     return int(top.sum()), int(bot.sum())
 
 
@@ -157,14 +204,15 @@ def near_tie(x, b, err):
     return np.abs(t - np.floor(t) - 0.5) <= err * S
 
 
-def compare(got, x, b, err=0.0):
-    """got (the M7's crushed block) against crush(x, b). err = 0: x is the M7's own float32 s, so every sample must match
-    exactly. err > 0: x comes from another model within err of s; samples near a tie (near_tie) may differ by exactly
-    one step, all others exactly. Returns the number of tie samples that did differ; raises on any other mismatch."""
-    got = np.asarray(got, dtype=np.float64); want = crush(x, b, f32=err == 0.0)
+def compare(got, x, b, err=0.0, dc=0.0):
+    """got (the M7's crushed block) against crush(x, b, dc=dc). err = 0: x is the M7's own float32 s, so every sample must
+    match exactly. err > 0: x comes from another model within err of s; samples near a tie (near_tie, of x + dc) may differ
+    by exactly one step, all others exactly. Returns the number of tie samples that did differ; raises on any other
+    mismatch."""
+    got = np.asarray(got, dtype=np.float64); want = crush(x, b, f32=err == 0.0, dc=dc)
     if got.shape != want.shape: raise AssertionError(f"shape {got.shape} != {want.shape}")
-    d = np.abs(levels(got, b) - levels(want, b))
-    tie = near_tie(x, b, err) if err > 0 else np.zeros(d.shape, bool)
+    d = np.abs(levels(got, b, dc) - levels(want, b, dc))
+    tie = near_tie(np.asarray(x, dtype=np.float64) + dc, b, err) if err > 0 else np.zeros(d.shape, bool)
     bad = (d > 1) | ((d == 1) & ~tie)
     if np.any(bad):
         i = int(np.flatnonzero(bad)[0])
@@ -172,34 +220,44 @@ def compare(got, x, b, err=0.0):
     return int(np.sum(d == 1))
 
 
-def mutants(x, b):
-    """The wrong quantisers 6.6 must catch (plus three plausible slips), each on the same float32 input."""
-    x = _x(x, True); S = scale(b); t = x * S
+def mutants(x, b, dc=0.0):
+    """The wrong quantisers 6.6 must catch (plus three plausible slips), each on the same float32 input; with a dc (Q2b,
+    OD12) the Q2 forms act on x + dc as the correct one does, and OD12's own wrong forms are added."""
+    x = _x(x, True); S = scale(b); d = _dc(dc, x.shape); y = _on(x, d, True); t = y * S
+    off = lambda g: np.where(d == 0, g, _f32(g - d))
     away = np.sign(t) * np.floor(np.abs(t) + 0.5)                # C roundf: ties away from zero
-    return {
-        "mid_tread_no_clamp": np.rint(t) / S,                    # OD11 (a)
-        "top_clamped_at_S": np.clip(np.rint(t), -S, S) / S,
-        "half_away_from_zero": np.clip(away, -S, S - 1) / S,
-        "truncate": np.clip(np.trunc(t), -S, S - 1) / S,
-        "symmetric_clip": np.clip(np.rint(t), -(S - 1), S - 1) / S,
+    m = {
+        "mid_tread_no_clamp": off(np.rint(t) / S),               # OD11 (a)
+        "top_clamped_at_S": off(np.clip(np.rint(t), -S, S) / S),
+        "half_away_from_zero": off(np.clip(away, -S, S - 1) / S),
+        "truncate": off(np.clip(np.trunc(t), -S, S - 1) / S),
+        "symmetric_clip": off(np.clip(np.rint(t), -(S - 1), S - 1) / S),
     }
+    if np.any(d != 0):
+        m["dc_not_added"] = crush(x, b)                          # OD12 (a): Q2's grid on the DC-free pulse
+        m["dc_not_subtracted"] = np.clip(np.rint(t), -S, S - 1) / S
+        m["dc_sign_flipped"] = crush(x, b, dc=-d)
+    return m
 
 
-def discriminates(x, b):
-    """{mutant: number of samples where it differs from crush(x, b)}: a crush case's block must score > 0 on each
+def discriminates(x, b, dc=0.0):
+    """{mutant: number of samples where it differs from crush(x, b, dc=dc)}: a crush case's block must score > 0 on each
     mutant it is meant to kill."""
-    want = crush(x, b)
-    return {k: int(np.sum(v != want)) for k, v in mutants(x, b).items()}
+    want = crush(x, b, dc=dc)
+    return {k: int(np.sum(v != want)) for k, v in mutants(x, b, dc).items()}
 
 
-def probe(b):
+def probe(b, dc=0.0):
     """A crafted float32 block for b: every tie at the bottom, middle and top of the range, -0.0, a negative value that
-    rounds to -0.0, overshoot past +1 and below -1 (beyond the tie at -S - 0.5), and both exact ends."""
+    rounds to -0.0, overshoot past +1 and below -1 (beyond the tie at -S - 0.5), and both exact ends. dc (Q2b): the same
+    points for x + dc (the block is shifted by -dc; exact, so still every tie, for a dc of few bits such as -0.75; for a
+    kernel dc of 24 bits the float32 shift moves each point by an ulp, so near-ties on both sides instead)."""
     S = scale(b)
     k = np.r_[-S - 3, -S - 1, -S - 0.5, -S, -S + 0.5, -2.5, -1.5, -0.5, -0.3, 0.0, 0.3, 0.5, 1.5, 2.5,
               S - 1.5, S - 1, S - 0.5, S, S + 0.5, S + 3]
     x = np.r_[k / S, -0.0, 1.06, -1.06]
-    return x.astype(np.float32).astype(np.float64)
+    x = x.astype(np.float32).astype(np.float64)
+    return x if dc == 0 else _f32(x - float(np.float32(dc)))
 
 
 # ---- Q3: the shapes below the saw (4.6, OD6) -------------------------------------------------------------------------------
@@ -482,6 +540,60 @@ def _selftest():
             with self.assertRaises(AssertionError): levels(mutants(x, 8)["mid_tread_no_clamp"], 8)
             with self.assertRaises(AssertionError): levels(x, 8)              # uncrushed input is off the grid
             with self.assertRaises(ValueError): crush([0.0, np.nan], 8)
+
+        # ---- Q2b (OD12 = (b)): the grid about the part's dc
+        def test_dc_zero_is_q2s_grid(self):                      # every bit, sign of zero included
+            rng = np.random.default_rng(4412)
+            for b in BITS:
+                S = scale(b)
+                for x in (probe(b), _f32(rng.standard_normal(4096) * 0.7)):
+                    q2 = np.clip(np.rint(x * S), -S, S - 1) / S
+                    self.assertTrue(np.array_equal(crush_bits(x, b, dc=0.0), q2.astype(np.float32).view(np.uint32)), b)
+            self.assertTrue(np.signbit(crush([-0.0], 8, dc=0.0)[0]))
+
+        def test_dc_by_hand(self):                               # 4 bits about dc -0.75: the pulse 1.75 / -0.25 (w 1/8)
+            x = np.array([1.75, -0.25, 0.8125, 1.9, -0.4])           # x + dc = 1, -1, 1/16 (a tie), 1.15, -1.15
+            q = crush(x, 4, dc=-0.75)
+            self.assertTrue(np.array_equal(q, [1.625, -0.25, 0.75, 1.625, -0.25]), q)
+            self.assertTrue(np.array_equal(levels(q, 4, -0.75), [7, -8, 0, 7, -8]))
+            self.assertEqual(check_clip(x, q, 4, dc=-0.75), (2, 1))
+            self.assertTrue(np.array_equal(crush(x, None, dc=-0.75), _f32(x)))          # Full: untouched (any dc)
+
+        def test_dc_float32_exact(self):                         # == the float32 add, grid, subtract, every bit
+            rng = np.random.default_rng(4413)
+            x32 = (rng.standard_normal(65536) * 0.9).astype(np.float32)
+            d32 = (-0.84 * rng.random(65536)).astype(np.float32)
+            for b in BITS:
+                S = np.float32(scale(b))
+                with np.errstate(all="raise"):
+                    g = np.minimum(np.maximum(np.rint((x32 + d32) * S), -S), S - np.float32(1)) * (np.float32(1) / S)
+                    q32 = g - d32
+                self.assertTrue(np.array_equal(q32.view(np.uint32), crush_bits(x32, b, dc=d32)), b)
+
+        def test_dc_levels_and_clip_on_a_sweep(self):            # one dc: exactly 2^b values, both clips about dc
+            d = float(np.float32(-0.84))
+            for b in BITS:
+                S = scale(b); x = _f32(np.linspace(-1.3, 1.3, 200001) - d); q = crush(x, b, dc=d)
+                self.assertEqual(check_levels(q, b, d), 1 << b)
+                top, bot = check_clip(x, q, b, dc=d); self.assertGreater(top, 0); self.assertGreater(bot, 0)
+                self.assertEqual(q.max(), float(np.float32((S - 1) / S - d)), b)
+                self.assertEqual(q.min(), float(np.float32(-1 - d)), b)
+            with self.assertRaises(ValueError): check_levels(q, 4, np.full(q.shape, d))
+            with self.assertRaises(ValueError): crush([0.1], 8, dc=0.1)       # not a float32 value
+
+        def test_the_pulse_keeps_its_mean(self):                 # OD12's point: the DC-free pulse stays DC-free
+            for w in (0.08, 0.25, 0.4):
+                d = float(np.float32(2 * w - 1)); P = 400; hi = int(round(w * P))
+                one = np.r_[np.full(hi, 1 - d), np.full(P - hi, -1 - d)]; x = _f32(np.tile(one, 50))
+                for b in BITS:
+                    S = scale(b); q = crush(x, b, dc=d)
+                    self.assertLess(abs(np.mean(q - x) + hi / P / S), 2.0 ** -23, (w, b))   # the +1 high loses one step
+                    self.assertGreater(abs(np.mean(crush(x, b) - x)), 2 * hi / P / S, (w, b))   # OD12 (a): over twice
+
+        def test_probe_about_dc_kills_every_mutant(self):
+            for b in BITS:
+                for name, n in discriminates(probe(b, -0.75), b, -0.75).items(): self.assertGreater(n, 0, (b, name))
+                self.assertEqual(len(mutants(probe(b, -0.75), b, -0.75)), 8)
 
     class Shapes(unittest.TestCase):                             # Q3 (4.6, OD6)
         CASES = (0, 1, 12, 23, 24, 36, 45.5, 47)

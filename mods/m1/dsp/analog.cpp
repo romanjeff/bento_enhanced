@@ -23,7 +23,8 @@
  *   - Shape modulation (Track M, J4): on an Analog oscillator the sources routed to its Position parameter move Shape,
  *     ramped over the block (a step every AN_RAMP frames, each with its correction: an_reshape);
  *   - P3 Q2 Bit Depth (docs/plan-p3-fm-bits.md 4.7, OD11): Full / 12 / 8 / 4 bits per oscillator, a two's-complement
- *     post-pass on the 96 kHz block before Level (an_crush), counted in SA_FMSTATS (bits=).
+ *     pass on the 96 kHz block before Level (an_crush, part by part about the kernel's dc: Q2b, OD12), counted in
+ *     SA_FMSTATS (bits=).
  * Four vtable words point at build.py's trampolines (in this window, before this ELF):
  *   A1  Wavetable root slot 18 (voice render): an_enter(root, voice), then stock's render
  *   A2  Wavetable oscillator slot 0 (render): an_osc(osc, scratch, out) != 0 means handled, else stock
@@ -511,6 +512,12 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     u32 parts = step ? (n + step - 1u) / step : 0u;
     float *s = FN(S_SCRATCH_PTR, float *(*)(void *))(scratch);
     FN(S_SCRATCH_SIZE, void (*)(void *, u32))(scratch, n);
+    /* P3 Q2 Bit Depth (plan 4.7, OD11): each part crushed as soon as it is rendered, before Level (SMOOTH_APPLY) and in the
+     * 96 kHz domain ahead of stock's FIR; Full skips it (the loops are untouched: M1). Q2b (OD12 = (b)): about the part's
+     * own dc (an_dc of its k: a Shape ramp moves the pulse's DC part by part), so the DC-free pulse is crushed on the grid's
+     * range and stays DC-free. A part's samples are final once rendered (an_reshape only moves `delayed`). BD1: OSC1's FM
+     * 1>2 buffer B (Q6) is written from s after this loop, before Level, also when OSC1 is silent (E3 (a)). */
+    u32 bits = props(osc)->bits;
     for (u32 j = 0, off = 0; j < parts; j++, off += step) {
         u32 m = n - off < step ? n - off : step, co = off % AN_EVENTS;
         u8 *ev = slave->events;                               /* (unused by AN_FREE) */
@@ -524,11 +531,9 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
         if (k != kp) an_reshape(self, kp, k);
         kp = k;
         an_render(self, inc, k, s + off, m, ev, role);
+        if (bits) an_crush(s + off, m, bits, an_dc(k));
     }
-    /* P3 Q2 Bit Depth (plan 4.7, OD11): a post-pass over the whole block, before Level (SMOOTH_APPLY) and in the 96 kHz
-     * domain ahead of stock's FIR; Full skips it (the loops above are untouched: M1). BD1: OSC1's FM 1>2 buffer B (Q6) is
-     * written from s here, after the crush and before Level, also when OSC1 is silent (E3 (a)). */
-    if (u32 bits = props(osc)->bits) { an_crush(s, n, bits); FMSTATS->bits++; }
+    if (bits) FMSTATS->bits++;                                /* (one per crushed render, as Q2's post-pass counted) */
     if (!silent) {
         FN(S_SMOOTH_APPLY, void (*)(void *, float *, u32, u32))((u8 *)osc + OSC_SMOOTH, s, 0, n);
         FN(S_MIX_INTO, void (*)(void *, void *))(out, scratch);

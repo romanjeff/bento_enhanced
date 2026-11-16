@@ -30,7 +30,9 @@ P3 Q1 (docs/plan-p3-fm-bits.md 2.4, 3.3, 6.1, 6.2): Props stores Sub FM, Bit Dep
 (BE_REF, default ~/bento/out/m1-be440: its image and its manifest's DSP symbols) and compares them byte for byte.
 P3 Q2 (plan 4.7, OD11): BitDepth checks an_crush against p3_golden.py (numpy) bit for bit, and in the voice path takes the
 block at Level's input (stock's SMOOTH_APPLY, called from the DSP) to prove the crush is the golden grid on the
-oscillator's own signal and the only change.
+oscillator's own signal and the only change. P3 Q2b (OD12 = (b)): the grid acts on s + dc, dc the part's own (an_dc, captured
+at each an_crush call), and dc comes off after: BitDepth checks the pulse above Shape 88 stays near-transparent at 12 / 8
+bits and DC-free, and a Shape ramp's parts each get their dc.
 P3 Q3 (plan 4.6, OD6): ShapeLow checks the five shapes' LOW regime (sine, triangle and their morphs below the saw) against
 p3_golden.py sample by sample and by spectrum, an_shape's map in the voice path, the sync roles and the Shape ramp across the
 new plateaus; P3Identity covers 45..127 against BE4.40.
@@ -1948,20 +1950,57 @@ def level_taps(r, inject=None):
     """P3 Q2: every block our DSP hands to Level (stock's SMOOTH_APPLY (smoother, s, 0, n) called from the DSP window; stock's
     own Wavetable render calls it too, from its own code, and is left out), as float32 arrays in call order. inject(x, i) -> y:
     y is written over s before Level runs (the golden crush, put where the build's crush is); i is the oscillator (0 OSC1,
-    1 OSC2, by r0 = osc + OSC_SMOOTH against r.v, which voice_case sets; None where r has no r.v)."""
-    got, lo, hi = [], S.M7_DSP, S.M7_DSP_LIMIT
+    1 OSC2, by r0 = osc + OSC_SMOOTH against r.v, which voice_case sets; None where r has no r.v).
+    P3 Q2b: the list also carries, per block, .osc (that i), .calls (the an_crush calls that wrote into it since the last
+    block: (offset, n, bits, dc), dc from s0 at an_crush's entry, as float32) and .dc (one dc per sample, 0 where no call
+    wrote: a Full oscillator). an_crush called from outside a block's range is in .stray (none is expected)."""
+    got, lo, hi = Taps(), S.M7_DSP, S.M7_DSP_LIMIT
+    pending = []
+    def c(uc, a, size, _):
+        pending.append((uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2),
+                        np.frombuffer(struct.pack("<I", uc.reg_read(UC_ARM_REG_S0)), dtype="<f4")[0]))
     def h(uc, a, size, _):
         if not lo <= (uc.reg_read(UC_ARM_REG_LR) & ~1) < hi:
             return
         p, n = uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R3)
         x = np.frombuffer(bytes(uc.mem_read(p, 4 * n)), dtype="<f4").copy()
-        got.append(x)
+        osc, v = uc.reg_read(UC_ARM_REG_R0) - OSC_SMOOTH, getattr(r, "v", None)
+        i = None if v is None else next((k for k in (0, 1) if osc == r.osc(v, k)), "?")
+        calls, d = [], np.zeros(n, dtype=np.float32)
+        for cp, cn, cb, cd in pending:
+            if p <= cp < p + 4 * n:
+                calls.append(((cp - p) // 4, cn, cb, cd)); d[(cp - p) // 4:(cp - p) // 4 + cn] = cd
+            else:
+                got.stray.append((cp, cn, cb, cd))
+        pending.clear()
+        got.append(x); got.osc.append(i); got.calls.append(calls); got.dc.append(d)
         if inject:
-            osc, v = uc.reg_read(UC_ARM_REG_R0) - OSC_SMOOTH, getattr(r, "v", None)
-            i = None if v is None else next((k for k in (0, 1) if osc == r.osc(v, k)), "?")
             uc.mem_write(p, np.asarray(inject(x, i), dtype="<f4").tobytes())
+    if "an_crush" in r.dsp:
+        r.u.hook_add(UC_HOOK_CODE, c, begin=r.dsp["an_crush"] & ~1, end=r.dsp["an_crush"] & ~1)
     r.u.hook_add(UC_HOOK_CODE, h, begin=S.SMOOTH_APPLY, end=S.SMOOTH_APPLY)
     return got
+
+
+class Taps(list):
+    """level_taps' blocks, with each block's oscillator, an_crush calls and per-sample dc (P3 Q2b)."""
+    def __init__(self):
+        super().__init__(); self.osc, self.calls, self.dc, self.stray = [], [], [], []
+
+
+def dc_feed(taps):
+    """inject's dc source for a Full run that replays a crushed one: the crushed run's per-sample dc of each block, in the
+    same Level-call order (the cases assert both runs hand Level as many blocks)."""
+    it = iter(taps.dc)
+    return lambda: next(it)
+
+
+def dc_of(k):
+    """The pulse's DC term at kernel coordinate k, float64, from the kernel's stated law (analog_kernel.cpp header, plan
+    4.7): width = 0.5 - 0.84 (k - 0.5) above 0.5 (k clamped to 1), dc = 2 width - 1; 0 at and below 0.5 (the saw, the
+    square, LOW). The independent check of an_dc (within float32 rounding)."""
+    k = min(float(k), 1.0)
+    return 0.0 if not k > 0.5 else 2 * (0.5 - 0.84 * (k - 0.5)) - 1
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
@@ -1973,41 +2012,96 @@ class BitDepth(unittest.TestCase):
     zero included. Two levels: an_crush called on crafted blocks (every tie, -0.0, past +1 and below -1: the golden probe,
     which separates every wrong grid the model names), and the voice path, where the block at Level's input is taken with
     Bit Depth set and with it Full (level_taps). Placement and 'nothing else': the build with Full and the golden crush
-    injected at Level's input plays the crushed build byte for byte (output, voice, stats)."""
+    injected at Level's input plays the crushed build byte for byte (output, voice, stats).
+    P3 Q2b (OD12 = (b)): the grid acts on x + dc and dc comes off after, dc the part's own (an_dc); the golden crush takes it
+    as an argument (p3_golden: a spec change, the model follows OD12's text). In the voice path the dc of every crushed part
+    is captured at an_crush's entry (level_taps .calls / .dc) and checked against dc_of (the stated law), and the Full
+    replay injects the golden crush with that same dc."""
 
-    def crush_on_m7(self, x, bits):
+    def crush_on_m7(self, x, bits, dc=0.0):
         r = Rig()
         p = r.alloc(4 * len(x))
         r.u.mem_write(p, np.asarray(x, dtype="<f4").tobytes())
-        _, c = r.call(DSP["an_crush"], p, len(x), bits)
+        _, c = r.call(DSP["an_crush"], p, len(x), bits, fargs=(dc,))
         return np.frombuffer(bytes(r.u.mem_read(p, 4 * len(x))), dtype="<f4").copy(), c
+
+    @staticmethod
+    def an_dc(k, r=None):
+        """The M7's an_dc(k) (the part's dc an_osc hands an_crush), float32."""
+        r = r or Rig()
+        r.call(DSP["an_dc"], fargs=(k,))
+        return float(np.frombuffer(struct.pack("<I", r.u.reg_read(UC_ARM_REG_S0)), dtype="<f4")[0])
 
     def test_an_crush_is_the_golden_grid(self):
         """Settings 1 / 2 / 3 (12 / 8 / 4 bits; an_prop clamps anything past 3 to 3, OD4): the golden probe, a sweep over
         -1.3..1.3 (every level and both clips), random blocks of 4 x 4096 (normal, sd 0.7); bit for bit. Each of the
         model's wrong grids (mid-tread without the clamp, the top clamped at S, roundf, truncation, a symmetric clip) differs
         from it on the probe (so on this build's output), and the levels are exactly 2^b. Setting 0 leaves the block
-        alone."""
+        alone.
+        Q2b: each of those about dc 0 (Q2's grid, bit for bit: the same probe, sweep and random blocks), -0.75 (a dc of few
+        bits, so the shifted probe still lands on every tie: every Q2 and OD12 mutant is separated) and the kernel's own dc
+        at Shapes 100 and 127 (an_dc: the shifted probe's points move by an ulp, so OD12's mutants are what it separates);
+        the sweep of x + dc has exactly 2^b values of q for one dc. Full leaves the block alone at any dc."""
         rng = np.random.default_rng(1404)
-        for bits in (1, 2, 3):
-            b = G.bits_of(bits)
-            for name, x in (("probe", G.probe(b)), ("sweep", np.linspace(-1.3, 1.3, 20001)),
-                            ("random", rng.standard_normal(4 * 4096) * 0.7)):
-                with self.subTest(bits=bits, case=name):
-                    x = np.asarray(x, dtype=np.float32).astype(np.float64)
-                    q, _ = self.crush_on_m7(x, bits)
-                    self.assertTrue(np.array_equal(q.view(np.uint32), G.crush_bits(x, b)),
-                                    f"{b}-bit: {int(np.sum(q.view(np.uint32) != G.crush_bits(x, b)))} samples differ")
-                    if name == "probe":
-                        for m, k in G.discriminates(x, b).items():
-                            self.assertGreater(k, 0, f"{b}-bit probe separates {m}")
-                        top, bot = G.check_clip(x, q, b)
-                        self.assertGreater(top, 0); self.assertGreater(bot, 0)
-                    if name == "sweep":
-                        self.assertEqual(G.check_levels(q, b), 1 << b)
-        x = G.probe(8)
-        q, _ = self.crush_on_m7(x, 0)
-        self.assertTrue(np.array_equal(q.view(np.uint32), x.astype(np.float32).view(np.uint32)), "Full: untouched")
+        dcs = (0.0, -0.75, self.an_dc(k_of(100)), self.an_dc(k_of(127)))
+        self.assertTrue(dcs[2] < 0 and dcs[3] < dcs[2], dcs)
+        for dc in dcs:
+            for bits in (1, 2, 3):
+                b = G.bits_of(bits)
+                for name, x in (("probe", G.probe(b, dc)), ("sweep", np.linspace(-1.3, 1.3, 20001) - dc),
+                                ("random", rng.standard_normal(4 * 4096) * 0.7)):
+                    with self.subTest(dc=dc, bits=bits, case=name):
+                        x = np.asarray(x, dtype=np.float32).astype(np.float64)
+                        q, _ = self.crush_on_m7(x, bits, dc)
+                        want = G.crush_bits(x, b, dc=dc)
+                        self.assertTrue(np.array_equal(q.view(np.uint32), want),
+                                        f"{b}-bit dc {dc}: {int(np.sum(q.view(np.uint32) != want))} samples differ")
+                        if name == "probe":
+                            exact_ties = dc in (0.0, -0.75)
+                            for m, k in G.discriminates(x, b, dc).items():
+                                if exact_ties or m.startswith("dc_"):
+                                    self.assertGreater(k, 0, f"{b}-bit probe (dc {dc}) separates {m}")
+                            top, bot = G.check_clip(x, q, b, dc=dc)
+                            self.assertGreater(top, 0); self.assertGreater(bot, 0)
+                        if name == "sweep":
+                            self.assertEqual(G.check_levels(q, b, dc), 1 << b)
+        for dc in dcs:
+            x = G.probe(8)
+            q, _ = self.crush_on_m7(x, 0, dc)
+            self.assertTrue(np.array_equal(q.view(np.uint32), x.astype(np.float32).view(np.uint32)), f"Full: untouched (dc {dc})")
+
+    def test_an_dc_is_the_kernels_dc(self):
+        """Q2b: an_dc(k) is the DC term the kernel takes off its waveform, bit for bit: a free an_render at k (inc 0.001, so
+        whole plateaus) plays exactly f32(1 - dc) on its high and f32(-1 - dc) on its low (wave<PULSE> / wave<MIXED>
+        compute (+-1) - dc), for every whole Shape 89..127 and 1/512-held values next to 88; dc within 1e-6 of dc_of's
+        stated law; exactly +0.0 at and below k 0.5 (the saw 48, Shape 70, 87.6 and 88 - 1/512 just under the knee, the
+        square 88, LOW, NaN). Past k 1 (an_shape caps Shape at AN_SHAPE_MAX, so an_osc never passes it; set_shape clamps
+        it, and so does an_dc): an_dc(k) is an_dc(1) bit for bit and still an_render's own plateaus at that k."""
+        r = Rig()
+        st, out = r.alloc(256), r.alloc(4 * 2048)
+
+        def plateaus(k, dc):
+            r.u.mem_write(st, struct.pack("<I", 0x4f4c4e41) + bytes(252))
+            r.call(DSP["an_render"], st, out, 2048, 0, sargs=(0,), fargs=(0.001, k))
+            y = np.frombuffer(bytes(r.u.mem_read(out, 4 * 2048)), dtype="<f4")[1:]
+            vals, cnt = np.unique(y, return_counts=True)
+            top2 = sorted(vals[np.argsort(cnt)[-2:]])
+            self.assertEqual([float(v) for v in top2], [float(np.float32(-1.0) - np.float32(dc)), float(np.float32(1.0) - np.float32(dc))])
+        for sh in [88 + 1 / 512, 88 + 2 / 512] + list(range(89, 128)):
+            k = f32(k_of(sh)); dc = self.an_dc(k, r)
+            with self.subTest(shape=sh):
+                self.assertAlmostEqual(dc, dc_of(k), delta=1e-6)
+                self.assertLess(dc, 0.0)
+                plateaus(k, dc)
+        top = struct.pack("<f", self.an_dc(1.0, r))
+        for k in (f32(1.0 + 2 ** -23), 1.25, 2.0, float("inf")):          # (k past 1: the clamp)
+            with self.subTest(k=k):
+                dc = self.an_dc(k, r)
+                self.assertEqual(struct.pack("<f", dc), top)
+                plateaus(k, dc)
+        for k in (0.0, 0.25, f32(k_of(87.6)), f32(k_of(88 - 1 / 512)), 0.5, -0.5, -1.0, float("nan")):   # (just under the knee too)
+            d = self.an_dc(k)
+            self.assertEqual(struct.pack("<f", d), struct.pack("<f", 0.0), k)
 
     # the amounts cases (P3Identity.test_q1_plays_no_amount's seven), here with Bit Depth set
     push = staticmethod(P3Identity.push)
@@ -2024,6 +2118,32 @@ class BitDepth(unittest.TestCase):
                 ("root voice", lambda r: self.root_case(r, p3=p3), (0, 1)),
                 ("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,)))
 
+    # Q2b: each case's Shapes (OSC1, OSC2), for the dc its crushed parts must carry (root voice: Type 1's reset Shape 48;
+    # mixed: OSC2 48, OSC1 is stock's Wavetable)
+    SHAPES = {"free": (48, 88), "sync": (70, 100), "sync silent master": (48, 88), "glide": P3Identity.GLIDE["shape"],
+              "osc2 wavetable": (64, 48), "root voice": (48, 48), "mixed": (48, 48)}
+
+    def check_dcs(self, name, taps, shapes, b, oscs=(0, 1)):
+        """Q2b: every crushed block (of the oscillators oscs) is covered by its parts' an_crush calls end to end, at this
+        b's setting, with no call outside a block; a held Shape gives one dc per block, within 1e-6 of dc_of(its Shape),
+        the stated law (an_dc is pinned to the kernel's own dc by test_an_dc_is_the_kernels_dc). Where level_taps cannot
+        tell the oscillator (no r.v), every Shape of the case must give the same dc. Returns the dcs seen."""
+        self.assertEqual(taps.stray, [], f"{name}: an_crush only inside the blocks Level gets")
+        setting, seen = {12: 1, 8: 2, 4: 3}[b], set()
+        for j, (x, i, calls) in enumerate(zip(taps, taps.osc, taps.calls)):
+            if i in (0, 1) and i not in oscs:
+                continue                                         # (another oscillator's blocks: its own check)
+            self.assertEqual(sum(c[1] for c in calls), len(x), f"{name}: block {j} crushed end to end")
+            self.assertEqual([c[0] for c in calls], [sum(c[1] for c in calls[:m]) for m in range(len(calls))],
+                             f"{name}: block {j}: the parts in order")
+            self.assertTrue(all(c[2] == setting for c in calls), f"{name}: block {j} at setting {setting}")
+            want = {dc_of(k_of(shapes[i]))} if i in (0, 1) else {dc_of(k_of(s)) for s in shapes}
+            self.assertEqual(len(want), 1, f"{name}: the case's Shapes say one dc")
+            self.assertEqual(len({float(c[3]) for c in calls}), 1, f"{name}: block {j}: a held Shape, one dc")
+            self.assertAlmostEqual(float(calls[0][3]), want.pop(), delta=1e-6, msg=f"{name}: block {j} dc")
+            seen.add(float(calls[0][3]))
+        return seen
+
     def expected_change(self, name, at, dev, bits, b):
         """Case `at` three times on this build: crushed (Bit Depth `bits`), Full (the same case, Bit Depth 0), and Full with
         the golden crush injected at Level's input. Returns (Level-input blocks Full, crushed, instructions crushed, Full)."""
@@ -2031,8 +2151,10 @@ class BitDepth(unittest.TestCase):
         _, full, _ = self.cases(0)[at]
         rc, rf, ri = Rig(dev=dev), Rig(dev=dev), Rig(dev=dev)
         tc, tf = level_taps(rc), level_taps(rf)
-        level_taps(ri, inject=lambda x, i: G.crush(x, b))
+        feed = dc_feed(tc)                                       # Q2b: the crushed run's dc per sample, block by block
+        level_taps(ri, inject=lambda x, i: G.crush(x, b, dc=feed()))
         c = run(rc)
+        self.check_dcs(name, tc, self.SHAPES[self.cases(bits)[at][0]], b)
         for i in oscs:
             self.assertEqual(rc.stored[i][3], min(bits & 0xFFFFFFFF, 3), f"{name}: control, OSC{i + 1}'s Bit Depth as stored")
         f, inj = full(rf), full(ri)
@@ -2040,11 +2162,12 @@ class BitDepth(unittest.TestCase):
             self.assertEqual(rf.stored[i][3], 0, f"{name}: control, OSC{i + 1} Full in the reference")
         self.assertEqual(len(tc), len(tf), f"{name}: as many renders reach Level")
         self.assertGreater(len(tc), 0, f"{name}: control, the case renders")
-        for j, (y, x) in enumerate(zip(tc, tf)):
-            got = y.view(np.uint32)
-            if not np.array_equal(got, G.crush_bits(x.astype(np.float64), b)):
-                k = int(np.flatnonzero(got != G.crush_bits(x.astype(np.float64), b))[0])
-                self.fail(f"{name}: render {j}, sample {k}: {y[k]!r} vs golden {G.crush(x[k:k + 1], b)[0]!r} (in {x[k]!r})")
+        for j, (y, x, d) in enumerate(zip(tc, tf, tc.dc)):
+            got, want = y.view(np.uint32), G.crush_bits(x.astype(np.float64), b, dc=d)
+            if not np.array_equal(got, want):
+                k = int(np.flatnonzero(got != want)[0])
+                self.fail(f"{name}: render {j}, sample {k}: {y[k]!r} vs golden {G.crush(x[k:k + 1], b, dc=d[k])[0]!r} "
+                          f"(in {x[k]!r}, dc {d[k]!r})")
         self.assertNotEqual(c[0], f[0], f"{name}: Bit Depth {bits} changes the output")
         same(self, c[0], inj[0], f"{name}: the output = Full with the golden crush at Level's input")
         same(self, P3Identity.masked(c[1], oscs), P3Identity.masked(inj[1], oscs), f"{name}: the voice")
@@ -2069,36 +2192,185 @@ class BitDepth(unittest.TestCase):
                 b, name = G.bits_of(bits), self.cases(bits)[at][0]
                 with self.subTest(dev=dev, case=name, bits=bits):
                     tf, tc, cc, cf = self.expected_change(f"{name} bits={bits} dev={dev}", at, dev, bits, b)
-                    for x, y in zip(tf, tc):
-                        t, d = G.check_clip(x.astype(np.float64), y.astype(np.float64), b)
+                    for x, y, dc in zip(tf, tc, tc.dc):
+                        t, d = G.check_clip(x.astype(np.float64), y.astype(np.float64), b, dc=dc)
                         clip[0] += t; clip[1] += d
                     cost.append((f"{name} bits={bits} dev={dev}", cc, cf, sum(len(x) for x in tc)))
         w = max(cost, key=lambda c: (c[1] - c[2]) / c[3])
         print(f"\n  BitDepth: {len(cost)} cases, crush cost per crushed sample: worst {(w[1] - w[2]) / w[3]:.2f} instructions "
               f"({w[0]}: {w[1]} vs Full {w[2]}, {w[3]} samples); clipped samples top {clip[0]}, bottom {clip[1]}", file=sys.stderr)
-        self.assertGreater(clip[0], 0, "a case drives s past the top (the pulse's DC-free high, BLEP overshoot): top at (S-1)/S")
+        # Q2b (OD12 (b), reviewed edit): the top is now reached by the +1 high itself (the square's, and the pulse's about
+        # its dc), no longer by the DC-free pulse's 2 - 2w high
+        self.assertGreater(clip[0], 0, "a case reaches the top (s + dc at the +1 high): top at (S-1)/S")
 
-    def test_real_blocks_reach_the_top_clip(self):
-        """6.6 (Q2): a real block past the top, at every b, so a top clamped at S (or no clamp) is seen in the voice path,
-        not only on an_crush's crafted probe: the pulse is DC-free (1 - dc high, 1.84 at Shape 127, 1.26 at 100), so every
-        Shape above 88 drives s past +1 by far more than BLEP overshoot. The bottom: the BE4.40 kernel never goes below -1
-        (M, measured here: min -1.000000, the square's low; a sync reset's BLEP stays inside), so a missing *bottom* clamp
-        alone is invisible on real blocks; its cover is test_an_crush_is_the_golden_grid's probe (x S down to -S - 3).
-        Shapes 127 / 100 / 48 / 88 / 70, free and synced, notes 60..115, Rig(dev=True)."""
-        top, lo = {b: 0 for b in G.BITS}, []
-        for shape, sync, note in ((127, 0, 60), (100, 1, 96), (48, 1, 108), (88, 1, 100), (70, 1, 110), (127, 1, 115)):
-            r = Rig(dev=True)
-            tf = level_taps(r)
-            self.voice_case(r, shape=(shape, shape), sync=sync, notes={0: note}, blocks=6)
-            x = np.concatenate(tf).astype(np.float64)
-            lo.append(x.min())
+    def pair(self, shape, sync=0, note=60, bits=1, blocks=6, mod=None, dev=True):
+        """Q2b: one voice case twice on this build, Bit Depth `bits` on both oscillators and Full: (Full taps, crushed taps).
+        Both runs hand Level the same blocks in the same order (asserted), and Full calls an_crush nowhere (identity at
+        Full: the Full path is Q1's, P3Identity compares it with BE4.40)."""
+        rc, rf = Rig(dev=dev), Rig(dev=dev)
+        tc, tf = level_taps(rc), level_taps(rf)
+        kw = dict(shape=(shape, shape) if not isinstance(shape, tuple) else shape, sync=sync, notes={0: note}, blocks=blocks,
+                  mod=mod)
+        self.voice_case(rc, p3=(0, bits, 0), **kw); self.voice_case(rf, p3=(0, 0, 0), **kw)
+        self.assertEqual(len(tc), len(tf)); self.assertGreater(len(tc), 0)
+        self.assertEqual((tf.stray, sum(len(c) for c in tf.calls)), ([], 0), "Full: no an_crush call")
+        return tf, tc
+
+    PULSES = ((88, 0, 60), (89, 0, 60), (100, 0, 60), (110, 0, 72), (120, 0, 60), (127, 0, 60), (100, 1, 96), (127, 1, 115),
+              (88, 1, 100))
+
+    def test_real_blocks_sit_on_the_grids_range(self):
+        """Q2b, retires Q2's test_real_blocks_reach_the_top_clip (a reviewed expected change, OD12 = (b)): Q2 pinned that the
+        DC-free pulse's high (2 - 2w: 1.84 at Shape 127, 1.26 at 100) drove s far past +1, so every Bit Depth clipped it
+        hard. Now the grid sees s + dc, the pulse on its own range: on real blocks (Shapes 88..127 free and synced, plus
+        Q2's 48 / 70 synced, notes 60..115, Rig(dev=True)) s + dc stays within [-1, 1] (M: the measured ends are printed;
+        the kernel's 2-point BLEP interpolates between the levels, so it never overshoots them), while s itself still goes
+        past +1 (the reason for dc). The top is still reached at every b, by the +1 high itself (the square's and the pulse's
+        about dc), so the voice path still sees a top clamped at S; the bottom tie is not passed (as in Q2: the -1 low lands
+        on -S exactly), its cover stays the probe. s + dc is the float32 sum an_crush forms (dc captured at its entry)."""
+        top, ends, raw = {b: 0 for b in G.BITS}, [], []
+        for shape, sync, note in self.PULSES + ((48, 1, 108), (70, 1, 110)):
+            tf, tc = self.pair(shape, sync, note)
+            self.check_dcs(f"{shape}/{sync}/{note}", tc, (shape, shape), 12)
+            x = np.concatenate(tf).astype(np.float32); d = np.concatenate(tc.dc)
+            y = (x + d).astype(np.float64)                       # float32 add, as an_crush's
+            ends.append((y.min(), y.max())); raw.append(float(x.max()))
             for b in G.BITS:
-                top[b] += int(np.sum(x * G.scale(b) >= G.scale(b) - 0.5))
-        below = {b: int(min(lo) * G.scale(b) < -G.scale(b) - 0.5) for b in G.BITS}
-        print(f"\n  real blocks: past the top per b {top}; lowest sample {min(lo):.6f} (below the bottom tie: {below})",
+                top[b] += int(np.sum(y * G.scale(b) >= G.scale(b) - 0.5))
+        lo, hi = min(e[0] for e in ends), max(e[1] for e in ends)
+        print(f"\n  real blocks: s + dc in [{lo:.9f}, {hi:.9f}] (s alone up to {max(raw):.6f}); at the top per b {top}",
               file=sys.stderr)
+        self.assertGreaterEqual(lo, -1.0, "s + dc: never below -1 (the bottom clamp is not reached)")
+        self.assertLessEqual(hi, 1.0, "s + dc: never above +1 (only the +1 high itself meets the top)")
+        self.assertGreater(max(raw), 1.8, "control: s alone (the DC-free pulse at 127) is far past +1")
         for b in G.BITS:
-            self.assertGreater(top[b], 0, f"{b}-bit: a real block past the top")
+            self.assertGreater(top[b], 0, f"{b}-bit: a real block reaches the top")
+
+    def test_12_and_8_bits_are_near_transparent_on_the_pulse(self):
+        """Q2b (OD12 = (b)): at 12 and 8 bits the crushed pulse (Shapes 88..127, free and synced, Rig(dev=True)) is within
+        one step of the Full one at every sample: |q - s| <= 1/S + 2^-23. Derived: y = s + dc rounds once (half an ulp of
+        a value under 2, 2^-24); y stays within [-1, 1] (test_real_blocks_sit_on_the_grids_range), so rint moves it by at
+        most 1/(2S), and the clip only moves the +1 high down to (S-1)/S, by 1/S; the - dc rounds once more (2^-24). So the
+        largest error is the +1 high's one step, and the pulse keeps its peak to peak but for that step (1/2048 at 12 bits,
+        1/128 at 8). Control: Q2's grid without dc (OD12 (a), p3_golden.crush with dc 0) is off by more than 0.2 on the same
+        blocks for every Shape from 100 (the clipped high; measured worst printed)."""
+        worst, old = {}, {}
+        for shape, sync, note in self.PULSES:
+            for bits in (1, 2):
+                b = G.bits_of(bits); S = G.scale(b)
+                tf, tc = self.pair(shape, sync, note, bits)
+                x = np.concatenate(tf).astype(np.float64); q = np.concatenate(tc).astype(np.float64)
+                e = float(np.max(np.abs(q - x)))
+                with self.subTest(shape=shape, sync=sync, bits=bits):
+                    self.assertLessEqual(e, 1 / S + 2.0 ** -23, f"{b}-bit Shape {shape}: worst |q - s| {e!r}")
+                    pp = (x.max() - x.min()) - (q.max() - q.min())
+                    self.assertLessEqual(abs(pp), 1 / S + 2.0 ** -22, f"{b}-bit Shape {shape}: peak to peak lost {pp!r}")
+                    a = float(np.max(np.abs(G.crush(x, b) - x)))
+                    if shape >= 100:
+                        self.assertGreater(a, 0.2, f"control: OD12 (a) at Shape {shape} clips the high ({a!r})")
+                worst[(shape, sync, b)] = e * S; old[(shape, sync, b)] = a
+        print(f"\n  pulse, worst |q - s| in steps: {max(worst.values()):.6f}; OD12 (a) on the same blocks up to "
+              f"{max(old.values()):.4f} (Shape 127 / 12 bits {old[(127, 0, 12)]:.4f})", file=sys.stderr)
+
+    def test_the_crushed_pulse_keeps_its_mean(self):
+        """Q2b (OD12 = (b): B stays DC-free): the crush moves the pulse's mean by about -f_hi / S only. Derived, per sample,
+        with e = q - s: on the low plateau s = f32(-1 - dc), s + dc rounds to -1 within 2^-24, the level is -S, and q =
+        f32(-1 - dc) = s: e = 0 exactly; on the high plateau s = f32(1 - dc), the level is S - 1 (the clip), and e = -1/S
+        within 2^-23; on the edge samples (the BLEP's, a sync reset's) |e| <= 1/S + 2^-23 (the transparency bound). So with
+        f_hi and f_edge the fractions of high and edge samples,
+            |mean(e) + f_hi / S| <= f_edge (1/S + 2^-23) + f_hi 2^-23,
+        and since f_hi <= w (the width: 8 % at Shape 127) the shift is at most about (w + f_edge) / S: -3.9e-5 at Shape 127
+        / 12 bits (M), against Q2's (OD12 (a)) -0.070 on the same blocks (the clipped high). Under FM 1>2 (Q6, B = I inc1 q)
+        the shift is a detune of I inc1 mean(q): at I = 8 about 3e-4 inc1 instead of -0.56. Not removed: the same -f_hi / S
+        on the square (Shape 88, no dc), OD11 (b)'s asymmetric top, which at 4 bits is -0.065 (M, printed). Each case also
+        checks the low plateau's e = 0 and the
+        high's -1/S directly, and, from Shape 100, that Q2's form moves the mean further: over 100 / 10 / 1 times as far at
+        12 / 8 / 4 bits (the figures are printed)."""
+        rows = []
+        for shape, sync, note in self.PULSES:
+            for bits in (1, 2, 3):
+                b = G.bits_of(bits); S = G.scale(b)
+                tf, tc = self.pair(shape, sync, note, bits, blocks=8)
+                x = np.concatenate(tf).astype(np.float64); q = np.concatenate(tc).astype(np.float64)
+                d = np.concatenate(tc.dc); dc = float(d[0])
+                with self.subTest(shape=shape, sync=sync, bits=bits):
+                    self.assertTrue(np.all(d == dc), "a held Shape: one dc")
+                    hi_v, lo_v = float(np.float32(1.0) - np.float32(dc)), float(np.float32(-1.0) - np.float32(dc))
+                    hi, lo = x == hi_v, x == lo_v
+                    edge = ~(hi | lo)
+                    e = q - x
+                    self.assertGreater(lo.sum(), 0, "control: a low plateau")
+                    self.assertTrue(np.all(e[lo] == 0.0), "the low plateau: e = 0")
+                    if hi.any():                                 # (Shape 127 at note 115: the high is under one sample)
+                        self.assertLessEqual(float(np.max(np.abs(e[hi] + 1 / S))), 2.0 ** -23, "the high plateau: e = -1/S")
+                    f_hi, f_edge = hi.mean(), edge.mean()
+                    m = float(e.mean())
+                    bound = f_edge * (1 / S + 2.0 ** -23) + f_hi * 2.0 ** -23
+                    self.assertLessEqual(abs(m + f_hi / S), bound, f"{b}-bit Shape {shape}: mean shift {m!r}")
+                    ma = float(np.mean(G.crush(x, b) - x))
+                    if shape >= 100 and f_hi > 0.05:             # (below 100 dc is small, and so is (a)'s clip; with no
+                                                                 # high plateau (127 at note 115) there is little to clip)
+                        self.assertGreater(abs(ma), {12: 100, 8: 10, 4: 1}[b] * abs(m), f"control: OD12 (a) {ma!r} vs {m!r}")
+                rows.append((shape, sync, b, float(x.mean()), float(q.mean()), m, ma, f_hi, f_edge))
+        w = max((r for r in rows if r[0] > 88), key=lambda r: abs(r[5]) * G.scale(r[2]))
+        print("\n  crushed pulse mean shift (mean(q) - mean(s)); OD12 (a) on the same blocks:\n" + "\n".join(
+              f"    Shape {r[0]:3} sync {r[1]} {r[2]:2}-bit: mean s {r[3]:+.6f} q {r[4]:+.6f} shift {r[5]:+.3e} "
+              f"(f_hi {r[7]:.3f}, edges {r[8]:.3f}); (a) {r[6]:+.4f}" for r in rows if r[2] in (12, 4) and r[1] == 0),
+              file=sys.stderr)
+
+    def test_a_ramp_crushes_each_part_about_its_own_dc(self):
+        """Q2b (OD12: dc follows a Shape ramp part by part): an LFO on Position moves Shape between 100 and about 125 every
+        block (free and synced, Rig(dev=True), 12 / 8 / 4 bits), so each changed block ramps in 8 AN_RAMP parts. Each part's
+        an_crush call follows its an_render call (same offset and length) with dc = an_dc of that part's k (the M7's own,
+        bit for bit) and within 1e-6 of dc_of(k); the dcs of a ramp block are 8 distinct values in the ramp's order. The
+        Level-input block is the golden crush of the Full block with that per-sample dc, bit for bit. Each constant-dc part
+        has at most 2^b distinct values, on the grid about its dc (check_levels); a held block (one part of 256) at 4 bits has
+        at most 16. A whole ramp block is off the grid of any one of its dcs (the 2^b is per part; the count per block is
+        printed)."""
+        mod = lambda blk, i: 0.2 * (blk % 2)
+        r0 = Rig()
+        for sync in (0, 1):
+            for bits in (1, 2, 3):
+                b = G.bits_of(bits)
+                with self.subTest(sync=sync, bits=bits):
+                    rc, rf = Rig(dev=True), Rig(dev=True)
+                    tc, tf = level_taps(rc), level_taps(rf)
+                    seq = []
+                    rc.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: seq.append(("r", uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2),
+                                  np.frombuffer(struct.pack("<I", uc.reg_read(UC_ARM_REG_S1)), dtype="<f4")[0])),
+                                  begin=DSP["an_render"] & ~1, end=DSP["an_render"] & ~1)
+                    rc.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: seq.append(("c", uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1),
+                                  np.frombuffer(struct.pack("<I", uc.reg_read(UC_ARM_REG_S0)), dtype="<f4")[0])),
+                                  begin=DSP["an_crush"] & ~1, end=DSP["an_crush"] & ~1)
+                    kw = dict(shape=(100, 100), sync=sync, mod=mod, blocks=6)
+                    self.voice_case(rc, p3=(0, bits, 0), **kw); self.voice_case(rf, p3=(0, 0, 0), **kw)
+                    self.assertEqual((tf.stray, sum(len(c) for c in tf.calls)), ([], 0), "Full: no an_crush call")
+                    self.assertEqual(tc.stray, [])
+                    self.assertEqual([s[0] for s in seq], ["r", "c"] * (len(seq) // 2), "each render, then its crush")
+                    for (_, rout, rn, k), (_, cp, cn, dc) in zip(seq[0::2], seq[1::2]):
+                        self.assertEqual((cp, cn), (rout, rn), "the crush covers its render's part")
+                        self.assertEqual(float(dc), self.an_dc(float(k), r0), "dc = an_dc(the part's k), bit for bit")
+                        self.assertAlmostEqual(float(dc), dc_of(k), delta=1e-6)
+                    ramps, per_block = 0, []
+                    for j, (x, y, calls, d) in enumerate(zip(tf, tc, tc.calls, tc.dc)):
+                        want = G.crush_bits(x.astype(np.float64), b, dc=d)
+                        self.assertTrue(np.array_equal(y.view(np.uint32), want), f"block {j}: the golden crush with its parts' dc")
+                        dcs = [float(c[3]) for c in calls]
+                        if len(set(dcs)) > 1:
+                            ramps += 1
+                            self.assertEqual(len(calls), 8, f"block {j}: 8 AN_RAMP parts")
+                            self.assertEqual(len(set(dcs)), 8, f"block {j}: 8 dcs")
+                            self.assertTrue(dcs == sorted(dcs) or dcs == sorted(dcs, reverse=True), f"block {j}: in the ramp's order")
+                            per_block.append(int(np.unique(y).size))
+                            with self.assertRaises(AssertionError, msg=f"block {j}: one dc for the whole ramp block is off its grid"):
+                                G.check_levels(y.astype(np.float64), b, dcs[0])
+                        for off, n, _, dc in calls:
+                            G.check_levels(y[off:off + n].astype(np.float64), b, float(dc))
+                        if len(calls) == 1 and b == 4:
+                            self.assertLessEqual(int(np.unique(y).size), 16)
+                    self.assertGreaterEqual(ramps, 4, "control: the LFO ramps most blocks")
+                    if b == 4:
+                        print(f"\n  ramp blocks at 4 bits (sync {sync}): distinct values per block {per_block}", file=sys.stderr)
 
     def test_each_oscillator_crushes_at_its_own_depth(self):
         """Q2 review: OSC1 and OSC2 at different depths (12 / 4 bits, Full / 8, 8 / Full), free and synced, both rigs: the
@@ -2112,14 +2384,20 @@ class BitDepth(unittest.TestCase):
                         gb = [G.bits_of(x) if x else 0 for x in bb]
                         rc, rf, ri = Rig(dev=dev), Rig(dev=dev), Rig(dev=dev)
                         tc = level_taps(rc)
-                        hits = []
+                        hits, feed = [], dc_feed(tc)             # Q2b: each block's dc, as the crushed run had it
                         def inj(x, i):
                             self.assertIn(i, (0, 1), "level_taps: the oscillator")
                             hits.append(i)
-                            return G.crush(x, gb[i]) if gb[i] else x
+                            d = feed()
+                            return G.crush(x, gb[i], dc=d) if gb[i] else x
                         level_taps(ri, inject=inj)
                         c = self.voice_case(rc, p3=tuple((700, x, 333) for x in bb), **kw)
                         self.assertEqual([rc.stored[i][3] for i in (0, 1)], list(bb), f"{name}: control, stored per oscillator")
+                        for i in (0, 1):
+                            if gb[i]:
+                                self.check_dcs(f"{name} {bb}", tc, kw["shape"], gb[i], oscs=(i,))
+                            else:
+                                self.assertEqual([c for o, c in zip(tc.osc, tc.calls) if o == i and c], [], f"OSC{i + 1} Full: no crush")
                         f, d = self.voice_case(rf, p3=(700, 0, 333), **kw), self.voice_case(ri, p3=(700, 0, 333), **kw)
                         self.assertEqual(len(hits), len(tc)); self.assertEqual(set(hits), {0, 1}, "both oscillators reach Level")
                         self.assertNotEqual(c[0], f[0], f"{name} {bb}: changes the output")

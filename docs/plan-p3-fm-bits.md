@@ -197,7 +197,7 @@ an_enter(root,voice): r->voice = voice; Run.fmtag = 0; glide, sub +0x04 write
 OSC1 (which 0, Analog):
    needA = I_s1 > 0 || msub > 0                     -> sub_copy 2N into A, fmtag |= A
    render 2N into s (FM loop if needA, else today's an_render), role FREE/MASTER
-   Bit Depth post-pass on s (if bits != 0)
+   per part: render (an_render / an_render_fm), then an_crush(s+off, m, bits, an_dc(k)) if bits != 0  (Q2b, OD12)
    if OSC2 Analog && (fm12(o2) > 0 || m12(o2) > 0): B[i] = inc1 * s[i]; fmtag |= B   (BD1: after crush, before Level)
    SMOOTH_APPLY + MIX (only if !silent)
 OSC2 (which 1, Analog):
@@ -328,13 +328,16 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
   on the saw plateau). A BE4.40 project with Shape < 45 now plays sine or triangle (no migration, as decided).
 
 ### 4.7 Bit Depth
-- A post-pass after the part loop and before `S_SMOOTH_APPLY` (as built: `an_crush` in analog_kernel.cpp, called from
-  an_osc right after the part loop), over s[0..n). Skipped for Full.
+- Per part, inside an_osc's part loop (Q2b, OD12): `an_crush(s + off, m, bits, an_dc(k))` right after each part's
+  `an_render` (Q5: after `an_render_fm`), before `S_SMOOTH_APPLY`. Skipped for Full (neither call is made). A part's
+  samples are final once rendered (an_reshape only moves `delayed`), so this is a post-pass over s[0..n) with a per-part
+  dc. (Q2 had one post-pass after the loop with no dc; a whole-block post-pass is wrong once a Shape ramp changes dc.)
 - **True b-bit two's-complement grid (OD11 = (b), Jeff 2026-11-15; replaces the draft's mid-tread):**
   `q = clamp(__builtin_rintf(x * S), -S, S - 1) * (1/S)`, with S = 2^(b-1): 2048, 128 and 8 for 12, 8 and 4 bits.
   - Exactly 2^b levels (4-bit: -8..+7, steps of 1/8). The top clips at (S-1)/S, the bottom at -1: asymmetric by one
     step, so a full-scale signal gains a small DC and some even-order distortion (accepted: that is the "strict 4-bit"
-    grit OD11 chose). The BLEP overshoot above 1 clips at (S-1)/S too; below -1 it clips at -1.
+    grit OD11 chose). (Superseded by Q2b, M: the 2-point BLEP never overshoots, s + dc stays in [-1, 1] on real
+    blocks; the top is reached only by the +1 high itself, the bottom only by the crafted probe.)
   - **Found in Q2 (M): the top clip is not only overshoot.** The kernel's pulse is DC-free, `(p < w ? 1 : -1) - dc` with
     dc = 2w - 1, so its high is 2 - 2w: 1.26 at Shape 100, 1.84 at Shape 127. Every Shape above 88 drives s well past +1,
     and every Bit Depth (12 bits included) clips that high to (S-1)/S. At Shape 127 the pulse goes from 1.84 / -0.16 to
@@ -344,7 +347,17 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
     any Bit Depth with Shape > 88 detunes OSC2 by kin * mean(B) = I * inc1 * mean(q) (I: arithmetic on the clipped
     levels, BLEP ignored): mean(q) = -0.067 at Shape 127 / 12 bits, -0.045 at 127 / 4 bits, -0.096 at Shape 100 /
     12 bits, so at I = 8 OSC2's mean increment moves by about -0.4 to -0.8 x inc1. Full has mean 0, so the detune
-    switches on with Bit Depth: the hazard OD10 removed for the Square sub. Open: **OD12**, to be answered before Q6.
+    switches on with Bit Depth: the hazard OD10 removed for the Square sub. **OD12 = (b)** (Jeff 2026-11-15), built in
+    Q2b: `q = clamp(rint((x + dc) S), -S, S - 1) / S - dc`, dc the part's own DC term (`an_dc(k)`, the kernel's
+    2w - 1, 0 at and below the square), so the pulse is crushed on its [-1, 1] range. M (Q2b): s + dc stays in
+    [-1, 1] on real blocks; 12 / 8 bits are within one step of Full (the +1 high's); the mean moves by -f_hi / S only
+    (-3.9e-5 at Shape 127 / 12 bits, against -0.070 before). Exactly 2^b levels per constant-dc part, dc off the grid.
+  - **Left by OD12 (I/M, for Q6; OD15):** the same -f_hi / S shift on any signal whose high sits at +1, the square
+    included (no dc there): OD11 (b)'s asymmetric top. Mean shift: -2.6e-4 at 12 bits (Shape 88, M), about -4e-3 at 8
+    bits (I: f_hi / 128), **-0.065 at 4 bits** (M). Under FM 1>2 (detune I * inc1 * mean(q)) at I = 8, OSC1 = OSC2, a
+    square OSC1 (f_hi ~ 0.5) moves OSC2 by about **-3 / -55 / -1200 cents** at 12 / 8 / 4 bits (I: 1200 log2(1 - 4 / S));
+    a pulse scales with its f_hi (Shape 127, f_hi ~ 0.08: about -0.5 / -9 / -140 cents). So it is audible from 8 bits
+    on, not only at 4. OD12 did not ask for this; open decision **OD15**, needed before Q6 writes B.
   - **Use `__builtin_rintf`, not `rintf`.** The DSP build uses -ffreestanding -fno-builtin -nostdlib, so plain `rintf`
     compiles to a `bl`. `__builtin_rintf` inlines to VRINTX.F32 (M: q.cpp compiled with the project flags, compile_dsp's
     `common`). As built (M, Q2): lld itself refuses a plain `rintf` (undefined symbol: compiler_rt has none), but zig's
@@ -362,8 +375,8 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
     numpy's `rint`, which does the same).
   - The golden model and the 6.3 crush cases use this grid.
 - The crush runs in the 96 kHz domain ahead of the FIR, so the decimator partly removes its images above 24 kHz (I).
-- BD1: B is written from the quantised s, before Level.
-- Because it is a post-pass, the non-FM loops stay untouched (M1).
+- BD1: B is written from the quantised s, before Level (after the part loop: every part is crushed by then).
+- Because it runs outside an_render (per part, after it), the non-FM loops stay untouched (M1).
 
 ### 4.8 Zero cost when off
 - Gates for each oscillator render:
@@ -454,7 +467,8 @@ How the CPU gate is derived:
 ### 6.3 Independent host golden model (`p3_golden.py`, numpy, float64, shares no C code)
 - It reimplements the sub waves from stock's formulas (with the DC-free Square, OD10); the through-zero phase with
   mirrored polyBLEP/BLAMP; the slave reset rule for di <= 0 (4.3); the index law I = 8(v/1000)^2, the ramp and the
-  clamp; the events; and the clamped two's-complement quantiser (OD11, 4.7).
+  clamp; the events; and the clamped two's-complement quantiser (OD11, 4.7), about the part's dc (OD12, Q2b: `crush(x,
+  b, dc=...)`, dc a float32 scalar or one per sample, supplied by the caller; dc 0 is Q2's grid bit for bit).
 - Compared with the emulator sample by sample, max error <= 1e-5 (float32 vs float64), for: Sub FM with sine, saw,
   square and noise subs; FM 1>2 and both routes together; a sync master and slave with FM (including di < 0 at the
   reset); mixed sync with Sub FM; each Bit Depth; Shape 0, 12, 24, 36 and 47.
@@ -510,9 +524,13 @@ not mirrored; the slave reset under di < 0 done as p = 0 (double edge); FM 1>2 r
 3; slot 7 shown while OSC1 is Wavetable; an_shape's plateau centred on 48 (shifts 49..51); an out-of-range Bit Depth
 played as Full; the pulse's DC term dropped in the FM loop; `rintf` instead of `__builtin_rintf` (link or DSP_REFUSED
 fails); Q2 (OD11, Q0 review): the Bit Depth clamp missing (OD11 (a) mid-tread), and its top clamped at S instead of
-S - 1; at least one 6.3 crush case drives s past +1 (BLEP overshoot at full level) and one to -1, so both turn red.
+S - 1; at least one 6.3 crush case reaches the top clip and one -1, so both turn red. (Q2b supersedes "drives s past +1
+(BLEP overshoot)": the BLEP never overshoots and s + dc stays in [-1, 1]; the +1 high reaches the top, and the top-at-S
+mutant stays red because (x + dc) S = S >= S - 0.5.)
 (Q2 as built: real blocks pass the top at every b, the DC-free pulse above Shape 88, but the BE4.40 kernel's minimum is
 exactly -1, so the bottom clamp is covered on an_crush's crafted probe only; Q3 and Q5 re-measure the lowest sample.)
+Q2b (OD12): the crush's dc zero (OD12 (a)), its sign flipped, one dc per block or the first part's, dc not added, dc not
+subtracted, the zero-dc sign-of-zero identity dropped, an_dc's slope or its 0.5 knee wrong, bits= counted per part.
 
 ### 6.7 Existing tests that encode BE4.40 behaviour (edit as reviewed changes, each with its new value)
 | Test | Today | After | Sprint |
@@ -523,6 +541,8 @@ exactly -1, so the bottom clamp is covered on an_crush's crafted probe only; Q3 
 | test_synth_ui.py:781, :940-953 V1 tables, `test_out_of_range_shapes_clamp` | Shape <= 48 -> `Saw` | five-shape texts | Q3 |
 | test_keys.py:233 | `cover == [SHAPE, SYNC]` | `[SHAPE, SYNC, BITS]` | Q1 |
 | test_native_props.py:237 | 0 pads | 1 pad | Q1 |
+| test_analog `BitDepth.test_real_blocks_reach_the_top_clip` (Q2) | the DC-free pulse drives s past +1 at every b (clipped hard) | retired: `test_real_blocks_sit_on_the_grids_range`, s + dc in [-1, 1], the top reached by the +1 high | Q2b |
+| test_analog `BitDepth` amounts / per-oscillator cases (Q2) | golden crush with no dc (sync case's Shape 100 clipped) | golden crush with the captured per-part dc; the top-clip assertion's reason reworded (the +1 high) | Q2b |
 
 ---
 
@@ -533,7 +553,9 @@ exactly -1, so the bottom clamp is covered on an_crush's crafted probe only; Q3 
 | Q0 | Glide fix (if OD1 = in P3) | `glide_coef`: `s * 48000 * F(osc,0x108)` (2 on the device). The coef cache key is unchanged (n is already in it; that covers the divider only because a root's vt[19] sets both its 2N and its divider, I: see Q0 as built). Add the Rig(dev=True) glide-time test. | The 6.4 glide test is red at HEAD and green after; Rig() glide outputs bit-identical |
 | Q1 | Keys, storage, harness; no sound | template keys + pad; `NP_KEYS` 7 keys; `want_row` slots 5..7 + the hidden rule; `resend` with 6 keys; `an_prop` stores (+ OD4 Sync line); AnOsc +4 B; SA_FMBUF, SA_FMSTATS and the tag in synth_shared.h; fmtag clear in an_enter; **P3Identity harness** (second build dir, capture/replay, one-ulp control); type-0xFF tests; BE4.40-opens-P3 test; preset round trip if the entry is found; 6.7 Q1 edits | 6.1 green; 6.2 identity green; manifest template_n 0x304 |
 | Q2 | Bit Depth | post-pass quantiser (`__builtin_rintf`, DSP_REFUSED `rintf`), `bits=` stat | golden 6.3 crush cases; identity at Full; BD placement mutations |
+| Q2b | Bit Depth about the pulse's dc (OD12 = (b)) | an_crush on s + dc, dc off after, dc per kernel part (`an_dc`); p3_golden's crush with the dc argument; Q2's clip tests retired | 12 / 8 bits near-transparent on Shapes 88..127; crushed pulse mean ~0 (bound derived); <= 2^b levels per constant-dc part; identity at Full |
 | Q3 | Five shapes | an_shape map, set_shape for k < 0, LOW regime x 3, `wave_any`, sinq THD measured, V1 text, five-glyph dial, 6.7 Q3 edits | identity 45..127; golden sine/tri/blends; click test; UI snapshots; DSP size logged against the 14 KB ceiling |
+| Q3b | Dial glyphs (OD14) | the sine and triangle glyphs redone (not taken as built) | (Q3b's own) |
 | Q4 | Sub copy and buffers | `sub_inc`/`sub_copy` port with the DC-free Square (OD10) and the PARAM_VALUE cache restore; buffer A; n > 256 guard (nothing audible uses it yet) | 6.4 sub copy worst 0 (up to dc) in the voice path, 5 waves x 2 levels; sub object byte-identical; copy cost recorded |
 | Q5 | Sub FM (OSC1, OSC2) | `an_render_fm` x 3 roles incl. the di <= 0 slave rule; msub ramp and skip reset; E3 (b)/(c); mixed-voice path; `fm=` stat; measure the specialised delta at 2N and fix the gate | golden Sub FM cases incl. sync master/slave and mixed sync; VDIV counts by PC range; cost gate; DSP size; mutations |
 | Q6 | FM 1>2 | B write (BD1), E3 (a), useB + fmtag, m12 ramp, `fmx=` | golden FM 1>2, combined and Level 0 cases; Bessel check (sine/sine); full-FM cost within the gate |
@@ -947,6 +969,103 @@ Review fixes (two reviews; each issue checked, build ~/bento/out/m1-p3q3, clean)
 - After the fixes: DSP 12,748 B (unchanged), image **0x1890D8** (+16 B, 16,988 B under PROVEN_MAX), synth UI 14,960 B
   (+16); test_analog 90 tests (+2), test_synth_ui 62.
 
+### Q2b as built (2026-11-15, working tree on b9d8ec4; build ~/bento/out/m1-p3q2b)
+
+OD12 = (b), OD13 = (a), OD14 (reset BLAMP kept, glyphs to Q3b) recorded in Decisions. Q2b is after Q3 in time but
+touches only Bit Depth.
+
+What was built:
+- **M7 kernel** (analog_kernel.cpp): `an_crush(s, n, bits, dc)` = `clamp(rint((x + dc) S), -S, S - 1) / S - dc`. A zero
+  dc adds -0.0 and subtracts +0.0, so dc 0 is Q2's grid bit for bit, sign of zero included (S: x + -0 = x, q - +0 = q).
+  Per sample VADD, VMUL, VRINTX, VMAXNM, VMINNM, VFMA (the level x 1/S - dc fused: exact, because the product is exact),
+  x4 unrolled. New `an_dc(shape)`, set_shape's `k.dc` in the same arithmetic (S: the same VFMA pair in both), 0 at and
+  below 0.5 and for NaN. Taking it from set_shape itself compiled to 184 B (its LOW branch), so it is a separate 80 B
+  function, pinned to the kernel's own pulse levels by a test.
+- **M7 hook** (analog.cpp an_osc): the crush moved into the part loop: `if (bits) an_crush(s + off, m, bits, an_dc(k))`
+  right after each part's `an_render`. A part's samples are final once rendered (an_reshape moves only `delayed`), so this
+  is the post-pass with a per-part dc. `bits=` still counts one per crushed render, after the loop. BD1 unchanged: B (Q6)
+  is written after the loop.
+- **p3_golden.py** (a spec change, so the model changes, written from OD12's text): `crush(x, b, f32, dc)` with dc a
+  float32 scalar or one per sample; the add and the subtract round once each to float32 (computed in float64 and rounded
+  once: double rounding is harmless at 53 >= 2 x 24 + 2 bits); dc 0 is Q2's crush in every bit. `levels` / `check_levels` /
+  `check_clip` / `compare` / `mutants` / `discriminates` / `probe` take dc; the new mutants are dc not added (OD12 (a)),
+  not subtracted, sign flipped. Self-test 23 tests (Q3 17 + 6: dc 0 = Q2 bit for bit, 4-bit by hand about -0.75,
+  float32-exact against numpy float32 on random x and dc, sweep levels and clips, the naive pulse's mean shift = -f_hi / S
+  within 2^-23, the probe about -0.75 kills all 8 mutants).
+
+Tests (test_analog BitDepth, 94 tests: Q3 90 - 1 retired + 5):
+- **level_taps** also hooks an_crush's entry: per block the parts' calls (offset, n, setting, dc from s0) and a per-sample
+  dc; `dc_feed` replays a crushed run's dc into a Full run's injected golden crush. `dc_of(k)` is the stated law
+  (2 (0.5 - 0.84 (k - 0.5)) - 1), the independent check on every captured dc (1e-6).
+- `test_an_crush_is_the_golden_grid`: Q2's probe, sweep and random blocks about dc 0, -0.75 (exact ties: every Q2 and
+  OD12 mutant separated) and an_dc at Shapes 100 / 127 (OD12's mutants separated); sweep exactly 2^b; Full untouched at
+  any dc.
+- `test_an_dc_is_the_kernels_dc` (new): an_render at k plays exactly f32(1 - dc) / f32(-1 - dc) on its plateaus, Shapes
+  88 + 1/512 .. 127.9; +0.0 at k 0, 0.25, just under the knee (87.6, 88 - 1/512), 0.5, LOW, NaN.
+- `test_real_blocks_sit_on_the_grids_range` (**retires** Q2's `test_real_blocks_reach_the_top_clip`, 6.7): s + dc in
+  [-1.000000000, 1.000000000] on real blocks (Shapes 88..127 free / synced, 48 / 70 synced, notes 60..115), while s itself
+  reaches 1.84 (control). The top is still reached at every b (by the +1 high: 8,718 / 8,742 / 8,822 samples); the bottom
+  tie is never passed.
+- `test_12_and_8_bits_are_near_transparent_on_the_pulse` (new): |q - s| <= 1/S + 2^-23 at every sample, peak to peak lost
+  <= 1/S + 2^-22, Shapes 88, 89, 100, 110, 120, 127 free and 100 / 127 / 88 synced. **M: worst exactly 1.000000 step** (the
+  +1 high). Derivation in the docstring (one rounding on the add, rint <= 1/(2S) inside [-1, 1], the clip 1/S at +1, one
+  rounding on the subtract). Control: OD12 (a) on the same blocks is off by up to 0.848 (0.8405 at Shape 127 / 12 bits).
+- `test_the_crushed_pulse_keeps_its_mean` (new): **bound |mean(q - s) + f_hi / S| <= f_edge (1/S + 2^-23) + f_hi 2^-23**,
+  derived per sample (low plateau e = 0 exactly, high plateau e = -1/S within 2^-23, edge samples within the transparency
+  bound), both plateau facts asserted directly. M (free, note 60, 8 dev blocks): shift -3.9e-5 / -1.0e-2 at Shape 127,
+  12 / 4 bits (OD12 (a): -0.070 / -0.049); -1.9e-4 / -4.9e-2 at Shape 100 ((a) -0.102 / -0.156). From Shape 100 (with a
+  high plateau), (a) moves the mean over 100 / 10 / 1 x as far at 12 / 8 / 4 bits.
+- `test_a_ramp_crushes_each_part_about_its_own_dc` (new): an LFO moves Shape 100 <-> 125.4 each block, free and synced,
+  all three depths: every an_render part is followed by an an_crush on the same range with dc = an_dc(that part's k)
+  bit for bit (and dc_of within 1e-6); a ramp block has 8 parts with 8 dcs in ramp order; the Level input = the golden crush
+  of the Full block with that per-sample dc, bit for bit; each part passes check_levels (<= 2^b values, on its own grid);
+  a held 4-bit block has <= 16 values; a whole ramp block is off the grid of any single one of its dcs. Full: no an_crush
+  call at all (identity at Full; P3Identity's 59 cases stay byte-identical with BE4.40).
+- **Reviewed edits (expected changes, no tolerance loosened):** the amounts and per-oscillator cases inject the golden crush
+  with the captured dc (`check_dcs`: each block covered end to end by its parts, setting, one dc per held Shape = dc_of);
+  the sync case's OSC2 at Shape 100 is the one case whose Level input changes. The amounts test's top-clip assertion
+  keeps its value (> 0), with its reason reworded (the +1 high, not the 2 - 2w high).
+
+Measured (M):
+- Sizes: DSP **12,964 B** (+216 on Q3's 12,748; P3 has used 3,256 B of its 14 KB ceiling), 23,644 B free in the window.
+  an_crush 448 B (+96: the add, the subtract, the zero-dc selects), an_dc 80 B, an_osc +36 (0x784 -> 0x7A8; +4 alignment). Image **0x1890D8** (unchanged:
+  M4 untouched), 16,988 B under PROVEN_MAX 0x18D334.
+- Cost, off: `Cost` n = 256 saw 13,236 (Q3 13,242), mixed 19,876, saw+sync 15,847, mixed+sync 22,228; n = 128 saw 7,348.
+  P3Identity 59 cases, worst +0.97 % (mod dev=False, 110,965 vs 109,899), total +0.33 % (M1 +2 %).
+- Cost, on: at most **10.77 instructions per crushed sample** including the calls (sync, Bit Depth 2, Rig(): 111,959 vs
+  89,911 over 2,048 samples; Q2: 8.56), so about 2.8 k per oscillator per 2N block (I: 256 x 10.77). The +2.2 is the add
+  and subtract per sample plus one an_dc call and one an_crush call per part (2 per synced 2N block, 8 in an AN_RAMP ramp).
+- Mutations (scratch p3/q2b/mutate.py, each built from a copy, the whole of test_analog; logs p3/q2b/mut/): all red.
+  dc 0 in an_osc (OD12 (a)): 50 failing (sub)tests; dc sign flipped: 48; one dc per block (k1): 6, first part's (k0): 6,
+  both only in the ramp test; dc not added: 73; not subtracted: 74; the zero-dc sign-of-zero selects dropped: 3 (the
+  probe's -0.0, grid test only); an_dc slope 0.8401: 74; an_dc's knee at 0.49: **green at first** (no test had a k in
+  (0.49, 0.5)), red (1) after the knee cases were added to test_an_dc_is_the_kernels_dc; bits= counted per part: 6.
+- Full suite (wsl/test_m1.sh, O=~/bento/out/m1-p3q2b) green; test_analog 94 tests.
+
+Found during Q2b (corrections to this plan):
+- **OD12 removes the pulse's DC, not the grid's.** The +1 high still loses one step, on the square too (dc 0), so any
+  signal with a high plateau at +1 keeps a mean shift of -f_hi / S: -2.6e-4 at 12 bits, **-0.065 at 4 bits on the square**
+  (M). Under FM 1>2 (B = I inc1 q) at I = 8, OSC1 = OSC2, a square OSC1 detunes OSC2 by about -3 / -55 / -1200 cents
+  at 12 / 8 / 4 bits (I, 4.7). OD12's "B stays DC-free" holds for the pulse's own DC at every depth, but not for the
+  grid's: audible from 8 bits on. **Open: OD15** (needed before Q6).
+- 4.7's "post-pass after the part loop" is now per part inside the loop (4.7 updated); the plan's "one add and one subtract
+  per sample" holds, the per-part dc costs one an_dc call a part.
+
+Review fixes (two reviews; each issue checked, rebuilt clean into ~/bento/out/m1-p3q2b, sizes unchanged: image 0x1890D8,
+DSP 12,964 B; full suite green, test_analog 94):
+- **The grid's DC was understated (major).** At I = 8, OSC1 = OSC2, a square OSC1 detunes OSC2 by about -3 / -55 / -1200
+  cents at 12 / 8 / 4 bits (I: 1200 log2(1 - I f_hi / S), f_hi ~ 0.5), so 8 bits is half a semitone, not "holds". 4.7 and
+  the note above restated per depth; the question is now **OD15** (every depth, before Q6). No code change.
+- **Stale text (minor):** 4.1's pseudo-code (per-part crush with an_dc), 4.7's first bullet, the BLEP-overshoot sentences
+  (4.7, OD11 in Decisions) and 6.6's "drives s past +1" marked superseded: s + dc stays in [-1, 1], the +1 high reaches
+  the top, the top-at-S mutant still red.
+- **an_osc +36, not +40 (minor):** M, llvm-objdump: 0x784 -> 0x7A8; corrected above.
+- **an_dc's k > 1 clamp was untested (minor):** kept (it is set_shape's, so an_dc stays its k.dc for any caller), and
+  test_an_dc_is_the_kernels_dc now checks k = 1 + 2^-23, 1.25, 2, inf: an_dc(1) bit for bit and an_render's own plateaus
+  at that k. The 127.9 case (k_of caps it at 127, so a duplicate of 127) is gone. Mutant "clamp removed": red, 4 subtests
+  (was green).
+- **OD12's Decisions bullet** points to OD15; Jeff's wording unchanged.
+
 ---
 
 ## 8. Device checklist (BE4.41; BE4.40's own checklist runs first, as it is not flashed yet)
@@ -960,6 +1079,8 @@ Review fixes (two reviews; each issue checked, build ~/bento/out/m1-p3q3, clean)
 5. Sub FM with a Square sub at PW 30 %: the pitch centre does not drift as Sub FM rises (OD10).
 6. FM 1>2 with OSC1 at Level 0: OSC2 is still FM'd.
 7. Bit Depth 12/8/4 on each oscillator; the sub is unaffected. With FM 1>2 on, OSC1's crush changes OSC2's timbre (BD1).
+   Shape 100..127 at 12 bits sounds as Full, with no level drop (OD12, Q2b); a Shape LFO over 90..127 at 4 bits steps
+   without clicks beyond the crush's own grit (the dc moves part by part).
 8. Sync 1>2 on plus Sub FM on OSC1: the slave follows the FM'd master. Also mixed sync (OSC1 Wavetable) with Sub FM on
    OSC2.
 9. Shape sweep 0..127 by knob and by modulation (Position routed): sine, triangle, saw at 48, square, pulse. The dial
@@ -1018,8 +1139,15 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 - **OD10 = (a):** Sub FM uses a DC-free Square (subtract 1 - 2*pw); exactness tested up to that constant.
 - **OD11 = (b), not the recommendation:** true b-bit two's-complement grid. `q = clamp(rint(x*S), -S, S-1) / S`,
   S = 2^(b-1): exactly 2^b levels (4-bit: -8..+7 in steps of 1/8), the top clips asymmetrically. The golden model
-  and the 6.3 crush cases use this grid; the BLEP overshoot above 1 clips at (S-1)/S.
+  and the 6.3 crush cases use this grid; the BLEP overshoot above 1 clips at (S-1)/S. (Q2b, M: there is no overshoot;
+  the +1 high reaches the top.)
 - **OD5:** any master wrap (either direction) resets the slave; a backward slave resets to p = 1 (one edge).
+- **OD12 = (b)** (2026-11-15, Q2's finding): crush `s + dc`, then subtract dc, so the DC-free pulse sits on the grid's
+  range; B stays DC-free; dc follows a Shape ramp part by part. Q2's clip-pinning tests are retired as expected changes.
+  Built in Q2b ("Q2b as built"). The grid's own top-clip DC (-f_hi / S, every depth) is not covered by it: OD15.
+- **OD13 = (a), as built in Q3:** `AN_RAMP_LOW` = 16-frame steps for a ramp with either end below the saw.
+- **OD14:** the SLAVE reset's slope BLAMP in LOW stays as built. The one-cycle sine / triangle dial glyphs are **redone
+  in Q3b** (not taken as built).
 - Taken as recommended (not asked): OD2 one 7-key group, OD3 hide, OD4 as recommended, OD6 plateaus
   sine 0..2 / triangle 22..26 / saw 45..48, OD7 add the test, OD8 one kit BE4.41, OD9 keep SA_LAYOUT 2, CPU gate
   1.3 x the specialised voice at 2N.
@@ -1039,9 +1167,10 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 | OD9 | SA_LAYOUT with the new SA_FMSTATS line | keep 2; bump to 3 | **Keep 2**. The change only adds a region at an undefined offset, and both cores ship in one image (I). Bump it only if you want a mismatched-core boot to say so explicitly. |
 | OD10 | DC of the Square sub as an FM modulator | (a) DC-free (subtract 1 - 2*pw, the prototype's `dcfree`); (b) raw (bit-exact copy, the carrier detunes with PW and depth: +3.2*inc_sub at I = 8, PW 30 %) | **(a) DC-free**. Turning Sub FM up should not change the pitch centre, and PW then shapes the timbre only. Exactness is still tested, up to the known DC constant. (b) is the analog-linear-FM behaviour, if you want it as a feature. |
 | OD11 | Bit Depth grid | (a) mid-tread, S = 2^(b-1): 2^b + 1 levels, symmetric, no clip; (b) true b-bit two's complement, clamped to [-S, S-1] | **(a)** (superseded: Jeff chose (b), Decisions above; 4.7). It has no DC and no top clip, and at 12/8 bits the extra level is inaudible. At 4 bits it is 17 levels instead of 16, so the label is nominal. Choose (b) if you want a stricter "4-bit" grit with an asymmetric top clip. |
-| OD12 | Bit Depth's clip of the DC-free pulse (Q2, 4.7) | Every Bit Depth, 12 bits too, clips the pulse's high (2 - 2w, 1.84 at Shape 127) for Shape > 88: 4.7 to 6 dB less peak to peak, and no longer DC-free, so under FM 1>2 (B = crushed s, BD1) OSC1 detunes OSC2 by I * inc1 * mean(q) (about -0.4 to -0.8 x inc1 at I = 8). (a) accept the clip as grit; then Q6 either subtracts B's mean (known only per block, or from the clipped levels) or accepts the detune as a feature. (b) crush `s + dc`, then subtract dc (the pulse's own range sits on the grid's [-1, 1)): B stays nearly DC-free and 12 / 8 bits nearly transparent (the +1 high still loses one step: 0.9995 at 12 bits, 0.875 at 4), but the dc must follow a Shape ramp part by part (the kernel knows it per part) and the output is offset from the grid by dc. (c) no clamp above S - 1: more than 2^b levels, so it is OD11 (a) again, not a variant | **(b)**, to be confirmed. It keeps OD11 (b)'s grid for the signal the grid was meant for, keeps B DC-free as OD10 chose for the sub, and costs one add and one subtract per sample (the dc per part is already computed). (a) with a mean subtracted in Q6 is the fallback. Q2 ships (a) as built, pinned by its tests; the answer is needed before Q6 writes B. |
-| OD13 | Shape ramp step below the saw (Q3, deviation from 4.6) | (a) `AN_RAMP_LOW` = 16 frames for a ramp with either end below the saw (k0 < 0 or k1 < 0), AN_RAMP = 32 elsewhere; (b) 4.6 as written, AN_RAMP = 32 for every ramp | **(a)**, as built. At 32 frames 6.4's criterion fails: per part edge 1.02 / 1.08 / 0.95 x the saw > square ramp's click at LFO centres 24 / 28 / 46 (the LOW map moves k twice as fast a Shape step). At 16, per block (6.4's metric) 0.0083 / 0.0089 / 0.0135 against saw > square's 0.0163. A slope BLAMP in an_reshape changed nothing measurable, so it is not the fix. Cost: a LOW ramp block 29,554 instructions against 22,859 for the saw > square ramp (1.29 x); ramps at Shape >= 45 are untouched (identity). (b) is one line in an_osc plus the expected part count in ShapeLow; 6.4 would then need a looser criterion for the LOW map. |
-| OD14 | Taken as built in Q3 (beyond 4.6, listed so you see them) | the SLAVE reset's slope BLAMP in LOW; the sine and triangle dial glyphs drawn one cycle each (the others two) | **Keep both.** The reset BLAMP is the value BLEP's missing half: without it a synced triangle is off the exact band-limited wave by up to 0.12, with it ~1e-4 (both reviews measured it against a brute-force reference); one sinq per reset, nothing per sample. The glyphs: at two cycles the sine and triangle drew alike (snapshot); one cycle gives the sine a round top. Device item 9 judges it; reverting is one expression in `glyph()`. |
+| OD12 | Bit Depth's clip of the DC-free pulse (Q2, 4.7) | Every Bit Depth, 12 bits too, clips the pulse's high (2 - 2w, 1.84 at Shape 127) for Shape > 88: 4.7 to 6 dB less peak to peak, and no longer DC-free, so under FM 1>2 (B = crushed s, BD1) OSC1 detunes OSC2 by I * inc1 * mean(q) (about -0.4 to -0.8 x inc1 at I = 8). (a) accept the clip as grit; then Q6 either subtracts B's mean (known only per block, or from the clipped levels) or accepts the detune as a feature. (b) crush `s + dc`, then subtract dc (the pulse's own range sits on the grid's [-1, 1)): B stays nearly DC-free and 12 / 8 bits nearly transparent (the +1 high still loses one step: 0.9995 at 12 bits, 0.875 at 4), but the dc must follow a Shape ramp part by part (the kernel knows it per part) and the output is offset from the grid by dc. (c) no clamp above S - 1: more than 2^b levels, so it is OD11 (a) again, not a variant | **Decided: (b)** (Decisions; built in Q2b). It keeps OD11 (b)'s grid for the signal the grid was meant for, keeps B DC-free as OD10 chose for the sub, and costs one add and one subtract per sample (the dc per part is already computed). (a) with a mean subtracted in Q6 is the fallback. Q2 ships (a) as built, pinned by its tests; the answer is needed before Q6 writes B. |
+| OD13 | Shape ramp step below the saw (Q3, deviation from 4.6) | (a) `AN_RAMP_LOW` = 16 frames for a ramp with either end below the saw (k0 < 0 or k1 < 0), AN_RAMP = 32 elsewhere; (b) 4.6 as written, AN_RAMP = 32 for every ramp | **Decided: (a)**, as built (Decisions). At 32 frames 6.4's criterion fails: per part edge 1.02 / 1.08 / 0.95 x the saw > square ramp's click at LFO centres 24 / 28 / 46 (the LOW map moves k twice as fast a Shape step). At 16, per block (6.4's metric) 0.0083 / 0.0089 / 0.0135 against saw > square's 0.0163. A slope BLAMP in an_reshape changed nothing measurable, so it is not the fix. Cost: a LOW ramp block 29,554 instructions against 22,859 for the saw > square ramp (1.29 x); ramps at Shape >= 45 are untouched (identity). (b) is one line in an_osc plus the expected part count in ShapeLow; 6.4 would then need a looser criterion for the LOW map. |
+| OD14 | Taken as built in Q3 (beyond 4.6, listed so you see them) | the SLAVE reset's slope BLAMP in LOW; the sine and triangle dial glyphs drawn one cycle each (the others two) | **Decided** (Decisions): the reset BLAMP kept as built; **the glyphs redone in Q3b**. (Recommendation was: keep both.) The reset BLAMP is the value BLEP's missing half: without it a synced triangle is off the exact band-limited wave by up to 0.12, with it ~1e-4 (both reviews measured it against a brute-force reference); one sinq per reset, nothing per sample. The glyphs: at two cycles the sine and triangle drew alike (snapshot); one cycle gives the sine a round top. Device item 9 judges it; reverting is one expression in `glyph()`. |
+| OD15 | The grid's own DC under FM 1>2 (Q2b, 4.7; needed before Q6) | OD11 (b)'s top at (S-1)/S takes one step off any +1 high (the square, and the pulse after OD12), so mean(q) = -f_hi / S and B = inc1 q detunes OSC2 by I * inc1 * mean(q): at I = 8, OSC1 = OSC2, a square OSC1 gives about -3 / -55 / -1200 cents at 12 / 8 / 4 bits (I). (a) accept it as part of the grit; (b) Q6 writes B from the crush with its top clamp at S instead of S - 1 (the audio keeps OD11 (b); B gets the +1 level back, so its error is unbiased rounding; about one compare and one add per sample, in the FM 1>2 path only); (c) subtract a known -f_hi / S from B (f_hi is not known exactly per block: edges, sync, ramps); (d) a half-step (mid-rise) grid, which revisits OD11 for the audio too and puts a +1 / 2S offset on a zero input; (e) B from the uncrushed s (revisits BD1: the crush no longer colours FM 1>2) | **(b)**. It removes the detune at every depth for the cost of one extra clamp in the path that already writes B, and leaves Jeff's audio grid untouched. (e) is cheaper (zero) but loses the crushed modulator BD1 chose; (a) is defensible at 12 bits (-3 cents) but not at 8 (half a semitone). Close call between (b) and (e). |
 | CPU gate | (not a new decision; FD6 restated) | | The draft's 27.5 k was tighter than FD6. The plan now uses FD6 faithfully: 1.3 x the specialised voice at 2N (~31 k, I), measured in Q5. Say so if you want the tighter target instead. |
 
 ---
