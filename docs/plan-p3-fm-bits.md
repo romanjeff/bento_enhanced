@@ -311,6 +311,11 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
   - **Q3 as built, beyond this text:** a SLAVE reset in LOW also steps the slope (triangle -4 -> +4 past its top, the
     sine's 2 pi sin 2 pi p -> 0), so it gets a BLAMP next to the value BLEP (one sinq per reset). See "Q3 as built".
   - k = 0 still dispatches to SAW, so Shape 45..127 runs today's instances (bit identity).
+  - **Q3b:** the two plateaus (k = -1, -0.5) below inc 0.09 run their own path, `run_flat` (a correction-free stretch
+    between corners, LOW's own sample at each corner): the triangle bit for bit LOW's, the sine within 1.8e-7. Its cost
+    is pitch-dependent (two long-way samples a cycle): at or below the saw voice up to about note 72 (sine) / 90
+    (triangle), above it rising to ~2.5 x the saw near FLAT_INC, always below Q3's LOW. The blends stay generic. See "Q3b
+    as built" and its review fixes.
 - `an_reshape` (analog_kernel.cpp:222-227): replace `wave<MIXED>` with `wave_any(p, Shape)`. It must call
   `wave<MIXED>` unchanged for k >= 0 (bit for bit) and the LOW form only for k < 0. The correction is still a value jump
   only. At AN_RAMP = 32-frame steps the slope change per step is tiny (I), so the reshape gets no BLAMP. Test 6.4
@@ -400,7 +405,7 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
 | AnProps | 12 B | 0 | 12 B | S |
 | Shared area | SA_UI 2 KB unused; SA+0x100..0x200 undefined | A 1 KB + B 1 KB in SA_UI; SA_FMSTATS 32 B at SA+0x100 | | S |
 | Run | r9..r15 spare | r9 fmtag, r10 inc_sub | r11..r15 spare | S |
-| CPU per voice-block, n = 256 (hooks only) | saw 13,192; mixed 19,840; saw+sync 15,785; mixed+sync 22,180 | full FM voice (sine sub -> both, 1>2, saw). **Q3 (M), FM off:** a held LOW Shape (sine, triangle or a blend) ~23,470 = 1.18 x mixed, 1.77 x saw; tri+sync 25,833; a LOW Shape ramping every block 29,554 = 1.29 x the saw > square ramp (22,859) | **Gate (FD6 restated): generic full-FM saw voice <= 1.3 x the specialised full-FM voice at 2N, provisionally ~31 k** | M / I |
+| CPU per voice-block, n = 256 (hooks only) | saw 13,192; mixed 19,840; saw+sync 15,785; mixed+sync 22,180 | full FM voice (sine sub -> both, 1>2, saw). **Q3 (M), FM off:** a held LOW Shape (sine, triangle or a blend) ~23,470 = 1.18 x mixed, 1.77 x saw; tri+sync 25,833; a LOW Shape ramping every block 29,554 = 1.29 x the saw > square ramp (22,859). **Q3b (M):** at note 60 sine 13,100, triangle 11,760 (saw 13,236); sine+sync 14,357, tri+sync 13,215 (saw+sync 15,845); blends ~23,500 as Q3 (+20 a call); LOW ramp 30,242 = 1.32 x. The plateaus' cost rises with pitch (an_render free per sample against the saw: sine 1.00 x at note 72, 1.27 x at 96, 1.64 x at 108, 2.24 x at 119; triangle 0.98 x at 90, 1.44 x at 108, 2.05 x at 119), below Q3's LOW (~31-35) up to FLAT_INC (inc 0.09, note ~120), LOW's cost above. Worst case: a plateau slave under a master above ~24 kHz (an event every ~4 samples) costs more than LOW, up to 1.29 x at the clamp (sine 97.3 against 75.2 a sample) | **Gate (FD6 restated): generic full-FM saw voice <= 1.3 x the specialised full-FM voice at 2N, provisionally ~31 k** | M / I |
 | Block budget | 1.28 M cycles per 128 output frames | per root with 10 full-FM voices: ~+110-130 k **instructions** (I). Device CPI is unmeasured (code runs from flash), so this is not a cycle figure. Worst case: several Analog tracks with FM chords multiply it, and it is not bounded offline. | | I |
 | Message load | 4 set_property per oscillator per push | +3 per oscillator per push or resend | the ring blocks, it never drops (2.4) | S |
 
@@ -511,7 +516,7 @@ How the CPU gate is derived:
     render, with a worst-case cost test: deep through-zero, 8 % pulse, high OSC1 ratio.
   - `sub_copy`: count == the golden model's sub edge count (saw wrap, both square ramps).
   - FM off: today's count, which is 1 per `an_render` call (so a Shape ramp gives one per part, e.g. 8), not 1 per
-    oscillator.
+    oscillator. (Q3b: "inside an_render" includes the plateaus' out-of-line run_flat and low_step.)
 - Cost table at n = 256 (and 128): off cases within +2 % of BE4.40; the full-FM saw voice within the gate (section 5);
   the mixed + full-FM voice and the sub copy per wave recorded.
 
@@ -555,7 +560,7 @@ subtracted, the zero-dc sign-of-zero identity dropped, an_dc's slope or its 0.5 
 | Q2 | Bit Depth | post-pass quantiser (`__builtin_rintf`, DSP_REFUSED `rintf`), `bits=` stat | golden 6.3 crush cases; identity at Full; BD placement mutations |
 | Q2b | Bit Depth about the pulse's dc (OD12 = (b)) | an_crush on s + dc, dc off after, dc per kernel part (`an_dc`); p3_golden's crush with the dc argument; Q2's clip tests retired | 12 / 8 bits near-transparent on Shapes 88..127; crushed pulse mean ~0 (bound derived); <= 2^b levels per constant-dc part; identity at Full |
 | Q3 | Five shapes | an_shape map, set_shape for k < 0, LOW regime x 3, `wave_any`, sinq THD measured, V1 text, five-glyph dial, 6.7 Q3 edits | identity 45..127; golden sine/tri/blends; click test; UI snapshots; DSP size logged against the 14 KB ceiling |
-| Q3b | Dial glyphs (OD14) | the sine and triangle glyphs redone (not taken as built) | (Q3b's own) |
+| Q3b | Plateau CPU, dial glyphs (OD14) | the sine and triangle plateaus' own loops (run_flat, LOW's sample at each corner; FLAT_INC); the sine and triangle glyphs redone (not taken as built) | pure sine / triangle at or below the saw voice (n = 256, note 60), LOW's output within the golden tolerances (max difference stated), Shape >= 45 bit-identical, DSP within 14 KB; glyphs that fail on the Q3 pair; snapshots at 1x and 4x |
 | Q4 | Sub copy and buffers | `sub_inc`/`sub_copy` port with the DC-free Square (OD10) and the PARAM_VALUE cache restore; buffer A; n > 256 guard (nothing audible uses it yet) | 6.4 sub copy worst 0 (up to dc) in the voice path, 5 waves x 2 levels; sub object byte-identical; copy cost recorded |
 | Q5 | Sub FM (OSC1, OSC2) | `an_render_fm` x 3 roles incl. the di <= 0 slave rule; msub ramp and skip reset; E3 (b)/(c); mixed-voice path; `fm=` stat; measure the specialised delta at 2N and fix the gate | golden Sub FM cases incl. sync master/slave and mixed sync; VDIV counts by PC range; cost gate; DSP size; mutations |
 | Q6 | FM 1>2 | B write (BD1), E3 (a), useB + fmtag, m12 ramp, `fmx=` | golden FM 1>2, combined and Level 0 cases; Bessel check (sine/sine); full-FM cost within the gate |
@@ -1066,6 +1071,149 @@ DSP 12,964 B; full suite green, test_analog 94):
   (was green).
 - **OD12's Decisions bullet** points to OD15; Jeff's wording unchanged.
 
+### Q3b as built (2026-11-15, working tree on e240781; build ~/bento/out/m1-p3q3b)
+
+Two fixes to Q3, as OD14 asked (glyphs) plus LOW's cost on the plateaus. OD12 / OD13 / OD14 were already recorded in Decisions
+by Q2b; nothing new to record.
+
+What was built:
+- **M7 kernel** (analog_kernel.cpp): the plateaus get their own path, `run_flat<SINE | TRI>(o, inc, rinc, out, n, events, role)`
+  (out of line, the role a run-time argument: one function per plateau), taken from `by_regime` when the Shape is exactly
+  on a plateau (k.ws == 1: sine; k.tw == 1: triangle) **and inc < FLAT_INC = 0.09**; the blends, and the plateaus above
+  FLAT_INC, keep run<LOW>. Inside, a sample where the phase may reach a corner (1/2 or the wrap), or a slave has an
+  event, goes the long way: `low_step`, LOW's own per-sample body (`sample<LOW>`, out of line, shared by both plateaus and
+  all roles), so those samples are LOW's bit for bit. Between corners a correction-free stretch of
+  m = floor((lim - p) g) samples, g = rinc (1 - 2^-16) - rinc^2 2^-22, which cannot reach lim (the derivation is in the
+  code: each float32 step p += inc errs by at most 2^-25 below 1; the rinc^2 term covers that, 2^-16 the roundings of
+  lim - p, rinc, g and the product; no division: g is from E2's rinc). A stretch sample has LOW's now = next = 0, so it
+  is out = delayed, delayed = the wave: the triangle tri(p), the same expression; the sine on a half cycle as
+  sinq(4 s (p - c)) (c 1/4 rising, s 1; 3/4 falling, s -1) with 4 and s folded into sinq's coefficients (powers of two,
+  exact), one subtraction for tri()'s three. The sine stretch runs in pairs (one loop count and branch per two
+  samples, an odd one after), the triangle's one at a time. MASTER writes 255 per stretch sample, SLAVE stops a
+  stretch at an event. `run<>` now takes its body from `sample<R>` (always_inline: BE4.40's regimes compile as before,
+  P3Identity byte-identical, Cost unchanged to the instruction).
+- **FLAT_INC (found, not in the brief):** at high notes the long way (~100 instructions, two corners a cycle) outweighs
+  the stretch: an_render free per sample, plateau / LOW: 26.3 / 34.5 at inc 0.0625, 32.8 / 35.3 at 0.09, **40.5 / 36.3 at
+  0.125, 52.6 / 37.5 at 0.174** (M, the first build without the threshold). So plateaus at inc >= 0.09 (8.6 kHz at 96 kHz,
+  above note 120; 4.3 kHz in Rig()'s 48 kHz) take run<LOW>, as in Q3.
+- **Two things that cost instructions everywhere, avoided (M):** passing the Shape by address to an out-of-line helper
+  spilled an_render's Shape for every regime (saw +6 a call, P3Identity's mod case +0.7 %); `low_step` takes the fields
+  by value and `run_flat` takes inc / rinc. Taking p and delayed's addresses for the long-way call kept them on the stack
+  through the stretch (+3 a sample); the call goes through copies.
+- **M4** (m4_synth.c `glyph()`): the sine is one smooth cycle sin 2 pi p from the middle (crest and trough 5 columns
+  each), the triangle two cycles of straight flanks in the kernel's phase (from the bottom, points 3 columns wide). The
+  sine's phase is no longer the kernel's (-cos): a glyph names the shape; a free oscillator's phase is not heard.
+
+Tests:
+- **`ShapeLow.test_the_plateaus_go_the_long_way_at_every_corner`** (new): 132 calls at incs 2^-20 (the bound's rinc^2 term
+  at its largest), 1.3e-4, note 60, 0.0123, 0.073, 0.05, FLAT_INC (1 - 2^-20), FLAT_INC, 0.2, 0.45, each from 0 to 3
+  increments below a corner, n 5 / 128 / 512, free, master (events pre-filled 0x55) and slave (random events). low_step's
+  out_i hooked by PC: below FLAT_INC every corner sample (float32 phase law) and every slave event went the long way, at
+  most 2 x corners + 2 did (M: 147 / 144 and 263 / 261 over the run); at and above FLAT_INC none did. Output the golden's
+  within tol_time (slave: low_slave's), phase the float32 law's exactly, master bytes the golden's wraps and 255
+  elsewhere.
+- **`ShapeLow.test_cost`** (reviewed edit, bounds added, none loosened): + a sine+sync row; at n = 256 (the device's block)
+  sine and triangle <= Cost's saw voice, sine+sync and tri+sync <= its saw+sync voice. The blends keep the 1.3 x mixed
+  bound; n = 128 keeps it too (there the sine is 1.03 x the saw: below).
+- **`ShapeLow.test_one_division_per_render`**: counts VDIV.F32 by PC over an_render, both run_flat and low_step (the
+  plateaus' code is out of line now; asserted 4 ranges), still 1 per call.
+- **test_synth_ui `Dial.test_the_glyphs_read_as_the_sound`** (reviewed edit, the Q3 sine / triangle criteria replaced):
+  sine: starts and ends mid-height (within 2 px), one crest in the first half and one trough in the second, each held
+  >= 4 columns; triangle: two points <= 3 columns wide, three bottom points (the first at column 0), every flank column
+  moving 2..4 px the same way; the two differ in their crest count. Each sine criterion and the triangle's two-point one
+  fails on the Q3 pair (both started at the bottom with one peak in the middle); saw and pulse checks unchanged.
+
+Measured (M):
+- **Max difference to Q2b's run<LOW>** (scratch p3/q3b/vsq2b.py: the same an_render calls on this build and on
+  ~/bento/out/m1-p3q2b, 2,000 random calls, incs 1e-6..0.45 and powers of two, phases on and just below the corners, n 1
+  to 1024, all roles, random slave events): **triangle bit for bit**, output and state (phase, delayed), master events
+  identical; **sine within 1.79e-7 in all roles** (this run gave 1.19e-7 free / master, 1.79e-7 slave; the review's rerun,
+  5,000 cases with n up to 1024 in every role, 1.79e-7 in each), phase bit for bit. The golden tolerances are unchanged and hold as before (LOW vs golden worst 8.08e-5 = 0.89 of its tolerance at
+  Shape 0, the sinq term; `test_the_sine_is_the_stated_sinq` 1e-6). Shape >= 45: P3Identity's 59 cases byte-identical.
+- **Cost** (`ShapeLow.test_cost`, hooks per voice-block, both oscillators): n = 256 **sine 13,100, triangle 11,760 against
+  the saw voice's 13,236** (0.99 x, 0.89 x; Q3: 23,472 = 1.77 x); sine+sync 14,357, tri+sync 13,215 against saw+sync
+  15,845 (Q3 tri+sync 25,833). n = 128 (Rig(): 48 kHz, twice the increment, so twice the corners a sample) sine 7,580,
+  triangle 6,896 against the saw's 7,348: **the sine is 1.03 x there**, not at or below. an_render alone at note 60
+  (inc 0.00273), per sample free / master / slave: sine 12.97 / 13.98 / 23.27, triangle 10.40 / 11.80 / 18.74, saw 13.32 /
+  15.58 / 21.35, Q2b's LOW 31.8 / 34.5 / 44.0 (slave with an event every ~32 samples). At inc 0.0436 (4.2 kHz) sine /
+  triangle 22.3 / 19.6 against LOW's 34.0; at and above FLAT_INC LOW's (35.3 at 0.09).
+- **Blends: +20 instructions per an_render call** (630 -> 650 at n = 16, 8,242 -> 8,262 at n = 256, M: the dispatch's
+  extra compares and an_render's changed layout), so held blends +0.1 % (sine>tri 23,516 against Q3's 23,482) and a LOW
+  ramp block, 32 calls of 16 frames, **+2.3 %** (tri+ramp 30,242 against Q3's 29,554; still 1.32 x the saw > square ramp,
+  test bound 1.5 x). Cost (Shape >= 45) unchanged to the instruction (saw 13,236, mixed 19,880, saw+sync 15,845, mixed+sync
+  22,232); P3Identity 59 cases worst +1.06 % (mod dev=False 111,065 vs 109,899; Q2b +0.97 %), total +0.34 %.
+- **Sizes:** DSP **15,572 B: +2,608 on Q2b's 12,964** (after the review fix **15,620 B, +2,656: P3 has used 5,912 B of
+  its 14 KB, 8,424 B left**; run_flat<SINE> 816 B, <TRI> 488), as first built **P3 had used 5,864 B of its 14 KB (14,336 B)
+  ceiling, 8,472 B left** for Q4 to Q6; 21,036 B free in the window. run_flat<SINE> 768 B, run_flat<TRI> 484, low_step 1,108, an_render
+  +236 (0x1920 -> 0x1A0C). Tried and dropped (M): one run_flat per role, 6 instances (+1,008 B for -0.1 a sample);
+  the sine stretch unrolled x4 by the compiler (17,516 B with the roles separate, 11.97 a sample); x2 by pragma (+360 B
+  for less than the hand-paired loop). Image **0x1890D0** (-8 B: the glyph code), **16,996 B under PROVEN_MAX** 0x18D334;
+  synth UI 14,952 B (-8). Dial draw 116,089 instructions, 206 fills.
+- **Snapshots** (scratch p3/q3b/snap, from this build's M4 through test_synth_ui's Dial rig, the pane 622 x 142 px):
+  `montage_1x.png` (Shapes 0, 12, 24, 36, 48, 68, 88, 127 at the device's pixel scale), `montage_4x.png` (nearest
+  neighbour), each Shape's `dial_NNN_1x/4x.png`, and the dial region alone `crop_000/024/048_1x/4x.png`. At 1x the sine
+  reads as the usual tilde-like wave and the triangle as a pointed zigzag (an M without verticals); the saw at 48 is the
+  other zigzag, told apart by its vertical falls.
+- Mutations (scratch p3/q3b/mut/mutate.py, each built from a copy, logs p3/q3b/mut/logs): all 19 red. Failing (sub)tests:
+  sine dispatch removed 50 (test_cost, the long-way test, the VDIV test's 4 ranges), triangle dispatch removed 50;
+  FLAT_INC 0.46 36, 0.05 36 (long-way test); the stretch one sample too long 87; g = rinc (no margin) 2 (test_spectra:
+  a coherent inc lands a stretch on the corner); lim always 1 92; the sine's falling half not negated 57, c 1/4 on both
+  halves 57; sinq c1 -0.6417 3 (the stated-sinq test, spectra); the slave's event check dropped from the sine stretch 19,
+  from the triangle's 19; the master's 255 not written in the sine stretch 16 (long-way test, 0x55 fill); low_step's tw
+  swapped 105. M4 (test_synth_ui): the Q3 pair restored 3, the sine from the bottom 1, the triangle one cycle 2, the
+  sine drawn as the triangle 1, the sine two cycles 2.
+- Full suite (wsl/test_m1.sh, O=~/bento/out/m1-p3q3b) green; test_analog 95 tests (+1), test_synth_ui 62. (After the
+  review fixes below: 98 and 62, green.)
+
+Found during Q3b (corrections to this plan):
+- **The plateau loop is not a win at every pitch** (FLAT_INC above): Q3's note "specialising would cut that" holds up to
+  about inc 0.1 only. A plateau note above about note 120 costs Q3's LOW figure, not the saw's.
+- **"At or below the saw" holds on the device's block (n = 256), not in Rig() (n = 128: sine 1.03 x)**: the long way's
+  ~100 instructions come twice a cycle, and Rig()'s increment is twice the device's.
+- **The 14 KB ceiling is tighter for Q5:** 8,424 B are left (8,472 before the review fix) against 5's estimate for Q4
+  (~2 KB) plus Q5's three FM instances (~1.5-2.5 KB each) plus Q6: 6.5 to 9.5 KB (I). If Q5 lands at the high end, the plateau path (2.6 KB) is the
+  first thing to trade (it can be compiled out: by_regime's two lines).
+- 4.6 / 9's "specialise LOW into ST / TS (~2 KB more)" is superseded for the plateaus by run_flat (2.6 KB, M); the blends
+  remain generic.
+- Device item 9's glyph judgement is now about the triangle against the saw (both two-cycle zigzags), not the sine
+  against the triangle.
+
+Q3b review fixes (two reviews; figures above re-measured on the fixed build where they moved):
+- **The plateaus' cost is pitch-dependent** (review 2): "at or below the saw" was measured at note 60 only. The long way
+  costs ~200 instructions a cycle against ~20 for the saw, so the plateau overtakes the saw as the pitch rises. an_render
+  free per sample, n = 256, this build (scratch p3/q3b/fix/cross.py), plateau / saw: sine 12.76 / 13.31 at note 60, 13.39 /
+  13.33 at 72 (**crossover ~note 72**), 14.54 at 84 (1.09 x), 17.10 at 96 (1.27 x), 22.23 at 108 (1.64 x), 30.82 at 119
+  (2.24 x); triangle 10.18 at 60, 13.07 at 90 (0.98 x, **crossover ~note 91**), 14.41 at 96 (1.07 x), 19.50 at 108 (1.44 x),
+  28.21 at 119 (2.05 x). Q2b's generic LOW is 31.8..35.3 over the same range, so below FLAT_INC the plateaus never cost
+  more than Q3 did. 4.6, 5, the risks row and device item 12 restated; test_cost still asserts note 60 only (the bound
+  is the claim it makes).
+- **A plateau slave under dense master events** (review 1): every event sample goes the long way and the stretch is
+  recomputed, so with an event every few samples run_flat costs more than run<LOW>. The sine's pair loop also sent ev[0]
+  the long way when only ev[1] held the event; **fixed** (ev[0] now in the stretch: one(), then low_step for ev[1]; +48 B).
+  Slave at inc 0.0027, master saw events, n = 256, per sample this build / Q2b's LOW (scratch p3/q3b/fix/slavecost2.py):
+  master inc 0.031: sine 20.4 / 43.7, triangle 18.2; 0.2: 50.4 / 55.3, 46.5; 0.25: 60.6 / 60.6 (was 85.6), 58.1; 0.45 (the
+  clamp): **sine 97.3 / 75.2 = 1.29 x** (was 131.4 = 1.75 x), triangle 93.7 = 1.25 x. FLAT_INC looks at the slave's
+  increment only; the master would need to be above ~24 kHz (tune, pitch modulation or Q5's deep Sub FM on it). Recorded,
+  not gated: a per-block event count to choose run<LOW> would cost every slave block for a corner case.
+- **Tests added** (review 2's major, both reviews' minors): `ShapeLow.test_the_stretch_bound_holds_on_long_stretches`
+  (32 calls chosen on the host so that the bound without its rinc^2 term, float32 as compiled, overruns the corner:
+  stretches of 5 to 250 samples at incs 1e-5..1e-3, n 512, all roles; the corner test's calls start within 3
+  increments of a corner, where that term never matters); `ShapeLow.test_the_plateaus_are_lows_own_samples` (the
+  plateaus against one low_step call per sample, the build's own LOW sample by symbol: the triangle bit for bit, output,
+  phase, delayed, master bytes; the sine within 2e-7, M 1.19e-7 on its 36 calls, phase and master bytes bit for bit);
+  `ShapeLow.test_only_the_exact_plateaus_run_flat` (k one float32 step off -1 and either side of -0.5, Shapes 3 / 21 / 27,
+  free and slave: no low_step call, the Shapes against the golden / low_slave). The long-way bound tightened from
+  2 x corners + 2 to corners + 2 (M 147 / 144, 263 / 261). test_synth_ui: the sine and triangle glyphs must be the
+  pulse's height (19 px; the saw's BE4.40 ramp is 17: its last step stops short), not just > 14 px. test_cost's docstring
+  figures made the plan's. test_analog 98 tests (+3).
+- Mutations against the fixed tests (scratch p3/q3b/fix/mut/fmut.py, results.txt; each built from a copy): all red.
+  g without the rinc^2 term 32 (the new long-stretch test; it survived the whole suite before), g = rinc 34 (that test
+  and test_spectra), the sine's odd tail dropped 12 (the corner test's tightened bound, the long-stretch test), the sine
+  dispatch loosened to ws >= .9 8 (the exact-plateau test; it survived before), the triangle's to tw >= .9 17, sinq's
+  first coefficient 2 ulp off in the stretch 12 (the low_step equality test: an error ~1e-3 of the golden's tolerance),
+  the triangle stretch's order swapped 84, the sine glyph at amplitude 7 1 (test_synth_ui; it survived before).
+- Kept as is: the triangle and the saw glyph are the closest pair now (review 1); device item 9 judges it.
+
 ---
 
 ## 8. Device checklist (BE4.41; BE4.40's own checklist runs first, as it is not flashed yet)
@@ -1084,15 +1232,17 @@ DSP 12,964 B; full suite green, test_analog 94):
 8. Sync 1>2 on plus Sub FM on OSC1: the slave follows the FM'd master. Also mixed sync (OSC1 Wavetable) with Sub FM on
    OSC2.
 9. Shape sweep 0..127 by knob and by modulation (Position routed): sine, triangle, saw at 48, square, pulse. The dial
-   glyphs light. Judge whether the sine and triangle glyphs read apart (Q3 review: one cycle each now, the sine's round
-   top against the triangle's point; offline their top profiles differ by 2 px in 18 of 26 columns, but at 24 x 9 px the
-   difference stays small), and listen for clicks while an LFO sweeps 5..45 (Q3's AN_RAMP_LOW, OD13).
+   glyphs light. Judge whether the glyphs read apart (Q3b: the sine one smooth cycle from the middle, the triangle a
+   two-cycle zigzag of straight flanks; the closest pair is now the triangle and the saw, both zigzags, the saw's falls
+   vertical), and listen for clicks while an LFO sweeps 5..45 (Q3's AN_RAMP_LOW, OD13).
 10. Save, reload, copy/paste a track, save and load a preset **file**: all three values are kept. Stock 1.6.8 opens the
     project. BE4.40 opens it too, and drops the three values on its next save (expected).
 11. Glide 50 % = 1 s (stopwatch or tuner; Q0 shipped). BE4.40 took 0.5 s for the same setting.
 12. CPU: an 8-voice chord with full FM, then the same on several tracks. Record DSP %, `peak`, `voices_peak`, `fm=` and
-    `bits=`, with no `OVER`. Also (Q3) an 8-voice chord at Shape 0 and at Shape 24, FM off, on one and then several
-    tracks (LOW costs ~1.77 x a saw voice), and the same with an LFO on Position (a LOW ramp, 1.29 x): peak, no `OVER`.
+    `bits=`, with no `OVER`. Also (Q3, Q3b) an 8-voice chord at Shape 0, 12 and 24, FM off, on one and then several
+    tracks (Q3b: around note 60 Shape 0 / 24 cost a saw voice or less, the blend at 12 ~1.77 x), the same chord in the
+    upper register (Q3b: the plateaus rise with pitch, ~1.3 x the saw at note 96, ~2 x near 119, LOW's cost above 120),
+    and with an LFO on Position (a LOW ramp, 1.32 x): peak, no `OVER`.
 13. An old BE4.40 project with Shape < 45 now plays sine or triangle (expected; no migration).
 
 ---
@@ -1104,7 +1254,7 @@ DSP 12,964 B; full suite green, test_analog 94):
 | FM costs about 2x the old plan at 2N | +9-10 % instructions per root of 10 full-FM voices; multiplied across tracks; OVER on dense patches | gate measured in Q5; specialise the hot case (saw carrier, sine sub) only if it fails; device item 12 | I |
 | Device CPI unknown (flash execution) | instruction counts understate cycles | device item 12 records `peak` with `fm=` | I |
 | The generic loop hoists a division into every sample | ~257 VDIVs per render | VDIV count by PC range (6.5) on every build | I |
-| DSP code larger than estimated | squeezes the drums' room | 14 KB ceiling measured at Q3 and Q5 | I |
+| DSP code larger than estimated | squeezes the drums' room; Q3b left 8,424 B of the 14 KB for Q4 to Q6 (estimate 6.5-9.5 KB) | 14 KB ceiling measured at Q3 and Q5; the plateau path (2.6 KB, Q3b) is the first to trade | M / I |
 | Square sub DC detunes the carrier | pitch drifts as Sub FM rises | DC-free copy (OD10); golden mean-frequency case | S/I |
 | sub_copy disturbs the sub via PARAM_VALUE's cache | the copy or the sub's render is no longer exact | save/restore around the calls; sub-object identity test | S |
 | Stale A or B between voices | FM from another voice | fmtag cleared right after `r->voice`; `Run.voice` check; mutations | S |
@@ -1112,7 +1262,7 @@ DSP 12,964 B; full suite green, test_analog 94):
 | Backward wraps and slave resets | resets that sound wrong under deep through-zero sync; double edges at di < 0 | golden model; the one-edge reset rule; OD5 | I |
 | The Shape remap changes J4 and old projects below 45 | an audible change | checklist item 13; no migration (decided); 6.7 edits | S |
 | LOW regime BLAMP / sinq quality | aliasing on bright blends; Bessel test too strict | THD measured first; spectral checks | I |
-| LOW regime cost (Q3, M) | every sine / triangle patch costs ~1.77 x a saw voice with FM off (the generic loop pays tri, sinq and the saw term every sample); dense sine / triangle chords across tracks, and FM on top in Q5, near OVER | device item 12's Shape 0 / 24 chords; if it fails, specialise LOW into ST / TS (4.6's rejected alternative, ~2 KB more code) | M / I |
+| LOW regime cost (Q3, M; Q3b) | Q3: every sine / triangle patch cost ~1.77 x a saw voice with FM off. Q3b: the plateaus at or below the saw voice up to about note 72 (sine) / 91 (triangle), rising to ~2.2 x it at note 119, LOW's cost above inc 0.09 (note ~120), never above Q3's LOW below that except a plateau slave under a master above ~24 kHz (up to 1.29 x LOW); the blends (Sin>Tri, Tri>Saw) and LOW ramps still ~1.77 x / 1.32 x; dense blend chords across tracks, and FM on top in Q5, near OVER | device item 12's Shape 0 / 12 / 24 chords; if a blend fails, specialise ST / TS (~2 KB more, against the 8.4 KB left of the 14 KB ceiling) | M / I |
 | The type-0xFF pad entry is reachable | a one-property object from a crafted file | reader-type scan and injected-element load test (Q1) | S |
 | Rollback to BE4.40 | the 3 values silently dropped on its next save | BE4.40-opens-P3 test; release note; checklist item 10 | S/I |
 | M7 key-flag path 0x08059960 never run | a new key mirrored to handle 0xFFFFFFFE | static reading (only 0x05/0x27/0x31 flagged); runtime test (OD7) | S |
@@ -1169,7 +1319,7 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 | OD11 | Bit Depth grid | (a) mid-tread, S = 2^(b-1): 2^b + 1 levels, symmetric, no clip; (b) true b-bit two's complement, clamped to [-S, S-1] | **(a)** (superseded: Jeff chose (b), Decisions above; 4.7). It has no DC and no top clip, and at 12/8 bits the extra level is inaudible. At 4 bits it is 17 levels instead of 16, so the label is nominal. Choose (b) if you want a stricter "4-bit" grit with an asymmetric top clip. |
 | OD12 | Bit Depth's clip of the DC-free pulse (Q2, 4.7) | Every Bit Depth, 12 bits too, clips the pulse's high (2 - 2w, 1.84 at Shape 127) for Shape > 88: 4.7 to 6 dB less peak to peak, and no longer DC-free, so under FM 1>2 (B = crushed s, BD1) OSC1 detunes OSC2 by I * inc1 * mean(q) (about -0.4 to -0.8 x inc1 at I = 8). (a) accept the clip as grit; then Q6 either subtracts B's mean (known only per block, or from the clipped levels) or accepts the detune as a feature. (b) crush `s + dc`, then subtract dc (the pulse's own range sits on the grid's [-1, 1)): B stays nearly DC-free and 12 / 8 bits nearly transparent (the +1 high still loses one step: 0.9995 at 12 bits, 0.875 at 4), but the dc must follow a Shape ramp part by part (the kernel knows it per part) and the output is offset from the grid by dc. (c) no clamp above S - 1: more than 2^b levels, so it is OD11 (a) again, not a variant | **Decided: (b)** (Decisions; built in Q2b). It keeps OD11 (b)'s grid for the signal the grid was meant for, keeps B DC-free as OD10 chose for the sub, and costs one add and one subtract per sample (the dc per part is already computed). (a) with a mean subtracted in Q6 is the fallback. Q2 ships (a) as built, pinned by its tests; the answer is needed before Q6 writes B. |
 | OD13 | Shape ramp step below the saw (Q3, deviation from 4.6) | (a) `AN_RAMP_LOW` = 16 frames for a ramp with either end below the saw (k0 < 0 or k1 < 0), AN_RAMP = 32 elsewhere; (b) 4.6 as written, AN_RAMP = 32 for every ramp | **Decided: (a)**, as built (Decisions). At 32 frames 6.4's criterion fails: per part edge 1.02 / 1.08 / 0.95 x the saw > square ramp's click at LFO centres 24 / 28 / 46 (the LOW map moves k twice as fast a Shape step). At 16, per block (6.4's metric) 0.0083 / 0.0089 / 0.0135 against saw > square's 0.0163. A slope BLAMP in an_reshape changed nothing measurable, so it is not the fix. Cost: a LOW ramp block 29,554 instructions against 22,859 for the saw > square ramp (1.29 x); ramps at Shape >= 45 are untouched (identity). (b) is one line in an_osc plus the expected part count in ShapeLow; 6.4 would then need a looser criterion for the LOW map. |
-| OD14 | Taken as built in Q3 (beyond 4.6, listed so you see them) | the SLAVE reset's slope BLAMP in LOW; the sine and triangle dial glyphs drawn one cycle each (the others two) | **Decided** (Decisions): the reset BLAMP kept as built; **the glyphs redone in Q3b**. (Recommendation was: keep both.) The reset BLAMP is the value BLEP's missing half: without it a synced triangle is off the exact band-limited wave by up to 0.12, with it ~1e-4 (both reviews measured it against a brute-force reference); one sinq per reset, nothing per sample. The glyphs: at two cycles the sine and triangle drew alike (snapshot); one cycle gives the sine a round top. Device item 9 judges it; reverting is one expression in `glyph()`. |
+| OD14 | Taken as built in Q3 (beyond 4.6, listed so you see them) | the SLAVE reset's slope BLAMP in LOW; the sine and triangle dial glyphs drawn one cycle each (the others two) | **Decided** (Decisions): the reset BLAMP kept as built; **the glyphs redone in Q3b**. (Recommendation was: keep both.) The reset BLAMP is the value BLEP's missing half: without it a synced triangle is off the exact band-limited wave by up to 0.12, with it ~1e-4 (both reviews measured it against a brute-force reference); one sinq per reset, nothing per sample. The glyphs: at two cycles the sine and triangle drew alike (snapshot); one cycle gives the sine a round top. Device item 9 judges it; reverting is one expression in `glyph()`. **Q3b:** redone (the sine one cycle from the middle, the triangle two cycles of straight flanks; "Q3b as built"). |
 | OD15 | The grid's own DC under FM 1>2 (Q2b, 4.7; needed before Q6) | OD11 (b)'s top at (S-1)/S takes one step off any +1 high (the square, and the pulse after OD12), so mean(q) = -f_hi / S and B = inc1 q detunes OSC2 by I * inc1 * mean(q): at I = 8, OSC1 = OSC2, a square OSC1 gives about -3 / -55 / -1200 cents at 12 / 8 / 4 bits (I). (a) accept it as part of the grit; (b) Q6 writes B from the crush with its top clamp at S instead of S - 1 (the audio keeps OD11 (b); B gets the +1 level back, so its error is unbiased rounding; about one compare and one add per sample, in the FM 1>2 path only); (c) subtract a known -f_hi / S from B (f_hi is not known exactly per block: edges, sync, ramps); (d) a half-step (mid-rise) grid, which revisits OD11 for the audio too and puts a +1 / 2S offset on a zero input; (e) B from the uncrushed s (revisits BD1: the crush no longer colours FM 1>2) | **(b)**. It removes the detune at every depth for the cost of one extra clamp in the path that already writes B, and leaves Jeff's audio grid untouched. (e) is cheaper (zero) but loses the crushed modulator BD1 chose; (a) is defensible at 12 bits (-3 cents) but not at 8 (half a semitone). Close call between (b) and (e). |
 | CPU gate | (not a new decision; FD6 restated) | | The draft's 27.5 k was tighter than FD6. The plan now uses FD6 faithfully: 1.3 x the specialised voice at 2N (~31 k, I), measured in Q5. Say so if you want the tighter target instead. |
 

@@ -999,35 +999,56 @@ class Dial(unittest.TestCase):
 
     def test_the_glyphs_read_as_the_sound(self):
         """Review rev_m4_1: the saw rises (the kernel's 2p - 1, analog_kernel.cpp) and falls back at each cycle's end, two
-        cycles per glyph; the pulse shows both edges and a high run of at least 3 px. P3 Q3: the sine and the triangle start
-        at the bottom (the kernel's phase: -cos 2 pi p, 1 - 4 |p - 1/2|), peak in the middle, and have no edge; Q3 review:
-        one cycle each (was two, which drew them alike: the review's mutation "the sine drawn as the triangle" stayed green),
-        and they read apart: their top profiles (each from its own bottom) differ by 2 px in at least 12 of the 26 columns
-        (M: 18), and the sine's round top holds its peak for at least 5 columns where the triangle's point holds 3 (the
-        2-px fill). Glass Y is down. Each anchor lights only its own glyph (test_pointer_and_lit_glyphs), so all lit pixels
-        are it."""
+        cycles per glyph; the pulse shows both edges and a high run of at least 3 px. P3 Q3b (OD14: the Q3 pair, one cycle
+        each from the bottom, both read as a caret on the snapshot): the sine and the triangle are told apart by their form,
+        not by a pixel or two of roundness. The sine is one smooth cycle as it is drawn everywhere (sin, from the middle: up
+        to a crest, down through the middle to a trough, back), its crest and trough each held for at least 4 columns (round);
+        the triangle two cycles in the kernel's phase, a zigzag of straight flanks (each column moves the same 3 +- 1 px) to
+        two sharp points (at most 3 columns at the top: the 2-px fill) over three bottom points. Neither has an edge. Each
+        criterion fails on the Q3 pair (both started at the bottom with one peak in the middle). The sine and the triangle are
+        the pulse's height (M 19 px; Q3b review: "more than 14 px" passed a sine 4 px short; the saw's ramp, BE4.40's, stops
+        a step short of the top: 17). Glass Y is down; each anchor lights only its own glyph (test_pointer_and_lit_glyphs),
+        so all lit pixels are it."""
         import numpy as np
+        def runs(idx):                                        # groups of neighbouring columns, as (first, last)
+            out = []
+            for i in idx:
+                if out and i - out[-1][1] <= 1: out[-1][1] = i
+                else: out.append([i, i])
+            return out
         prof = {}
         for s in (0, 24):
-            with self.subTest(shape=s):
-                r, _ = self.draw(s)
-                ys, xs = np.nonzero(r.glass(0)[0] == LIT)
-                cols = sorted(set(xs))
-                top = [ys[xs == x].min() for x in cols]
-                span = [ys[xs == x].max() - ys[xs == x].min() for x in cols]
-                self.assertLess(max(span), 16, "no edge (an edge spans the glyph's 18 px, below)")
-                lows = [i for i in range(len(top)) if top[i] == max(top)]
-                highs = [i for i in range(len(top)) if top[i] == min(top)]
-                self.assertIn(0, lows, "the cycle starts at the bottom")
-                self.assertEqual(len([i for i in range(1, len(highs)) if highs[i] - highs[i - 1] > 3]) + 1, 1, "one peak")
-                self.assertLessEqual(abs((highs[0] + highs[-1]) / 2 - (len(top) - 1) / 2), 1.5, "in the middle")
-                self.assertGreater(max(top) - min(top), 14, "full height")
-                prof[s] = (np.array(top[0]) - np.array(top), len(highs))
-        (sine, sp), (tri, tp) = prof[0], prof[24]
-        self.assertEqual(len(sine), len(tri))
-        self.assertGreaterEqual(int(np.sum(np.abs(sine - tri) >= 2)), 12, f"the sine and the triangle differ: {sine} / {tri}")
-        self.assertGreaterEqual(sp, 5, "the sine's round top")
-        self.assertLessEqual(tp, 3, "the triangle's point")
+            r, _ = self.draw(s)
+            ys, xs = np.nonzero(r.glass(0)[0] == LIT)
+            cols = sorted(set(xs))
+            top = np.array([ys[xs == x].min() for x in cols]); bot = np.array([ys[xs == x].max() for x in cols])
+            self.assertLess(int(max(bot - top)), 16, f"Shape {s}: no edge (an edge spans the glyph's 18 px, below)")
+            self.assertGreater(int(max(bot) - min(top)), 14, f"Shape {s}: full height")
+            prof[s] = (top, bot, runs([i for i in range(len(cols)) if top[i] == min(top)]),
+                       runs([i for i in range(len(cols)) if bot[i] == max(bot)]))
+        top, bot, crest, trough = prof[0]                     # the sine
+        n, mid = len(top), (int(max(bot)) + int(min(top))) / 2
+        with self.subTest(glyph="sine"):
+            for i in (0, n - 1):
+                self.assertLessEqual(abs((top[i] + bot[i]) / 2 - mid), 2, f"column {i}: the cycle starts and ends mid-height")
+            self.assertEqual((len(crest), len(trough)), (1, 1), "one crest, one trough: one cycle")
+            self.assertLess(crest[0][1], n / 2, "the crest in the first half")
+            self.assertGreater(trough[0][0], n / 2, "the trough in the second half")
+            self.assertGreaterEqual(min(crest[0][1] - crest[0][0], trough[0][1] - trough[0][0]) + 1, 4,
+                                    f"round: crest {crest}, trough {trough}")
+        top, bot, peaks, lows = prof[24]                      # the triangle
+        with self.subTest(glyph="triangle"):
+            self.assertEqual(len(peaks), 2, f"two cycles: two points ({peaks})")
+            self.assertLessEqual(max(b - a + 1 for a, b in peaks), 3, f"sharp points ({peaks})")
+            self.assertEqual(len(lows), 3, f"three bottom points ({lows})")
+            self.assertEqual(lows[0][0], 0, "from the bottom: the kernel's phase")
+            for (_, a), (b, _) in zip(lows, peaks):           # the rising flanks: bottom point -> top point
+                d = np.diff(top[a:b + 1])
+                self.assertTrue(all(-4 <= v <= -2 for v in d), f"a straight flank: {list(d)}")
+            for (_, a), (b, _) in zip(peaks, lows[1:]):       # the falling ones
+                d = np.diff(top[a:b + 1])
+                self.assertTrue(all(2 <= v <= 4 for v in d), f"a straight flank: {list(d)}")
+        self.assertNotEqual(len(prof[0][2]), len(prof[24][2]), "the two glyphs differ in form: one crest against two points")
         r, _ = self.draw(48)
         ys, xs = np.nonzero(r.glass(0)[0] == LIT)          # the saw glyph
         top = {x: ys[xs == x].min() for x in set(xs)}
@@ -1045,6 +1066,11 @@ class Dial(unittest.TestCase):
         self.assertGreaterEqual(sum(v >= 16 for v in span.values()), 4, "both edges of two pulses")
         high = sorted(set(xs[ys == ys.min()]))
         self.assertGreaterEqual(len(high), 3, "a high run of 3 px or more")
+        tall = {}                                             # Q3b review: the pulse's height (was > 14 px only)
+        for s in (0, 24, 127):
+            ys, _ = np.nonzero(self.draw(s)[0].glass(0)[0] == LIT)
+            tall[s] = int(ys.max() - ys.min())
+        self.assertEqual(len(set(tall.values())), 1, f"the glyphs' full heights (Shape: px) {tall}")
 
     def test_cost(self):
         """One dial draw on the emulated M4: instructions and fills (recorded in the plan doc; the device's DMA2D time is not

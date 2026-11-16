@@ -13,6 +13,8 @@
  * triangle's weight (2 shape + 2 on [-1, -0.5], the rest sine; -2 shape above, the rest saw). The triangle 1 - 4 |p - 0.5|
  * (-1 at p = 0, +1 at 0.5) gets a two-point polyBLAMP at both corners, the saw part its BLEP scaled by 1 - tw, the sine
  * (sinq of the triangle: -cos 2 pi p, in phase with it) none. Shape >= 0 is BE4.40's code and result, bit for bit.
+ * P3 Q3b: the two plateaus (sine ws = 1, triangle tw = 1) run_flat: LOW's own sample only where a corner or a slave's event
+ * may fall, a correction-free stretch between (the triangle LOW's bit for bit, the sine within 1.8e-7); the blends keep LOW.
  *
  * Efficiency (docs/plan-synths-168.md section 6, measured by test_analog.py):
  *   E1  the loop is specialised by template: the shape regime (pure saw, pure pulse, mixed) and the
@@ -131,42 +133,142 @@ template <int R> inline float advance(float &p, const Shape &k, float begin, flo
     return wrap;
 }
 
+/* One sample of regime R: the phase over it (a corner, a wrap, a pulse edge, with their corrections), or a slave's reset
+ * at e (the event byte; AN_NO_EVENT: none). Writes out_i, returns the master's event byte (AN_NO_EVENT: no wrap). */
+template <int R> __attribute__((always_inline)) inline
+unsigned char sample(float &p, float &delayed, const Shape &k, float &out_i, unsigned e) {
+    float now = 0.f, next = 0.f;
+    unsigned char m = AN_NO_EVENT;
+    if (e != AN_NO_EVENT && k.inc > 0.f) {
+        float at = (float)e * (1.f / 254.f);
+        advance<R>(p, k, 0.f, at, now, next);
+        edge(at, wave<R>(0.f, k) - wave<R>(p, k), now, next);
+        /* P3 Q3, LOW: the slope steps too (the saw's does not, the pulse's is 0): from the triangle's -4 past its top and
+         * the sine's 2 pi sin 2 pi p (= 2 pi sinq(tri(p + 1/4))) to the triangle's +4 and the sine's 0 at p = 0 */
+        if (R == LOW) {
+            float q = p + .25f;
+            corner(at, k.inc * ((p < .5f ? 0.f : 8.f) * k.tw - 6.2831853f * k.ws * sinq(tri(q < 1.f ? q : q - 1.f))),
+                   now, next);
+        }
+        p = 0.f;
+        advance<R>(p, k, at, 1.f - at, now, next);
+    } else {
+        float wrap = advance<R>(p, k, 0.f, 1.f, now, next);
+        if (wrap >= 0.f) { int f = (int)(wrap * 254.f + .5f); m = (unsigned char)(f < 0 ? 0 : f > 254 ? 254 : f); }
+    }
+    out_i = delayed + now;
+    delayed = wave<R>(p, k) + next;
+    return m;
+}
+
 template <int R, int ROLE>
 void run(AnOsc &o, const Shape &k, float *out, unsigned n, unsigned char *events) {
     float p = o.phase, delayed = o.delayed;
     for (unsigned i = 0; i < n; i++) {
-        float now = 0.f, next = 0.f;
-        unsigned e = ROLE == SLAVE ? events[i] : AN_NO_EVENT;
-        if (ROLE == SLAVE && e != AN_NO_EVENT && k.inc > 0.f) {
-            float at = (float)e * (1.f / 254.f);
-            advance<R>(p, k, 0.f, at, now, next);
-            edge(at, wave<R>(0.f, k) - wave<R>(p, k), now, next);
-            /* P3 Q3, LOW: the slope steps too (the saw's does not, the pulse's is 0): from the triangle's -4 past its top and
-             * the sine's 2 pi sin 2 pi p (= 2 pi sinq(tri(p + 1/4))) to the triangle's +4 and the sine's 0 at p = 0 */
-            if (R == LOW) {
-                float q = p + .25f;
-                corner(at, k.inc * ((p < .5f ? 0.f : 8.f) * k.tw - 6.2831853f * k.ws * sinq(tri(q < 1.f ? q : q - 1.f))),
-                       now, next);
+        unsigned char m = sample<R>(p, delayed, k, out[i], ROLE == SLAVE ? events[i] : AN_NO_EVENT);
+        if (ROLE == MASTER) events[i] = m;
+    }
+    o.phase = p;
+    o.delayed = delayed;
+}
+
+/* P3 Q3b: LOW's two plateaus, the sine (ws = 1) and the triangle (tw = 1), which run<LOW> rendered at the whole blend's
+ * cost every sample (1.77 x a saw voice, Q3). A sample where the phase may reach a corner (1/2, the wrap) or a slave has
+ * an event goes the long way, low_step: LOW's own sample (out of line, shared), so those samples are LOW's bit for bit.
+ * Between them runs a stretch of m samples that cannot reach the next corner lim (1/2 or 1): after m steps p += inc, each
+ * rounded to float32 below 1 (at most 2^-25 off), p_m <= p + m (inc + 2^-25); m = floor((lim - p) g) with
+ * g = rinc (1 - 2^-16) - rinc^2 2^-22 keeps p_m < lim (rinc^2 2^-22 inc >= rinc 2^-25 covers the steps' roundings, 2^-16
+ * those of lim - p, rinc, g and the product, 2^-24 each). Such a sample has no correction (LOW's now = next = 0), so
+ * out = delayed, delayed = the wave at the new phase: the triangle tri(p), LOW's bit for bit; the sine, on a half cycle,
+ * sinq of t = 4 s (p - c) (c 1/4 rising, s 1; 3/4 falling, s -1), the 4 and s folded into sinq's coefficients (powers of
+ * two: exact), one subtraction where tri() takes three: p - c rounds once where 1/4 - |p - 1/2| may round twice, so within
+ * 1.8e-7 of LOW's (M). The phase (p += inc, -1 at the wrap in low_step) is LOW's law, bit for bit. */
+__attribute__((noinline)) unsigned char low_step(float *p, float *delayed, float inc, float rinc, float tw, float *out_i,
+                                                 unsigned e) {
+    Shape k;                          /* (by value: an address-taken Shape would spill an_render's for every regime) */
+    k.inc = inc; k.rinc = rinc; k.tw = tw; k.ws = 1.f - tw; k.wsaw = 0.f; k.low = 1;
+    return sample<LOW>(*p, *delayed, k, *out_i, e);
+}
+enum Plateau { SINE, TRI };
+/* Above it the plateaus take run<LOW>: two corners a cycle, each a long-way sample (~100 instructions), outweigh the stretch
+ * near inc 0.1 (M, an_render free per sample: sine / triangle 32.8 / 30.0 against LOW's 35.3 at inc 0.09, 40.5 / 38.0
+ * against 36.3 at 0.125). 0.09 is 8.6 kHz at the device's 96 kHz (above note 120), 4.3 kHz in Rig()'s 48 kHz. */
+const float FLAT_INC = .09f;
+/* m samples of the stretch (fewer if a slave meets an event: that sample goes the long way); y, ev and p, delayed move on.
+ * The sine in pairs (the loop's count and branch once per two), an odd one after them. */
+template <int F, int ROLE> __attribute__((always_inline)) inline
+void stretch(float *&y, unsigned char *&ev, unsigned m, float &p, float &delayed, float inc, int lo) {
+    if (F == SINE) {
+        float c = lo ? .25f : .75f, s = lo ? 1.f : -1.f;
+        float s0 = s * (4.f * 1.570243f), s1 = s * (64.f * -.641711175f), s2 = s * (1024.f * .0714682192f);
+        auto one = [&](float *q) {
+            p += inc;
+            float d = p - c, w = d * d;
+            *q = delayed;
+            delayed = d * (s0 + w * (s1 + w * s2));
+        };
+        float *stop = y + (m & ~1u);
+#pragma clang loop unroll(disable)
+        for (; y != stop; y += 2) {
+            if (ROLE == SLAVE && (ev[0] != AN_NO_EVENT || ev[1] != AN_NO_EVENT)) {
+                if (ev[0] == AN_NO_EVENT) { one(y++); ev++; }   /* (review: ev[0] in the stretch, only ev[1] the long way) */
+                return;
             }
-            p = 0.f;
-            advance<R>(p, k, at, 1.f - at, now, next);
-        } else {
-            float wrap = advance<R>(p, k, 0.f, 1.f, now, next);
-            if (ROLE == MASTER) {
-                unsigned char m = AN_NO_EVENT;
-                if (wrap >= 0.f) { int f = (int)(wrap * 254.f + .5f); m = (unsigned char)(f < 0 ? 0 : f > 254 ? 254 : f); }
-                events[i] = m;
-            }
+            one(y); one(y + 1);
+            if (ROLE == MASTER) ev[0] = ev[1] = AN_NO_EVENT;
+            if (ROLE != FREE) ev += 2;
         }
-        out[i] = delayed + now;
-        delayed = wave<R>(p, k) + next;
+        if ((m & 1u) && !(ROLE == SLAVE && *ev != AN_NO_EVENT)) {
+            one(y++);
+            if (ROLE == MASTER) *ev = AN_NO_EVENT;
+            if (ROLE != FREE) ev++;
+        }
+    } else {
+        float *stop = y + m;
+#pragma clang loop unroll(disable)
+        for (; y != stop; y++) {
+            if (ROLE == SLAVE && *ev != AN_NO_EVENT) return;
+            p += inc;
+            *y = delayed;
+            delayed = tri(p);
+            if (ROLE == MASTER) *ev = AN_NO_EVENT;
+            if (ROLE != FREE) ev++;
+        }
+    }
+}
+template <int F>
+__attribute__((noinline)) void run_flat(AnOsc &o, float inc, float rinc, float *out, unsigned n, unsigned char *events,
+                                        int role) {
+    float p = o.phase, delayed = o.delayed;
+    float g = rinc * (1.f - 1.f / 65536.f) - rinc * rinc * (1.f / 4194304.f);
+    float *y = out, *end = out + n;
+    unsigned char *ev = events;
+    while (y != end) {
+        int lo = p < .5f;
+        float x = ((lo ? .5f : 1.f) - p) * g;
+        unsigned m = x >= 1.f ? (x < 65536.f ? (unsigned)x : 65536u) : 0u, left = (unsigned)(end - y);
+        if (m > left) m = left;
+        if (role == FREE) stretch<F, FREE>(y, ev, m, p, delayed, inc, lo);
+        else if (role == MASTER) stretch<F, MASTER>(y, ev, m, p, delayed, inc, lo);
+        else stretch<F, SLAVE>(y, ev, m, p, delayed, inc, lo);
+        if (y == end) break;
+        float lp = p, ld = delayed;      /* (copies: p, delayed with their address taken would live on the stack) */
+        unsigned char e = low_step(&lp, &ld, inc, rinc, F == TRI ? 1.f : 0.f, y++, role == SLAVE ? *ev : AN_NO_EVENT);
+        p = lp; delayed = ld;
+        if (role == MASTER) *ev = e;
+        if (role != FREE) ev++;
     }
     o.phase = p;
     o.delayed = delayed;
 }
 
 template <int ROLE> void by_regime(AnOsc &o, const Shape &k, float *out, unsigned n, unsigned char *events) {
-    if (k.low) { run<LOW, ROLE>(o, k, out, n, events); return; }   /* P3 Q3: one generic regime below the saw */
+    if (k.low) {                      /* P3 Q3: one generic regime below the saw; Q3b: its plateaus on their own, below FLAT_INC */
+        if (k.tw == 1.f && k.inc < FLAT_INC) run_flat<TRI>(o, k.inc, k.rinc, out, n, events, ROLE);
+        else if (k.ws == 1.f && k.inc < FLAT_INC) run_flat<SINE>(o, k.inc, k.rinc, out, n, events, ROLE);
+        else run<LOW, ROLE>(o, k, out, n, events);
+        return;
+    }
 #if AN_E1
     if (k.blend <= 0.f) run<SAW, ROLE>(o, k, out, n, events);
     else if (k.blend >= 1.f) run<PULSE, ROLE>(o, k, out, n, events);

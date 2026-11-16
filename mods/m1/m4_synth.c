@@ -691,21 +691,22 @@ static int angle(u32 shape) { return 160 - (int)(shape * 192u / AN_SHAPE_MAX); }
 #define C_DIM 0xF3u                           /* stock's palette entries (pane paint 0x08184550 / render.py, M) */
 #define C_LIT 0xF2u
 #define C_POINTER 0xF6u
-/* Glyph k (0 sine, 1 triangle, 2 saw, 3 square, 4 pulse) over 24 columns, amplitude 9, centred on (cx, cy), y up, in the
- * kernel's phase (analog_kernel.cpp): the sine -cos 2 pi p and the triangle 1 - 4 |p - 1/2| start at the bottom and peak
- * at the middle, ONE cycle each (Q3 review: at two cycles, 6 columns a half cycle, the two drew alike; at 12 the sine's
- * round top, 3 columns at the peak (rounded to nearest: >> 12 floors x + 1/2), and the triangle's point read apart, M
- * snapshot; the triangle's (16 - d) 9 / 16 truncates, as before); the saw rises and falls back at each
- * cycle's end as 2p - 1; the square and the pulse show both edges, two cycles each; the pulse is high for 3 of a cycle's
- * 12 columns (8 % would be one: too thin to read), review rev_m4_1. Each column joins the last one's level, which draws
- * the vertical edges. */
+/* Glyph k (0 sine, 1 triangle, 2 saw, 3 square, 4 pulse) over 24 columns, amplitude 9, centred on (cx, cy), y up. P3 Q3b
+ * (OD14): the sine and the triangle differ in form, not by a pixel of roundness (Q3 drew both as one cycle from the bottom:
+ * two carets on the snapshot). The sine is the sign everyone reads, one smooth cycle sin 2 pi p from the middle (a crest
+ * and a trough of 5 columns each, rounded to nearest: >> 12 floors x + 1/2); the triangle a zigzag in the kernel's phase
+ * (analog_kernel.cpp: 1 - 4 |p - 1/2|, from the bottom), two cycles of straight 3-px-a-column flanks to sharp points
+ * ((16 - d) 9 / 16 truncates). The sine's phase is not the kernel's (-cos): a glyph names the shape, and a free
+ * oscillator's phase is not heard. The saw rises and falls back at each cycle's end as 2p - 1; the square and the pulse
+ * show both edges, two cycles each; the pulse is high for 3 of a cycle's 12 columns (8 % would be one: too thin to read),
+ * review rev_m4_1. Each column joins the last one's level, which draws the vertical edges. */
 #define GLYPH_N 24
 #define GLYPH_AMP 9
 static void glyph(u32 k, int cx, int cy, u32 c, u32 surf) {
     int prev = 0;
     for (int i = 0; i <= GLYPH_N; i++) {
-        int p = i * (k < 2u ? 64 : 128) / GLYPH_N & 63, d = p < 32 ? 32 - p : p - 32;
-        int y = cy + (k == 0u ? (sin64(p - 16) * GLYPH_AMP + 2048) >> 12 : k == 1u ? (16 - d) * GLYPH_AMP / 16
+        int p = i * (k == 0u ? 64 : 128) / GLYPH_N & 63, d = p < 32 ? 32 - p : p - 32;
+        int y = cy + (k == 0u ? (sin64(p) * GLYPH_AMP + 2048) >> 12 : k == 1u ? (16 - d) * GLYPH_AMP / 16
                       : k == 2u ? (p - 32) * GLYPH_AMP / 32 : p < (k == 3u ? 32 : 16) ? GLYPH_AMP : -GLYPH_AMP);
         int lo = i && prev < y ? prev : y, hi = i && prev > y ? prev : y;
         fill(cx - GLYPH_N / 2 + i, lo, 2, hi - lo + 2, c, surf);

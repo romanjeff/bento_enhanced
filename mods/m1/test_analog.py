@@ -2462,11 +2462,31 @@ class BitDepth(unittest.TestCase):
 SINQ_ERR = 8.1e-5           # dsp/analog_kernel.cpp sinq: its stated design maximum (the fit's), not a residual of the kernel
 SINQ_THD_DB = -81.87        # sinq of the triangle, THD (plan 6.3: measured first, in numpy, before the kernel: scratch p3/q3/impl)
 SINQ = (1.570243, -0.641711175, 0.0714682192)   # its stated coefficients (sin(pi/2 x) ~ x (c0 + x^2 (c1 + x^2 c2)), rc26)
+FLAT_INC = 0.09             # analog_kernel.cpp (P3 Q3b): the plateaus' own loops below this increment, run<LOW> at and above
 
 
 def k_of(sh):
     """Shape (whole or 1/512-held) -> the kernel's shape, float64: p3_golden's map below 48 (P3 Q3), BE4.40's above."""
     return G.kcoord(sh) if sh <= 48 else (sh - 48) * (0.5 / 40) if sh <= 88 else 0.5 + (min(sh, 127) - 88) * (0.5 / 39)
+
+
+def dsp_sym(part):
+    """The address (Thumb bit cleared) of the one DSP symbol whose (mangled) name contains part, e.g. 'low_step'."""
+    got = [a & ~1 for k, a in DSP.items() if part in k]
+    assert len(got) == 1, (part, got)
+    return got[0]
+
+
+def render_ranges():
+    """[start, end) of each function of an_render's code: an_render itself and (P3 Q3b) the plateaus' out-of-line run_flat
+    instances and low_step; each ends at the next DSP symbol."""
+    starts = sorted({a & ~1 for a in DSP.values()})
+    out = []
+    for k, a in DSP.items():
+        if k == "an_render" or "run_flat" in k or "low_step" in k:
+            a &= ~1
+            out.append((a, min([b for b in starts if b > a] + [S.M7_DSP_LIMIT])))
+    return sorted(out)
 
 
 def low_slave(inc, shape, n, ev, phase, delayed, reset_blamp=True):
@@ -2677,16 +2697,18 @@ class ShapeLow(unittest.TestCase):
 
     def test_one_division_per_render(self):
         """6.5 (FM off): the LOW regime divides once per an_render call (the block's 1 / inc, E2), never per sample or per
-        edge: VDIV.F32 executed inside an_render counted by PC, Shapes 0 / 24 / 36 at inc 0.2 (an edge every few samples),
-        256 samples, free, master and slave."""
-        lo = DSP["an_render"] & ~1
-        hi = min(a & ~1 for a in DSP.values() if (a & ~1) > lo)
+        edge: VDIV.F32 executed inside the render's code counted by PC (an_render and, Q3b, the plateaus' run_flat and
+        low_step, out of line), Shapes 0 / 24 / 36 at inc 0.2 (an edge every few samples), 256 samples, free, master and
+        slave."""
+        rs = render_ranges()
+        self.assertEqual(len(rs), 4, "an_render, run_flat x 2, low_step")
+        lo, hi = min(a for a, _ in rs), max(b for _, b in rs)
         for shape in (0, 24, 36):
             for role, n in ((0, 256), (1, 128), (2, 128)):
                 with self.subTest(shape=shape, role=role):
                     r = Rig(); divs = []
                     def h(uc, a, sz, _):
-                        if sz == 4:
+                        if sz == 4 and any(x <= a < y for x, y in rs):
                             w0, w1 = struct.unpack("<HH", uc.mem_read(a, 4))
                             if w0 & 0xFFB0 == 0xEE80 and w1 & 0x0F50 == 0x0A00:
                                 divs.append(a)
@@ -2695,20 +2717,209 @@ class ShapeLow(unittest.TestCase):
                     self.kernel(r, self.state(r, 0.1, 0.0), f32(0.2), f32(k_of(shape)), n, role=role, events=ev)
                     self.assertEqual(len(divs), 1, f"{len(divs)} VDIVs")
 
+    def test_the_plateaus_go_the_long_way_at_every_corner(self):
+        """P3 Q3b: Shapes 0 and 24 (the plateaus, k = -1 / -0.5) run_flat: a sample goes the long way (low_step, LOW's own
+        sample) wherever a corner can fall, and a correction-free stretch runs between; at and above FLAT_INC run<LOW> takes
+        them (no low_step call). 132 calls at incs from 2^-20 (the bound's rinc^2 term at its largest) through note 60 and
+        either side of FLAT_INC to the clamp 0.45, each starting within 0 to 3 increments below a corner (1/2 or the wrap),
+        n 5 to 512; free, master (its event bytes pre-filled 0x55) and slave (random events). Free / master: every sample
+        whose phase crosses 1/2 or 1 on the float32 law went the long way (low_step's out_i, by PC hook), and at most the
+        corners + 2 did (the stretch does the work; Q3b review: was 2 x, which a lost odd tail of the sine's pairs passed); output the golden render's within tol_time
+        (sinq's error for the sine), the phase the float32 law's exactly, the master's bytes the golden's wraps within one
+        step and 255 everywhere else (the stretch writes them). Slave: every event's sample went the long way; output
+        low_slave's within its tolerance. (Q3b, M: the plateaus against Q2b's run<LOW> on the same calls: the triangle bit
+        for bit, output and state; the sine within 1.8e-7, its phase bit for bit: scratch.)"""
+        ls = dsp_sym("low_step")
+        rng = random.Random(41)
+        incs = (2.0 ** -20, 1.3e-4, float(self.INCS[0]), 0.0123, 0.073, FLAT_INC * (1 - 2 ** -20), FLAT_INC, 0.2, 0.45,
+                0.05)
+        r = Rig(); st, out, evb = r.alloc(176), r.alloc(4 * 512), r.alloc(512)
+        hits = []
+        r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: hits.append((uc.reg_read(UC_ARM_REG_R2) - out) // 4), begin=ls, end=ls)
+        tally = {}
+        for t in range(132):
+            shape = (0, 24)[t % 2]; role = (t // 2) % 3; k = f32(k_of(shape))
+            base = incs[(t // 6) % len(incs)]
+            inc = f32(base if abs(base / FLAT_INC - 1) < 1e-3 else min(0.45, base * (1 + 0.1 * rng.random())))
+            lim = (0.5, 1.0)[(t // 3) % 2]
+            ph = f32((lim - float(inc) * 3 * rng.random()) % 1.0)
+            n = 128 if role else (5, 128, 512)[t % 3]
+            d0 = f32(float(G.naive(ph, shape)))
+            ev = ([255 if rng.random() < 0.9 else rng.randrange(255) for _ in range(n)] if role == 2 else
+                  [0x55] * n if role == 1 else [255] * n)
+            with self.subTest(shape=shape, role=role, inc=inc, phase=ph, n=n):
+                r.u.mem_write(st, struct.pack("<Iff", AN_MAGIC, ph, d0)); r.u.mem_write(evb, bytes(ev))
+                hits.clear()
+                r.call(DSP["an_render"], st, out, n, evb, sargs=(role,), fargs=(inc, k))
+                y = np.frombuffer(bytes(r.u.mem_read(out, 4 * n)), dtype="<f4").astype(np.float64)
+                phase = struct.unpack("<f", r.u.mem_read(st + 4, 4))[0]
+                got = set(hits)
+                if not inc < f32(FLAT_INC):
+                    self.assertEqual(got, set(), "at and above FLAT_INC: run<LOW>, no long-way call")
+                if role == 2:
+                    want = {i for i, e in enumerate(ev) if e != 255}
+                    if inc < f32(FLAT_INC): self.assertLessEqual(want, got, "every event's sample the long way")
+                    tol = G.TOL_F32 + 2 * G.weights(shape)[0] * SINQ_ERR
+                    self.assertLessEqual(float(np.max(np.abs(y - low_slave(inc, shape, n, ev, ph, d0)))), tol)
+                    continue
+                corners, p = set(), np.float32(ph)
+                for i in range(n):
+                    e = np.float32(p + np.float32(inc))
+                    if (p < 0.5 <= e) or e >= 1: corners.add(i)
+                    p = np.float32(e - np.float32(1)) if e >= 1 else e
+                if inc < f32(FLAT_INC): self.assertLessEqual(corners, got, f"a corner in a stretch: {sorted(corners - got)}")
+                self.assertLessEqual(len(got), len(corners) + 2, f"{len(got)} long-way samples, {len(corners)} corners")
+                if inc < f32(FLAT_INC): a, c = tally.get(shape, (0, 0)); tally[shape] = (a + len(got), c + len(corners))
+                g = G.render(inc, shape, n, phase=ph, delayed=d0, law="f32")
+                self.assertEqual(phase, f32(g.phase), "the phase: the float32 law")
+                tol = G.tol_time(shape, inc, n, "f32", SINQ_ERR)
+                self.assertLessEqual(float(np.max(np.abs(y - g.y))), tol)
+                if role == 1:
+                    evo = bytes(r.u.mem_read(evb, n))
+                    self.assertEqual([e == 255 for e in evo], [e == 255 for e in g.ev], "the wraps (and 255 elsewhere)")
+                    self.assertLessEqual(max(abs(a - b) for a, b in zip(evo, g.ev)), 1)
+        print("\n  plateaus, long-way samples / corners (free, master): "
+              + ", ".join(f"Shape {s} {a} / {c}" for s, (a, c) in tally.items()), file=sys.stderr)
+
+    def test_the_stretch_bound_holds_on_long_stretches(self):
+        """P3 Q3b review: run_flat's stretch bound m = floor((lim - p) g), g = rinc (1 - 2^-16) - rinc^2 2^-22, on stretches
+        of 5 to 250 samples that end at a corner inside the call (the corner test's calls start 0 to 3 increments below
+        one, so there the steps' accumulated rounding, which the rinc^2 term covers, never matters). Each call is chosen on
+        the host so that the bound without that term (g = rinc (1 - 2^-16), in float32 as the kernel's) overruns the
+        corner: 16 per plateau, incs 1e-5 .. 1e-3 (random mantissa), n 512, free / master / slave with no events. Every
+        corner went the long way, at most the corners + 2 did, the output is the golden render's within tol_time, the phase
+        the float32 law's (the corner test's asserts)."""
+        ls = dsp_sym("low_step")
+        rng = random.Random(47)
+        f = np.float32
+        def overruns(inc, ph):                 # the bound without its rinc^2 term, on the kernel's float32 stretch
+            lim = f(0.5) if ph < 0.5 else f(1.0)
+            m = int(np.floor(f(f(lim - ph) * f(f(f(1) / inc) * f(1 - 2 ** -16)))))
+            p = ph
+            for _ in range(m): p = f(p + inc)
+            return p >= lim
+        cases = []
+        while len(cases) < 32:
+            inc = f(10 ** rng.uniform(-5, -3)); lim = rng.choice((0.5, 1.0))
+            ph = f(lim - float(inc) * rng.uniform(5, 250))
+            if overruns(inc, ph): cases.append((len(cases) % 2 * 24, float(inc), float(ph)))
+        n = 512
+        r = Rig(); st, out, evb = r.alloc(176), r.alloc(4 * n), r.alloc(n)
+        hits = []
+        r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: hits.append((uc.reg_read(UC_ARM_REG_R2) - out) // 4), begin=ls, end=ls)
+        for t, (shape, inc, ph) in enumerate(cases):
+            role = t // 2 % 3; d0 = f32(float(G.naive(ph, shape)))
+            with self.subTest(shape=shape, role=role, inc=inc, phase=ph):
+                r.u.mem_write(st, struct.pack("<Iff", AN_MAGIC, ph, d0)); r.u.mem_write(evb, bytes([255]) * n)
+                hits.clear()
+                r.call(DSP["an_render"], st, out, n, evb, sargs=(role,), fargs=(inc, f32(k_of(shape))))
+                y = np.frombuffer(bytes(r.u.mem_read(out, 4 * n)), dtype="<f4").astype(np.float64)
+                corners, p = set(), f(ph)
+                for i in range(n):
+                    e = f(p + f(inc))
+                    if (p < 0.5 <= e) or e >= 1: corners.add(i)
+                    p = f(e - f(1)) if e >= 1 else e
+                got = set(hits)
+                self.assertTrue(corners, "the corner falls inside the call")
+                self.assertLessEqual(corners, got, f"a corner in a stretch: {sorted(corners - got)}")
+                self.assertLessEqual(len(got), len(corners) + 2, f"{len(got)} long-way samples, {len(corners)} corners")
+                g = G.render(inc, shape, n, phase=ph, delayed=d0, law="f32")
+                self.assertEqual(struct.unpack("<f", r.u.mem_read(st + 4, 4))[0], f32(g.phase))
+                self.assertLessEqual(float(np.max(np.abs(y - g.y))), G.tol_time(shape, inc, n, "f32", SINQ_ERR))
+
+    def test_the_plateaus_are_lows_own_samples(self):
+        """P3 Q3b review: run_flat against LOW's own sample, in the suite (Q3b had it in scratch only): the same call
+        rendered one low_step per sample (the build's LOW sample, by symbol: what run<LOW> runs for each sample at a plateau,
+        tw / ws / wsaw as set_shape sets them there). The triangle bit for bit: output bytes, phase, delayed and the
+        master's event bytes. The sine within 2e-7 (its stretch's p - c rounds once where tri() may round twice: M 1.79e-7),
+        its phase and the master's bytes bit for bit. 36 calls, incs 2^-20 to just below FLAT_INC (random mantissa), random
+        phases, n 128 / 256, free, master (bytes pre-filled 0x55) and slave (random events, about 1 in 10). This sees a
+        stretch error far inside the golden's tolerance (a tri() written otherwise, a lost exact fold of sinq's 4 and
+        sign)."""
+        ls = dsp_sym("low_step")
+        rng = random.Random(43)
+        r = Rig(); st, out, evb, ref, pd = r.alloc(176), r.alloc(4 * 256), r.alloc(256), r.alloc(4 * 256), r.alloc(8)
+        worst = 0.0
+        for t in range(36):
+            shape = (0, 24)[t % 2]; role = t // 2 % 3; n = (128, 256)[t // 6 % 2]
+            inc = f32(min(FLAT_INC * 0.999, 2.0 ** rng.uniform(-20, math.log2(FLAT_INC))))
+            rinc = float(np.float32(1) / np.float32(inc))
+            ph = f32(rng.random()); d0 = f32(float(G.naive(ph, shape)))
+            ev = ([rng.randrange(255) if rng.random() < 0.1 else 255 for _ in range(n)] if role == 2 else
+                  [0x55] * n if role == 1 else [255] * n)
+            with self.subTest(shape=shape, role=role, inc=inc, phase=ph, n=n):
+                r.u.mem_write(pd, struct.pack("<ff", ph, d0))
+                evr = bytes(r.call(ls, pd, pd + 4, ref + 4 * i, ev[i] if role == 2 else 255,
+                                   fargs=(inc, rinc, 1.0 if shape else 0.0))[0] & 0xFF for i in range(n))
+                r.u.mem_write(st, struct.pack("<Iff", AN_MAGIC, ph, d0)); r.u.mem_write(evb, bytes(ev))
+                r.call(DSP["an_render"], st, out, n, evb, sargs=(role,), fargs=(inc, f32(k_of(shape))))
+                yb, rb = bytes(r.u.mem_read(out, 4 * n)), bytes(r.u.mem_read(ref, 4 * n))
+                sa, sb = bytes(r.u.mem_read(st + 4, 8)), bytes(r.u.mem_read(pd, 8))
+                if role == 1: self.assertEqual(bytes(r.u.mem_read(evb, n)), evr, "the master's event bytes")
+                self.assertEqual(sa[:4], sb[:4], "the phase, bit for bit")
+                if shape == 24:
+                    self.assertEqual(yb, rb, "the triangle: LOW's output bit for bit")
+                    self.assertEqual(sa, sb, "the triangle: LOW's state bit for bit")
+                else:
+                    d = max(float(np.max(np.abs(np.frombuffer(yb, "<f4").astype(np.float64) - np.frombuffer(rb, "<f4")))),
+                            abs(struct.unpack("<f", sa[4:])[0] - struct.unpack("<f", sb[4:])[0]))
+                    worst = max(worst, d)
+                    self.assertLessEqual(d, 2e-7, "the sine: within 2e-7 of LOW's")
+        print(f"\n  plateaus against low_step per sample: the sine within {worst:.3g}", file=sys.stderr)
+
+    def test_only_the_exact_plateaus_run_flat(self):
+        """P3 Q3b review: by_regime sends a Shape to run_flat only at ws == 1 or tw == 1 exactly; a blend next to a
+        plateau keeps run<LOW> (no low_step call) and its own weights: k one float32 step off -1 and either side of -0.5,
+        and Shapes 3, 21 and 27 (the first blends off the plateaus 0..2 and 22..26), incs at note 60 and 0.0123, free and
+        slave (random events). The Shapes also against the golden render (free) / low_slave (slave) within their
+        tolerances."""
+        ls = dsp_sym("low_step")
+        rng = random.Random(53)
+        r = Rig(); st, out, evb = r.alloc(176), r.alloc(4 * 256), r.alloc(256)
+        hits = []
+        r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: hits.append(a), begin=ls, end=ls)
+        n = 256
+        near = [(None, float(np.nextafter(np.float32(-1), np.float32(0)))),
+                (None, float(np.nextafter(np.float32(-0.5), np.float32(-1)))),
+                (None, float(np.nextafter(np.float32(-0.5), np.float32(0))))] + [(s, f32(k_of(s))) for s in (3, 21, 27)]
+        for shape, k in near:
+            for inc in (self.INCS[0], f32(0.0123)):
+                for role in (0, 2):
+                    ev = [rng.randrange(255) if rng.random() < 0.05 else 255 for _ in range(n)] if role else [255] * n
+                    ph = f32(rng.random()); d0 = f32(float(G.naive(ph, shape))) if shape is not None else 0.0
+                    with self.subTest(shape=shape, k=k, inc=inc, role=role):
+                        r.u.mem_write(st, struct.pack("<Iff", AN_MAGIC, ph, d0)); r.u.mem_write(evb, bytes(ev))
+                        hits.clear()
+                        r.call(DSP["an_render"], st, out, n, evb, sargs=(role,), fargs=(inc, k))
+                        self.assertEqual(hits, [], "a blend: run<LOW>, not a plateau's run_flat")
+                        if shape is None: continue
+                        y = np.frombuffer(bytes(r.u.mem_read(out, 4 * n)), dtype="<f4").astype(np.float64)
+                        if role:
+                            tol = G.TOL_F32 + 2 * G.weights(shape)[0] * SINQ_ERR
+                            want = low_slave(inc, shape, n, ev, ph, d0)
+                        else:
+                            tol = G.tol_time(shape, inc, n, "f32", SINQ_ERR)
+                            want = G.render(inc, shape, n, phase=ph, delayed=d0, law="f32").y
+                        self.assertLessEqual(float(np.max(np.abs(y - want))), tol)
+
     def test_cost(self):
         """Instructions per voice-block (both oscillators Analog at one Shape, an_enter + WT1 + WT2, median of 6), n = 256 in
         Rig(dev=True) and 128 in Rig(): the LOW regime at Shapes 0, 12, 24, 36, free and synced; and Shape 24 ramping every
         block (an LFO on Position: AN_RAMP_LOW parts) next to Shape 68 under the same LFO (BE4.40's saw > square ramp, AN_RAMP
-        parts). The LOW loop is generic (plan 4.6: one regime, not four), so it pays the triangle, sinq and the saw term
-        every sample. Bounds, guards against a per-sample division or a lost specialisation rather than budgets: a held LOW
-        Shape 1.3 x Cost's mixed (saw > square) voice in the same rig; the LOW ramp 1.5 x the saw > square ramp (twice the
-        parts, each with reshape_low). M, Q3: the sine 12.5 k at n = 128 against mixed 10.7 k and saw 7.4 k."""
+        parts). The LOW loop is generic (plan 4.6: one regime, not four), so the blends pay the triangle, sinq and the saw
+        term every sample: bound 1.3 x Cost's mixed (saw > square) voice in the same rig (a guard against a per-sample
+        division or a lost specialisation); the LOW ramp 1.5 x the saw > square ramp (twice the parts, each with
+        reshape_low). Q3b: the plateaus run_flat, so on the device's block (n = 256) the sine and the triangle cost at most
+        Cost's saw voice, synced at most its saw+sync voice (M: Q3's sine 23,472 = 1.77 x the saw; Q3b's sine 13,100 and
+        triangle 11,760 against 13,236). In Rig() (n = 128, twice the increment, so twice the corners a sample) the sine is
+        about 1.03 x the saw: held to the blends' bound there."""
         mixed = {dev: Cost.cost(Cost(), 0.25, dev=dev)[0] for dev in (False, True)}
+        saw = {(dev, fl): Cost.cost(Cost(), 0.0, fl, dev=dev)[0] for dev in (False, True) for fl in (1, 3)}
         rows = {}
         for dev in (False, True):
             for name, shape, flags, mod in (("sine", 0, 1, None), ("sine>tri", 12, 1, None), ("tri", 24, 1, None),
-                                            ("tri>saw", 36, 1, None), ("tri+sync", 24, 3, None), ("tri+ramp", 24, 1, "lfo"),
-                                            ("saw>sq+ramp", 68, 1, "lfo")):
+                                            ("tri>saw", 36, 1, None), ("sine+sync", 0, 3, None), ("tri+sync", 24, 3, None),
+                                            ("tri+ramp", 24, 1, "lfo"), ("saw>sq+ramp", 68, 1, "lfo")):
                 r = Rig(dev=dev); root, v = r.voice(0x32); r.table(0, 0x32, flags); r.note(v, 60)
                 srcs = []
                 for i in (0, 1):
@@ -2722,11 +2933,16 @@ class ShapeLow(unittest.TestCase):
                     _, c = r.render(root, v, None, (0, 1)); r.block(); totals.append(sum(c))
                 rows[(name, r.frames)] = sorted(totals)[len(totals) // 2]
             f = DEV_FRAMES if dev else FRAMES
-            for name in ("sine", "sine>tri", "tri", "tri>saw", "tri+sync"):
+            for name in ("sine", "sine>tri", "tri", "tri>saw", "sine+sync", "tri+sync"):
                 self.assertLess(rows[(name, f)], 1.3 * mixed[dev], f"{name} n={f}: {rows[(name, f)]} vs mixed {mixed[dev]}")
+            if dev:
+                for name, fl in (("sine", 1), ("tri", 1), ("sine+sync", 3), ("tri+sync", 3)):
+                    self.assertLessEqual(rows[(name, f)], saw[(dev, fl)],
+                                         f"{name} n={f}: {rows[(name, f)]} vs the saw voice {saw[(dev, fl)]} (Q3b)")
             self.assertLess(rows[("tri+ramp", f)], 1.5 * rows[("saw>sq+ramp", f)], f"n={f}: the LOW ramp")
         print("\n  LOW hooks per voice-block (instructions): " + ", ".join(f"{n} n={f} {c}" for (n, f), c in rows.items())
-              + f"; mixed n=128 {mixed[False]}, n=256 {mixed[True]}", file=sys.stderr)
+              + f"; mixed n=128 {mixed[False]}, n=256 {mixed[True]}; saw n=128 {saw[(False, 1)]} (+sync "
+              f"{saw[(False, 3)]}), n=256 {saw[(True, 1)]} (+sync {saw[(True, 3)]})", file=sys.stderr)
 
     @staticmethod
     def sinq(x):
