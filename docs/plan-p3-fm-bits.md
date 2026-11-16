@@ -600,7 +600,7 @@ subtracted, the zero-dc sign-of-zero identity dropped, an_dc's slope or its 0.5 
 | Q4 | Sub copy and buffers | `sub_inc`/`sub_copy` port with the DC-free Square (OD10) and the PARAM_VALUE cache restore; buffer A; n > 256 guard (nothing audible uses it yet) | 6.4 sub copy worst 0 (up to dc) in the voice path, 5 waves x 2 levels; sub object byte-identical; copy cost recorded |
 | Q5 | Sub FM (OSC1, OSC2) | `an_render_fm` x 3 roles incl. the di <= 0 slave rule; msub ramp and skip reset; E3 (b)/(c); mixed-voice path; `fm=` stat; measure the specialised delta at 2N and fix the gate | golden Sub FM cases incl. sync master/slave and mixed sync; VDIV counts by PC range; cost gate; DSP size; mutations |
 | Q6 | FM 1>2 | B write (BD1), E3 (a), useB + fmtag, m12 ramp, `fmx=` | golden FM 1>2, combined and Level 0 cases; Bessel check (sine/sine); 6.3's through-zero DC drift (I = 8, 100 blocks) and aliasing after the FIR model, for Sub FM and FM 1>2 (carried from Q5); full-FM cost within the gate; FM off within M1's +2 % (0.43 pt left after Q5). **Done:** "Q6 as built" |
-| Q7 | Kit BE4.41 | build; size and cost tables into this doc; device checklist; black box lines; release notes (glide time change, Shape < 45 change, rollback drops the 3 values) | full suite green; manifest sizes within section 5; checklist written |
+| Q7 | Kit BE4.41 | build; size and cost tables into this doc; device checklist; black box lines; release notes (glide time change, Shape < 45 change, rollback drops the 3 values) | full suite green; manifest sizes within section 5; checklist written. **Done:** "Q7 as built" |
 
 The order puts the zero-risk plumbing (Q1) and the separable features (Q2, Q3) before the hard DSP (Q5, Q6), so each
 commit can ship on its own. Close call: Q3 could come after FM. It stays before, because the FM loop has to generate
@@ -1691,9 +1691,90 @@ reviewed one: only comments changed in the DSP and synth_shared.h; sizes and cos
   disassembly), the result still exact as level * r is.
 - **Doc** (review 1): 4.1, 4.4 (a), 4.5 and 4.7 point to "Q6 as built" for B's place and grid; 9's cost row has Q6's figures.
 
+### Q7 as built (2026-11-16, working tree on 08e9353; build ~/bento/out/m1-be441; kit flash\bento_enhanced-v4.41)
+
+What was done:
+- **Label:** build.py `BASE_SETTINGS["stock_168"]["version"]` 4.40 -> **4.41** (the one place BE4.40 set it, 6adc04f; the boot
+  label `DISPLAY` = "BE" + version, written into S.VERSION_STR, which the black box's "firmware" line prints). No test pins
+  this build's label: test_diag's `test_visible_version_label` derives it from the manifest, and test_native_props' "4.40"
+  is the BE4.40 reference's manifest (REF440), unchanged. No expected-change edit was needed.
+- **Image = Q6's + the label (M):** `cmp -l` of ~/bento/out/m1-p3q6/bento1.bin against m1-be441: 2 bytes differ, '0' ->
+  '1' in the two copies of the version string; same length. So every Q0..Q6 measurement holds for the kit unchanged.
+- **Kit:** wsl/package_m1.sh, as BE4.40's: 01_TEST_FIRMWARE (this image + stock 1.6.8 bento2.bin), 03_RESTORE_STOCK
+  (stock 1.6.8, the base checked by its sha256 against the manifest), manifest.json, DEVICE_CHECKLIST.txt (=
+  docs/checklist-v4.41.txt), SHA256SUMS.txt regenerated after the checklist was copied (as v4.40's lists it) and
+  verified with `sha256sum -c`. **Found:** package_m1.sh took the build dir as `ls -d ~/bento/out/m1-* | tail -1`, i.e. by
+  name: here m1-p3q6r2, not m1-be441. It now honours `O=` and otherwise takes the newest by time (test_m1.sh's rule);
+  the script lives outside the repo (bento_mods/wsl).
+- **Docs:** docs/checklist-v4.41.txt (section 8 made step by step), "Release notes (BE4.41)" below, final tables below.
+
+Final sizes (M, manifests of ~/bento/out/m1-be440 and m1-be441):
+
+| Item | BE4.40 | BE4.41 | Limit / left |
+|---|---|---|---|
+| Image (bento1.bin) | 0x188DF8 (1,609,208 B) | **0x1890D0 (1,609,936 B)**, +728 | PROVEN_MAX 0x18D334: **16,996 B** left |
+| DSP code (window 0x080D0100..0x080D9000, 36,608 B) | 9,708 B | **23,772 B**, +14,064 | P3 ceiling 14,336 B: **272 B** left (no overrun); window **12,836 B** free (>= 9 KB rule holds) |
+| Synth UI (M4) | 14,224 B | 14,952 B, +728 | in the image figure |
+| M4 code / M7 code / trampolines | 24,424 / 15,368 / 752 B | unchanged | |
+| Property template (np_template_n) | 0x300, 0 pads | **0x304, 1 pad** | |
+| AnOsc | 172 / 180 B | 176 / 180 B | 4 B spare |
+| Patched sites (writes) | 108 | 108 | |
+
+Final costs (M; instructions per voice-block, n = 256 unless marked, hooks only; offline, not device cycles):
+
+| Case | BE4.40 | BE4.41 | Gate / bound |
+|---|---|---|---|
+| Cost saw / mixed / saw+sync / mixed+sync (FM off) | 13,192 / 19,840 / 15,785 / 22,180 | 13,324 / 19,968 / 15,905 / 22,292 | M1: P3Identity worst **+1.68 %** (mod dev=False), total +0.88 %, bound +2 % |
+| Cost saw, n = 128 | 7,304 | 7,436 | |
+| Shape 0 / 24 held (FM off, note 60) | a saw there: 13,192 | 13,100 / 11,760 | <= the saw voice (ShapeLow.test_cost) |
+| Shape blend (12, 36) / LOW ramp block | | ~23,500 / 30,242 | 1.3 x mixed / 1.5 x the saw > square ramp |
+| Sub FM on both (saws, sine sub) | | 27,294 | 0.910 of 29,981 |
+| FM 1>2 alone | | 18,974 | |
+| Full FM (Sub FM both + FM 1>2) | | **30,753** | **0.993** of 1.3 x (13,346 + 10,480) = 30,974; Q5's fixed 30,906 also asserted |
+| Full FM synced / OSC1 at 8 bits | | 32,928 / 35,258 | not gated |
+| Sub FM, triangle carriers (Shape 24) | | 33,407 | 1.117 x the Sub FM gate, not gated |
+| Full FM, triangle carriers (Shape 24) | | **37,489** | **1.210 x** the full gate: the heaviest measured voice, not gated (device item 12) |
+| Bit Depth, per crushed sample | | <= 10.77 | (~2.8 k an oscillator a 2N block, I) |
+| an_render_fm worst case per sample (8 % pulse, deep FM) | | 77.7 free / 85.7 master | 2n VDIVs a render |
+
+The cost figures are Q6's measurements (the image is Q6's plus the label, above); test_m1.sh keeps only each suite's
+last 15 lines, so it does not re-print them.
+Full suite (wsl/test_m1.sh, O=~/bento/out/m1-be441) **green** (M): test_analog 140, test_native_props 19, test_synth_ui 62
+(2 skipped), test_keys 10, test_note0 32, test_diag 92, the rest as before; test_drums / test_drum_ui not run (drums omitted
+on 1.6.8).
+
+## Release notes (BE4.41)
+
+New (Analog oscillators of a Wavetable track; plan 2, 4):
+- **Sub FM** on OSC1 and OSC2 (0..100 %, squared to index 8): the track's sub oscillator FMs the oscillator, through
+  zero. The sub's Level does not matter (it modulates at Level 0). A Square sub modulates without its DC, so its Pulse
+  Width changes the timbre, not the pitch centre.
+- **FM 1>2** on OSC2 (0..100 %), only while OSC1 is Analog (hidden otherwise): OSC1 FMs OSC2, also at OSC1 Level 0.
+  OSC1's own Sub FM and its Bit Depth are part of the modulator (B is written on a grid with no top-clip DC, OD15).
+- **Bit Depth** Full / 12 / 8 / 4 per oscillator (not the sub), before Level; a pulse is crushed about its own DC (OD12).
+- **Shape 0..47**: sine (0..2), sine > triangle, triangle (22..26), triangle > saw, saw (45..48); 48..127 as BE4.40. The
+  dial has five glyphs. Shape modulation below 48 now sweeps into triangle and sine.
+- Black box: `fm=`, `bits=`, `fmx=<skipped>/<missed>` on the ANALOG line.
+
+Behaviour changes (no migration, as decided):
+- **Glide takes its set time** (50 % = 1 s): every glide on the device is twice as long as on BE4.40 (OD1, Q0).
+- **Shape < 45 plays sine or triangle**: a BE4.40 project with Shape below 45 (BE4.40 played saw there) changes sound.
+- **Rollback to BE4.40** opens a BE4.41 project (its four values kept; no FM, no crush, Shape < 45 as saw) and **drops
+  Sub FM, Bit Depth and FM 1>2 on its next save**. Stock 1.6.8 opens it as plain Wavetable and drops every bento_* value
+  on its save.
+- The property template has a pad entry (type 0xFF) for the first time; no reader path creates one (Q1, tested).
+
+Known, open (not changed in this kit):
+- **OD17:** OSC1's own Sub FM gives B a DC, so FM 1>2 then shifts OSC2's pitch (up to about an octave at 100 %), moving
+  with OSC1's Sub FM and Shape. The checklist (section 4) asks for a judgement.
+- **OD18:** at 4 bits, a Shape whose peak falls between two levels gives OSC2 a small detune under FM 1>2 (+17 cents at
+  Shape 36, note 60; -139 with OSC1's own Sub FM).
+- OSC1 renders for OSC2's FM 1>2 even when OSC2 turns out silent (a cost corner, Q6).
+- CPU on the device is unmeasured: full FM with triangle carriers is 2.8 x a BE4.40 saw voice offline (37.5 k / 13.2 k).
+
 ---
 
-## 8. Device checklist (BE4.41; BE4.40's own checklist runs first, as it is not flashed yet)
+## 8. Device checklist (BE4.41; BE4.40's own checklist runs first, as it is not flashed yet; made step by step in docs/checklist-v4.41.txt)
 1. Boot: the black box shows `keys=ok` and no `TAKEN`; the FM stats line prints.
 2. Rows: the OSC1/OSC2 Analog rows show Sub FM and Bit Depth in slots 5/6, and FM 1>2 in OSC2's slot 7 only while OSC1
    is Analog. Flip OSC1 to Wavetable: slot 7 disappears within a tick.

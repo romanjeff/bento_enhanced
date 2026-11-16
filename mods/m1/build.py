@@ -73,7 +73,7 @@ GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_en
 BASE_SETTINGS = {
     "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0", "drums"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.40", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.41", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
                               "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx", "drums"), omit_off=("drums",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
