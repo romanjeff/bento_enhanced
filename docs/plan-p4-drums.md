@@ -600,6 +600,19 @@ Each sprint ends offline-green and is committed (standing OK). Nothing is pushed
 
 ---
 
+## Decisions (2026-11-16)
+
+- **No DaisySP (Jeff):** the drum engines are our own lean designs (docs/p4-engine-spec.md: <= 60 instructions per sample
+  per voice, <= 1.5 KB code, <= 320 B state). They go in at **P4-2**, replacing the DaisySP Kick, and BE4.50 ships all five
+  engines (window measured: 10,254 B free once the DaisySP Kick is removed, M). **P4-D12 is overridden:** BE4.50 does not
+  ship the DaisySP Kick. The KF1-KF3 profile stays as reference only.
+- **No marker files, not even for a preview (Jeff):** the first playable drum kit is BE4.50 on the real Drum Synth track.
+- **P4-D1 = (a)** (done in P4-0). Taken as recommended (Claude, told to Jeff): **P4-D2** keys 0x1A8 + 0x1A2; **P4-D4**
+  SquareNoise HiHat (superseded by the lean HiHat); **P4-D7** action 0x10F4; **P4-D8** hook only the Bank title and the
+  step-view "No WAV" labels, tracks named "Drums %d"; **P4-D10** Cut greyed on drum pads; **P4-D11** MultiSam (key 0x3A)
+  pinned to 0 on drum pads. Still open for Jeff: **P4-D3** (sample pad pasted onto a drum track), **P4-D5** (Load /
+  Unload / Rename: disable recommended), **P4-D6** (engine cap: with lean engines, start at 16, tune from the DRUMS line).
+
 ## Open decisions for Jeff
 
 **Settled:** P4-D1 = (a), done in P4-0.
