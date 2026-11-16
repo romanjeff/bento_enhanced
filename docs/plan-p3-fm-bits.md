@@ -1585,6 +1585,9 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 ---
 
 ## Decisions (Jeff, 2026-11-15)
+- **OD15 = (b)** (Jeff, 2026-11-16): FM 1>2's modulator B is written from the crush with its top clamp at S, not
+  S - 1, so B carries only unbiased rounding (no grid DC, no OSC2 detune at any depth). The audio keeps OD11 (b)'s grid.
+  FM 1>2 path only.
 - **OD1 = (a):** the glide fix ships in BE4.41 as sprint Q0. Release note: glides now take the set time (twice BE4.40's).
 - **OD10 = (a):** Sub FM uses a DC-free Square (subtract 1 - 2*pw); exactness tested up to that constant.
 - **OD11 = (b), not the recommendation:** true b-bit two's-complement grid. `q = clamp(rint(x*S), -S, S-1) / S`,
