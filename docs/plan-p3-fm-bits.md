@@ -276,6 +276,10 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
 - The Shape ramp (J4, AN_RAMP parts) keeps working. The FM loop is called per part at the same place as `an_render`
   (analog.cpp:479), with `ev` and `s + off` as today. The `an_reshape` correction is unchanged.
 - The non-FM path is today's `an_render` call, with unchanged instructions (M1).
+- **Q5 as built, beyond this text:** the generic sample runs only where a sample crosses an edge or a slave has an event
+  (`fm_slow`, out of line, shared by the roles); every other sample takes a correction-free fast path, versioned on the
+  wave's form (LOW / MIXED): 6 small loops + 1 shared sample, not 3 instances (CPU: 41.6 -> 29.4 instructions a sample for
+  the saw, the gate failed as written). VDIVs are counted over an_render_fm and fm_slow. See "Q5 as built".
 
 ### 4.4 E3 and skip rules (analog.cpp:428-444)
 - (a) OSC1 is silent, OSC2 is Analog, and `fm12 > 0 || m12 > 0`: do not take the `(silent && !master)` early return.
@@ -287,7 +291,8 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
 - (d) OSC2 is silent: skip as today. It is nobody's modulator.
 - **Skip path resets the ramps.** When an oscillator takes the silent skip, set `msub = m12 = 0`, as the skip path does
   for `mshape` (S). Otherwise the oscillator would ramp from a stale amount when it is heard again. After silence the
-  amount starts at its set value with no ramp.
+  amount starts at its set value with no ramp. (Q5, M: not so: msub 0 is a real amount, so the first block heard ramps the
+  index in from 0, 2.7 ms; kept as built, open decision **OD16**.)
 - Ramp-down: if a block's amount is 0 but `msub`/`m12` is still > 0, the block takes the FM path and ramps to 0. The last
   value is then set to 0, so the next block is bit-identical non-FM.
 
@@ -409,13 +414,13 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
 
 | Budget | Now (BE4.40) | P3 adds | After | Label |
 |---|---|---|---|---|
-| DSP window 0x080D0100..0x080D9000 (36,608 B) | 9,708 B used, 26,900 B free | **~10-13 KB** in all. an_render's 9 instances are 4,640 B (~515 B each, M). The generic FM loop has per-sample mirrored edges, triangle BLAMPs both ways, sinq, two modulator reads, a ramp and a clamp, and SLAVE inlines advance twice, so ~1.5-2.5 KB per instance x 3. Plus sub copy ~2 KB, LOW x 3 + shape code ~2 KB, Bit Depth + glue ~0.5 KB. **Ceiling: P3 <= 14 KB**, measured at the end of Q3 and Q5. | ~20-23 KB used; with drums (~6 KB) ~26-29 KB, 7-10 KB free | M (now) / I (adds) |
+| DSP window 0x080D0100..0x080D9000 (36,608 B) | 9,708 B used, 26,900 B free | **~10-13 KB** in all. an_render's 9 instances are 4,640 B (~515 B each, M). The generic FM loop has per-sample mirrored edges, triangle BLAMPs both ways, sinq, two modulator reads, a ramp and a clamp, and SLAVE inlines advance twice, so ~1.5-2.5 KB per instance x 3. Plus sub copy ~2 KB, LOW x 3 + shape code ~2 KB, Bit Depth + glue ~0.5 KB. **Ceiling: P3 <= 14 KB**, measured at the end of Q3 and Q5. **Q5 (M): 21,404 B used; P3 11,696 B of 14,336, 2,640 B left for Q6** (an_render_fm 2,196, fm_slow 2,324, an_osc +420). | ~20-23 KB used; with drums (~6 KB) ~26-29 KB, 7-10 KB free | M (now) / I (adds) |
 | M4 image vs PROVEN_MAX 0x18D334 | 0x188DF8, 17,724 B free | ~1.6 KB: template +32 B, descriptors/labels/resend/rows ~0.4 KB, dial + V1 text ~1 KB, an_print FM line ~0.1 KB | ~16 KB free | M / I |
 | AnOsc | 172 / 180 B | msub, m12 (4 B) | 176 / 180 B | S |
 | AnProps | 12 B | 0 | 12 B | S |
 | Shared area | SA_UI 2 KB unused; SA+0x100..0x200 undefined | A 1 KB + B 1 KB in SA_UI; SA_FMSTATS 32 B at SA+0x100 | | S |
 | Run | r9..r15 spare | r9 fmtag, r10 inc_sub | r11..r15 spare | S |
-| CPU per voice-block, n = 256 (hooks only) | saw 13,192; mixed 19,840; saw+sync 15,785; mixed+sync 22,180 | full FM voice (sine sub -> both, 1>2, saw). **Q3 (M), FM off:** a held LOW Shape (sine, triangle or a blend) ~23,470 = 1.18 x mixed, 1.77 x saw; tri+sync 25,833; a LOW Shape ramping every block 29,554 = 1.29 x the saw > square ramp (22,859). **Q3b (M):** at note 60 sine 13,100, triangle 11,760 (saw 13,236); sine+sync 14,357, tri+sync 13,215 (saw+sync 15,845); blends ~23,500 as Q3 (+20 a call); LOW ramp 30,242 = 1.32 x. The plateaus' cost rises with pitch (an_render free per sample against the saw: sine 1.00 x at note 72, 1.27 x at 96, 1.64 x at 108, 2.24 x at 119; triangle 0.98 x at 90, 1.44 x at 108, 2.05 x at 119), below Q3's LOW (~31-35) up to FLAT_INC (inc 0.09, note ~120), LOW's cost above. Worst case: a plateau slave under a master above ~24 kHz (an event every ~4 samples) costs more than LOW, up to 1.29 x at the clamp (sine 97.3 against 75.2 a sample) | **Gate (FD6 restated): generic full-FM saw voice <= 1.3 x the specialised full-FM voice at 2N, provisionally ~31 k** | M / I |
+| CPU per voice-block, n = 256 (hooks only) | saw 13,192; mixed 19,840; saw+sync 15,785; mixed+sync 22,180 | full FM voice (sine sub -> both, 1>2, saw). **Q3 (M), FM off:** a held LOW Shape (sine, triangle or a blend) ~23,470 = 1.18 x mixed, 1.77 x saw; tri+sync 25,833; a LOW Shape ramping every block 29,554 = 1.29 x the saw > square ramp (22,859). **Q3b (M):** at note 60 sine 13,100, triangle 11,760 (saw 13,236); sine+sync 14,357, tri+sync 13,215 (saw+sync 15,845); blends ~23,500 as Q3 (+20 a call); LOW ramp 30,242 = 1.32 x. The plateaus' cost rises with pitch (an_render free per sample against the saw: sine 1.00 x at note 72, 1.27 x at 96, 1.64 x at 108, 2.24 x at 119; triangle 0.98 x at 90, 1.44 x at 108, 2.05 x at 119), below Q3's LOW (~31-35) up to FLAT_INC (inc 0.09, note ~120), LOW's cost above. Worst case: a plateau slave under a master above ~24 kHz (an event every ~4 samples) costs more than LOW, up to 1.29 x at the clamp (sine 97.3 against 75.2 a sample) | **Gate (FD6 restated): generic full-FM saw voice <= 1.3 x the specialised full-FM voice at 2N, provisionally ~31 k**; **Q5 (M): fixed at 29,913 (Sub FM -> both) / 30,906 (Q6's full voice); the Sub FM voice 27,069 (0.905), synced 28,982.** The gate is the saw carrier's; a triangle carrier (Shape 24 on both, LOW's FM loop) measures **33,407 = 1.117 x it** (not gated; device item 12). **FM off, M1's +2 %:** Q5's worst P3Identity case is +1.57 %, so **~0.43 pt is left for Q6's** feedB / fm12 / m12 gates on the same path | M / I |
 | Block budget | 1.28 M cycles per 128 output frames | per root with 10 full-FM voices: ~+110-130 k **instructions** (I). Device CPI is unmeasured (code runs from flash), so this is not a cycle figure. Worst case: several Analog tracks with FM chords multiply it, and it is not bounded offline. | | I |
 | Message load | 4 set_property per oscillator per push | +3 per oscillator per push or resend | the ring blocks, it never drops (2.4) | S |
 
@@ -428,6 +433,9 @@ How the CPU gate is derived:
 - The +5.5 k row already contained the sine sub copy, so it needs no extra headroom for that.
 - Faithful restatement: 1.3 x (13.2 k + 11 k) = about 31 k (I). This is provisional. Q5 measures the specialised delta
   at 2N with the prototype rig (rc26/dsp/proto) and fixes the gate from that measurement.
+- **Fixed in Q5 (M, the prototype at 2N, scratch p3/q5/proto_cost.py):** a Sub FM saw oscillator +2,600, one writing B
+  +3,364, the sine copy 4,398, sub_inc's stock part 118. Gate for Q5's voice (sub -> both) 1.3 x (13,294 + 9,716) =
+  **29,913**; for Q6's full voice (+ OSC1 -> OSC2) 1.3 x (13,294 + 10,480) = **30,906**. Q5 measures 27,069 (0.905).
 - A division hoisted into the per-sample loop would cost about 257 VDIVs per render at 2N (I). 6.5 watches for it.
 
 ---
@@ -559,6 +567,10 @@ subtracted, the zero-dc sign-of-zero identity dropped, an_dc's slope or its 0.5 
 | test_analog `BitDepth.test_real_blocks_reach_the_top_clip` (Q2) | the DC-free pulse drives s past +1 at every b (clipped hard) | retired: `test_real_blocks_sit_on_the_grids_range`, s + dc in [-1, 1], the top reached by the +1 high | Q2b |
 | test_analog `BitDepth` amounts / per-oscillator cases (Q2) | golden crush with no dc (sync case's Shape 100 clipped) | golden crush with the captured per-part dc; the top-clip assertion's reason reworded (the +1 high) | Q2b |
 | test_analog `P3Identity.check` / `test_q1_plays_no_amount` (Sub FM 700) | no fill; the whole count under M1's +2 % | fills 8 / 11 / 24 asserted; **a bound carve-out**: sub_fill's Span is left out of the +2 % (M1 is for FM off) and bounded on its own, `FILL_MAX` a call (Rig's zero sub 640 / 1,175 at n = 128 / 256, stock's root's default sub 2,005 / 3,890: measured +5 %) | Q4 |
+| test_analog `P3Identity.AMOUNTS`, `test_q1_plays_no_amount`, `test_glide_dev_is_the_expected_change` (Sub FM 700) | Sub FM 700 stored, plays nothing; fills A | AMOUNTS (0, 0, 333), no fill, the whole count under +2 %; the Sub FM cases are `SubFm.test_the_amounts_cases_are_the_expected_change` (every FM call the golden's, fm=) | Q5 |
+| test_analog BitDepth `expected_change`, `test_each_oscillator_crushes_at_its_own_depth` | SA_FMSTATS (0, bits, 0, ..) | (fm, bits, 0, ..): Sub FM 700 plays, fm= its renders (both runs alike) | Q5 |
+| test_analog `Props.test_the_silent_paths_zero_the_fm_ramp_memory` | the oscillator that played keeps msub 123 | it ramps to Sub FM 0: msub 0 (m12 kept until Q6) | Q5 |
+| test_analog SubCopy `test_the_copy_changes_nothing_else`, `test_other_waves_copy_silence` | output and whole voice byte for byte with Sub FM 0; gate + call < 40 instructions | the sub object's own bytes at its render; the zero copy's output within 1e-5 (the FM loop at rest); the instruction check to SubFm.test_cost | Q5 |
 
 ---
 
@@ -574,7 +586,7 @@ subtracted, the zero-dc sign-of-zero identity dropped, an_dc's slope or its 0.5 
 | Q3b | Plateau CPU, dial glyphs (OD14) | the sine and triangle plateaus' own loops (run_flat, LOW's sample at each corner; FLAT_INC); the sine and triangle glyphs redone (not taken as built) | pure sine / triangle at or below the saw voice (n = 256, note 60), LOW's output within the golden tolerances (max difference stated), Shape >= 45 bit-identical, DSP within 14 KB; glyphs that fail on the Q3 pair; snapshots at 1x and 4x |
 | Q4 | Sub copy and buffers | `sub_inc`/`sub_copy` port with the DC-free Square (OD10) and the PARAM_VALUE cache restore; buffer A; n > 256 guard (nothing audible uses it yet) | 6.4 sub copy worst 0 (up to dc) in the voice path, 5 waves x 2 levels; sub object byte-identical; copy cost recorded |
 | Q5 | Sub FM (OSC1, OSC2) | `an_render_fm` x 3 roles incl. the di <= 0 slave rule; msub ramp and skip reset; E3 (b)/(c); mixed-voice path; `fm=` stat; measure the specialised delta at 2N and fix the gate | golden Sub FM cases incl. sync master/slave and mixed sync; VDIV counts by PC range; cost gate; DSP size; mutations |
-| Q6 | FM 1>2 | B write (BD1), E3 (a), useB + fmtag, m12 ramp, `fmx=` | golden FM 1>2, combined and Level 0 cases; Bessel check (sine/sine); full-FM cost within the gate |
+| Q6 | FM 1>2 | B write (BD1), E3 (a), useB + fmtag, m12 ramp, `fmx=` | golden FM 1>2, combined and Level 0 cases; Bessel check (sine/sine); 6.3's through-zero DC drift (I = 8, 100 blocks) and aliasing after the FIR model, for Sub FM and FM 1>2 (carried from Q5); full-FM cost within the gate; FM off within M1's +2 % (0.43 pt left after Q5) |
 | Q7 | Kit BE4.41 | build; size and cost tables into this doc; device checklist; black box lines; release notes (glide time change, Shape < 45 change, rollback drops the 3 values) | full suite green; manifest sizes within section 5; checklist written |
 
 The order puts the zero-risk plumbing (Q1) and the separable features (Q2, Q3) before the hard DSP (Q5, Q6), so each
@@ -1338,6 +1350,168 @@ reviewed one: only comments changed in the DSP; sizes and costs above unchanged)
   bounds it); the tag's invariant (an oscillator renders only after A1's an_enter) recorded for Q5 above, not changed in
   Q4: tagging the block too costs every fill for a path the device does not have.
 
+### Q5 as built (2026-11-16, working tree on 479cc79; build ~/bento/out/m1-p3q5)
+
+OD5 as decided (any master wrap resets the slave; a backward slave resets to p = 1, one edge). OD12 / OD13 / OD14 were
+recorded in Decisions by Q2b; nothing new to record. p3_golden.py's Q5 section (written from the plan, Q3's model and
+test_analog's BE4.40 model alone, before and without any FM C/C++) is used with **one bug fixed** (below).
+
+What was built:
+- **M7 kernel** (analog_kernel.cpp): `an_render_fm(o, inc, shape, out, n, events, role, const FmIn *f)` (analog.h
+  `FmIn {a, ia, dia, off}`: A from the block's frame 0, the index line, the call's first frame). Per sample
+  `di = fma(fma(dia, off + i, ia), a[off + i], inc)` (float32, each fma one rounding), VMAXNM / VMINNM to +-0.45, then
+  `end = p + di`. Any Shape: the carrier's terms are gathered once a call (`Fx`): k >= 0 BE4.40's MIXED regrouped as
+  `A p + B + (p < w ? C : -C)` (the saw 2p - 1 and the pulse +-1 - dc one rounding each), k < 0 LOW's blend; one inner
+  edge `m` (the pulse's width when blend > 0, the triangle's top when tw > 0, 2 = none) and the wrap, each with a
+  forward value jump and slope change; a backward crossing is the mirror (jump negated, slope change |di| dS).
+- **Fast path / long way (a deviation from 4.3's "3 instances", flag for review):** most samples cross nothing: they stay
+  in [lo, hi), the edges either side of p (taken again after every long-way sample), and play `out = delayed, delayed =
+  wave(end)` with no correction and no division. A sample that crosses, or a slave's event, goes the long way:
+  `fm_slow` (noinline, shared by the three roles, the role a run-time argument, the state by copies as Q3b's low_step):
+  4.3's generic sample, one VDIV per crossing (`(edge - p) / di`), the master's byte `(int) fma(fr, 254, 0.5)` either
+  way, the slave's reset (OD5: 0 forward, 1.0 = the left limit backward, none at di == 0; the value BLEP and, in LOW, Q3's
+  slope BLAMP, OD14). The fast loop is versioned on the wave's form (LOW / MIXED), so 6 small loops plus one fm_slow.
+  Why (M, an_render_fm free per sample, the saw at note 60, index 8): the first build, 4.3 as written (one generic
+  sample inlined per role), **41.6 instructions a sample** (5,012 B) and the Sub FM voice 33,952 against the gate's 29,913
+  (red); gathered terms and one inner edge 40.6; the fast path 33.4 (3,932 B); versioned 29.4 (4,520 B). Close call: the
+  versioning costs 592 B of the 14 KB for 4 instructions a sample.
+- **`__builtin_fmaf` is a library call here** (found): under -fno-builtin it links compiler_rt's `fmaf`, which pulls in
+  double helpers (`__aeabi_dadd` ...), and check_dsp_elf refuses the ELF. The kernel writes VFMA.F32 by name (`fma32`,
+  inline asm); the phase law and di are stated with it (p3_golden `fma = True`).
+- **M7 hook** (analog.cpp an_osc, 4.1 / 4.4 / 4.8): `fm = (subfm || msub) && Run.voice == v && (fmtag & A)`; the line
+  `ia = I(msub)`, `dia = i1 != i0 ? (I(subfm) - ia) / n : 0` (one VDIV in the hook per FM render: the compiler
+  computes the step and selects, so a held amount divides too; M, SubFm's ramp test counts it), `I(v) = f32(v^2) x
+  f32(8e-6)` (`an_index`, FD3); `msub = fm ? subfm : 0`; `fm=` (SA_FMSTATS.fm) once per render with FM. The part loop
+  calls `an_render_fm` in place of `an_render` with `fi.off = off` (the ramp parts and sync chunks continue one line),
+  then the crush (Bit Depth after FM, OD12's per-part dc). **E3 (b):** a silent master with `fm` renders its chunks under
+  FM in the MASTER role into the scratch block (its stored Shape: the wraps do not depend on it), unheard, so a ramp down
+  stays on FM to its end; without `fm`, an_track as before. **E3 (c)** needed no code: a silent OSC1 that is no master
+  takes its skip path, and OSC2 fills A (Q4's gate). The mixed voice needed none either: OSC2 fills A and runs its own
+  role (FREE, or SLAVE on an_master's events). FM off: the `fm` test and the `fm ?` per part, nothing else (M1).
+- Comments: analog.h (msub, AnProps), synth_shared.h (SaFmStats.fm counts since Q5).
+
+Tests (test_analog, 108 -> 124 tests: + `FmKernel` 5, `SubFm` 11):
+- **`FmKernel.test_the_kernel_is_the_golden_model`**: 243 cases (Shapes 0, 12, 24, 36, 48, 68, 88, 100, 127 x incs note 60
+  at 96 kHz / 0.0123 / 0.2 x a sine sub an octave down at index 8, a DC-free Square at PW 30 % at index 1, a saw at 1.5 x
+  ramping 0 -> 8 x free / master / slave), 2N in two parts of 128 (the line continuing), the slave on an FM'd golden
+  master's bytes (forward and backward wraps). Each part: the end phase the golden's exactly (di's arithmetic as stated),
+  every sample within `fm_tol` (TOL_F32 + ws SINQ_ERR; a slave twice the sine's term, Q3's slave bound), the master's
+  bytes the golden's (+-1 on ev_near), and **the VDIVs inside an_render_fm and fm_slow (by PC) = the golden's dividing
+  crossings, +- 0**, at most 2n. M: worst 0.89 of the tolerance (Shape 0: sinq), 414 backward resets, 1,989 backward
+  wraps, the clamp reached (lowest di -0.45).
+- `test_zero_modulation_is_the_plain_render` (A = 0: an_render's samples within the tolerance, its phase bit for bit, the
+  bytes within 1: an_render multiplies by its 1 / inc), `test_the_mutants_the_golden_names_are_seen` (on deep through-zero
+  cases, inc 0.0123, 256 samples: no_mirror 1.9e5 x the tolerance, no_backward 9.6e4, rinc 9.5e4; **reset_p0 0.80 x: the
+  double edge plays the one-edge rule's output, as the golden's author found, so its red test is the edge count: 40 extra
+  backward wraps there**), `test_the_index_is_the_square_law` (an_index = fm_index within float32 for v 0..1000; I(500) = 2,
+  I(1000) = 8 exactly; never the linear law), `test_the_worst_case_divides_at_most_2n` (8 % pulse, a sine at 3 x the
+  carrier at index 8, inc 0.2: 110 VDIVs / 128, free 77.1 / master 85.2 instructions a sample: the long way's call).
+- **`SubFm`** (the device's path: stock's root, engine init, 2N, stock's sub; `fm_capture` hooks every an_render_fm call at
+  its entry and at an_osc's return sites, and each call is replayed through the golden with its own A, line, state, role
+  and bytes): both oscillators free (Shapes (48, 127), (24, 0); through zero; the line from 0 in the first block, msub
+  starting at 0, then held at 8; fm= 12; the output not Sub FM 0's); every sub wave (Rev Saw, Triangle, Square, Sine,
+  Noise: the call's own A, so Noise too, which the golden does not model); the index ramp over 8 blocks (0, 1000, 1000,
+  500, 0, 0, 250, 1000: each block's line, the ramp down still FM, the block after it on an_render, msub the last amount);
+  both-Analog sync (OSC1 MASTER with Sub FM, OSC2 SLAVE with Sub FM: each slave block's bytes = its master's); E3 (b) (a
+  silent master with Sub FM 700, 700, 0, 0, 0: FM in blocks 0..2, the ramp down included, an_track from block 3); E3 (c)
+  (OSC1 silent, no sync: only OSC2 fills and renders); the mixed voice (OSC1 Wavetable; OSC2 free and synced to it);
+  **Bit Depth after FM** (8 / 4 bits, a pulse with a dc: the Level-input block = the golden crush of the FM calls' samples,
+  bit for bit); **the Square sub keeps the pitch** (6.3, OD10: PW 30 %, index 8, over the window's 4 whole sub cycles the
+  carrier travels 3.9986 cycles against inc L 3.9993: within one bin; the raw Square would add 12.8); the amounts cases as
+  the expected change (below); the cost gate.
+- **Reviewed edits (expected changes, no tolerance loosened):**
+  - `P3Identity.AMOUNTS` (700, 0, 333) -> **(0, 0, 333)**: Sub FM left the "plays nothing" cases (FM 1>2 stays until Q6);
+    `test_q1_plays_no_amount` and `test_glide_dev_is_the_expected_change` expect the stored (0, 0, 333), and with no Sub FM
+    no fill (Q4's fill carve-out does not apply: the whole count is under +2 %). The seven cases with Sub FM 700 (both rigs)
+    are **`SubFm.test_the_amounts_cases_are_the_expected_change`**: every FM call the golden's (Rig's own voices have a
+    zero sub: di = inc, the FM loop at rest), fm= = the renders with FM.
+  - BitDepth `expected_change` and `test_each_oscillator_crushes_at_its_own_depth`: the SA_FMSTATS line now has fm= = the
+    FM renders (both runs alike, > 0) next to bits=; the golden-crush comparisons are unchanged (and now crush FM renders).
+  - `Props.test_the_silent_paths_zero_the_fm_ramp_memory`: the oscillator that played, msub hand-set to 123 with Sub FM 0,
+    ramps it down and ends at **0** (was: kept 123; m12 still kept, Q6).
+  - SubCopy `test_the_copy_changes_nothing_else`: Sub FM 700 now plays, so the comparison is **the sub object's own bytes**
+    at its render (voice +0x4C .. +0x178, the cache words included), not the whole voice and the output; Q4's instruction
+    check (the gate and the call) went with it (SubFm.test_cost bounds the whole). `test_other_waves_copy_silence`: A = 0
+    renders through the FM loop at rest (first edit: within 1e-5 of Sub FM 0's output, a loosened tolerance; **review
+    fix:** byte for byte again, below).
+
+Measured (M):
+- **The specialised delta at 2N** (the rc26 prototype /root/rv26dsp/out/proto.elf, build.py's DSP flags, in Unicorn: scratch
+  p3/q5/proto_cost.py; at n = 128 it reproduces plan-analog-fm 6's 1,733 / 3,037 / 2,222): a saw 3,397, a Sub FM saw
+  through zero 5,997 (**+2,600**), with B written 6,761 (+3,364), master 6,543 / base 3,907, master writing B 7,307
+  (+3,400); the sine copy (-O2) **4,398**. sub_inc's stock part (our sub_fill minus an_sub_copy) 118.
+- **The gate, fixed:** Sub FM -> both (Q5's voice) 1.3 x (13,294 + 2 x 2,600 + 4,398 + 118) = **29,913**; the full voice
+  for Q6 (sub -> both, OSC1 -> OSC2 writing B, free) 1.3 x (13,294 + 3,364 + 2,600 + 4,398 + 118) = **30,906** (the
+  provisional 31 k held; plan 5's "+11 k" was 10.5 k). Measured on the device's path (SubFm.test_cost, an_enter + an_osc
+  with their helpers, note 60, both saws, a sine sub): off 13,294, **Sub FM on both 27,069 = 0.905 of the gate** (2.04 x the
+  off voice; sub_fill 5,256 of it), synced 28,982.
+- an_render_fm per sample at note 60, index 8 (free / master / slave): saw 29.4 / 31.5 / 43.6, square 30.3 / 32.5 / 43.6,
+  8 % pulse 30.3 / 32.5 / 47.5, triangle 41.4 / 43.5 / 60.5, sine 40.4 / 42.6 / 60.5 (an_render: 13.3 / 15.4 / 23.0 saw).
+- Sizes: DSP **21,404 B** (+4,952 on Q4's 16,452: an_render_fm 2,196, fm_slow 2,324, an_osc +420), **P3 has used 11,696 B of
+  its 14,336 B ceiling: 2,640 B left for Q6** (5's estimate for Q5 was 4.5-7.5 KB: within it), 15,204 B free in the window.
+  Image **0x1890D0** (unchanged: M4 untouched), 16,996 B under PROVEN_MAX 0x18D334.
+- Cost, off: `Cost` at n = 256 saw 13,272 (Q4 13,244), mixed 19,916, saw+sync 15,887, mixed+sync 22,274; n = 128 saw
+  7,384. P3Identity 59 cases, worst **+1.57 %** (mod dev=False 111,627 vs 109,899; Q4 +1.13 %: the `fm ?` per part and the
+  amounts' gate), total +0.64 % (M1 +2 %). BitDepth's crush cost unchanged (10.77 a crushed sample).
+- Mutations (scratch p3/q5/mutate.py, each built from a copy of the repo, run against FmKernel / SubFm (Props for the skip
+  path); logs p3/q5/mut/): all 16 red. Failing (sub)tests:
+  E3 (b) still using an_track 3; E3 (b) gated on the amount only (no msub) 1; msub not reset on the skip path 2 (Props);
+  the linear index law 1 (the ramp test's line); the clamp missing (+-4.5) 82; backward inner edge not mirrored 101,
+  backward wrap not mirrored 115; the backward reset to p = 0 (the double edge) 49 (the VDIV / edge counts, as predicted);
+  no reset when di < 0 48; the pulse's dc dropped from the FM wave 78; the ramp starting at the amount (no ramp) 3; the
+  ramp restarted per part (off 0) **green at first** (every chunked call was replayed against its own A), red (2) once the
+  sync test checked the chunks' line and offsets; fm= not counted 31; the fast path's lo left at 0 11; Sub FM on OSC1
+  only 16 + 1 error; the crush skipped after FM 1.
+- Full suite (wsl/test_m1.sh, O=~/bento/out/m1-p3q5) green: test_analog 124 tests, test_native_props 19, test_synth_ui 62,
+  test_keys 10 (test_drums / test_drum_ui not run: drums omitted on 1.6.8); p3_golden.py self-test 38 tests OK (after its fix).
+
+Found during Q5 (corrections to this plan and to the golden model):
+- **p3_golden bug (fixed, demonstrated):** fm_render's float32 master byte was `_fma32(f, 254, 0.5)`, i.e. f + 127, so
+  every golden master byte was 127 (M: 81 of FmKernel's master cases red on it with the kernel's bytes spread over
+  0..254). `_fma32(a, b, c)` is a + b c; the byte is f32(0.5 + f 254): now `_fma32(0.5, f, 254.0)`. One line; its self-test
+  never compared a float32 byte against an independent one. No other change to the model.
+- **The double edge (6.6) is not an output mutant** (the golden's author's finding, confirmed on the kernel's own cases:
+  0.80 x the tolerance): OD5's p = 1 buys one edge fewer per backward reset (cost and the VDIV count), not a different
+  sound. Its red test is 6.5's edge count (FmKernel's VDIV = edges; the reset_p0 kernel mutant above). OD5 stands as
+  decided; nothing for Jeff unless he wants the rationale restated as "cost, not sound".
+- **4.4's "after silence the amount starts at its set value with no ramp" is not what msub = 0 does:** 0 is a real
+  amount, not a "no ramp" mark (mshape has AN_NO_SHAPE; msub has no sentinel), so an oscillator heard again ramps its
+  index in from 0 over its first block (2.7 ms at 2N), as at a note's first block. Kept (Level ramps up from 0 there too,
+  I: inaudible); a sentinel (0xFFFF) would change Q1's pinned zeros (review: a flag byte would not). Open: **OD16**.
+- **4.3's "3 instances"** is 6 small fast loops + one shared long-way sample (above), for CPU: the gate failed as written.
+- **5's DSP estimate held for Q5 (4.9 KB), but the ceiling is now tight for Q6:** 2,640 B left for B, E3 (a), the m12 ramp
+  and the B term in the loop (the fast loop's second fma: 6 copies). If Q6 does not fit, the first trade is Q3b's plateau
+  path (2.6 KB), then the fast loop's LOW / MIXED versioning (592 B, +4 instructions a sample).
+- Not done in Q5 (6.3 rows outside the sprint's list): the through-zero DC-drift check over 100 blocks and the aliasing
+  check after the FIR model; the Bessel check is Q6's (sine / sine needs FM 1>2). Review fix: both are now in Q6's exit (7).
+
+Q5 review fixes (two reviews; each issue checked; rebuilt clean into ~/bento/out/m1-p3q5, the image byte-identical to the
+reviewed one: only comments changed in the DSP; sizes and costs above unchanged; test_analog 124 -> 126 tests):
+- **Tests for the review's surviving mutants** (scratch p3/q5fix/mut.py, results.txt; each built from a copy, run against
+  SubCopy / SubFm / FmKernel / Props): E3 (b)'s chunks at `fi.off = 0` (both reviews): test_a_silent_master_renders_its_wraps
+  _under_fm now checks its chunks' line and offsets (`lines`, off {0, 128}), as the sync test does. The gate without its tag
+  term (a render past A's 256 floats on a longer block) and without `Run.voice == v`, and `msub = subfm` whatever played:
+  test_longer_blocks_than_the_buffer_fill_nothing now asserts no an_render_fm call, fm= 0, msub 0 after the long blocks and
+  the next 2N block's line from I(0); test_only_the_named_voice_fills renders voice 1's OSC1 (Sub FM 700) again after voice
+  0 tagged A: an_render, no FM call, msub 0. E3 (b) at k = 0: new test_a_silent_master_heard_again_continues (OSC1 Shape
+  100, silent two blocks then heard: one k throughout, the stored Shape's; the first heard call from the last silent
+  call's state; the line continuing). OD5's corners: new FmKernel.test_the_corner_rules (golden-checked, VDIVs = its
+  crossings): a master wrap at fraction exactly 0 from p = 0 backward and from p = 1.0 forward writes byte 0; a slave event
+  at di == 0 exactly resets nothing (one at di > 0 does); p exactly on the pulse edge moving backward crosses it.
+- **test_other_waves_copy_silence** (both reviews: a loosened tolerance): measured, the voice's output is Sub FM 0's byte
+  for byte (worst 0), so the comparison is exact again, and each FM call is stated: A = +0.0 bit for bit, one call a block
+  on OSC1, replayed through the golden (SubFm.replay).
+- **Not restored: Q4's < 40-instruction gate-and-call check** in test_the_copy_changes_nothing_else (review 2: acceptable
+  if noted). With Sub FM 700 now playing FM there is no FM-free pair to difference; the FM-off cost of the gate is
+  P3Identity's (+2 % of BE4.40 with Sub FM 0), and the FM-on whole is SubFm.test_cost's gate.
+- **`di_no_fma` is an equivalent mutant** (review 2, M: the same 38 VFMA / 14 VMUL / 21 VADD in an_render_fm): clang's
+  contraction makes di's two VFMAs anyway; fma32's comment says the name keeps the law independent of -ffp-contract.
+- **Comments** (review 1): analog.h's msub and an_osc's skip path said "heard again: no ramp" for the FM amounts; they
+  now say the index ramps in from 0 (OD16).
+- **Doc** (both reviews): 6.3's DC-drift and aliasing checks scheduled into Q6's exit (7); M1's remaining FM-off headroom
+  (0.43 pt) and the triangle-carrier Sub FM voice (33,407, 1.117 x the saw's gate, measured: SubFm.test_cost prints it) in
+  5 and 9; 4.4's departure as **OD16**.
+
 ---
 
 ## 8. Device checklist (BE4.41; BE4.40's own checklist runs first, as it is not flashed yet)
@@ -1366,7 +1540,9 @@ reviewed one: only comments changed in the DSP; sizes and costs above unchanged)
     `bits=`, with no `OVER`. Also (Q3, Q3b) an 8-voice chord at Shape 0, 12 and 24, FM off, on one and then several
     tracks (Q3b: around note 60 Shape 0 / 24 cost a saw voice or less, the blend at 12 ~1.77 x), the same chord in the
     upper register (Q3b: the plateaus rise with pitch, ~1.3 x the saw at note 96, ~2 x near 119, LOW's cost above 120),
-    and with an LFO on Position (a LOW ramp, 1.32 x): peak, no `OVER`.
+    and with an LFO on Position (a LOW ramp, 1.32 x): peak, no `OVER`. Q5: the same chord with Sub FM 100 % on both oscillators
+    (a sine sub; offline 2.04 x the saw voice at note 60, synced 2.18 x), then at Shape 0 / 24 (the FM loop's LOW form
+    costs ~11 instructions a sample more than its saw).
 13. An old BE4.40 project with Shape < 45 now plays sine or triangle (expected; no migration).
 
 ---
@@ -1375,10 +1551,10 @@ reviewed one: only comments changed in the DSP; sizes and costs above unchanged)
 
 | Risk | Effect | Mitigation | Label |
 |---|---|---|---|
-| FM costs about 2x the old plan at 2N | +9-10 % instructions per root of 10 full-FM voices; multiplied across tracks; OVER on dense patches | gate measured in Q5; specialise the hot case (saw carrier, sine sub) only if it fails; device item 12 | I |
+| FM costs about 2x the old plan at 2N | +9-10 % instructions per root of 10 full-FM voices; multiplied across tracks; OVER on dense patches; **Q5 (M): the Sub FM voice 27,069 = 2.04 x the saw voice, within its gate (29,913); with triangle carriers 33,407 = 1.117 x that gate (the gate is the saw's: not gated)**; FM off, Q6 has ~0.43 pt of M1's +2 % left (Q5 worst +1.57 %) | gate measured in Q5; specialise the hot case (saw carrier, sine sub) only if it fails; device item 12 | I |
 | Device CPI unknown (flash execution) | instruction counts understate cycles | device item 12 records `peak` with `fm=` | I |
 | The generic loop hoists a division into every sample | ~257 VDIVs per render | VDIV count by PC range (6.5) on every build | I |
-| DSP code larger than estimated | squeezes the drums' room; Q3b left 8,424 B of the 14 KB for Q4 to Q6 (estimate 6.5-9.5 KB); **Q4 took 832 B (the copy at minsize): 7,592 B left for Q5 / Q6** (estimate 4.5-8 KB) | 14 KB ceiling measured at Q3 and Q5; the plateau path (2.6 KB, Q3b) is the first to trade; the copy's Sine at -O2 (+544 B, -8 % its cost) is the first buy-back if Q5 lands small | M / I |
+| DSP code larger than estimated | squeezes the drums' room; Q3b left 8,424 B of the 14 KB for Q4 to Q6 (estimate 6.5-9.5 KB); **Q4 took 832 B (the copy at minsize): 7,592 B left for Q5 / Q6** (estimate 4.5-8 KB); **Q5 took 4,952 B: 2,640 B left for Q6** (M) | 14 KB ceiling measured at Q3 and Q5; the plateau path (2.6 KB, Q3b) is the first to trade; the copy's Sine at -O2 (+544 B, -8 % its cost) is the first buy-back if Q5 lands small | M / I |
 | Square sub DC detunes the carrier | pitch drifts as Sub FM rises | DC-free copy (OD10); golden mean-frequency case | S/I |
 | sub_copy disturbs the sub via PARAM_VALUE's cache | the copy or the sub's render is no longer exact | save/restore around the calls; sub-object identity test | S |
 | Stale A or B between voices | FM from another voice | fmtag cleared right after `r->voice`; `Run.voice` check; mutations | S |
@@ -1445,6 +1621,7 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 | OD13 | Shape ramp step below the saw (Q3, deviation from 4.6) | (a) `AN_RAMP_LOW` = 16 frames for a ramp with either end below the saw (k0 < 0 or k1 < 0), AN_RAMP = 32 elsewhere; (b) 4.6 as written, AN_RAMP = 32 for every ramp | **Decided: (a)**, as built (Decisions). At 32 frames 6.4's criterion fails: per part edge 1.02 / 1.08 / 0.95 x the saw > square ramp's click at LFO centres 24 / 28 / 46 (the LOW map moves k twice as fast a Shape step). At 16, per block (6.4's metric) 0.0083 / 0.0089 / 0.0135 against saw > square's 0.0163. A slope BLAMP in an_reshape changed nothing measurable, so it is not the fix. Cost: a LOW ramp block 29,554 instructions against 22,859 for the saw > square ramp (1.29 x); ramps at Shape >= 45 are untouched (identity). (b) is one line in an_osc plus the expected part count in ShapeLow; 6.4 would then need a looser criterion for the LOW map. |
 | OD14 | Taken as built in Q3 (beyond 4.6, listed so you see them) | the SLAVE reset's slope BLAMP in LOW; the sine and triangle dial glyphs drawn one cycle each (the others two) | **Decided** (Decisions): the reset BLAMP kept as built; **the glyphs redone in Q3b**. (Recommendation was: keep both.) The reset BLAMP is the value BLEP's missing half: without it a synced triangle is off the exact band-limited wave by up to 0.12, with it ~1e-4 (both reviews measured it against a brute-force reference); one sinq per reset, nothing per sample. The glyphs: at two cycles the sine and triangle drew alike (snapshot); one cycle gives the sine a round top. Device item 9 judges it; reverting is one expression in `glyph()`. **Q3b:** redone (the sine one cycle from the middle, the triangle two cycles of straight flanks; "Q3b as built"). |
 | OD15 | The grid's own DC under FM 1>2 (Q2b, 4.7; needed before Q6) | OD11 (b)'s top at (S-1)/S takes one step off any +1 high (the square, and the pulse after OD12), so mean(q) = -f_hi / S and B = inc1 q detunes OSC2 by I * inc1 * mean(q): at I = 8, OSC1 = OSC2, a square OSC1 gives about -3 / -55 / -1200 cents at 12 / 8 / 4 bits (I). (a) accept it as part of the grit; (b) Q6 writes B from the crush with its top clamp at S instead of S - 1 (the audio keeps OD11 (b); B gets the +1 level back, so its error is unbiased rounding; about one compare and one add per sample, in the FM 1>2 path only); (c) subtract a known -f_hi / S from B (f_hi is not known exactly per block: edges, sync, ramps); (d) a half-step (mid-rise) grid, which revisits OD11 for the audio too and puts a +1 / 2S offset on a zero input; (e) B from the uncrushed s (revisits BD1: the crush no longer colours FM 1>2) | **(b)**. It removes the detune at every depth for the cost of one extra clamp in the path that already writes B, and leaves Jeff's audio grid untouched. (e) is cheaper (zero) but loses the crushed modulator BD1 chose; (a) is defensible at 12 bits (-3 cents) but not at 8 (half a semitone). Close call between (b) and (e). |
+| OD16 | An oscillator heard again (Q5, 4.4) ramps its Sub FM index in from 0 | 4.4 said: after the silent skip the amount starts at its set value, no ramp. As built, msub = 0 there (and after reset, a Type change, or a block with no FM), and 0 is a real amount, so the first block heard ramps I from 0 to the set amount over 2N (2.7 ms), as a project's first block does. (a) keep it (as built, no change); (b) a "no ramp" mark so the first heard block plays the set amount at once: a flag byte in AnOsc's 4 spare bytes (176 / 180), set on the skip path and cleared by the next render, Q1's msub zeros unchanged (a few instructions in the FM gate; the msub = 0xFFFF sentinel instead would change Q1's pinned zeros) | **(a)**. The oscillator returns from Level 0 through stock's Level smoother, which also ramps from 0 over its first block (S: an_osc's silent is Level 0 with the smoother not moving), so the index ramp sits under a ramp that already hides it (I: not separately audible); (b) costs code in the 2.6 KB Q6 has left and a state rule more to test, for a difference inside that Level ramp. Choose (b) if you want a struck FM attack on an oscillator brought back by Level automation to be at full index from its first sample. |
 | CPU gate | (not a new decision; FD6 restated) | | The draft's 27.5 k was tighter than FD6. The plan now uses FD6 faithfully: 1.3 x the specialised voice at 2N (~31 k, I), measured in Q5. Say so if you want the tighter target instead. |
 
 ---

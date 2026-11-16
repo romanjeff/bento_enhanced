@@ -1058,8 +1058,9 @@ class Props(unittest.TestCase):
                     self.assertEqual(msub(r, o), (123, 456), "control: written where AnOsc keeps them")
                     r.render(root, v, n, (0, 1)); r.block()
                 self.assertEqual(msub(r, o), (0, 0), f"{name}: msub, m12 after the block")
-                if n is None:                                    # P3 Q1 / Q2: the playing path keeps them (Q5 / Q6 ramp them)
-                    self.assertEqual(msub(r, other), (123, 456), f"{name}: control, the oscillator that played")
+                if n is None:                                    # P3 Q5 (reviewed edit): the playing path ramps msub (Sub FM 0
+                    # there: 123 -> 0 over the block, so 0 after it); m12 is kept (Q6 ramps it)
+                    self.assertEqual(msub(r, other), (0, 456), f"{name}: control, the oscillator that played")
 
     def test_an_enter_clears_the_fm_tag_for_every_voice(self):
         """P3 3.3 (review R11): Run.fmtag is 0 after an_enter names a voice, before its `no Analog oscillator` return as after
@@ -1698,8 +1699,10 @@ class P3Identity(unittest.TestCase):
                 f"{n} {t / c:.0f}" for n, c, t in cls.copies), file=sys.stderr)
 
     # Sub FM 70 %, Bit Depth Full, FM 1>2 33.3 %: test_q1_plays_no_amount. P3 Q2: Bit Depth 2 (8 bits) was in it through Q1;
-    # it plays since Q2, so it left this tuple for BitDepth.test_the_amounts_cases_crush_and_nothing_else (same cases)
-    AMOUNTS = (700, 0, 333)
+    # it plays since Q2, so it left this tuple for BitDepth.test_the_amounts_cases_crush_and_nothing_else (same cases). P3 Q5:
+    # Sub FM plays, so its 700 left too, for SubFm.test_the_amounts_cases_are_the_expected_change (same cases); FM 1>2 stays
+    # until Q6
+    AMOUNTS = (0, 0, 333)
     # the kernel-area bytes of P3's three settings (AnProps bits, subfm, fm12): stored on this build, never on BE4.40
     P3_BYTES = (PROPS_AT + 3, PROPS_AT + 6, PROPS_AT + 7, PROPS_AT + 8, PROPS_AT + 9)
 
@@ -1885,7 +1888,8 @@ class P3Identity(unittest.TestCase):
         and the square of that, twice as far gone, on BE4.40 (ln to 4 x 5e-5: stock's exp2 table, as in
         Oscillator.test_glide_takes_the_set_time_on_the_device). Q1's amounts control, on this build alone: the same case
         with Sub FM and FM 1>2 set plays it byte for byte (stored, not played; the settings bytes masked). Q2: Bit Depth
-        plays now, so it is Full here (AMOUNTS); its dev glide case is in BitDepth.test_the_amounts_cases_crush_and_nothing_else."""
+        plays now, so it is Full here (AMOUNTS); its dev glide case is in BitDepth.test_the_amounts_cases_crush_and_nothing_else.
+        Q5: Sub FM plays too, so AMOUNTS has FM 1>2 alone (Sub FM's dev glide case: SubFm's amounts test)."""
         rp = Rig(dev=True)
         runs = [self.voice_case(Rig(dev=True), **self.GLIDE),
                 self.voice_case(Rig(img=REF_IMG, dev=True, dsp=REF_DSP), **self.GLIDE),
@@ -1893,7 +1897,7 @@ class P3Identity(unittest.TestCase):
         (a, va, sa, ca), (b, vb, sb, cb), (p, vp, sp, _) = runs
         for i in (0, 1):
             s = rp.stored[i]
-            self.assertEqual((s[3], s[5], s[6]), (0, 700, 333), f"control, OSC{i + 1}'s Bit Depth, Sub FM, FM 1>2 as stored")
+            self.assertEqual((s[3], s[5], s[6]), (self.AMOUNTS[1], self.AMOUNTS[0], self.AMOUNTS[2]), f"control, OSC{i + 1}'s Bit Depth, Sub FM, FM 1>2 as stored")
         same(self, p, a, "amounts set: the output")
         same(self, self.masked(vp, (0, 1)), self.masked(va, (0, 1)), "amounts set: the voice")
         self.assertEqual(sp, sa, "amounts set: the stats words")
@@ -1919,8 +1923,9 @@ class P3Identity(unittest.TestCase):
         test_glide_dev_is_the_expected_change). Q2 made Bit Depth's part its expected change: Bit Depth 2 left AMOUNTS,
         and the same seven cases with it, in both rigs, are BitDepth.test_the_amounts_cases_crush_and_nothing_else. Q4: Sub
         FM 700 fills buffer A once per voice-block (still played by nothing): the output and the voice stay BE4.40's, and the
-        instruction bound is on everything but the copy (check's fills; the copy's own figures are SubCopy's). Q5 (Sub FM) and
-        Q6 (FM 1>2) turn the rest into their expected changes (plan 7)."""
+        instruction bound is on everything but the copy (check's fills; the copy's own figures are SubCopy's). Q5 (Sub FM)
+        made Sub FM's part its expected change: 700 left AMOUNTS, and the same seven cases with it are
+        SubFm.test_the_amounts_cases_are_the_expected_change; Q6 (FM 1>2) turns the rest into its own (plan 7)."""
         p3 = self.AMOUNTS
         # sub_fill a call, upper bounds (M, Q4: Rig's zero sub (core wave 0) 606 / 1,118 at n = 128 / 256, stock's root's
         # default sub 1,908 / 3,701; +5 %), keyed (stock's root, dev)
@@ -1942,10 +1947,12 @@ class P3Identity(unittest.TestCase):
                         if r.dsp is DSP:
                             for i in oscs:
                                 s = r.stored[i]
-                                self.assertEqual((s[3], s[5], s[6]), (0, 700, 333),
+                                self.assertEqual((s[3], s[5], s[6]), (p3[1], p3[0], p3[2]),
                                                  f"{name}: control, OSC{i + 1}'s Bit Depth, Sub FM, FM 1>2 as stored")
                         return x
-                    self.check(f"amounts {name} dev={dev}", stored, dev, mask=oscs, fills=fills,
+                    # P3 Q5 (reviewed edit): with Sub FM 0 nothing fills A (Q4's 8 / 11 / 24 fills went with Sub FM 700),
+                    # so no carve-out: the whole count is under M1's +2 %, the output and voice BE4.40's byte for byte
+                    self.check(f"amounts {name} dev={dev}", stored, dev, mask=oscs, fills=fills if p3[0] else None,
                                fill_max=FILL_MAX[(name == "root voice", dev)])
 
     def test_the_harness_goes_red(self):
@@ -2192,9 +2199,13 @@ class BitDepth(unittest.TestCase):
         same(self, c[0], inj[0], f"{name}: the output = Full with the golden crush at Level's input")
         same(self, P3Identity.masked(c[1], oscs), P3Identity.masked(inj[1], oscs), f"{name}: the voice")
         self.assertEqual(c[2], inj[2], f"{name}: the stats words")
+        # P3 Q5 (reviewed edit): Sub FM 700 plays since Q5, on both runs alike, so fm= counts its renders (the same on both,
+        # every case has one), fmx= nothing; bits= the crushed renders only
         n_bits = struct.unpack("<8I", rc.u.mem_read(SA + SA_FMSTATS, 32))
-        self.assertEqual(n_bits, (0, len(tc), 0, 0, 0, 0, 0, 0), f"{name}: bits= counts every crushed render, fm= / fmx= nothing")
-        self.assertEqual(struct.unpack("<8I", rf.u.mem_read(SA + SA_FMSTATS, 32)), (0,) * 8, f"{name}: Full counts nothing")
+        n_fm = struct.unpack("<8I", rf.u.mem_read(SA + SA_FMSTATS, 32))[0]
+        self.assertGreater(n_fm, 0, f"{name}: control, Sub FM plays")
+        self.assertEqual(n_bits, (n_fm, len(tc), 0, 0, 0, 0, 0, 0), f"{name}: fm= the FM renders, bits= every crushed render")
+        self.assertEqual(struct.unpack("<8I", rf.u.mem_read(SA + SA_FMSTATS, 32)), (n_fm,) + (0,) * 7, f"{name}: Full: fm= only")
         return tf, tc, c[3], f[3]
 
     def test_the_amounts_cases_crush_and_nothing_else(self):
@@ -2424,8 +2435,9 @@ class BitDepth(unittest.TestCase):
                         same(self, c[0], d[0], f"{name} {bb}: the output = Full with each oscillator's golden crush")
                         same(self, self.masked(c[1], (0, 1)), self.masked(d[1], (0, 1)), f"{name} {bb}: the voice")
                         self.assertEqual(c[2], d[2], f"{name} {bb}: the stats words")
+                        # P3 Q5 (reviewed edit): Sub FM 700 plays, so fm= counts every render (both oscillators, each block)
                         self.assertEqual(struct.unpack("<8I", rc.u.mem_read(SA + SA_FMSTATS, 32)),
-                                         (0, sum(1 for i in hits if gb[i]), 0, 0, 0, 0, 0, 0), f"{name} {bb}: bits=")
+                                         (len(hits), sum(1 for i in hits if gb[i]), 0, 0, 0, 0, 0, 0), f"{name} {bb}: fm=, bits=")
 
     def test_the_fm_stats_line_is_cleaned_with_the_stats(self):
         """Q2 review: finish() cleans SA_FMSTATS's line (DCCMVAC) wherever it cleans SA_STATS, after the block's counts, so
@@ -3183,16 +3195,17 @@ class SubCopy(unittest.TestCase):
         r.u.hook_add(UC_HOOK_CODE, fill, begin=f, end=f)
         return got, fills
 
-    def play(self, wave, level, blocks=BLOCKS, levels=None, msub=None, notes=None, each=None, **kw):
+    def play(self, wave, level, blocks=BLOCKS, levels=None, msub=None, notes=None, each=None, capture=False, **kw):
         """One case on this build: (per-block records, the voice output, sub_fill's calls, instructions per block, Span,
         (rig, voice, sub)). A holds a non-zero pattern before each block (a copy that writes nothing is seen); rec["arg"]
         is the increment sub_inc gave an_sub_copy (its r3) this block, or None. notes: the blocks' note starts (NOTES);
-        each(r, sub, b): before block b's render."""
+        each(r, sub, b): before block b's render; capture: the an_render_fm calls in rig.fm (fm_capture, P3 Q5)."""
         r = Rig()
         notes = self.NOTES if notes is None else notes
         root, v, sub, src = self.voice(r, wave, level, **kw)
         self.assertEqual(r.r32(sub + 0xDC), 2, "the device's sub: +0xDC = 2 after stock's engine init")
         got, fills = self.taps(r, [sub])
+        r.fm = fm_capture(r) if capture else None
         span = Span(r, dsp_sym("sub_fill"))
         lo = dsp_sym("an_sub_copy")
         args = []
@@ -3339,25 +3352,24 @@ class SubCopy(unittest.TestCase):
                     self.assertGreater(sum(rec["divs"] for rec in recs), 1, "control: it divides at all (notes 48 / 61: a wrap every few blocks)")
 
     def test_the_copy_changes_nothing_else(self):
-        """6.4: with Sub FM 700 on OSC1 (the copy runs) and with Sub FM 0 (it does not), the same case plays the same voice
-        output byte for byte, and the whole voice reaches the sub's render with the same bytes (P3's settings bytes masked):
-        the sub object byte-identical, PARAM_VALUE's cache words (+0xC0, +0x120) included, which move every block here
-        (pitch modulation, a width change). The rest of the instructions between the two is the gate and the call."""
+        """6.4: with Sub FM 700 on OSC1 (the copy runs) and with Sub FM 0 (it does not), the sub object reaches its render
+        with the same bytes, PARAM_VALUE's cache words (+0xC0, +0x120) included, which move every block here (pitch
+        modulation, a width change). P3 Q5 (reviewed edit): Sub FM 700 now plays, so the voice's output and the rest of the
+        voice (OSC1's state, the filters' histories) differ, and the comparison is the sub's own bytes (voice +0x4C up to the
+        voice's oscillator pointers at +0x178); Q4 compared the whole voice and the output byte for byte, and the
+        instructions (the gate and the call), which now include the FM render (SubFm.test_cost)."""
         for wave in SUB_WAVES:
             with self.subTest(wave=SUB_WAVES[wave]):
                 a = self.play(wave, 1000)
                 b = self.play(wave, 1000, fm=(0, 0))
-                same(self, a[1], b[1], "the voice's output")
+                self.assertNotEqual(a[1], b[1], "control: Sub FM 700 plays (Q5)")
                 self.assertEqual(len(a[2]), self.BLOCKS); self.assertEqual(len(b[2]), 0, "control: Sub FM 0 does not fill")
                 for k, (x, y) in enumerate(zip(a[0], b[0])):
-                    same(self, P3Identity.masked(x["voice"], (0, 1)), P3Identity.masked(y["voice"], (0, 1)),
-                         f"block {k}: the voice at the sub's render")
+                    same(self, x["voice"][S.VOICE_SUB:0x178], y["voice"][S.VOICE_SUB:0x178], f"block {k}: the sub at its render")
                 cache = lambda x, at: x["voice"][S.VOICE_SUB + at:S.VOICE_SUB + at + 4]
                 self.assertGreater(len({cache(x, 0xC0) for x in a[0]}), 6, "control: the pitch cache moves")
                 if wave == 3:
                     self.assertEqual(len({cache(x, 0x120) for x in a[0][1:]}), 2, "control: the width cache moves (30 %, 65 %)")
-                rest = [ca - cb - x["fill"] for ca, cb, x in zip(a[3], b[3], a[0])]
-                self.assertTrue(all(0 < d < 40 for d in rest), f"the gate and the call, per block: {rest}")
 
     def test_which_oscillator_fills(self):
         """4.1: A is filled once per voice-block, by OSC1 when it has Sub FM, else by OSC2: OSC2 alone, both (OSC2 uses OSC1's
@@ -3446,19 +3458,43 @@ class SubCopy(unittest.TestCase):
         self.assertEqual(fills, [], "voice 1 while voice 0 is named: no fill")
         self.assertEqual(bytes(r.u.mem_read(SA + SA_FMBUF_A, 4 * AN_FM_FRAMES)), b"\x5a" * (4 * AN_FM_FRAMES), "A untouched")
         self.assertEqual(r.r32(SA + SA_RUN + RUN_FMTAG) & 1, 0, "Run.fmtag clear")
+        calls = fm_capture(r)
         osc1(v0)
         self.assertEqual(fills, [(r.osc(v0, 0), s0)], "voice 0's OSC1 fills its own")
         self.assertEqual(r.r32(SA + SA_RUN + RUN_FMTAG) & 1, 1, "Run.fmtag says A")
         self.assertNotEqual(bytes(r.u.mem_read(SA + SA_FMBUF_A, 4 * DEV_FRAMES)), b"\x5a" * (4 * DEV_FRAMES), "A written")
+        # P3 Q5 (review): the FM gate's voice term: with A tagged (voice 0's), voice 1's OSC1, Sub FM 700 too, plays plain
+        # (an_render, no an_render_fm, msub 0): A is another voice's sub
+        self.assertEqual({x["osc"] for x in calls}, {r.osc(v0, 0)}, "control: voice 0's OSC1 plays Sub FM")
+        o = r.osc(v1, 0)
+        self.assertEqual(struct.unpack("<H", r.u.mem_read(o + S.OSC_KERNEL + PROPS_AT + 6, 2))[0], 700, "control: Sub FM")
+        n0 = len(calls)
+        osc1(v1)
+        self.assertEqual(len(calls), n0, "voice 1 while A is voice 0's: no FM render")
+        self.assertIn(o, [x for x, _ in calls.plain], "voice 1's OSC1: an_render")
+        self.assertEqual(struct.unpack("<H", r.u.mem_read(o + S.OSC_KERNEL + MSUB_AT, 2))[0], 0, "msub: no FM played")
 
     def test_other_waves_copy_silence(self):
         """4.2: stock's core has 10 waves (its LFOs'); the sub's wave key stores value + 1 unclamped, so a hand-edited file
         can give it 6..10, or 0 (key value 255: no render). Their copy is 0 (no Sub FM; A held a non-zero pattern before
-        each block: play), and the copy still changes nothing."""
+        each block: play), and the copy still changes nothing. P3 Q5 (reviewed edit; Q4: the voice's output byte for byte
+        against Sub FM 0's): Sub FM 700 now renders OSC1 through the FM loop with A = +0.0, so di = fma(I, +0, inc) = inc
+        every sample. Stated exactly: every an_render_fm call (one a block) reads A = +0.0 bit for bit and is p3_golden's
+        render at rest (its end phase exactly, its samples within fm_tol, its VDIVs the golden's crossings: SubFm.replay);
+        and the voice's output is still Sub FM 0's byte for byte (M, review: the first Q5 edit had loosened this to 1e-5;
+        the measured difference is 0: here the FM loop at rest plays an_render's samples exactly)."""
         for key in (5, 9, 255):
             with self.subTest(wave_key=key):
-                a = self.play(key + 1, 1000, blocks=3)
+                a = self.play(key + 1, 1000, blocks=3, capture=True)
                 b = self.play(key + 1, 1000, blocks=3, fm=(0, 0))
+                rr, vv = a[5][0], a[5][1]
+                calls = rr.fm
+                self.assertTrue(calls and all("y" in x for x in calls), "every call returned through an_osc")
+                self.assertEqual([(x["osc"], x["block"] - calls[0]["block"], x["n"]) for x in calls],
+                                 [(rr.osc(vv, 0), j, DEV_FRAMES) for j in range(3)], "OSC1's FM render, one a block")
+                for x in calls:
+                    self.assertEqual(np.asarray(x["a"], dtype="<f4").view("<u4").tolist(), [0] * x["n"], "the call's A: +0.0")
+                SubFm.replay(self, f"wave key {key}", calls)
                 same(self, a[1], b[1], "the voice's output")
                 for rec in a[0]:
                     self.assertEqual(rec["wave"], (key + 1) & 0xFF)
@@ -3466,7 +3502,10 @@ class SubCopy(unittest.TestCase):
 
     def test_longer_blocks_than_the_buffer_fill_nothing(self):
         """4.2: a block longer than AN_FM_FRAMES gets no FM: A is not written, the tag stays clear and each render that wanted
-        it counts in fm_skipped (fmx=); at 2N the same voice fills A. (Rig's own voice: no stock sub, its core wave 0.)"""
+        it counts in fm_skipped (fmx=); at 2N the same voice fills A. (Rig's own voice: no stock sub, its core wave 0.)
+        P3 Q5 (review): and plays no FM (the gate's tag term: a render would read A past its 256 floats): no an_render_fm
+        call, fm= 0, msub 0 after it, so the next 2N block ramps the index in from I(0) (its line (0, I(700) / 2N)); at 2N
+        both oscillators play FM (A = 0: at rest) and msub ends on 700."""
         for n, fill in ((2 * DEV_FRAMES, False), (DEV_FRAMES, True)):
             with self.subTest(n=n):
                 r = Rig(dev=True); root, v = r.voice(0x6D)
@@ -3474,6 +3513,7 @@ class SubCopy(unittest.TestCase):
                     P3Identity.push(r, r.osc(v, i), 0x6D, i, (1, 48, 0, 0), (700, 0, 0))
                 r.note(v, 60)
                 r.u.mem_write(SA + SA_FMBUF_A, b"\x5a" * (4 * AN_FM_FRAMES))
+                calls = fm_capture(r)
                 for _ in range(3):
                     r.render(root, v, n, (0, 1)); r.block()
                 a = bytes(r.u.mem_read(SA + SA_FMBUF_A, 4 * AN_FM_FRAMES))
@@ -3481,6 +3521,723 @@ class SubCopy(unittest.TestCase):
                 self.assertEqual(r.r32(SA + SA_RUN + RUN_FMTAG) & 1, int(fill), "Run.fmtag")
                 self.assertEqual(a, bytes(4 * AN_FM_FRAMES) if fill else b"\x5a" * (4 * AN_FM_FRAMES),
                                  "A: the zero sub's copy (wave 0)" if fill else "A untouched")
+                self.assertEqual(r.r32(SA + SA_FMSTATS + FM_FM), 6 if fill else 0, "fm=")
+                self.assertEqual(SubFm.renders(calls), 6 if fill else 0, "the renders with FM")
+                msub = [struct.unpack("<H", r.u.mem_read(r.osc(v, i) + S.OSC_KERNEL + MSUB_AT, 2))[0] for i in (0, 1)]
+                self.assertEqual(msub, [700, 700] if fill else [0, 0], "msub")
+                if not fill:
+                    blk = r.idx
+                    r.render(root, v, DEV_FRAMES, (0, 1)); r.block()
+                    for i in (0, 1):
+                        SubFm.lines(self, "after the long blocks", calls, r.osc(v, i), {blk: (0, 700)})
+
+
+# ---- P3 Q5: Sub FM (docs/plan-p3-fm-bits.md 4.1, 4.3, 4.4, 4.8, 6.3 - 6.6) --------------------------------------------------
+FM_ROLES = ("free", "master", "slave")
+FM_FM = 0                   # SaFmStats.fm (byte offset): renders with FM (fm=)
+AN_EVENTS_N = 128           # analog.h AN_EVENTS: a sync chunk
+
+
+def an_index(v):
+    """The kernel's index for an amount (dsp/analog.cpp an_index, its stated arithmetic): f32(v^2) x f32(8e-6), one rounding;
+    p3_golden.fm_index (8 (v / 1000)^2, float64) within float32 rounding (FmKernel.test_the_index_is_the_square_law)."""
+    return f32(f32(float(v * v)) * f32(8e-6))
+
+
+def sym_range(name):
+    """[start, end) of one DSP function (its exact name, or the one mangled name containing it): its symbol to the next DSP
+    symbol (or the window's end)."""
+    a = DSP[name] & ~1 if name in DSP else dsp_sym(name)
+    return a, min([b & ~1 for b in DSP.values() if (b & ~1) > a] + [S.M7_DSP_LIMIT])
+
+
+def fm_ranges():
+    """an_render_fm's code: the function (its role loops inlined) and the long-way sample it calls, fm_slow (out of line)."""
+    return [sym_range("an_render_fm"), sym_range("fm_slow")]
+
+
+def is_vdiv(uc, a, sz):
+    if sz != 4:
+        return False
+    w0, w1 = struct.unpack("<HH", uc.mem_read(a, 4))
+    return w0 & 0xFFB0 == 0xEE80 and w1 & 0x0F50 == 0x0A00     # VDIV.F32
+
+
+def fm_golden(inc, k, a, ia, dia, off, n, phase, delayed, role, ev=None, width=None, mutant=None):
+    """p3_golden's render of one an_render_fm call (law "f32", fma True: the kernel's stated arithmetic, analog_kernel.cpp
+    run_fm / fm_part): I_j = f32(ia + dia j), j the block frame off + i; di = f32(inc + I_j a_j) clamped. Returns (FmRender,
+    di, I)."""
+    j = np.arange(off, off + n, dtype=np.float64)
+    I = G._fma32(np.full(n, f32(ia)), np.full(n, f32(dia)), j)
+    di = G.increments(inc, [(I, np.asarray(a, dtype=np.float64))], law="f32", fma=True)
+    g = G.fm_render(di, k=k, phase=phase, delayed=delayed, role=FM_ROLES[role], sync=ev if role == 2 else None, law="f32",
+                    fma=True, width=width, mutant=mutant, inc0=inc)
+    return g, di, I
+
+
+_WIDTH = {}
+def fm_width(k):
+    """The kernel's float32 pulse width at k (dc = 2 w - 1 is exact, so w = (an_dc(k) + 1) / 2 exactly), None at and below
+    the square (FmWave's 0.5 is the kernel's). p3_golden: an edge's position error moves its fraction by err / di, large
+    near di = 0, so the golden takes the kernel's own width (its width= argument)."""
+    if not k > 0.5:
+        return None
+    if k not in _WIDTH:
+        _WIDTH[k] = (BitDepth.an_dc(k) + 1.0) / 2.0
+    return _WIDTH[k]
+
+
+def fm_tol(k, role):
+    """TOL_F32 + the sine's weight x sinq's stated error: once for a free / master sample (the value), twice for a slave
+    (Q3's slave bound: the reset's BLEP and BLAMP read sinq too, 0.5 + 0.45 x 2 pi / 6 < 1 more)."""
+    ws = G.FmWave(k).ws if k < 0 else 0.0
+    return G.TOL_F32 + (2 if role == 2 else 1) * ws * SINQ_ERR
+
+
+def fm_check(tc, name, g, y, phase, ev, k, role):
+    """One call against its golden: the end phase first (the same float32 law: a difference means di's arithmetic statement
+    is wrong, not the tolerance), the samples within fm_tol, a master's bytes the golden's (ev_near +-1). Returns err / tol."""
+    tc.assertEqual(f32(phase), f32(g.phase), f"{name}: the end phase (di's arithmetic, the float32 law)")
+    tol = fm_tol(k, role)
+    d = np.abs(np.asarray(y, dtype=np.float64) - g.y)
+    err = float(np.max(d)) if len(d) else 0.0
+    tc.assertLessEqual(err, tol, f"{name}: worst {err:.3g} > {tol:.3g} at {int(np.argmax(d)) if len(d) else 0}")
+    if role == 1:
+        got, want = np.frombuffer(bytes(ev), np.uint8).astype(int), g.ev.astype(int)
+        tc.assertEqual(list(got == 255), list(want == 255), f"{name}: the master's wraps")
+        bad = (np.abs(got - want) > 0) & ~(g.ev_near & (np.abs(got - want) <= 1))
+        tc.assertFalse(bad.any(), f"{name}: event bytes {list(got[bad][:4])} vs {list(want[bad][:4])}")
+    return err / tol
+
+
+class FmBench:
+    """an_render_fm called directly on one Rig, its buffers allocated once: (y, phase, delayed, events, instructions, VDIVs
+    inside an_render_fm's code by PC: fm_ranges)."""
+    def __init__(self, r=None):
+        self.r = r = r or Rig()
+        self.st, self.a, self.fi = r.alloc(176), r.alloc(4 * 1024), r.alloc(16)
+        self.out, self.ev = r.alloc(4 * 1024), r.alloc(1024)
+        self.divs = 0
+        def h(uc, a, sz, _):
+            if is_vdiv(uc, a, sz):
+                self.divs += 1
+        for lo, hi in fm_ranges():
+            r.u.hook_add(UC_HOOK_CODE, h, begin=lo, end=hi - 1)
+
+    def state(self, phase, delayed):
+        self.r.u.mem_write(self.st, struct.pack("<Iff", AN_MAGIC, phase, delayed))
+
+    def call(self, inc, k, a, ia, dia, off, n, role=0, ev=None):
+        """a: the block's A from frame 0 (the call reads a[off:off + n])."""
+        r = self.r
+        r.u.mem_write(self.a, np.asarray(a, dtype="<f4").tobytes())
+        r.u.mem_write(self.fi, struct.pack("<IffI", self.a, ia, dia, off))
+        r.u.mem_write(self.ev, bytes(ev) + bytes([255]) * (1024 - len(ev)) if ev is not None else bytes([255]) * 1024)
+        d0 = self.divs
+        _, cnt = r.call(DSP["an_render_fm"], self.st, self.out, n, self.ev, sargs=(role, self.fi), fargs=(inc, k))
+        y = np.frombuffer(bytes(r.u.mem_read(self.out, 4 * n)), dtype="<f4").astype(np.float64)
+        phase, delayed = struct.unpack("<ff", r.u.mem_read(self.st + 4, 8))
+        return y, phase, delayed, bytes(r.u.mem_read(self.ev, n)), cnt, self.divs - d0
+
+
+def edge_count(g):
+    """p3_golden's crossings that cost the kernel a VDIV (its statement, analog_kernel.cpp fm_part): every wrap, the width
+    where the blend is above 0, the top where the triangle's weight is; resets none (at is a byte)."""
+    e = g.edges
+    return sum(e[f"{k}_{d}"] for k in ("wrap", "width", "half") for d in "fb")
+
+
+def f32a(x): return np.float64(np.float32(x))
+
+
+def sub_a(wave, inc_sub, n, phase=0.1, pw=0.5):
+    """A buffer as Q4's copy writes it, from p3_golden's sub waves: f32(inc_sub x (y - dc)) (polarity the golden's; the voice
+    tests feed stock's own A)."""
+    m, _ = G.sub_mod(wave, inc_sub, n, phase, pw)
+    return np.asarray(f32a(inc_sub) * m, dtype=np.float32).astype(np.float64)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class FmKernel(unittest.TestCase):
+    """P3 Q5 (plan 4.3, OD5, 6.3, 6.5): an_render_fm on the M7 against p3_golden.py's fm_render (numpy, written from the plan
+    alone, before and without the kernel), sample by sample on the kernel's float32 phase law with di fed bit for bit: the
+    kernel's own index line (fma(dia, j, ia)) and A, folded as the golden's increments(law "f32", fma True). Every Shape
+    region (the sine, blends, the triangle, the saw, saw > square, the square, the pulse, the 8 % pulse), three carriers
+    (note 60 at 96 kHz, 0.0123, 0.2), three modulations (a sine sub an octave down at index 8: through zero; a DC-free
+    Square at PW 30 % at index 1; a saw at 1.5 x ramping 0 -> 8 across the block), free, master and slave (resets from an
+    FM'd golden master that wraps both ways). 2N = 256 frames in two parts of 128, the index line continuing."""
+    SHAPES = (0, 12, 24, 36, 48, 68, 88, 100, 127)
+    INCS = (f32(261.6256 / DEV_RATE), f32(0.0123), f32(0.2))
+    MODS = (("sine I8", "sine", 0.5, 0.5, 1000, 1000), ("square I1", "square", 1.0, 0.3, 354, 354),
+            ("saw ramp", "saw", 1.5, 0.5, 0, 1000))
+    N = 256
+
+    @classmethod
+    def master_events(cls):
+        """A golden master under deep FM (inc 0.031, a sine at 0.7 x, index 8: through zero): its bytes, forward and
+        backward wraps, for the slave cases (in parts of 128)."""
+        inc = f32(0.031)
+        a = sub_a("sine", f32(0.7 * inc), cls.N, 0.3)
+        g, di, _ = fm_golden(inc, 0.0, a, 8.0, 0.0, 0, cls.N, 0.2, 0.0, 1)
+        return g.ev, g.edges, float(np.min(di))
+
+    def run_case(self, b, shape, inc, mod, role, mev):
+        name, wave, ratio, pw, v0, v1 = mod
+        k = f32(k_of(shape)); N = self.N
+        a = sub_a(wave, f32(ratio * inc), N, 0.1, pw)
+        ia = an_index(v0); dia = f32(f32(an_index(v1) - an_index(v0)) / N)
+        p0 = f32(0.37); d0 = f32(G.FmWave(k, "f32", fm_width(k)).value(p0))
+        b.state(p0, d0)
+        gp, gd, worst, divs, edges, info = p0, d0, 0.0, 0, 0, dict(resets_b=0, wrap_b=0, dmin=1.0)
+        for off in (0, N // 2):
+            n = N // 2
+            ev = list(mev[off:off + n]) if role == 2 else None
+            y, ph, dl, evo, _, dv = b.call(inc, k, a, ia, dia, off, n, role, ev)
+            g, di, _ = fm_golden(inc, k, a[off:off + n], ia, dia, off, n, gp, gd, role, ev, fm_width(k))
+            worst = max(worst, fm_check(self, f"Shape {shape} inc {inc:.4g} {name} {FM_ROLES[role]} off {off}", g, y, ph, evo,
+                                        k, role))
+            divs += dv; edges += edge_count(g)
+            info["resets_b"] += g.edges["resets_b"]; info["wrap_b"] += g.edges["wrap_b"]
+            info["dmin"] = min(info["dmin"], float(di.min()))
+            gp, gd = g.phase, g.delayed
+        return worst, divs, edges, info
+
+    def test_the_kernel_is_the_golden_model(self):
+        """Every case: the end phase of each part the golden's exactly (so di's arithmetic is as stated), every sample
+        within fm_tol (TOL_F32 + the sine's weight x SINQ_ERR; twice that for a slave), a master's event bytes the golden's
+        (+-1 where its fraction is within float32 rounding of a byte boundary), and (6.5) the VDIVs executed inside
+        an_render_fm = the golden's crossings that divide (every wrap, the pulse edge where the blend > 0, the triangle's
+        top where its weight > 0), +- 0, at most 2n. Controls: the modulations run the phase backward (di < 0), the slave
+        sees backward resets (OD5: to p = 1) and the master backward wraps."""
+        mev, medges, mdmin = self.master_events()
+        self.assertGreater(medges["wrap_b"], 0, "control: the golden master wraps backward too (OD5: those reset the slave)")
+        worst, seen = (0.0, None), dict(resets_b=0, wrap_b=0, dmin=1.0, cases=0)
+        for shape in self.SHAPES:
+            b = FmBench()
+            for inc in self.INCS:
+                for mod in self.MODS:
+                    for role in (0, 1, 2):
+                        with self.subTest(shape=shape, inc=inc, mod=mod[0], role=FM_ROLES[role]):
+                            w, divs, edges, info = self.run_case(b, shape, inc, mod, role, mev)
+                            self.assertEqual(divs, edges, "VDIVs inside an_render_fm = the golden's dividing crossings")
+                            self.assertLessEqual(divs, 2 * self.N, "6.5: at most 2n a render")
+                            seen["cases"] += 1
+                            for key in ("resets_b", "wrap_b"):
+                                seen[key] += info[key]
+                            seen["dmin"] = min(seen["dmin"], info["dmin"])
+                            if w > worst[0]:
+                                worst = (w, (shape, inc, mod[0], FM_ROLES[role]))
+        print(f"\n  FM kernel vs golden: {seen['cases']} cases, worst {worst[0]:.2f} of its tolerance at {worst[1]}; "
+              f"backward resets {seen['resets_b']}, backward wraps {seen['wrap_b']}, lowest di {seen['dmin']:.4f}",
+              file=sys.stderr)
+        self.assertLess(seen["dmin"], 0.0, "control: through zero")
+        self.assertGreater(seen["resets_b"], 0, "control: backward slave resets (OD5, p = 1)")
+        self.assertGreater(seen["wrap_b"], 0, "control: backward wraps")
+
+    def test_the_corner_rules(self):
+        """P3 Q5 (review): OD5 / 4.3's corner rules, on crafted states the real cases do not reach, each against the golden
+        (fm_check; VDIVs = its crossings): (1) a master wrap at fraction exactly 0 writes its byte (0), from p = 0 going
+        backward and from p = 1.0 (the left limit a backward wrap can leave) going forward; (2) a slave event at a sample
+        with di == 0 exactly (a = -inc at index 1: fma(1, -inc, inc) = 0) resets nothing, one with di > 0 does (control);
+        (3) a phase exactly on the pulse's edge (p == w: the high side, [lo, hi)) moving backward crosses it."""
+        inc, n = f32(0.0123), 64
+        b = FmBench()
+        def run(name, shape, p0, a, role, ev=None):
+            k = f32(k_of(shape))
+            d0 = f32(G.FmWave(k, "f32", fm_width(k)).value(p0))
+            b.state(p0, d0)
+            a = np.asarray(a, dtype=np.float64)
+            y, ph, _, evo, _, dv = b.call(inc, k, a, 1.0, 0.0, 0, n, role, ev)
+            g, di, _ = fm_golden(inc, k, a, 1.0, 0.0, 0, n, p0, d0, role, ev, fm_width(k))
+            fm_check(self, name, g, y, ph, evo, k, role)
+            self.assertEqual(dv, edge_count(g), f"{name}: VDIVs = the golden's crossings")
+            return g, di, evo, ph
+        for p0, sign in ((0.0, -1.0), (1.0, 0.0)):
+            with self.subTest(case=f"master byte at fraction 0 from p = {p0}"):
+                g, di, evo, _ = run("byte", 48, f32(p0), np.full(n, f32(-2.0 * inc) if sign else 0.0), 1)
+                self.assertEqual(float(di[0]), -inc if sign else inc, "control: the step")
+                self.assertEqual(evo[0], 0, "the wrap at fraction 0: byte 0")
+                self.assertEqual(int(g.ev[0]), 0, "the golden's too")
+        with self.subTest(case="slave event at di == 0"):
+            a = np.zeros(n); ev = [255] * n
+            for i in (10, 50):
+                a[i] = -inc; ev[i] = 127
+            ev[30] = 127                                         # di = inc there: a reset (control)
+            g, di, _, ph = run("di 0", 48, f32(0.37), a, 2, ev)
+            self.assertEqual([float(di[i]) for i in (10, 30, 50)], [0.0, inc, 0.0], "control: di 0 exactly")
+            self.assertEqual(g.edges["resets"], 1, "one reset: none at di == 0")
+        with self.subTest(case="on the edge, backward"):
+            k = f32(k_of(100)); w = f32(fm_width(k))
+            g, di, _, _ = run("edge", 100, w, np.full(n, f32(-2.0 * inc)), 0)
+            self.assertEqual(g.edges["width_b"], 1, "control: the golden crosses the edge backward at sample 0")
+
+    def test_zero_modulation_is_the_plain_render(self):
+        """A = 0: di = inc every sample, so the golden is Q3's render at rest; the FM loop plays an_render's samples within
+        TOL_F32 + the sine's weight x SINQ_ERR, its phase bit for bit (the same float32 law), a master's bytes within one
+        (an_render's fraction multiplies by its 1 / inc). Not bit for bit: an_render divides once a block (E2), the FM loop
+        at every edge, and (Q3b) its plateaus run_flat. Zero cost and identity when off are the hook's (an_osc calls
+        an_render then: P3Identity)."""
+        for shape in self.SHAPES:
+            b = FmBench(); k = f32(k_of(shape))
+            for inc in self.INCS:
+                for role in (0, 1):
+                    with self.subTest(shape=shape, inc=inc, role=role):
+                        b.state(f32(0.37), 0.0)
+                        y, ph, _, ev, _, _ = b.call(inc, k, np.zeros(128), 0.0, 0.0, 0, 128, role)
+                        sk = ShapeLow.state(None, b.r, f32(0.37), 0.0)
+                        yr, phr, _, evr, _ = ShapeLow.kernel(None, b.r, sk, inc, k, 128, role=role)
+                        self.assertEqual(ph, phr, "the phase")
+                        self.assertLessEqual(float(np.max(np.abs(y - yr))), fm_tol(k, 0) + G.TOL_F32)
+                        if role:
+                            self.assertLessEqual(max(abs(x - z) for x, z in zip(ev, evr)), 1)
+
+    def test_the_mutants_the_golden_names_are_seen(self):
+        """6.6 on this kernel's own deep through-zero cases (index 8, a sine an octave down, inc 0.0123, 256 samples; free
+        and slave):
+        each of p3_golden's output mutants (backward crossings not mirrored, no correction on them, E2's per-block rinc
+        under FM) leaves the kernel by more than its tolerance; the double edge (OD5's p = 0 for a backward reset) has the
+        one-edge rule's output up to rounding (the golden's notes), so its red test is its extra backward wraps in the
+        VDIV / edge count."""
+        mev, _, _ = self.master_events()
+        far = {m: 0.0 for m in G.FM_MUTANTS}; extra = 0
+        for shape in (12, 24, 48, 100, 127):
+            b = FmBench(); k = f32(k_of(shape)); inc = self.INCS[1]; n = self.N
+            a = sub_a("sine", f32(0.5 * inc), n, 0.1)
+            for role in (0, 2):
+                p0 = f32(0.37); d0 = f32(G.FmWave(k, "f32", fm_width(k)).value(p0)); b.state(p0, d0)
+                ev = list(mev[:n]) if role == 2 else None
+                y, _, _, _, _, dv = b.call(inc, k, a, 8.0, 0.0, 0, n, role, ev)
+                for m in G.FM_MUTANTS:
+                    g, _, _ = fm_golden(inc, k, a, 8.0, 0.0, 0, n, p0, d0, role, ev, fm_width(k), mutant=m)
+                    if m == "reset_p0":
+                        extra += edge_count(g) - dv
+                    far[m] = max(far[m], float(np.max(np.abs(y - g.y))) / fm_tol(k, role))
+        for m in ("no_mirror", "no_backward", "rinc"):
+            self.assertGreater(far[m], 1.0, f"{m}: the kernel is not it")
+        self.assertGreater(extra, 0, "reset_p0: the double edge's extra backward wraps (its VDIVs) are not the kernel's")
+        print(f"\n  FM mutants against the kernel (worst / tolerance): " + ", ".join(f"{m} {v:.3g}" for m, v in far.items()) +
+              f"; reset_p0's extra edges {extra}", file=sys.stderr)
+
+    def test_the_index_is_the_square_law(self):
+        """FD3: an_index(v) (the kernel's stated arithmetic) = p3_golden.fm_index(v) = 8 (v / 1000)^2 within float32 rounding
+        for every v 0..1000 (I(500) = 2, I(1000) = 8 exactly), never the linear law (6.6) past v 0."""
+        for v in range(1001):
+            want = G.fm_index(v)
+            self.assertLessEqual(abs(an_index(v) - want), 2 ** -23 * want, v)
+        self.assertEqual((an_index(500), an_index(1000), an_index(0)), (2.0, 8.0, 0.0))
+        self.assertTrue(all(abs(an_index(v) - G.fm_index(v, "linear")) > 1e-3 for v in range(1, 1000)))
+
+    def test_the_worst_case_divides_at_most_2n(self):
+        """6.5's worst case: the 8 % pulse (Shape 127: the width edge and the wrap a cycle), deep through zero (a sine at 3 x
+        the carrier, index 8), a high carrier (inc 0.2), free and master: VDIVs = the golden's crossings, at most 2n; the
+        instructions per sample recorded."""
+        b = FmBench(); k = f32(k_of(127)); inc = f32(0.2)
+        a = sub_a("sine", f32(3 * 0.2), 128, 0.1)
+        rows = []
+        for role in (0, 1):
+            b.state(f32(0.37), 0.0)
+            y, ph, _, ev, cnt, dv = b.call(inc, k, a, 8.0, 0.0, 0, 128, role)
+            g, _, _ = fm_golden(inc, k, a, 8.0, 0.0, 0, 128, f32(0.37), 0.0, role, None, fm_width(k))
+            fm_check(self, f"worst case {FM_ROLES[role]}", g, y, ph, ev, k, role)
+            self.assertEqual(dv, edge_count(g)); self.assertLessEqual(dv, 2 * 128)
+            rows.append((FM_ROLES[role], cnt / 128, dv))
+        print("\n  FM worst case (8 % pulse, sine 3 x at index 8, inc 0.2): " +
+              ", ".join(f"{n} {c:.1f} a sample, {d} VDIVs / 128" for n, c, d in rows), file=sys.stderr)
+
+
+class FmCalls(list):
+    """fm_capture's records, with .plain (an_render calls: oscillator, block), .track (an_track's), .fills (sub_fill: the
+    oscillator in the last an_osc, block) and .rets (an_osc's return sites)."""
+
+
+def fm_capture(r):
+    """Every an_render_fm call in the voice path: at its entry (the state's phase and delayed, inc, the Shape, n, the role,
+    FmIn's a / ia / dia / off, A's samples for the call, a slave's event bytes, the oscillator, the LOAD ring index) and
+    after it returns (the samples, the end state, a master's bytes): the return addresses are an_osc's calls to it
+    (capstone, its bl sites; play asserts every call came back through one). Each record's divs: the VDIVs executed inside
+    an_render_fm's code (fm_ranges) during it; .osc_divs: VDIVs inside an_osc itself by (oscillator, block)."""
+    recs = FmCalls(); recs.plain, recs.track, recs.fills, recs.osc_divs = [], [], [], {}
+    last = [None]
+    fn = DSP["an_render_fm"] & ~1
+    lo, hi = sym_range("an_osc")
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
+    def target(i):
+        try:
+            return int(i.op_str.lstrip("#"), 16)
+        except ValueError:
+            return None
+    recs.rets = [i.address + i.size for i in md.disasm(bytes(r.u.mem_read(lo, hi - lo)), lo)
+                 if i.mnemonic in ("bl", "blx") and target(i) == fn]
+    def entry(uc, a, sz, _):
+        st, out, n, ev = (uc.reg_read(x) for x in (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3))
+        role, fi = struct.unpack("<II", uc.mem_read(uc.reg_read(UC_ARM_REG_SP), 8))
+        sf = lambda reg: struct.unpack("<f", struct.pack("<I", uc.reg_read(reg)))[0]
+        A, ia, dia, off = struct.unpack("<IffI", uc.mem_read(fi, 16))
+        phase, delayed = struct.unpack("<ff", uc.mem_read(st + 4, 8))
+        recs.append(dict(st=st, out=out, n=n, evp=ev, role=role, inc=sf(UC_ARM_REG_S0), k=sf(UC_ARM_REG_S1), A=A, ia=ia,
+                         dia=dia, off=off,
+                         a=np.frombuffer(bytes(uc.mem_read(A + 4 * off, 4 * n)), dtype="<f4").astype(np.float64),
+                         phase0=phase, delayed0=delayed, ev0=bytes(uc.mem_read(ev, n)) if ev else None,
+                         osc=st - S.OSC_KERNEL, block=r.idx, lr=uc.reg_read(UC_ARM_REG_LR) & ~1, divs=0))
+    def back(uc, a, sz, _):
+        if recs and "y" not in recs[-1] and recs[-1]["lr"] == a:
+            x = recs[-1]
+            x["y"] = np.frombuffer(bytes(uc.mem_read(x["out"], 4 * x["n"])), dtype="<f4").astype(np.float64)
+            x["phase1"], x["delayed1"] = struct.unpack("<ff", uc.mem_read(x["st"] + 4, 8))
+            x["ev1"] = bytes(uc.mem_read(x["evp"], x["n"])) if x["evp"] else None
+    def div(uc, a, sz, _):
+        if recs and "y" not in recs[-1] and is_vdiv(uc, a, sz):
+            recs[-1]["divs"] += 1
+    def odiv(uc, a, sz, _):
+        if is_vdiv(uc, a, sz):
+            key = (last[0], r.idx); recs.osc_divs[key] = recs.osc_divs.get(key, 0) + 1
+    r.u.hook_add(UC_HOOK_CODE, entry, begin=fn, end=fn)
+    for lo, hi in fm_ranges():
+        r.u.hook_add(UC_HOOK_CODE, div, begin=lo, end=hi - 1)
+    lo, hi = sym_range("an_osc")
+    r.u.hook_add(UC_HOOK_CODE, odiv, begin=lo, end=hi - 1)
+    for a in recs.rets:
+        r.u.hook_add(UC_HOOK_CODE, back, begin=a, end=a)
+    for sym, lst in (("an_render", recs.plain), ("an_track", recs.track)):
+        f = DSP[sym] & ~1
+        r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _, lst=lst: lst.append((uc.reg_read(UC_ARM_REG_R0) - S.OSC_KERNEL, r.idx)),
+                     begin=f, end=f)
+    o = DSP["an_osc"] & ~1
+    r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: last.__setitem__(0, uc.reg_read(UC_ARM_REG_R0)), begin=o, end=o)
+    f = dsp_sym("sub_fill")
+    r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: recs.fills.append((last[0], r.idx)), begin=f, end=f)
+    return recs
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class SubFm(unittest.TestCase):
+    """P3 Q5 (plan 4.1, 4.4, 4.5, 4.8, 6.3, 6.4): Sub FM in the voice, on the device's path (stock's root ctor and engine
+    init, 2N = 256 frames, stock's sub rendering after OSC1 / OSC2: SubCopy's harness): every an_render_fm call an_osc makes
+    is replayed through p3_golden (fm_golden: the call's own A, index line, state, role and events) and must match it
+    (fm_check); and the plumbing around it: the index ramp from msub to the amount over the block (FD3's square law), the
+    parts continuing one line, the block after a ramp to 0 back on an_render, E3 (b) (a silent master with Sub FM renders
+    its wraps under FM, an_track without it, a ramp down staying on FM to its end), E3 (c), the mixed voice (OSC2 fills A),
+    the slave's events = its master's bytes, fm= = the renders with FM, Bit Depth after FM, the Square sub's DC-free pitch."""
+    voice, note = SubCopy.voice, SubCopy.note
+
+    def play(self, wave=4, fm=(1000, 1000), shapes=(48, 48), sync=0, types=(1, 1), levels=None, blocks=6, amounts=None,
+             bits=(0, 0), pw=300, note=48, taps=False):
+        """One device-path case: (FmCalls, voice output bytes, SA_FMSTATS words, level taps or None, (r, v, sub)).
+        amounts(b) -> {osc: Sub FM} pushed through stock's root before block b; levels(b) -> (OSC1, OSC2) Level."""
+        r = Rig()
+        root, v, sub, src = self.voice(r, wave, 1000, fm=fm, types=types, glide=0, pw=pw, fine=0, sync=sync)
+        for i in (0, 1):
+            if types[i]:
+                r.root_prop(root, K_SHAPE, shapes[i], i)
+                r.root_prop(root, K_BITS, bits[i], i)
+        calls = fm_capture(r)
+        r.v = v
+        tp = level_taps(r) if taps else None
+        m = r.call(r.r32(r.r32(root) + 0x4C) & ~1, root)[0]
+        acc, ad = r.buf(DEV_N * m, 1024); scr, _ = r.buf(DEV_N * m, 1024); out, od = r.buf(DEV_N, 1024)
+        slot18 = r.r32(r.r32(root) + 0x48)
+        self.note(r, v, sub, note)
+        outs = b""
+        r.first = r.idx
+        for b in range(blocks):
+            for i, x in (amounts(b) if amounts else {}).items():
+                r.root_prop(root, K_SUBFM, x, i)
+            for i, l in enumerate(levels(b) if levels else (1.0, 1.0)):
+                r.level(v, i, l)
+            r.w32(acc + 4, DEV_N * m); r.w32(scr + 4, DEV_N * m); r.u.mem_write(ad, bytes(4096)); r.w32(out + 4, DEV_N)
+            r.call(slot18 & ~1, root, v, 0, scr, sargs=(acc, 0, out))
+            outs += bytes(r.u.mem_read(od, 4 * DEV_N))
+            r.block()
+        self.assertTrue(all("y" in x for x in calls), f"every an_render_fm call returned through an_osc's sites {calls.rets}")
+        stats = struct.unpack("<8I", r.u.mem_read(SA + SA_FMSTATS, 32))
+        return calls, outs, stats, tp, (r, v, sub)
+
+    def replay(self, name, calls):
+        """Every call against p3_golden (fm_check), its VDIVs (by PC, inside an_render_fm and fm_slow) the golden's dividing
+        crossings (6.5); A is buffer A. Returns (worst err / tol, the lowest di)."""
+        worst, dmin = 0.0, 1.0
+        for j, x in enumerate(calls):
+            self.assertEqual(x["A"], SA + SA_FMBUF_A, f"{name}: call {j} reads buffer A")
+            g, di, _ = fm_golden(x["inc"], x["k"], x["a"], x["ia"], x["dia"], x["off"], x["n"], x["phase0"], x["delayed0"],
+                                 x["role"], list(x["ev0"]) if x["role"] == 2 else None, fm_width(x["k"]))
+            worst = max(worst, fm_check(self, f"{name}: call {j} (block {x['block']}, {FM_ROLES[x['role']]}, off {x['off']})",
+                                        g, x["y"], x["phase1"], x["ev1"], x["k"], x["role"]))
+            self.assertEqual(x["divs"], edge_count(g), f"{name}: call {j}: VDIVs inside an_render_fm = the golden's crossings (6.5)")
+            dmin = min(dmin, float(di.min()))
+        return worst, dmin
+
+    def lines(self, name, calls, osc, want, n=DEV_FRAMES):
+        """The index plumbing: osc's calls in each block are parts that tile it in order (off continuing), each with the
+        block's line (ia, dia) = (I(last block's amount), f32(I(amount) - I(last)) / 2N); want: block -> (v0, v1)."""
+        by = {}
+        for x in calls:
+            if x["osc"] == osc:
+                by.setdefault(x["block"], []).append(x)
+        self.assertEqual(sorted(by), sorted(want), f"{name}: the blocks with FM")
+        for blk, (v0, v1) in want.items():
+            xs = by[blk]
+            self.assertEqual([x["off"] for x in xs], [sum(y["n"] for y in xs[:m]) for m in range(len(xs))], f"{name}: parts")
+            self.assertEqual(sum(x["n"] for x in xs), n, f"{name}: block {blk} rendered end to end")
+            i0, i1 = an_index(v0), an_index(v1)
+            dia = 0.0 if i1 == i0 else f32(f32(i1 - i0) / n)
+            self.assertTrue(all((x["ia"], x["dia"]) == (i0, dia) for x in xs),
+                            f"{name}: block {blk}: line {(xs[0]['ia'], xs[0]['dia'])} vs {(i0, dia)}")
+            self.assertLessEqual(abs(i0 + n * dia - i1), 1e-6 * max(1.0, i1), f"{name}: block {blk} ends on I(amount)")
+
+    @staticmethod
+    def renders(calls):
+        return len({(x["osc"], x["block"]) for x in calls})
+
+    def test_both_oscillators_free(self):
+        """Sub FM 100 % on both (index 8, a sine sub: through zero), OSC1 at the saw, OSC2 at the 8 % pulse, and at the
+        triangle / sine, 6 blocks: every call the golden's; one part a block (free, held Shape); the line from 0 in the first
+        block (msub starts at 0: the amount ramps in), then held at I(1000) = 8; fm= = 2 a block; the output not Sub FM 0's,
+        whose stats line stays 0."""
+        for shapes in ((48, 127), (24, 0)):
+            with self.subTest(shapes=shapes):
+                calls, outs, stats, _, (r, v, sub) = self.play(shapes=shapes)
+                w, dmin = self.replay(f"free {shapes}", calls)
+                self.assertLess(dmin, 0.0, "control: through zero")
+                for i in (0, 1):
+                    self.lines("free", calls, r.osc(v, i), {r.first + b: (0 if b == 0 else 1000, 1000) for b in range(6)})
+                self.assertEqual(stats[FM_FM // 4], 12, "fm=: both oscillators, 6 blocks")
+                _, outs0, stats0, _, _ = self.play(shapes=shapes, fm=(0, 0))
+                self.assertNotEqual(outs, outs0, "Sub FM changes the sound")
+                self.assertEqual(stats0, (0,) * 8, "Sub FM 0: nothing counted")
+                print(f"\n  Sub FM free {shapes}: worst {w:.2f} of the tolerance, lowest di {dmin:.4f}", file=sys.stderr)
+
+    def test_every_sub_wave_modulates(self):
+        """6.3's modulators: the sub's Rev Saw, Triangle, Square (PW 30 %, DC-free), Sine and Noise (its stride-stepped
+        table: p3_golden does not model it, so the call's own A is the modulator, as for every wave here), Sub FM 100 % on
+        OSC1 (the saw) and 50 % on OSC2 (Shape 100), 4 blocks: every call the golden's, and each wave's A differs."""
+        seen = set()
+        for wave in SUB_WAVES:
+            with self.subTest(wave=SUB_WAVES[wave]):
+                calls, _, stats, _, _ = self.play(wave=wave, fm=(1000, 500), shapes=(48, 100), blocks=4)
+                self.replay(SUB_WAVES[wave], calls)
+                self.assertEqual(stats[FM_FM // 4], 8)
+                a = np.concatenate([x["a"] for x in calls])
+                self.assertGreater(float(np.max(np.abs(a))), 0.0, "control: A moves")
+                seen.add(a.tobytes())
+        self.assertEqual(len(seen), len(SUB_WAVES), "control: five different modulators")
+
+    def test_the_index_ramps_over_the_block(self):
+        """4.3 / 4.4 / 6.4: OSC1's Sub FM 0, 1000, 1000, 500, 0, 0, 250, 1000 by block (OSC2 none): each block's line runs
+        from I(last block's) to I(this block's) (I(500) = 2: the square law), the parts continue it; the ramp down (block 4:
+        amount 0, msub 500) is still FM; the block after it (5) is an_render's (no FM call: bit for bit the non-FM path).
+        fm= counts the FM renders; msub ends on the last amount; an_osc's own VDIVs are the off count plus one in each FM
+        block (the line's step, 6.5)."""
+        amts = (0, 1000, 1000, 500, 0, 0, 250, 1000)
+        calls, outs, stats, _, (r, v, sub) = self.play(fm=(0, 0), blocks=len(amts), amounts=lambda b: {0: amts[b]})
+        self.replay("ramp", calls)
+        want = {r.first + b: (amts[b - 1] if b else 0, amts[b]) for b in range(len(amts)) if amts[b] or (b and amts[b - 1])}
+        o1 = r.osc(v, 0)
+        self.lines("ramp", calls, o1, want)
+        plain = sorted({blk for o, blk in calls.plain if o == o1})
+        self.assertEqual(plain, [r.first + b for b in range(len(amts)) if r.first + b not in want], "an_render where no FM is due")
+        self.assertEqual(stats[FM_FM // 4], len(want))
+        self.assertEqual(struct.unpack("<H", r.u.mem_read(o1 + S.OSC_KERNEL + MSUB_AT, 2))[0], 1000, "msub: the last amount")
+        # 6.5 "everywhere else": an_osc's own VDIVs (rate_of's two, ...) are the FM-off count, plus the line's one division
+        # in every FM block (M: the compiler computes the step and selects 0 for a held amount: one VDIV, not per sample)
+        dv = {b: calls.osc_divs.get((o1, r.first + b), 0) for b in range(len(amts))}
+        base = dv[0]
+        self.assertGreater(base, 0, "control: an_osc divides (rate_of)")
+        self.assertEqual(dv, {b: base + (r.first + b in want) for b in dv}, "an_osc's VDIVs per block: + 1 with FM")
+
+    def test_sync_master_and_slave(self):
+        """M6, both Analog (OSC2 Sync): OSC1 the MASTER with its own Sub FM, OSC2 the SLAVE with Sub FM (through zero: OSC1's
+        backward wraps reset OSC2, OD5), Shapes (24, 100) and (48, 12): every call the golden's (the master's bytes its
+        golden wraps), and each slave block's bytes are the master's of that block (chunk 0 in WT2's events, chunk 1 in
+        WT1's)."""
+        for shapes in ((24, 100), (48, 12)):
+            with self.subTest(shapes=shapes):
+                calls, _, stats, _, (r, v, sub) = self.play(shapes=shapes, sync=1)
+                self.replay(f"sync {shapes}", calls)
+                o1, o2 = r.osc(v, 0), r.osc(v, 1)
+                for blk in sorted({x["block"] for x in calls}):
+                    m = b"".join(x["ev1"] for x in calls if x["osc"] == o1 and x["block"] == blk)
+                    s = b"".join(x["ev0"] for x in calls if x["osc"] == o2 and x["block"] == blk)
+                    self.assertEqual(len(m), DEV_FRAMES)
+                    self.assertEqual(s, m, f"block {blk}: the slave's events are the master's bytes")
+                    self.assertTrue(all(x["role"] == (1 if x["osc"] == o1 else 2) for x in calls if x["block"] == blk))
+                self.assertGreater(sum(e != 255 for x in calls if x["osc"] == o1 for e in x["ev1"]), 0, "control: wraps")
+                self.assertEqual(stats[FM_FM // 4], 12)
+                for o in (o1, o2):                               # two sync chunks a block: the line and A continue at 128
+                    self.lines(f"sync {shapes}", calls, o, {r.first + b: (0 if b == 0 else 1000, 1000) for b in range(6)})
+                    self.assertEqual({x["off"] for x in calls if x["osc"] == o}, {0, AN_EVENTS_N}, "control: chunked")
+
+    def test_a_silent_master_renders_its_wraps_under_fm(self):
+        """E3 (b): OSC1 at Level 0 is OSC2's master, with Sub FM 700, 700, then 0, 0, 0: while it has Sub FM (and in the block
+        that ramps it to 0: msub) it renders under FM (MASTER, unheard), not an_track, its bytes the golden's and OSC2's
+        events; once the ramp has ended an_track again. OSC2 (no Sub FM) renders plain. P3 Q5 (review): its two chunks a
+        block tile it at off 0 and AN_EVENTS on the block's index line (lines: the second chunk reads A from frame 128 and
+        continues the line, so the master's wraps, OSC2's resets, are those of the block's modulation). Their Shape:
+        test_a_silent_master_heard_again_continues."""
+        amts = (700, 700, 0, 0, 0)
+        calls, _, stats, _, (r, v, sub) = self.play(fm=(700, 0), sync=1, levels=lambda b: (0.0, 1.0), blocks=5,
+                                                    amounts=lambda b: {0: amts[b]})
+        self.replay("silent master", calls)
+        o1, o2 = r.osc(v, 0), r.osc(v, 1)
+        self.assertEqual(sorted({x["block"] - r.first for x in calls if x["osc"] == o1}), [0, 1, 2],
+                         "FM through the ramp down (block 2: amount 0, msub 700)")
+        self.assertTrue(calls and all(x["role"] == 1 and x["osc"] == o1 for x in calls), "only the master, in its role")
+        self.assertEqual(sorted({blk - r.first for o, blk in calls.track if o == o1}), [3, 4], "an_track once the ramp has ended")
+        for blk in range(r.first, r.first + 3):
+            m = b"".join(x["ev1"] for x in calls if x["block"] == blk)
+            self.assertEqual(len(m), DEV_FRAMES)
+        self.assertEqual(stats[FM_FM // 4], 3)
+        self.lines("silent master", calls, o1, {r.first + b: (amts[b - 1] if b else 0, amts[b]) for b in range(3)})
+        self.assertEqual({x["off"] for x in calls}, {0, AN_EVENTS_N}, "control: chunked")
+
+    def test_a_silent_master_heard_again_continues(self):
+        """E3 (b), then heard: OSC1 (OSC2's master, Sub FM 700, Shape 100: k = 0.65, not the saw's 0) silent in blocks 0
+        and 1, heard from block 2: its silent renders and its heard ones are one Shape (E3 (b) renders at the stored Shape,
+        so `delayed` is that Shape's; review: k = 0 there was not seen), the first heard call starts from
+        the last silent call's end state (phase and delayed), and the heard calls are the golden's from there (replay), so the
+        first heard sample continues the unheard wave; every block's line continues (0 -> 700, then held)."""
+        calls, _, stats, _, (r, v, sub) = self.play(fm=(700, 0), sync=1, levels=lambda b: (0.0 if b < 2 else 1.0, 1.0),
+                                                    blocks=4, shapes=(100, 48))
+        self.replay("heard again", calls)
+        o1 = r.osc(v, 0)
+        xs = [x for x in calls if x["osc"] == o1]
+        self.assertEqual(sorted({x["block"] - r.first for x in xs}), [0, 1, 2, 3])
+        self.assertEqual(calls.track, [], "control: E3 (b), not an_track")
+        ks = {x["k"] for x in xs}
+        self.assertEqual(len(ks), 1, f"silent and heard: one Shape, {ks}")
+        self.assertLess(abs(ks.pop() - k_of(100)), 1e-6, "the stored Shape's k")
+        last = max((x for x in xs if x["block"] == r.first + 1), key=lambda x: x["off"])
+        first = min((x for x in xs if x["block"] == r.first + 2), key=lambda x: x["off"])
+        self.assertEqual((first["phase0"], first["delayed0"]), (last["phase1"], last["delayed1"]), "heard: from the unheard state")
+        self.lines("heard again", calls, o1, {r.first + b: (0 if b == 0 else 700, 700) for b in range(4)})
+        self.assertEqual(stats[FM_FM // 4], 4, "fm=: OSC1's renders (OSC2 has none)")
+
+    def test_a_silent_osc1_leaves_the_sub_to_osc2(self):
+        """E3 (c): OSC1 at Level 0, no sync, Sub FM on OSC2 only: OSC1 takes its skip path (no fill, no render), OSC2 fills A
+        itself and renders under FM; and OSC1 with Sub FM too (it still skips: nobody hears it, nothing syncs to it)."""
+        for fm in ((0, 1000), (1000, 1000)):
+            with self.subTest(fm=fm):
+                calls, _, stats, _, (r, v, sub) = self.play(fm=fm, levels=lambda b: (0.0, 1.0), blocks=4)
+                self.replay("E3 (c)", calls)
+                o2 = r.osc(v, 1)
+                self.assertTrue(calls and all(x["osc"] == o2 for x in calls), "only OSC2 renders under FM")
+                self.assertEqual([o for o, _ in calls.fills], [o2] * 4, "OSC2 fills A")
+                self.assertEqual(stats[FM_FM // 4], 4)
+
+    def test_a_mixed_voice(self):
+        """M2 / M6, 4.5: OSC1 Wavetable (stock's, no WAV), OSC2 Analog with Sub FM: free, and synced to the Wavetable OSC1
+        (mixed sync: an_master's events): OSC2 fills A and renders under FM (SLAVE with Sync), every call the golden's."""
+        for sync in (0, 1):
+            with self.subTest(sync=sync):
+                calls, _, stats, _, (r, v, sub) = self.play(fm=(0, 1000), types=(0, 1), sync=sync, shapes=(48, 88))
+                self.replay(f"mixed sync={sync}", calls)
+                o2 = r.osc(v, 1)
+                self.assertTrue(calls and all(x["osc"] == o2 and x["role"] == (2 if sync else 0) for x in calls))
+                self.assertEqual([o for o, _ in calls.fills], [o2] * 6)
+                if sync:
+                    self.assertGreater(sum(e != 255 for x in calls for e in x["ev0"]), 0, "control: the master's wraps")
+                self.assertEqual(stats[FM_FM // 4], 6)
+
+    def test_bit_depth_crushes_the_fm_render(self):
+        """4.7 (OD12 form) after FM: OSC1 Sub FM 100 % at 8 bits on the saw, OSC2 at 4 bits on a pulse (Shape 110: a dc):
+        each block at Level's input is the golden crush, about its parts' dc, of the FM calls' own samples, bit for bit;
+        bits= and fm= both count every render."""
+        calls, _, stats, tp, (r, v, sub) = self.play(shapes=(48, 110), bits=(2, 3), taps=True)
+        self.replay("bits", calls)
+        self.assertEqual(len(tp), 12)
+        for j, (x, i) in enumerate(zip(tp, tp.osc)):
+            parts = [c for c in calls if c["osc"] == r.osc(v, i) and c["block"] == r.first + j // 2]
+            y = np.concatenate([c["y"] for c in parts])
+            want = G.crush_bits(y, G.bits_of((2, 3)[i]), dc=tp.dc[j])
+            self.assertTrue(np.array_equal(x.view(np.uint32), want), f"render {j} (OSC{i + 1}): the crush of the FM samples")
+            self.assertTrue(any(c[3] != 0 for c in tp.calls[j]) == (i == 1), "control: OSC2's pulse has a dc")
+        self.assertEqual(stats[1], len(tp), "bits= every crushed render")
+        self.assertEqual(stats[FM_FM // 4], len(tp), "fm= every one of them")
+
+    def test_the_square_sub_keeps_the_pitch(self):
+        """6.3 / OD10: Sub FM 100 % (index 8) by a Square sub at PW 30 %, 16 blocks of one note: over the window's whole sub
+        cycles the carrier's travel sum(di) is the unmodulated inc x L within one bin of the L-sample window (one cycle),
+        where the raw Square's DC (1 - 2 pw = 0.4) would add I inc_sub 0.4 L."""
+        calls, _, _, _, (r, v, sub) = self.play(wave=3, fm=(1000, 0), blocks=16, pw=300)
+        o1 = r.osc(v, 0)
+        xs = [x for x in calls if x["osc"] == o1 and x["block"] > r.first]  # (block 0 ramps the index in)
+        a = np.concatenate([x["a"] for x in xs]); inc = xs[0]["inc"]
+        di = np.concatenate([fm_golden(x["inc"], x["k"], x["a"], x["ia"], x["dia"], x["off"], x["n"], x["phase0"],
+                                       x["delayed0"], 0)[1] for x in xs])
+        inc_sub = float(np.frombuffer(struct.pack("<I", r.r32(SA + SA_RUN + RUN_INC_SUB)), dtype="<f4")[0])
+        y = a / inc_sub                                              # y - dc: the Square about its own mean
+        starts = [i for i in range(1, len(y)) if y[i] < y[i - 1] - 1.0]   # the wrap's fall from the high
+        self.assertGreater(len(starts), 4, "control: whole sub cycles in the window")
+        t0, t1 = starts[0], starts[-1]
+        L = t1 - t0
+        travel = float(np.sum(di[t0:t1]))
+        raw = 8.0 * inc_sub * 0.4 * L
+        print(f"\n  Square sub PW 30 %, index 8: travel {travel:.4f} vs inc L {inc * L:.4f} over {L} samples "
+              f"({len(starts) - 1} sub cycles); the raw Square would add {raw:.2f} cycles", file=sys.stderr)
+        self.assertLess(abs(travel - inc * L), 1.0, "within one bin")
+        self.assertGreater(raw, 10.0, "control: the raw Square's DC would be seen")
+
+    def test_the_amounts_cases_are_the_expected_change(self):
+        """P3 Q5's expected change (6.7: Q1's test_q1_plays_no_amount, plan 7): its seven cases (free, sync, silent sync
+        master, glide, OSC2 Wavetable, stock's root voice, mixed sync), Rig() and Rig(dev=True), with Sub FM 700 and FM 1>2
+        333 now play Sub FM: every an_render_fm call is the golden's (Rig's own voices have a zero sub, so di = inc there:
+        the FM loop at rest; stock's root has its sub); fm= = the renders with FM. FM 1>2 still plays nothing
+        (test_q1_plays_no_amount, now (0, 0, 333), stays byte for byte BE4.40)."""
+        p3 = (700, 0, 333)
+        me = P3Identity()
+        cases = (("free", lambda r: me.voice_case(r, shape=(48, 88), p3=p3)),
+                 ("sync", lambda r: me.voice_case(r, shape=(70, 100), sync=1, p3=p3)),
+                 ("sync silent master", lambda r: me.voice_case(r, shape=(48, 88), sync=1, level0=0.0, p3=p3)),
+                 ("glide", lambda r: me.voice_case(r, **P3Identity.GLIDE, p3=p3)),
+                 ("osc2 wavetable", lambda r: me.voice_case(r, shape=(64, 48), types=(1, 0), p3=p3)),
+                 ("root voice", lambda r: me.root_case(r, p3=p3)),
+                 ("mixed", lambda r: me.mixed_case(r, 48, p3=p3)))
+        for dev in (False, True):
+            for name, run in cases:
+                with self.subTest(dev=dev, case=name):
+                    r = Rig(dev=dev); calls = fm_capture(r)
+                    run(r)
+                    self.assertTrue(all("y" in x for x in calls))
+                    self.assertGreater(len(calls), 0, f"{name}: Sub FM plays")
+                    self.replay(name, calls)
+                    st = struct.unpack("<8I", r.u.mem_read(SA + SA_FMSTATS, 32))
+                    self.assertEqual(st[FM_FM // 4], self.renders(calls), f"{name}: fm= = the renders with FM")
+
+    def test_cost(self):
+        """5 / 6.5: hooks per voice-block (an_enter + an_osc with their stock helpers: Span; median of 6) on the device's
+        path, note 60, both oscillators at the saw: Sub FM off; Sub FM 100 % on both by a sine sub (the copy and two FM
+        renders); the same synced. Gate (FD6 restated, plan 5): the Sub FM voice at most 1.3 x (the off voice + the
+        specialised delta at 2N), the delta measured on the rc26 prototype (scratch p3/q5/proto_cost.py, M): 2 x 2,600 (one
+        Sub FM saw oscillator through zero, 23.43 against 13.27 instructions a sample) + 4,398 (the sine copy at -O2) +
+        sub_inc's stock part (measured here: sub_fill minus an_sub_copy). The gate is the saw voice's (plan 5); the
+        triangle carrier (Shape 24 on both: LOW's FM loop) is measured and printed against it, not gated (review: plan 9)."""
+        SPEC_OSC, SPEC_COPY = 2600, 4398
+        rows = {}
+        for name, fm, sync, shape in (("off", (0, 0), 0, None), ("sub fm", (1000, 1000), 0, None),
+                                      ("sub fm+sync", (1000, 1000), 1, None), ("sub fm tri", (1000, 1000), 0, 24)):
+            r = Rig()
+            root, v, sub, src = self.voice(r, 4, 1000, fm=fm, glide=0, fine=0, sync=sync)
+            for i in ((0, 1) if shape is not None else ()):
+                r.root_prop(root, K_SHAPE, shape, i)
+            sp = [Span(r, DSP["an_enter"]), Span(r, DSP["an_osc"])]
+            fill, copy = Span(r, dsp_sym("sub_fill")), Span(r, DSP["an_sub_copy"])
+            m = r.call(r.r32(r.r32(root) + 0x4C) & ~1, root)[0]
+            slot18 = r.r32(r.r32(root) + 0x48)
+            self.note(r, v, sub, 60)
+            per = []
+            for b in range(6):
+                acc, ad = r.buf(DEV_N * m, 1024); scr, _ = r.buf(DEV_N * m, 1024); out, od = r.buf(DEV_N, 1024)
+                t0 = sum(s.total for s in sp)
+                r.call(slot18 & ~1, root, v, 0, scr, sargs=(acc, 0, out)); r.block()
+                per.append(sum(s.total for s in sp) - t0)
+            rows[name] = (sorted(per)[3], (fill.total - copy.total) / max(1, fill.calls), fill.total / max(1, fill.calls))
+        stock = rows["sub fm"][1]
+        gate = 1.3 * (rows["off"][0] + 2 * SPEC_OSC + SPEC_COPY + stock)
+        print(f"\n  Sub FM cost (hooks per voice-block, 2N, note 60, saw): off {rows['off'][0]}, Sub FM on both {rows['sub fm'][0]} "
+              f"({rows['sub fm'][0] / rows['off'][0]:.2f} x; sub_fill {rows['sub fm'][2]:.0f}), synced off -, on "
+              f"{rows['sub fm+sync'][0]}; sub_inc's stock part {stock:.0f}; gate 1.3 x ({rows['off'][0]} + "
+              f"{2 * SPEC_OSC + SPEC_COPY + stock:.0f}) = {gate:.0f}; the triangle carrier {rows['sub fm tri'][0]} "
+              f"({rows['sub fm tri'][0] / gate:.3f} of the saw's gate, not gated)", file=sys.stderr)
+        self.assertLessEqual(rows["sub fm"][0], gate, "the cost gate")
 
 
 if __name__ == "__main__":

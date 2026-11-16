@@ -49,8 +49,9 @@ struct AnOsc {
     unsigned short mshape;            /* Shape modulation (J4): the Shape the last block ended on x AN_SHAPE_Q, AN_NO_SHAPE none */
     unsigned msnap;
     /* P3 (docs/plan-p3-fm-bits.md 3.3, 4.4): the FM amounts the last block ended on (0..1000; the FM sprint ramps from them
-     * over the next block): msub the Sub FM, m12 FM 1>2 (OSC2's). 0 after reset / forget and on the silent skip (heard again:
-     * no ramp). P3 Q1: kept 0, nothing renders with FM yet */
+     * over the next block): msub the Sub FM, m12 FM 1>2 (OSC2's). 0 after reset / forget, on the silent skip and after a
+     * block with no FM: 0 is a real amount, so the first block heard after that ramps the index in from 0 (2.7 ms at 2N;
+     * Q5: plan 4.4's "no ramp" was not what 0 does; OD16). P3 Q5: msub ramps Sub FM (an_osc); m12 is kept 0 until Q6 */
     unsigned short msub, m12;
 };
 static_assert(sizeof(AnOsc) == 176, "Analog state: 176 bytes at oscillator +0x10C (4 left below AnProps)");
@@ -58,7 +59,7 @@ static_assert(sizeof(AnOsc) <= AN_PROPS_OFF, "Analog state must stay below the o
 
 /* An oscillator's settings, as stock's set_property delivered them (N3: dsp/analog.cpp an_prop), each clamped when stored.
  * P3 Q1: bits, subfm and fm12 are stored (and so reach the M7 with every push, edit and resend). P3 Q2: bits plays (an_crush);
- * subfm and fm12 play nothing yet. */
+ * P3 Q5: subfm plays (Sub FM, an_render_fm); fm12 plays nothing yet (Q6). */
 struct AnProps {
     unsigned char type;               /* 1 = Analog (a value of exactly 1; anything else is Wavetable) */
     unsigned char shape;              /* 0..AN_SHAPE_MAX */
@@ -84,7 +85,17 @@ static inline unsigned long long an_inc64(float x) {
     return s >= 0 ? m << s : s > -24 ? m >> -s : 0;
 }
 
+/* P3 Q5 (docs/plan-p3-fm-bits.md 4.3): an_render_fm's modulation, the sample i of the call being the block's frame off + i:
+ * di = inc + I a[off + i], I = ia + dia (off + i) (the block's index ramp, the same line across its parts). */
+struct FmIn {
+    const float *a;                   /* buffer A (the sub's copy, increment units: Q4), from the block's frame 0 */
+    float ia, dia;                    /* the index at frame 0 and its step per frame */
+    unsigned off;                     /* the call's first frame in the block */
+};
+
 extern "C" void an_render(AnOsc *o, float inc, float shape, float *out, unsigned n, unsigned char *events, int role);
+extern "C" void an_render_fm(AnOsc *o, float inc, float shape, float *out, unsigned n, unsigned char *events, int role,
+                             const FmIn *f);
 extern "C" void an_track(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_master(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_reshape(AnOsc *o, float from, float to);

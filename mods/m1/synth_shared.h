@@ -79,7 +79,7 @@ typedef struct {
 /* +0x0100 M7 FM stats, one line (P3, docs/plan-p3-fm-bits.md 3.3: SaStats has no free word; M7 writes and cleans after each
  * block, as SA_STATS, M4 reads: an_print's fm= / bits= / fmx=). +0x0100..+0x0200 was undefined; the M7 zeroes +0x40..+0x200
  * when it takes the area (m7_polyat.c synth_take), so a build whose DSP does not count yet reads 0 (P3 Q2: bits counts; Q4:
- * fm_skipped for Sub FM's buffer A; fm and fm_missed come with Q5 / Q6) */
+ * fm_skipped for Sub FM's buffer A; Q5: fm, the renders with Sub FM; fm_missed comes with Q6) */
 #define SA_FMSTATS 0x0100u
 typedef struct {
     unsigned fm;              /* Analog renders with FM (Sub FM or FM 1>2) */

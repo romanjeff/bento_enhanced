@@ -277,6 +277,153 @@ template <int ROLE> void by_regime(AnOsc &o, const Shape &k, float *out, unsigne
         run<MIXED, ROLE>(o, k, out, n, events);
 }
 
+/* ---- P3 Q5: through-zero FM (docs/plan-p3-fm-bits.md 4.3, OD5), one generic loop per role -------------------------------
+ * The increment moves every sample (di = inc + I a[i], clamped to |di| <= 0.45: at most one wrap a sample, as the 2-point
+ * corrections need) and may be negative: the phase then runs backward, and a crossing of an edge downward is the mirror of
+ * the upward one (the value jump negated, the slope change as forward: the time slope's change is |di| dS either way). The
+ * fraction is (edge - p) / di, one VDIV per crossing (E2's per-block rinc is invalid here): every wrap (the master needs
+ * its time even where nothing jumps), the pulse edge where the blend is above 0, the triangle's top where its weight is.
+ * The phase stays in [0, 1], 1.0 the left limit of the wrap (a backward wrap that rounds up to 1, a backward slave's reset),
+ * where every wave reads its left-limit value (2p - 1 = 1, p < width false, tri = -1). Any Shape: the LOW form below 0, the
+ * MIXED one at and above (the saw and the pulse are MIXED at blend 0 / 1, bit for bit), chosen per call, not per sample. */
+struct Fx {                           /* the carrier, as p3_golden's FmWave, its terms gathered once a call: */
+    float A, B, C, w;                 /* k >= 0: the wave A p + B + (p < w ? C : -C) (BE4.40's MIXED: A 2 (1 - blend), B */
+                                      /* blend - 1 - dc blend, C blend; the saw 2p - 1, the pulse +-1 - dc, each one rounding) */
+    float tw, ws, wsaw;               /* k < 0: LOW's weights (wave<LOW>) */
+    float m, jm, km;                  /* the edge inside the cycle: the pulse's width (blend > 0) or the triangle's top 1/2
+                                       * (tw > 0), 2 for none (never crossed: no division); its forward value jump (-2 blend)
+                                       * and slope change a unit of phase (-8 tw) */
+    float jwrap, kwrap;               /* the wrap's forward value jump and slope change (8 tw) */
+    int low;                          /* k < 0 */
+};
+const float FM_INC_MAX = .45f;
+/* c + a b rounded once (VFMA.F32). __builtin_fmaf is a call to compiler_rt's fmaf under these flags (-fno-builtin: it links
+ * double helpers, refused by build.py), so the instruction by name; the FM phase law and di are stated with it (p3_golden
+ * fma = True). (Q5 review, M: di written plainly, inc + (ia + dia j) a, compiles to the same two VFMAs through clang's
+ * contraction, an equivalent mutant; the name keeps the stated law from depending on -ffp-contract.) */
+__attribute__((always_inline)) inline float fma32(float a, float b, float c) {
+    __asm("vfma.f32 %0, %1, %2" : "+t"(c) : "t"(a), "t"(b));
+    return c;
+}
+__attribute__((always_inline)) inline float fm_low(float p, float tw, float ws, float wsaw) {
+    float t = tri(p);
+    return tw * t + ws * sinq(t) + wsaw * (2.f * p - 1.f);
+}
+__attribute__((always_inline)) inline float fm_wave(float p, const Fx &x) {
+    return x.low ? fm_low(p, x.tw, x.ws, x.wsaw) : fma32(x.A, p, x.B) + (p < x.w ? x.C : -x.C);
+}
+/* A crossing at fraction fr: a step J (edge()) and a slope change K (corner()) in one, J / 2 (1 - fr)^2 + K / 6 (1 - fr)^3
+ * now and -J / 2 fr^2 + K / 6 fr^3 next. */
+__attribute__((always_inline)) inline void cross(float fr, float J, float K, float &now, float &next) {
+    float t = 1.f - fr;
+    now += t * t * (J * .5f + K * (1.f / 6.f) * t);
+    next += fr * fr * (K * (1.f / 6.f) * fr - J * .5f);
+}
+/* The phase over [t0, t0 + len) of one sample at increment d, corrections into now / next; the wrap's fraction (either
+ * direction), or -1. Forward an edge is crossed for p < edge <= end, backward for end < edge <= p (p = 0 reads 0+, so
+ * leaving it backward crosses at t0; p = 1.0, the left limit, is not crossed going down). With |d| <= 0.45: forward the
+ * inner edge, or the wrap then the width + 1 (the top + 1 is out of reach); backward the inner edge, then maybe the wrap
+ * (never the other way round). */
+__attribute__((always_inline)) inline
+float fm_part(float &p, float d, float t0, float len, const Fx &x, float &now, float &next) {
+    float wrap = -1.f;
+    float end = len == 1.f ? p + d : fma32(d, len, p);
+    if (d > 0.f) {
+        if (end >= x.m && p < x.m) cross(t0 + (x.m - p) / d, x.jm, x.km * d, now, next);
+        if (end >= 1.f) {
+            wrap = t0 + (1.f - p) / d;
+            cross(wrap, x.jwrap, x.kwrap * d, now, next);
+            end -= 1.f;
+            if (end >= x.m) cross(wrap + x.m / d, x.jm, x.km * d, now, next);
+        }
+    } else if (d < 0.f) {
+        if (p >= x.m && end < x.m) cross(t0 + (x.m - p) / d, -x.jm, -x.km * d, now, next);
+        if (end < 0.f) {
+            wrap = t0 - p / d;
+            cross(wrap, -x.jwrap, -x.kwrap * d, now, next);
+            end += 1.f;
+        }
+    }
+    p = end;
+    return wrap;
+}
+/* A sample that crosses an edge, or a slave's event: out of line and shared by the three roles (role a run-time argument;
+ * the state by copies: see run_fm). This sample's corrections go straight into `delayed` (it is output now) and into next.
+ * SLAVE (OD5): an event byte resets the phase at at = e / 254 to the cycle boundary in the direction of travel, 0 moving
+ * forward, 1.0 (the left limit) moving backward: one edge, never a reset to 0 that wraps back at once; d == 0 no reset (the
+ * phase is not moving). The reset's value BLEP, and in LOW its slope BLAMP (Q3, OD14: the triangle's slope to +4 forward /
+ * -4 backward, the sine's 2 pi sin 2 pi p to 0). MASTER: the byte of a wrap either way (OD5: any master wrap resets the
+ * slave), as f32(fr 254 + 0.5) truncated, 0..254. */
+__attribute__((noinline)) unsigned char fm_slow(float *pp, float *pd, const Fx *xp, float d, float *out_i, unsigned e,
+                                                int role) {
+    const Fx &x = *xp;
+    float p = *pp, delayed = *pd, next = 0.f;
+    unsigned char m = AN_NO_EVENT;
+    if (role == SLAVE && e != AN_NO_EVENT && d != 0.f) {
+        float at = (float)e * (1.f / 254.f);
+        if (at > 0.f) fm_part(p, d, 0.f, at, x, delayed, next);
+        int fwd = d > 0.f;
+        float tgt = fwd ? 0.f : 1.f, K = 0.f;
+        if (x.low) {
+            float q = p + .25f;
+            K = d * (x.tw * ((fwd ? 4.f : -4.f) - (p < .5f ? 4.f : -4.f)) - 6.2831853f * x.ws * sinq(tri(q < 1.f ? q : q - 1.f)));
+        }
+        cross(at, fm_wave(tgt, x) - fm_wave(p, x), K, delayed, next);
+        p = tgt;
+        fm_part(p, d, at, 1.f - at, x, delayed, next);
+    } else {
+        float wrap = fm_part(p, d, 0.f, 1.f, x, delayed, next);
+        if (role == MASTER && wrap >= 0.f) {
+            int f = (int)fma32(wrap, 254.f, .5f);
+            m = (unsigned char)(f < 0 ? 0 : f > 254 ? 254 : f);
+        }
+    }
+    *out_i = delayed;
+    *pd = fm_wave(p, x) + next;
+    *pp = p;
+    return m;
+}
+/* The block's sample off + i: di = fma(I, a, inc), I = fma(dia, off + i, ia) (float32, each rounded once), then the clamp
+ * (VMAXNM / VMINNM: a and the index are finite, so no NaN reaches it), then p + di. Most samples cross nothing: they stay
+ * in [lo, hi), the edges either side of p (hi the next edge above, lo the one at or below: the inner edge mm, or the wrap at
+ * 1 / 0; with no inner edge mm is 1, so p = 1.0, the left limit, takes the long way), and play out = delayed, delayed =
+ * the wave at the new phase, with no correction; the others go the long way (fm_slow, which divides), after which lo and
+ * hi are taken again. The carrier's terms are locals (in registers: out[] would alias the struct), and the loop is
+ * versioned on the wave's form (LW: LOW's, else MIXED's), not per sample. */
+template <int ROLE, int LW> __attribute__((always_inline)) inline
+void fm_loop(AnOsc &o, const Fx &x, float inc, float *out, unsigned n, unsigned char *events, const FmIn &f) {
+    float p = o.phase, delayed = o.delayed, ia = f.ia, dia = f.dia;
+    const float A = x.A, B = x.B, C = x.C, w = x.w, tw = x.tw, ws = x.ws, wsaw = x.wsaw, mm = x.m < 1.f ? x.m : 1.f;
+    const float *a = f.a + f.off;
+    float j = (float)f.off;
+    float hi = p < mm ? mm : 1.f, lo = p >= mm ? mm : 0.f;
+    for (unsigned i = 0; i < n; i++, j += 1.f) {
+        float d = fma32(fma32(dia, j, ia), a[i], inc);
+        d = __builtin_fminf(__builtin_fmaxf(d, -FM_INC_MAX), FM_INC_MAX);
+        float end = p + d;
+        unsigned e = ROLE == SLAVE ? events[i] : AN_NO_EVENT;
+        if ((ROLE != SLAVE || e == AN_NO_EVENT) && end < hi && end >= lo) {
+            p = end;
+            out[i] = delayed;
+            delayed = LW ? fm_low(p, tw, ws, wsaw) : fma32(A, p, B) + (p < w ? C : -C);
+            if (ROLE == MASTER) events[i] = AN_NO_EVENT;
+        } else {
+            float lp = p, ld = delayed;      /* (copies: p, delayed with their address taken would live on the stack) */
+            unsigned char m = fm_slow(&lp, &ld, &x, d, out + i, e, ROLE);
+            p = lp; delayed = ld;
+            if (ROLE == MASTER) events[i] = m;
+            hi = p < mm ? mm : 1.f; lo = p >= mm ? mm : 0.f;
+        }
+    }
+    o.phase = p;
+    o.delayed = delayed;
+}
+template <int ROLE> void run_fm(AnOsc &o, const Fx &x, float inc, float *out, unsigned n, unsigned char *events,
+                                const FmIn &f) {
+    if (x.low) fm_loop<ROLE, 1>(o, x, inc, out, n, events, f);
+    else fm_loop<ROLE, 0>(o, x, inc, out, n, events, f);
+}
+
 }  // namespace
 
 /* Phase and sync events only (WT1 silent but the sync master: plan E3). The phase moves exactly as in
@@ -369,6 +516,30 @@ extern "C" void an_render(AnOsc *o, float inc, float shape, float *out, unsigned
     if (role == AN_MASTER && events) by_regime<MASTER>(*o, k, out, n, events);
     else if (role == AN_SLAVE && events) by_regime<SLAVE>(*o, k, out, n, events);
     else by_regime<FREE>(*o, k, out, n, events);
+}
+
+/* P3 Q5 (plan 4.3): an_render under FM, the same arguments and roles plus the modulation f (analog.h FmIn); inc the base
+ * increment (clamped as an_render's), the Shape held for the call (a part). No rinc: no division but at the edges. */
+extern "C" void an_render_fm(AnOsc *o, float inc, float shape, float *out, unsigned n, unsigned char *events, int role,
+                             const FmIn *f) {
+    Shape k;
+    if (!(inc > 0.f)) inc = 0.f;
+    if (inc > .45f) inc = .45f;
+    k.inc = inc;
+    set_shape(k, shape);
+    Fx x;
+    x.low = k.low;
+    if (k.low) {
+        x.A = x.B = x.C = x.w = 0.f; x.tw = k.tw; x.ws = k.ws; x.wsaw = k.wsaw;
+        x.m = k.tw > 0.f ? .5f : 2.f; x.jm = 0.f; x.km = -8.f * k.tw; x.jwrap = -2.f * k.wsaw; x.kwrap = 8.f * k.tw;
+    } else {
+        float b = k.blend;
+        x.A = 2.f - 2.f * b; x.B = (b - 1.f) - k.dc * b; x.C = b; x.w = k.width; x.tw = x.ws = x.wsaw = 0.f;
+        x.m = b > 0.f ? k.width : 2.f; x.jm = -2.f * b; x.km = 0.f; x.jwrap = -2.f + 4.f * b; x.kwrap = 0.f;
+    }
+    if (role == AN_MASTER && events) run_fm<MASTER>(*o, x, inc, out, n, events, *f);
+    else if (role == AN_SLAVE && events) run_fm<SLAVE>(*o, x, inc, out, n, events, *f);
+    else run_fm<FREE>(*o, x, inc, out, n, events, *f);
 }
 
 /* P3 Q2 Bit Depth (docs/plan-p3-fm-bits.md 4.7, OD11 = (b)): a true b-bit two's-complement grid on the block, in place,

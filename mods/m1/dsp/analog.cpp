@@ -27,7 +27,9 @@
  *     SA_FMSTATS (bits=);
  *   - P3 Q4 Sub FM's modulator (plan 4.2, OD10): the sub oscillator's block, copied once per voice-block into buffer A
  *     (SA_FMBUF_A) by the first Analog oscillator with Sub FM, from the sub's state before its own render (stock's formulas,
- *     its cache words put back: sub_fill). Q4: nothing plays it yet.
+ *     its cache words put back: sub_fill). P3 Q5: Sub FM plays it, through-zero linear FM of the oscillator's
+ *     increment (an_render_fm, the index ramped over the block from msub), also for a silent sync master (E3 (b)),
+ *     counted in SA_FMSTATS (fm=).
  * Four vtable words point at build.py's trampolines (in this window, before this ELF):
  *   A1  Wavetable root slot 18 (voice render): an_enter(root, voice), then stock's render
  *   A2  Wavetable oscillator slot 0 (render): an_osc(osc, scratch, out) != 0 means handled, else stock
@@ -205,6 +207,8 @@ static int ours(u32 key) {
            key == S_KEY_OSC_SUBFM || key == S_KEY_OSC_BITS || key == S_KEY_OSC_FM12;
 }
 static u16 amount(int v) { return (u16)(v < 0 ? 0 : v > (int)AN_FM_MAX ? AN_FM_MAX : (u32)v); }
+/* P3 Q5 (FD3): an FM amount 0..1000 (the knob's travel) to its index, I = 8 (v / 1000)^2: f32(v^2) exact, one rounding */
+static inline float an_index(u32 v) { return (float)(v * v) * (8.f / 1000000.f); }
 extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
     u32 key = *(volatile u16 *)((u8 *)msg + MSG_KEY);
     int v = (int)W(msg, MSG_VALUE);
@@ -287,7 +291,7 @@ static void finish(Run *r) {
         s->hist[pm < 50u ? 0 : pm < 150u ? 1 : pm < 300u ? 2 : 3]++;
         s->renders += r->oscs;
         clean(SA(SA_STATS), sizeof(SaStats));
-        clean(SA(SA_FMSTATS), sizeof(SaFmStats));             /* P3: bits= (Q2), fm= / fmx= (Q5, Q6) */
+        clean(SA(SA_FMSTATS), sizeof(SaFmStats));             /* P3: bits= (Q2), fm= (Q5), fmx= (Q4, Q6) */
     }
     r->cyc = r->oscs = r->voices = 0;
 }
@@ -516,7 +520,7 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     if ((silent && !master) || n > 1024u || n > W(scratch, S_BUF_CAPACITY)) {
         if (msync) an_master(self, minc, 0, n);               /* the master's phase moves on */
         self->mshape = (u16)AN_NO_SHAPE;                      /* heard again: from its Shape then, no ramp */
-        self->msub = self->m12 = 0;                           /* (P3: and from its FM amounts) */
+        self->msub = self->m12 = 0;                           /* (P3: its FM amounts ramp in from 0: OD16) */
         r->cyc += CYCCNT - c0;
         return 1;
     }
@@ -525,8 +529,9 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     /* P3 Q4 (plan 4.1, 4.2): Sub FM's modulator in buffer A, once per voice-block: the first oscillator that wants it fills it
      * (OSC1; OSC2 when OSC1 did not: Wavetable, skipped, or no Sub FM) and tags it; valid for the whole voice-block, since
      * nothing writes the sub before it renders. Only for the voice an_enter named (the tag is that voice's). Longer blocks
-     * than the buffer: no FM, counted (fmx=). Q4: nothing plays A yet (Q5). */
-    if (props(osc)->subfm || self->msub) {
+     * than the buffer: no FM, counted (fmx=). */
+    u32 v1 = props(osc)->subfm, v0 = self->msub;
+    if (v1 || v0) {
         if (n > AN_FM_FRAMES) FMSTATS->fm_skipped++;
         else if (r->voice == (u32)v && !(r->fmtag & AN_FMTAG_A)) {
             float f = sub_fill(v + S_VOICE_SUB, (float *)SA(SA_FMBUF_A), n);
@@ -534,12 +539,39 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
             r->fmtag |= AN_FMTAG_A;
         }
     }
+    /* P3 Q5 (plan 4.1, 4.3, 4.4, 4.8): Sub FM plays where this oscillator has it, or a ramp down still to run (msub), and A
+     * holds this voice-block's sub (longer blocks, or a render with no an_enter of its voice: plain, no FM). The index
+     * ramps linearly over the block from last block's amount to this one's (FD3: I = 8 (v / 1000)^2), the parts continuing
+     * one line; msub keeps the amount the block ended on (0 when it played no FM: heard again, it ramps in from 0). Off
+     * (both 0): today's path, nothing else computed. */
+    int fm = (v1 || v0) && r->voice == (u32)v && (r->fmtag & AN_FMTAG_A);
+    FmIn fi;
+    if (fm) {
+        float i0 = an_index(v0), i1 = an_index(v1);
+        fi.a = (const float *)SA(SA_FMBUF_A); fi.ia = i0; fi.dia = i1 != i0 ? (i1 - i0) / (float)n : 0.f; fi.off = 0;
+        FMSTATS->fm++;                                        /* the black box's fm= (renders with FM) */
+    }
+    self->msub = fm ? (u16)v1 : 0;
 #if AN_E3
     if (silent) {                                             /* a silent master: only the wraps for WT2 */
         self->mshape = (u16)AN_NO_SHAPE;
-        self->msub = self->m12 = 0;
-        for (u32 off = 0; off < n; off += AN_EVENTS)
-            an_track(self, inc, off ? g->events : slave->events, n - off < AN_EVENTS ? n - off : AN_EVENTS);
+        self->m12 = 0;
+        if (fm) {
+            /* E3 (b) (plan 4.4): an_track knows no FM, so a silent master with Sub FM (or its ramp down) renders, unheard,
+             * into the scratch block for its wraps, at its stored Shape (the wraps do not depend on it; delayed stays
+             * consistent for when it is heard again) */
+            float *s = FN(S_SCRATCH_PTR, float *(*)(void *))(scratch);
+            FN(S_SCRATCH_SIZE, void (*)(void *, u32))(scratch, n);
+            float k = an_shape((float)props(osc)->shape);
+            for (u32 off = 0; off < n; off += AN_EVENTS) {
+                fi.off = off;
+                an_render_fm(self, inc, k, s + off, n - off < AN_EVENTS ? n - off : AN_EVENTS, off ? g->events : slave->events,
+                             AN_MASTER, &fi);
+            }
+        } else {
+            for (u32 off = 0; off < n; off += AN_EVENTS)
+                an_track(self, inc, off ? g->events : slave->events, n - off < AN_EVENTS ? n - off : AN_EVENTS);
+        }
         r->cyc += CYCCNT - c0;
         return 1;
     }
@@ -585,8 +617,9 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
         float k = !ramp || j + 1u == parts ? k1 : k0 + (k1 - k0) * ((float)(j + 1u) / (float)parts);
         if (k != kp) an_reshape(self, kp, k);
         kp = k;
-        an_render(self, inc, k, s + off, m, ev, role);
-        if (bits) an_crush(s + off, m, bits, an_dc(k));
+        if (fm) { fi.off = off; an_render_fm(self, inc, k, s + off, m, ev, role, &fi); }   /* (P3 Q5: the same parts) */
+        else an_render(self, inc, k, s + off, m, ev, role);
+        if (bits) an_crush(s + off, m, bits, an_dc(k));          /* (after FM too: Bit Depth is the render's last step) */
     }
     if (bits) FMSTATS->bits++;                                /* (one per crushed render, as Q2's post-pass counted) */
     if (!silent) {
