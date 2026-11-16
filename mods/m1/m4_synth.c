@@ -8,13 +8,13 @@
  * registry build (N2). Stock then creates, stores, saves (bento_osc_type, bento_shape, bento_sync, bento_glide on each
  * oscillator's <cell> params), loads, clones, copies, reads (CONTEXT_GET), edits (0xCF -> 0xD0) and forwards them to the
  * M7 with the oscillator's index (set_property), where dsp/analog.cpp stores them per oscillator (N3). P3 Q1
- * (docs/plan-p3-fm-bits.md 2, 3): three more the same way, Sub FM, Bit Depth and FM 1>2 (bento_subfm, bento_bits,
- * bento_fm12), in the Analog rows' slots 5..7; the M7 stores them and nothing plays them yet. Nothing here holds
+ * (docs/plan-p3-fm-bits.md 2, 3): more the same way, Sub FM and FM 1>2 (bento_subfm, bento_fm12), in the Analog rows'
+ * slots 5 and 7 (BE4.42: Bit Depth, 0x1A4 / bento_bits in slot 6, is gone; slot 6 stays empty). Nothing here holds
  * Analog state: the BE4.22..BE4.31 table (AN4), its handle hooks (H1-H3), the XML hooks (X1, X2), the value hook (X3), the
  * menu entry (A3-A5) and the edit hook (A9) are gone for Analog. Stock never range-checks a value (a file is read raw), so
  * every reader here clamps, and Type is Analog only when it is exactly 1.
  * Sites (1.6.8; build.py writes them):
- *   N2     model init's bl REG_BUILD -> a wrapper: stock's builder, then np_keys (all seven descriptors, or none)
+ *   N2     model init's bl REG_BUILD -> a wrapper: stock's builder, then np_keys (all six descriptors, or none)
  *   A6     the Wavetable page's key copy (bl memcpy) -> an_page_keys: Type in each oscillator row's free 4th slot, and the
  *          Analog layout (Shape instead of Position, Glide / Sync) for an oscillator that is Analog
  *   A7     the four pane hint texts (bl SLOT_TITLE, PANE_TEXT_1/3/5/6) -> an_pane_text: an Analog pane's hint is empty (the
@@ -378,27 +378,26 @@ static void publish(volatile An4 *a) {
  * so they have their XML tokens before any project or preset is read. All must be empty after stock's builder (the
  * reviewed allow-list: test_keys runs stock's builder, decodes stock's key-range tests and scans both cores for
  * immediates); if any is taken, none is written, the keys stay stock's and the black box says which (keys= TAKEN:bits, bit i
- * = NP_KEYS[i]). P3 OD2: the FM keys join the one group (seven, all or none): a clash cannot happen on 1.6.8 (the registry
- * is deterministic and test_keys measures all seven empty, M), and a second group would only hide the page.
+ * = NP_KEYS[i]). P3 OD2: the FM keys join the one group (all or none; six since BE4.42 removed Bit Depth 0x1A4, which is
+ * left empty): a clash cannot happen on 1.6.8 (the registry is deterministic and test_keys measures them empty, M), and a
+ * second group would only hide the page.
  * A descriptor (32 B): +0 key, +2 type, +4 title, +8 labels and +0xC their count (a list, type 7), +0x10 / +0x14 the range,
- * +0x18 the XML token. Type, Sync and Bit Depth are lists as stock's Poly Mode (0x2E); Shape an integer in [0, 127] as
+ * +0x18 the XML token. Type and Sync are lists as stock's Poly Mode (0x2E); Shape an integer in [0, 127] as
  * stock's Shift (0x1AD, type 2); Glide, Sub FM and FM 1>2 0..1000 shown as a percentage as stock's Pulse Width (0xC5, type
  * 10: "0.0%".."100.0%"; P3 OD4: a file value past 1000 shows as it is while the M7 clamps, as Glide). */
 static const char T_TYPE[] = "Type", T_SHAPE[] = "Shape", T_SYNC[] = "Sync 1>2", T_GLIDE[] = "Glide";   /* J5: Sync 1>2 */
-static const char T_SUBFM[] = "Sub FM", T_BITS[] = "Bit Depth", T_FM12[] = "FM 1>2";                   /* P3 2.1 */
+static const char T_SUBFM[] = "Sub FM", T_FM12[] = "FM 1>2";                                         /* P3 2.1 */
 static const char K_TYPE[] = "bento_osc_type", K_SHAPE[] = "bento_shape", K_SYNC[] = "bento_sync", K_GLIDE[] = "bento_glide";
-static const char K_SUBFM[] = "bento_subfm", K_BITS[] = "bento_bits", K_FM12[] = "bento_fm12";
+static const char K_SUBFM[] = "bento_subfm", K_FM12[] = "bento_fm12";
 static const char *const TYPE_LABELS[2] = {"Wavetable", "Analog"};
 static const char *const SYNC_LABELS[2] = {"Off", "On"};
-static const char *const BITS_LABELS[AN_BITS_MAX + 1u] = {"Full", "12", "8", "4"};
 typedef struct { u16 key; u8 type; const char *title; const char *const *labels; u32 n; u32 lo, hi; const char *token; } Desc;
-static const Desc NP_KEYS[7] = {
+static const Desc NP_KEYS[6] = {
     {S_KEY_OSC_TYPE, 7, T_TYPE, TYPE_LABELS, 2, 0, 0, K_TYPE},
     {S_KEY_OSC_SHAPE, 2, T_SHAPE, 0, 0, 0, AN_SHAPE_MAX, K_SHAPE},
     {S_KEY_OSC_SYNC, 7, T_SYNC, SYNC_LABELS, 2, 0, 0, K_SYNC},
     {S_KEY_OSC_GLIDE, 10, T_GLIDE, 0, 0, 0, AN_GLIDE_MAX, K_GLIDE},
     {S_KEY_OSC_SUBFM, 10, T_SUBFM, 0, 0, 0, AN_FM_MAX, K_SUBFM},
-    {S_KEY_OSC_BITS, 7, T_BITS, BITS_LABELS, AN_BITS_MAX + 1u, 0, 0, K_BITS},
     {S_KEY_OSC_FM12, 10, T_FM12, 0, 0, 0, AN_FM_MAX, K_FM12},
 };
 #define NP_N (sizeof(NP_KEYS) / sizeof(NP_KEYS[0]))
@@ -502,9 +501,10 @@ static void dec(Out *o, u32 v) {
  * 0, 0, 0, 0, 0} (the flash table A6 copies). Ours, per Type:
  *   Wavetable: Level, Pitch, Position, Type
  *   Analog:    Level, Pitch, Shape, Type, then Glide (OSC1) / Sync 1>2 (OSC2, whatever OSC1's Type: BE4.40 J1, OSC1 is the
- *              master as Analog or as Wavetable, docs/plan-be440-sync-identity.md Track S), then (P3 2.2) Sub FM, Bit Depth
- *              and, on OSC2 while OSC1 is Analog, FM 1>2 (OD3: hidden while OSC1 is Wavetable, whose signal the M7 cannot
- *              read; the tick heals the rows, so a Type flip of OSC1 shows or hides it within a tick)
+ *              master as Analog or as Wavetable, docs/plan-be440-sync-identity.md Track S), then (P3 2.2) Sub FM in slot 5
+ *              and, on OSC2 while OSC1 is Analog, FM 1>2 in slot 7 (OD3: hidden while OSC1 is Wavetable, whose signal the M7
+ *              cannot read; the tick heals the rows, so a Type flip of OSC1 shows or hides it within a tick). BE4.42: slot
+ *              6 (Bit Depth's until BE4.41) stays empty, so FM 1>2 keeps its encoder
  * Only slots stock leaves empty get our keys, and slot 2 only while it is stock's key there. */
 #define ROW_BYTES 16u
 static volatile u16 *osc_row_keys(void *view, u32 row) { return (volatile u16 *)((u8 *)view + S_SYNTH_VIEW_KEYS + row * ROW_BYTES); }
@@ -516,7 +516,6 @@ static void want_row(const u16 *stock, u32 row, int me, int osc1, u16 *k) {
     if (k[2]) k[2] = (u16)S_KEY_OSC_SHAPE;
     if (!k[4]) k[4] = row == 0u ? (u16)S_KEY_OSC_GLIDE : (u16)S_KEY_OSC_SYNC;   /* BE4.40 J1: OSC2's Sync whatever OSC1's Type */
     if (!k[5]) k[5] = (u16)S_KEY_OSC_SUBFM;
-    if (!k[6]) k[6] = (u16)S_KEY_OSC_BITS;
     if (!k[7] && row == 1u && osc1) k[7] = (u16)S_KEY_OSC_FM12;                 /* P3 OD3: only while OSC1 is Analog */
 }
 /* H1 (BE4.40 identity): row 2 ("Osc + Config") is stock's, without WTOscReset while both oscillators are Analog (it acts
@@ -914,7 +913,7 @@ __attribute__((used, retain)) void an_value_text(void *label, const char *text) 
 }
 
 /* ---- an oscillator that just became Analog gets its other settings again ------------------------------------------------
- * The M7 keeps an oscillator's Shape / Sync / Glide (P3: and Sub FM, Bit Depth, FM 1>2) only while it is Analog (in the
+ * The M7 keeps an oscillator's Shape / Sync / Glide (P3: and Sub FM, FM 1>2) only while it is Analog (in the
  * oscillator's kernel area, which stock's wavetable render owns otherwise: docs/plan-native-props.md 3.3 rule 1, P0). A stock
  * push (project load, preset, menu create, paste) sends Type first and then the rest (the template's order); an edit of Type
  * alone does not, so the tick sends them: SET_PROPERTY(engine, track, key, value, index) as stock's own edit does
@@ -934,8 +933,8 @@ static void resend(u32 h) {
     u32 th = track_handle(sel_track()), index = 0;
     void *t = resolve(th);
     if (!t || !child_index(t, h, &index) || index > 1u) return;
-    static const u16 KEYS[6] = {S_KEY_OSC_SHAPE, S_KEY_OSC_SYNC, S_KEY_OSC_GLIDE, S_KEY_OSC_SUBFM, S_KEY_OSC_BITS, S_KEY_OSC_FM12};
-    for (u32 i = 0; i < 6u; i++) {
+    static const u16 KEYS[5] = {S_KEY_OSC_SHAPE, S_KEY_OSC_SYNC, S_KEY_OSC_GLIDE, S_KEY_OSC_SUBFM, S_KEY_OSC_FM12};
+    for (u32 i = 0; i < 5u; i++) {
         u32 v = 0;
         if (!prop(h, KEYS[i], &v)) continue;
         FN(S_SET_PROPERTY, void (*)(u32, u32, u32, u32, u32, u32, u32))(*(volatile u32 *)S_ENGINE_PTR, th, KEYS[i], v, index, 0, 0);
@@ -1372,7 +1371,7 @@ __attribute__((used, retain)) void an_print(char *buf, u32 *len, u32 max) {
         /* P3 (docs/plan-p3-fm-bits.md 3.3): the FM stats line; fmx= the renders whose FM was skipped (n past the buffers) /
          * missed (FM 1>2 without OSC1's buffer). P3 Q1: the M7 counts none of them yet (0) */
         volatile SaFmStats *f = FMSTATS;
-        field(&o, " fm=", f->fm); field(&o, " bits=", f->bits);
+        field(&o, " fm=", f->fm);                                   /* (BE4.42: no bits=, Bit Depth is gone) */
         field(&o, " fmx=", f->fm_skipped); field(&o, "/", f->fm_missed);
     }
     field(&o, " | load_pm=", a->cpu_pm); field(&o, " over_with_analog=", a->over);

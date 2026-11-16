@@ -77,25 +77,25 @@ typedef struct {
 } SaStats;                    /* 64 bytes: blocks +0, sum16 +4, peak +8, osc_peak +12, n_max +20, sync_skipped +24,
                                  hist +28, voices_peak +44, renders +48, misses +52, synced +56, shape_mods +60 */
 /* +0x0100 M7 FM stats, one line (P3, docs/plan-p3-fm-bits.md 3.3: SaStats has no free word; M7 writes and cleans after each
- * block, as SA_STATS, M4 reads: an_print's fm= / bits= / fmx=). +0x0100..+0x0200 was undefined; the M7 zeroes +0x40..+0x200
- * when it takes the area (m7_polyat.c synth_take), so a build whose DSP does not count yet reads 0 (P3 Q2: bits counts; Q4:
- * fm_skipped for Sub FM's buffer A; Q5: fm, the renders with Sub FM; Q6: fm_missed, FM 1>2 without B) */
+ * block, as SA_STATS, M4 reads: an_print's fm= / fmx=). +0x0100..+0x0200 was undefined; the M7 zeroes +0x40..+0x200
+ * when it takes the area (m7_polyat.c synth_take), so a build whose DSP does not count yet reads 0 (Q4: fm_skipped for Sub
+ * FM's buffer A; Q5: fm, the renders with Sub FM; Q6: fm_missed, FM 1>2 without B; BE4.42: +4, Bit Depth's bits= count
+ * through BE4.41, is unused and stays 0) */
 #define SA_FMSTATS 0x0100u
 typedef struct {
     unsigned fm;              /* Analog renders with FM (Sub FM or FM 1>2) */
-    unsigned bits;            /* Analog renders crushed (Bit Depth not Full) */
+    unsigned r1;              /* BE4.42: unused (BE4.41's bits=, the renders Bit Depth crushed) */
     unsigned fm_skipped;      /* renders with FM set but n > AN_FM_FRAMES (the modulator buffers): rendered without it */
     unsigned fm_missed;       /* OSC2 renders that wanted OSC1's signal (FM 1>2) but buffer B was not valid this voice-block */
     unsigned r4, r5, r6, r7;
-} SaFmStats;                  /* 32 bytes: fm +0, bits +4, fm_skipped +8, fm_missed +12 */
+} SaFmStats;                  /* 32 bytes: fm +0, fm_skipped +8, fm_missed +12 */
 /* +0x0400 M7 private: the DSP's running state (two lines) */
 #define SA_RUN 0x0400u
 /* +0x0200 (BE4.21..BE4.31: the M4's Analog track table, published; unused since BE4.40, when an oscillator's Type, Shape,
  * Sync and Glide became stock properties that reach the M7 as set_property messages: docs/plan-native-props.md) */
 #define AN_GLIDE_MAX 1000u                                  /* Glide 0..1000 = 0..2 s, stock's encoder units */
 #define AN_FM_MAX 1000u                                     /* P3: Sub FM, FM 1>2 0..1000 (0..100.0 % of the knob; the FM
-                                                               sprint plays index 8 (v / 1000)^2) */
-#define AN_BITS_MAX 3u                                      /* P3: Bit Depth 0 Full, 1 12, 2 8, 3 4 bits (the list's labels) */
+                                                               sprint plays index 16 (v / 1000)^1.5, BE4.42; BE4.41 8 (v / 1000)^2) */
 #define AN_SHAPE_MAX 127u                                   /* Shape 0..127: sine > triangle > saw > square > pulse (P3 Q3,
                                                                docs/plan-p3-fm-bits.md 4.6; BE4.40: saw > square > pulse) */
 #define AN_SHAPE_SINE 0u                                    /* P3 Q3 (OD6), one-sided plateaus: 0..2 plays the sine, */
@@ -114,8 +114,8 @@ typedef struct {
 #define SA_ANCACHE 0x0600u
 #define SA_ANCACHE_N 16u
 /* +0x0800 M7 private (P3, docs/plan-p3-fm-bits.md 3.3): the FM modulator buffers of the voice-block being rendered, two x
- * AN_FM_FRAMES floats in increment units: A (+0x800) the sub oscillator's copy, B (+0xC00) OSC1's pre-Level block on Bit
- * Depth's grid with its top at S (OD15: an_feed, before the audio crush; also for a silent OSC1), times OSC1's increment.
+ * AN_FM_FRAMES floats in increment units: A (+0x800) the sub oscillator's copy, B (+0xC00) OSC1's pre-Level block times
+ * OSC1's increment (an_feed; also for a silent OSC1; BE4.42: no Bit Depth grid any more, OD15 / OD18 moot).
  * Valid only while the run state's voice is that voice and its fmtag bit says so (dsp/analog.cpp). The M4 never reads or
  * writes it (SA_UI, the M4's synth UI state, unused since the review: the M4's state is in AN4) */
 #define SA_FMBUF 0x0800u

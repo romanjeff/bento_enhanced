@@ -22,16 +22,15 @@
  *     (PARAM_VALUE's cache store is undone, wt1_oct);
  *   - Shape modulation (Track M, J4): on an Analog oscillator the sources routed to its Position parameter move Shape,
  *     ramped over the block (a step every AN_RAMP frames, each with its correction: an_reshape);
- *   - P3 Q2 Bit Depth (docs/plan-p3-fm-bits.md 4.7, OD11): Full / 12 / 8 / 4 bits per oscillator, a two's-complement
- *     pass on the 96 kHz block before Level (an_crush, part by part about the kernel's dc: Q2b, OD12), counted in
- *     SA_FMSTATS (bits=);
+ *   - (P3 Q2 Bit Depth, BE4.41: removed in BE4.42 after device use, "not enough difference in practice": no crush, no
+ *     key 0x1A4, no bits=; docs/plan-p3-fm-bits.md, BE4.42);
  *   - P3 Q4 Sub FM's modulator (plan 4.2, OD10): the sub oscillator's block, copied once per voice-block into buffer A
  *     (SA_FMBUF_A) by the first Analog oscillator with Sub FM, from the sub's state before its own render (stock's formulas,
  *     its cache words put back: sub_fill). P3 Q5: Sub FM plays it, through-zero linear FM of the oscillator's
  *     increment (an_render_fm, the index ramped over the block from msub), also for a silent sync master (E3 (b)),
  *     counted in SA_FMSTATS (fm=);
- *   - P3 Q6 FM 1>2 (plan 4.1, 4.4 E3 (a), 4.5, BD1, OD15): an Analog OSC1's block before Level, on Bit Depth's grid with its
- *     top at S (an_feed), into buffer B (SA_FMBUF_B) while an Analog OSC2 has FM 1>2 (a silent OSC1 renders for it); OSC2
+ *   - P3 Q6 FM 1>2 (plan 4.1, 4.4 E3 (a), 4.5, BD1): an Analog OSC1's block before Level, times its increment (an_feed),
+ *     into buffer B (SA_FMBUF_B) while an Analog OSC2 has FM 1>2 (a silent OSC1 renders for it); OSC2
  *     adds it to its increment as a second term (I12 ramped from m12), counted as fm=, or fmx= missed where B was not
  *     written this voice-block.
  * Four vtable words point at build.py's trampolines (in this window, before this ELF):
@@ -200,19 +199,24 @@ static void sub_follow(AnOsc *g, u8 *v, float want) {
 /* N3, the oscillator's set property (r0 osc, r1 the message): 1 = one of our keys (stock's own slot 8 has no case for
  * them and would only return), 0 = stock's. Type 1 makes the oscillator Analog (a fresh state, default settings: the push
  * and the M4's resend bring the real ones after it); any other Type ends it now, before stock's render can read our state
- * as its history (WT1 gives the sub oscillator its glide offset back first). Shape, Sync, Glide and (P3) Sub FM, Bit Depth
- * and FM 1>2 are kept only while the oscillator is Analog (the area is stock's history otherwise), clamped to their ranges.
- * P3 OD4: the two lists play what stock's widget shows for a value it has no label for (a hand-edited file): Sync any
- * value but 0 is On, Bit Depth past its last label (or negative) is 4, the widget's last entry (M: test_synth_ui); the type-10
- * amounts clamp to 0..1000 while the widget shows the raw value (as Glide). Runs in the M7's synth message loop, between
- * renders. */
+ * as its history (WT1 gives the sub oscillator its glide offset back first). Shape, Sync, Glide and (P3) Sub FM and FM 1>2
+ * are kept only while the oscillator is Analog (the area is stock's history otherwise), clamped to their ranges.
+ * P3 OD4: the list plays what stock's widget shows for a value it has no label for (a hand-edited file): Sync any value but
+ * 0 is On (M: test_synth_ui); the type-10 amounts clamp to 0..1000 while the widget shows the raw value (as Glide).
+ * BE4.42: Bit Depth (0x1A4) is no longer ours: stock's slot 8 gets it and does nothing. Runs in the M7's synth message
+ * loop, between renders. */
 static int ours(u32 key) {
     return key == S_KEY_OSC_TYPE || key == S_KEY_OSC_SHAPE || key == S_KEY_OSC_SYNC || key == S_KEY_OSC_GLIDE ||
-           key == S_KEY_OSC_SUBFM || key == S_KEY_OSC_BITS || key == S_KEY_OSC_FM12;
+           key == S_KEY_OSC_SUBFM || key == S_KEY_OSC_FM12;
 }
 static u16 amount(int v) { return (u16)(v < 0 ? 0 : v > (int)AN_FM_MAX ? AN_FM_MAX : (u32)v); }
-/* P3 Q5 (FD3): an FM amount 0..1000 (the knob's travel) to its index, I = 8 (v / 1000)^2: f32(v^2) exact, one rounding */
-static inline float an_index(u32 v) { return (float)(v * v) * (8.f / 1000000.f); }
+/* P3 Q5 (FD3), BE4.42 (deeper, Jeff's device feedback "more moderate than expected"): an FM amount 0..1000 (the knob's
+ * travel) to its index, I = 16 (v / 1000)^1.5 (BE4.41: 8 (v / 1000)^2; 50 % now 5.66, was 2), in float32 as
+ * I = f32(f32(v sqrt(v)) K), K = f32(16 / 1000^1.5): v exact, VSQRT correctly rounded, two roundings (p3_golden.an_index32
+ * bit for bit; exact 2 at 250 and 16 at 1000, M). The square root is VSQRT inline: __builtin_sqrtf keeps a sqrtf call for
+ * errno under -fno-builtin (build.py refuses libm by name). */
+static inline float an_sqrt(float x) { float r; __asm__("vsqrt.f32 %0, %1" : "=t"(r) : "t"(x)); return r; }
+static inline float an_index(u32 v) { float f = (float)v; return f * an_sqrt(f) * (float)(16.0 / 31622.776601683792); }
 extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
     u32 key = *(volatile u16 *)((u8 *)msg + MSG_KEY);
     int v = (int)W(msg, MSG_VALUE);
@@ -236,8 +240,7 @@ extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
         else if (key == S_KEY_OSC_SYNC) p->sync = v != 0 ? 1u : 0u;
         else if (key == S_KEY_OSC_GLIDE) p->glide = (u16)(v < 0 ? 0 : v > (int)AN_GLIDE_MAX ? AN_GLIDE_MAX : (u32)v);
         else if (key == S_KEY_OSC_SUBFM) p->subfm = amount(v);
-        else if (key == S_KEY_OSC_FM12) p->fm12 = amount(v);
-        else p->bits = (u8)((u32)v <= AN_BITS_MAX ? (u32)v : AN_BITS_MAX);
+        else p->fm12 = amount(v);                             /* (S_KEY_OSC_FM12) */
     }
     if (area_ok()) STATS->props++;
     return 1;
@@ -295,7 +298,7 @@ static void finish(Run *r) {
         s->hist[pm < 50u ? 0 : pm < 150u ? 1 : pm < 300u ? 2 : 3]++;
         s->renders += r->oscs;
         clean(SA(SA_STATS), sizeof(SaStats));
-        clean(SA(SA_FMSTATS), sizeof(SaFmStats));             /* P3: bits= (Q2), fm= (Q5), fmx= (Q4, Q6) */
+        clean(SA(SA_FMSTATS), sizeof(SaFmStats));             /* P3: fm= (Q5), fmx= (Q4, Q6) */
     }
     r->cyc = r->oscs = r->voices = 0;
 }
@@ -420,7 +423,7 @@ __attribute__((noinline)) static float sub_fill(u8 *sub, float *a, u32 n) {
  * counted (fmx= skipped).
  * Q5: Sub FM plays where the oscillator has it, or a ramp down still to run (msub), and A holds this voice-block's sub
  * (longer blocks, or a render with no an_enter of its voice: plain, no FM). The index ramps linearly over the block from
- * last block's amount to this one's (FD3: I = 8 (v / 1000)^2), the parts continuing one line; msub keeps the amount the
+ * last block's amount to this one's (FD3: I = 16 (v / 1000)^1.5 since BE4.42), the parts continuing one line; msub keeps the amount the
  * block ended on (0 when it played no FM: heard again, it ramps in from 0, OD16).
  * Q6 (4.1, 4.5): FM 1>2 the same way on OSC2 (useB: twelve, its OSC1 Analog), from buffer B where OSC1 wrote it this
  * voice-block (fmtag B); wanted in a block the buffers hold but B not written (a render with no an_enter of its voice, or
@@ -464,19 +467,6 @@ __attribute__((noinline)) static int fm_setup(Run *r, u8 *v, AnOsc *self, AnProp
  * an_enter named, in a block the buffer holds (out of line: an_osc calls it only behind its FM gate). */
 __attribute__((noinline)) static int feeds(Run *r, u8 *v, u32 which, int a2, void *o2, u32 n) {
     return which == 0 && a2 && (props(o2)->fm12 || state(o2)->m12) && n <= AN_FM_FRAMES && r->voice == (u32)v;
-}
-
-/* P3 Q2 / Q2b / Q6, after each part's render (out of line: Full with no FM 1>2 never calls it, M1). Bit Depth (plan 4.7,
- * OD11): the part crushed as soon as it is rendered, before Level (SMOOTH_APPLY) and in the 96 kHz domain ahead of stock's
- * FIR, about the part's own dc (an_dc of its k: a Shape ramp moves the pulse's DC part by part, OD12), so the DC-free pulse
- * is crushed on the grid's range and stays DC-free. A part's samples are final once rendered (an_reshape only moves
- * `delayed`). Q6 (BD1, OD15): OSC1's FM 1>2 buffer B (b: B + the part's offset) from the part just before its audio crush
- * (an_feed: the same grid about the same dc, its top at S), before Level; a silent OSC1 (E3 (a)) feeds B and is not crushed
- * (nobody hears it). */
-__attribute__((noinline)) static void part_post(float *s, u32 m, u32 bits, float k, float *b, float inc, int silent) {
-    float dc = bits ? an_dc(k) : 0.f;
-    if (b) an_feed(s, b, m, bits, dc, inc);
-    if (bits && !silent) an_crush(s, m, bits, dc);
 }
 
 /* S1, slot 2: the oscillator's note start (osc, ?, &note), before stock's. WT1 Wavetable starting a note with WTOscReset on
@@ -659,11 +649,10 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     u32 parts = step ? (n + step - 1u) / step : 0u;
     float *s = FN(S_SCRATCH_PTR, float *(*)(void *))(scratch);
     FN(S_SCRATCH_SIZE, void (*)(void *, u32))(scratch, n);
-    /* P3 Q2 Bit Depth (plan 4.7, OD11, Q2b OD12) and Q6's buffer B (BD1, OD15): each part, once rendered, goes through
-     * part_post (B, then the crush); Full with no FM 1>2 to feed skips it (the loops are untouched: M1). bits= counts the
-     * crushed renders (a silent OSC1 feeding B is not crushed). */
-    u32 bits = props(osc)->bits;
-    /* the parts: one loop, instantiated twice (P3 Q6, M1): with FM, Bit Depth or B to feed (X), or today's path alone */
+    /* Q6's buffer B (BD1): each part of OSC1's, once rendered (its samples are final: an_reshape only moves `delayed`), goes
+     * to B before Level, times OSC1's increment (an_feed, at B + the part's offset); a silent OSC1 (E3 (a)) feeds it too.
+     * BE4.42: Bit Depth's crush (part_post, an_crush, an_dc) is gone, so B is OSC1's own s. The parts: one loop,
+     * instantiated twice (P3 Q6, M1): with FM or B to feed (X), or today's path alone */
     auto parts_loop = [&](auto X) __attribute__((always_inline)) {
         float kp = k0;
         for (u32 j = 0, off = 0; j < parts; j++, off += step) {
@@ -681,15 +670,12 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
             kp = k;
             if (X.value && fm) { fi.off = off; an_render_fm(self, inc, k, s + off, m, ev, role, &fi); }   /* (Q5: the parts) */
             else an_render(self, inc, k, s + off, m, ev, role);
-            if (X.value && (bits || bo)) part_post(s + off, m, bits, k, bo ? bo + off : 0, inc, silent);   /* (after FM too) */
+            if (X.value && bo) an_feed(s + off, bo + off, m, inc);   /* (after FM too) */
         }
     };
-    if (fm || bits || bo) parts_loop(Tf<1>());
+    if (fm || bo) parts_loop(Tf<1>());
     else parts_loop(Tf<0>());
-    if (bits || bo) {
-        if (bits && !silent) FMSTATS->bits++;                 /* (one per crushed render, as Q2's post-pass counted) */
-        if (bo) r->fmtag |= AN_FMTAG_B;
-    }
+    if (bo) r->fmtag |= AN_FMTAG_B;
     if (!silent) {
         FN(S_SMOOTH_APPLY, void (*)(void *, float *, u32, u32))((u8 *)osc + OSC_SMOOTH, s, 0, n);
         FN(S_MIX_INTO, void (*)(void *, void *))(out, scratch);

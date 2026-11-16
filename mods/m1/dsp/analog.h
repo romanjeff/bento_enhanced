@@ -58,13 +58,14 @@ static_assert(sizeof(AnOsc) == 176, "Analog state: 176 bytes at oscillator +0x10
 static_assert(sizeof(AnOsc) <= AN_PROPS_OFF, "Analog state must stay below the oscillator's settings (AnProps)");
 
 /* An oscillator's settings, as stock's set_property delivered them (N3: dsp/analog.cpp an_prop), each clamped when stored.
- * P3 Q1: bits, subfm and fm12 are stored (and so reach the M7 with every push, edit and resend). P3 Q2: bits plays (an_crush);
- * P3 Q5: subfm plays (Sub FM, an_render_fm); Q6: fm12 plays (OSC2's FM 1>2, from an Analog OSC1). */
+ * P3 Q1: subfm and fm12 are stored (and so reach the M7 with every push, edit and resend). P3 Q5: subfm plays (Sub FM,
+ * an_render_fm); Q6: fm12 plays (OSC2's FM 1>2, from an Analog OSC1). BE4.42: Bit Depth is gone (its byte, +3, is a spare
+ * that stays 0: 0x1A4 is no key of ours, so stock's slot 8 drops it, and a BE4.41 project's bento_bits is not read). */
 struct AnProps {
     unsigned char type;               /* 1 = Analog (a value of exactly 1; anything else is Wavetable) */
     unsigned char shape;              /* 0..AN_SHAPE_MAX */
     unsigned char sync;               /* 0 / 1 (WT2's: the slave) */
-    unsigned char bits;               /* Bit Depth 0..AN_BITS_MAX: Full, 12, 8, 4 */
+    unsigned char spare3;             /* BE4.42: unused, 0 (BE4.41's Bit Depth) */
     unsigned short glide;             /* 0..AN_GLIDE_MAX (WT1's: the voice's) */
     unsigned short subfm, fm12;       /* Sub FM, FM 1>2 0..AN_FM_MAX (fm12 is OSC2's; WT1's copy is kept but never read) */
     unsigned short spare;
@@ -104,12 +105,9 @@ extern "C" void an_render_fm(AnOsc *o, float inc, float shape, float *out, unsig
 extern "C" void an_track(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_master(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_reshape(AnOsc *o, float from, float to);
-extern "C" void an_crush(float *s, unsigned n, unsigned bits, float dc);   /* P3 Q2 Bit Depth: AnProps.bits 1..3, in
-                                                                           * place; Q2b (OD12): on x + dc, dc taken off */
-extern "C" float an_dc(float shape);  /* P3 Q2b: the kernel's DC term at shape (the pulse's 2 width - 1), the part's dc */
 extern "C" void an_sub_copy(const void *core, float *a, unsigned n, unsigned inc, unsigned pend);   /* P3 Q4: the sub's
                                                                            * block in increment units, DC-free (OD10) */
-extern "C" void an_feed(const float *s, float *b, unsigned n, unsigned bits, float dc, float inc);   /* P3 Q6: buffer B
-                                                                           * from a part (BD1; OD15: the grid's top at S) */
+extern "C" void an_feed(const float *s, float *b, unsigned n, float inc);   /* P3 Q6: buffer B from a part (BD1),
+                                                                           * b = s inc (BE4.42: no Bit Depth grid) */
 
 #endif
