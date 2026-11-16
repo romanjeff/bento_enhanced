@@ -526,6 +526,7 @@ SYMS = dict(
     NOTE_OCT=code(0x0804F680, note="(&note) -> octaves"),
     OCT_RATIO=code(0x0804F5E0, note="(octaves) -> 32.703 Hz x 2^octaves (C1 times; the pitch)"),
     EXP2=code(None, note="(x) -> 2^x for x in -10..10, the table OCT_RATIO uses (1.6.8 only)"),
+    SUB_NOISE_TABLE=data(None, note="the sub oscillator core's noise: 4096 floats its Noise wave steps through (P3 Q4 sub copy; 1.6.8 only)"),
     LEVEL_CURVE=code(0x0804F360, note="(level) -> gain"),
     SMOOTH_SET=code(0x08071240, note="(smoother, target)"),
     SMOOTH_APPLY=code(0x08071040, note="(smoother, samples, from, n)"),

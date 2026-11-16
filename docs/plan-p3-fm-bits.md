@@ -236,6 +236,16 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
   - Noise steps by its core+0x10 stride (M). The sub's Level is never read (FD1).
 - If n > 256 (the buffer size), there is no FM that block: A and B are not filled, the oscillator renders plain, and
   `fm_skipped++`. On the device n is 256 (M).
+- **Q4 as built (M/S, beyond this text):** the fill is `sub_fill` (analog.cpp) + `an_sub_copy` (analog_kernel.cpp,
+  `minsize`), called from an_osc after the skip path and before E3's silent-master branch, once per voice-block (fmtag A),
+  only for the voice an_enter named. A is `(y - dc) * inc 2^-32` in float32 and is tested bit for bit in that forward form
+  ("raw = A/inc + dc" does not invert two float32 roundings: within 2^-22). The prototype's `exact` / `dcfree` flags are
+  gone (always stock's table sine, always DC-free). Stock's core has **10** waves; the sub's key 0xC3 stores value + 1
+  unclamped (0x080A0CC6, S), so a hand-edited file reaches 6..10 or 0: their copy is all 0 (no Sub FM). Noise's stride is
+  **random per block** (`rand() % 256 + 1` after each render, 0x08056AFE..10, S); the copy reads this block's. The
+  Square's dc is the new width's from the block's start, but before the first wrap the old width (+0x18) plays, so a PW
+  change leaves a DC of 2 (pend - w) 2^-32 until that wrap (accepted, like the Rev Saw residual; at low sub pitches it can
+  last more than one block: Q5's mean-frequency golden case holds PW constant, or bounds it). "Q4 as built".
 
 ### 4.3 FM kernel: one generic through-zero loop per role
 - New function in analog_kernel.cpp:
@@ -548,6 +558,7 @@ subtracted, the zero-dc sign-of-zero identity dropped, an_dc's slope or its 0.5 
 | test_native_props.py:237 | 0 pads | 1 pad | Q1 |
 | test_analog `BitDepth.test_real_blocks_reach_the_top_clip` (Q2) | the DC-free pulse drives s past +1 at every b (clipped hard) | retired: `test_real_blocks_sit_on_the_grids_range`, s + dc in [-1, 1], the top reached by the +1 high | Q2b |
 | test_analog `BitDepth` amounts / per-oscillator cases (Q2) | golden crush with no dc (sync case's Shape 100 clipped) | golden crush with the captured per-part dc; the top-clip assertion's reason reworded (the +1 high) | Q2b |
+| test_analog `P3Identity.check` / `test_q1_plays_no_amount` (Sub FM 700) | no fill; the whole count under M1's +2 % | fills 8 / 11 / 24 asserted; **a bound carve-out**: sub_fill's Span is left out of the +2 % (M1 is for FM off) and bounded on its own, `FILL_MAX` a call (Rig's zero sub 640 / 1,175 at n = 128 / 256, stock's root's default sub 2,005 / 3,890: measured +5 %) | Q4 |
 
 ---
 
@@ -1214,6 +1225,119 @@ Q3b review fixes (two reviews; figures above re-measured on the fixed build wher
   the triangle stretch's order swapped 84, the sine glyph at amplitude 7 1 (test_synth_ui; it survived before).
 - Kept as is: the triangle and the saw glyph are the closest pair now (review 1); device item 9 judges it.
 
+### Q4 as built (2026-11-15, working tree on 9db0b13; build ~/bento/out/m1-p3q4)
+
+OD10 (DC-free Square) as decided. OD12 / OD13 / OD14 were recorded in Decisions by Q2b; nothing new to record. Nothing
+audible reads A yet: P3Identity's 59 cases stay byte-identical with BE4.40, and the amounts cases (Sub FM 700) fill A and
+still play BE4.40 byte for byte.
+
+What was built:
+- **Base table:** `SUB_NOISE_TABLE` 0x080CB9F8 (data, facts.py REVIEWED; stock_161.py absent; stock_168.py regenerated,
+  only this entry changed): the sub core's 4096-float noise, its one literal 0x08056D78 (S). Test-only addresses come from
+  the image at run time (the sub class's vtable slots 0 / 2 / 8 / 10; its smoother is SMOOTH_APPLY's r0 = sub + 0xCC), so no
+  other entry.
+- **M7 kernel** (analog_kernel.cpp): `an_sub_copy(core, a, n, inc, pend)`, the prototype's sub_copy without its `exact` /
+  `dcfree` flags (always stock's table sine, always DC-free): a[i] = (y - dc) inc 2^-32, waves 1 Rev Saw, 2 Triangle, 3 Square
+  (the width latched from pend at the first wrap, dc = 1 - pend 2^-31), 4 Sine (the core's table +4), 5 Noise (stepped by the
+  core's stride +0x10); any other wave byte copies 0. Stock's operation order and constants (re-read in 0x08056720, S),
+  `__attribute__((minsize))` (below).
+- **M7 hook** (analog.cpp): `sub_inc` (stock's formula, 0x080A0E18..0x080A0E68 then 0x08056E40) and `sub_fill` (noinline:
+  PARAM_VALUE's cache words +0xC0 (pitch) and, for the Square, +0x120 (width) saved and put back; the width as 0x08056440,
+  1..0xFFFFFFFE). In an_osc after the skip path and before E3's silent-master branch: `if (subfm || msub)`: n > AN_FM_FRAMES
+  -> `fm_skipped++`; else, for the voice an_enter named and A not yet tagged, fill A (SA_FMBUF_A), `Run.inc_sub` = inc 2^-32
+  (float bits), `fmtag |= A`. So OSC1 fills when it has Sub FM, else OSC2 (OSC1 Wavetable, skipped, or no Sub FM); a
+  silent sync master with Sub FM fills (Q5's E3 (b) will need it). **Invariant the tag rests on (I, for Q5):** an
+  oscillator renders only from stock's voice render, i.e. slot 18 after A1's an_enter, which clears fmtag; an_osc does not
+  compare the load-ring idx, so an oscillator render with no an_enter before it in a later audio block would find last
+  block's tag for the same voice and play last block's A. Tested only as far as the voice check (another voice's render
+  fills nothing). If Q5 finds a path that breaks it, tag the block too (r->idx at fill time).
+- synth_shared.h: comment only (fm_skipped counts since Q4).
+
+Tests (test_analog, new class `SubCopy`, 10 tests with the review's two; harness: stock's root ctor and engine init, the voice through the root's
+vtable word, so stock's sub renders after OSC1 / OSC2; the sub's +0xDC = 2 and n = 256 asserted):
+- `test_the_copy_is_stocks_sub_up_to_its_dc` (6.4): 5 waves x sub Level 0 / 1000, 12 device blocks with notes 48 / 61 / 36,
+  a retrigger (same note, retrigger on), OSC1 Glide 300 (an_enter writes +0x04), fine 250, pitch modulation on +0x84 every
+  block, the Square at PW 30 % then 65 % from block 6 (latched mid-block). Every block: **A = (raw - dc) inc 2^-32 in float32
+  bit for bit, worst 0** (raw = the sub's core block at its smoother's input), Run.inc_sub, fmtag A; A / inc + dc - raw
+  within 2^-22 (two roundings); dc {0.4, -0.3} for the Square, 0 else; one fill a block, by OSC1. Controls: each note start
+  restarts the phase, the increment, +0x04 and the pitch cache move.
+- `test_the_copy_changes_nothing_else`: Sub FM 700 against Sub FM 0, 5 waves: the output byte for byte, and **the whole
+  voice at the sub render's entry byte for byte** (P3 bytes masked), the two cache words included (control: they move);
+  per block, the instructions between the two minus sub_fill's are 0 < x < 40 (the gate and the call).
+- `test_which_oscillator_fills`: OSC2 only, both (one fill, OSC1's), OSC1 Wavetable, OSC1 silent (OSC2 fills), msub with
+  Sub FM 0, and (review) a silent sync master (OSC1 Level 0, OSC2 Sync: E3's branch) with Sub FM on OSC1 alone and on both:
+  OSC1 fills; A exact in each.
+- `test_each_voice_fills_its_own`: two voices of one root in one audio block, different waves / notes: each its own A.
+- (review) `test_only_the_named_voice_fills`: voice 1's OSC1 rendered while Run.voice names voice 0: no fill, A and fmtag
+  untouched; voice 0's OSC1 then fills its own sub's.
+- (review) `test_the_increment_is_stocks`: an_sub_copy's increment argument = stock's core +0xC after its render, 24 blocks:
+  a note start each block over 0..127, fine over both signs and odd values (-999..999), glide and pitch mod under it; A
+  exact (Rev Saw).
+- `test_other_waves_copy_silence`: wave key 5, 9, 255 (core bytes 6, 10, 0): A +0.0 (A holds a 0x5A pattern before every
+  block of `play`, review), output unchanged.
+- `test_longer_blocks_than_the_buffer_fill_nothing`: n = 512: A untouched, fmtag clear, fm_skipped = 6 (2 oscillators x 3
+  blocks); n = 256 fills.
+- `test_the_squares_width_at_its_ends`: PW 0 and 100 % (pend 1 / 0xFFFFFFFE), dc +-1.
+- `test_the_copy_divides_at_the_subs_edges_only` (6.5, ahead of Q5's row): VDIV.F32 by PC inside an_sub_copy per block =
+  the phase law's edges (Rev Saw wraps; Square wraps + rising-ramp samples with the latch), 0 for the others.
+- **Reviewed edit (expected change):** P3Identity `check(..., fills=n)`: in `test_q1_plays_no_amount` (Sub FM 700) this
+  build fills A once per voice-block (asserted: 8 / 11 / 24 per case); sub_fill's own instructions (Span: entry to return,
+  stock helpers included) are recorded and left out of the +2 % bound, which still holds for the rest. Output, voice and
+  stats unchanged. This is a bound carve-out (6.7), so (review) the copy has its own bound there: `FILL_MAX` a call (Rig's
+  zero sub 640 / 1,175 at n = 128 / 256, stock's root's default sub 2,005 / 3,890; measured +5 %).
+
+Measured (M):
+- Sizes: DSP **16,452 B** (+832 on Q3b's 15,620: an_sub_copy 460, sub_fill 276, an_osc +96), **P3 has used 6,744 B of its
+  14,336 B ceiling, 7,592 B left for Q5 / Q6**; 20,156 B free in the window. Image **0x1890D0** (unchanged: M4 untouched),
+  16,996 B under PROVEN_MAX 0x18D334.
+- **minsize, a close call:** an_sub_copy at the file's -O2 is 1,968 B (unrolled), at minsize 460 B. sub_fill per voice-block
+  (2N, its stock helpers included) -O2 / minsize: Rev Saw 3,297 / 3,724, Triangle 2,516 / 2,952, Square 3,594 / 3,994,
+  **Sine 4,830 / 5,256**, Noise 2,075 / 2,953. Loop pragmas (no unroll) on every loop: 536 B, the Sine 5,515 (worse than
+  minsize); on all but the Sine: 1,004 B with the Sine at -O2 speed (scratch p3/q4 variant.py). Taken: minsize, because the
+  14 KB ceiling is the scarcer budget for Q5's three FM instances (5: 4.5-7.5 KB); +430..880 instructions a voice-block
+  with Sub FM on (one copy per voice, not per oscillator). If Q5 lands small, the Sine-at--O2 form (+544 B) is the first
+  buy-back.
+- Cost, off: `Cost` at n = 256 saw 13,244 (Q3b 13,236: +4 a render, the subfm / msub test), mixed 19,888, saw+sync 15,853,
+  mixed+sync 22,240; n = 128 saw 7,356. P3Identity 59 cases, worst **+1.13 %** (mod dev=False 111,145 vs 109,899; Q3b
+  +1.06 %), total +0.47 % (the amounts cases' gate and call now in it; M1 +2 %). Rig's zero sub (wave 0) costs 606 / 1,118 a
+  fill at n = 128 / 256; stock's default sub at 2N 3,701.
+- Mutations (scratch p3/q4 variants.py / variant.py, each built from a copy, the whole test_analog; logs p3/q4/var/logs):
+  all red. Sub copy per 128-frame chunk (6.6; the second half from an advanced phase, width unlatched): 8 failing (sub)tests;
+  Noise advancing by inc (6.6): copy test; Square dc not subtracted (6.6): 11; dc from the old width: 11; pitch cache not
+  restored (6.6): 5 (changes_nothing_else); width cache not restored: 1 (same test); width latch removed: 7; Sine without
+  interpolation: 3; fmtag not set (OSC2 fills again): 27; the gate without msub: 1; the n > 256 guard removed: 1 (the longer-blocks test);
+  fm_skipped not counted: longer-blocks test; Run.inc_sub not stored: 20; sub_inc without the +0xDC term: 20; without +0x04
+  (glide): 19; the fill only from OSC1: 6; the width's 1..0xFFFFFFFE hold removed: 1 (the width-ends test; green until that
+  test was added). (The first mutation batch also saw a too-high control threshold in the VDIV test, since fixed; no mutant
+  relied on it.)
+- Full suite (wsl/test_m1.sh, O=~/bento/out/m1-p3q4) green; test_analog 108 tests (Q3b 98 + 10 SubCopy), test_native_props 19, test_synth_ui 62, test_keys 10.
+
+Found during Q4 (corrections to this plan):
+- **Stock's sub core has 10 waves, and the sub's wave key is unclamped** (0x080A0CC6 strb value + 1; core dispatch 1..10,
+  tbh at 0x08056732; S): waves 6..10 (unipolar sine, inverted ramps, a rand() sample-and-hold) or 0 are reachable from a
+  hand-edited file. 4.2 lists 5. The copy plays 0 for them (no Sub FM), tested.
+- **Noise's stride is random per block** (stock: `rand() % 256 + 1` after each render, 0x08056AFE..10; S). "Steps by its
+  stride" (M) holds; the copy reads the stride stock will use this block.
+- **"raw = A / inc_sub_f + dc, worst 0" (6.4) cannot hold in float32:** the store rounds twice. The test is the forward form,
+  A = f32(f32(raw - dc) inc), bit for bit; the inverse within 2^-22.
+- 5's "sub copy ~2 KB" holds at -O2 (2,244 B with sub_fill); 736 B as built (an_sub_copy at minsize + sub_fill; 832 with the gate in an_osc).
+- The sub render also calls PARAM_VALUE on +0x44 (its level) and SMOOTH_SET at +0xCC; the copy touches neither (S).
+
+Q4 review fixes (two reviews; each issue checked; rebuilt clean into ~/bento/out/m1-p3q4, the image byte-identical to the
+reviewed one: only comments changed in the DSP; sizes and costs above unchanged):
+- **Tests added for the four mutants that survived review 2** (scratch p3/q4fix/run.py, results.txt; each built from a copy,
+  the whole test_analog): the fill gate moved below E3's silent-master branch (red: the two silent-sync-master cases), the
+  `r->voice == v` check removed (red: test_only_the_named_voice_fills), the fine word unsigned and `/ 1000 / 12` folded to
+  `/ 12000` (red: test_the_increment_is_stocks; both were bit-identical at fine 250 only). Also red with the tightened tests:
+  the default case writing nothing (now test_other_waves_copy_silence too, A pre-filled), `hz * (2^32 / 48000)` (now the
+  increment sweep too, not only one Square case), and a doubled copy (the new FILL_MAX bound, and SUB_COST_MAX).
+- **The amounts cases' copy bound** (review 1): the carve-out named in 6.7, FILL_MAX asserted a call (above).
+- **Comments** (review 1): the Square's dc is one rounding of f32(pend) x 2^-31 (fma), not exact; minsize's +9..42 % is
+  sub_fill's with its stock helpers.
+- **Doc** (review 1): the Square's partial-cycle DC after a PW change (4.2; Q5's mean-frequency case holds PW constant or
+  bounds it); the tag's invariant (an oscillator renders only after A1's an_enter) recorded for Q5 above, not changed in
+  Q4: tagging the block too costs every fill for a path the device does not have.
+
 ---
 
 ## 8. Device checklist (BE4.41; BE4.40's own checklist runs first, as it is not flashed yet)
@@ -1254,7 +1378,7 @@ Q3b review fixes (two reviews; figures above re-measured on the fixed build wher
 | FM costs about 2x the old plan at 2N | +9-10 % instructions per root of 10 full-FM voices; multiplied across tracks; OVER on dense patches | gate measured in Q5; specialise the hot case (saw carrier, sine sub) only if it fails; device item 12 | I |
 | Device CPI unknown (flash execution) | instruction counts understate cycles | device item 12 records `peak` with `fm=` | I |
 | The generic loop hoists a division into every sample | ~257 VDIVs per render | VDIV count by PC range (6.5) on every build | I |
-| DSP code larger than estimated | squeezes the drums' room; Q3b left 8,424 B of the 14 KB for Q4 to Q6 (estimate 6.5-9.5 KB) | 14 KB ceiling measured at Q3 and Q5; the plateau path (2.6 KB, Q3b) is the first to trade | M / I |
+| DSP code larger than estimated | squeezes the drums' room; Q3b left 8,424 B of the 14 KB for Q4 to Q6 (estimate 6.5-9.5 KB); **Q4 took 832 B (the copy at minsize): 7,592 B left for Q5 / Q6** (estimate 4.5-8 KB) | 14 KB ceiling measured at Q3 and Q5; the plateau path (2.6 KB, Q3b) is the first to trade; the copy's Sine at -O2 (+544 B, -8 % its cost) is the first buy-back if Q5 lands small | M / I |
 | Square sub DC detunes the carrier | pitch drifts as Sub FM rises | DC-free copy (OD10); golden mean-frequency case | S/I |
 | sub_copy disturbs the sub via PARAM_VALUE's cache | the copy or the sub's render is no longer exact | save/restore around the calls; sub-object identity test | S |
 | Stale A or B between voices | FM from another voice | fmtag cleared right after `r->voice`; `Run.voice` check; mutations | S |

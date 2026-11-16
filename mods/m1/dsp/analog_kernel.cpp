@@ -424,3 +424,68 @@ extern "C" void an_reshape(AnOsc *o, float from, float to) {
     float p = o->phase;
     o->delayed += .5f * (wave<MIXED>(p, b) - wave<MIXED>(p, a));
 }
+
+/* P3 Q4 (docs/plan-p3-fm-bits.md 4.2, OD10): the sub oscillator's waveform for this block, as stock's sub core will render
+ * it after both oscillators (0x08056720, read by hand; rc26 fm_proto.cpp sub_copy, re-proven at 2N), into a[0..n) in
+ * increment units: a[i] = (y[i] - dc) inc 2^-32. One shot from the core as it is before the sub renders: its phase +8 is
+ * this block's start, inc this block's increment (an_osc's sub_inc), pend this block's pulse width (Square only; the core
+ * latches it into its width +0x18 at the first wrap, as stock's 0x08056964..70). The phase is a local: the sub's own
+ * render moves it. dc (OD10): the Square's 1 - 2 pw, so Sub FM by a Square does not detune its carrier; the others 0.
+ * Waves 1 Rev Saw, 2 Triangle, 3 Square, 4 Sine (the core's table +4, linear between entries), 5 Noise (S_SUB_NOISE_TABLE,
+ * stepped by the core's stride +0x10, not the increment). Stock's core has 10 waves (its LFOs'); the sub's key 0xC3 stores
+ * value + 1 unclamped (0x080A0CC6), so a hand-edited file can reach 6..10 (or 0): their copy is 0 (no Sub FM), as for no
+ * render. Stock's own constants K31 / K30 (0x08056A30 / A38: a hair below 2^-31 / 2^-30) and its operation order, so y is
+ * stock's sample bit for bit (test_analog SubCopy: worst 0).
+ * The Square's dc is the new width's from the block's start; before the first wrap the old width +0x18 plays, so a PW
+ * change leaves a DC of 2 (pend - w) 2^-32 until that wrap (accepted, like the Rev Saw's residual: plan 4.2).
+ * minsize (M, scratch p3/q4 variant.py): 460 B against 1,968 at this file's -O2 (unrolled loops), for +9 % (the Sine) to
+ * +42 % (Noise) on sub_fill (its stock helpers included; more on the copy's own loop), +430..880 instructions a
+ * voice-block with Sub FM; the 14 KB ceiling is the scarcer budget for Q5 / Q6. Loop pragmas instead (no unroll): 536 B
+ * and the Sine slower than minsize; all but the Sine's: 1,004 B. */
+extern "C" __attribute__((minsize)) void an_sub_copy(const void *core, float *a, unsigned n, unsigned inc, unsigned pend) {
+    const unsigned char *c = (const unsigned char *)core;
+    unsigned p = *(const unsigned *)(c + 8), wave = c[0];
+    float f = (float)inc * 2.3283064365386963e-10f;                    /* 2^-32: exact after vcvt's one rounding */
+    constexpr float K31 = 4.6566001055126094e-10f, K30 = 9.3132002110252190e-10f;
+    switch (wave) {
+    case 1:
+        for (unsigned i = 0; i < n; i++, p += inc)
+            a[i] = (p < inc ? -1.f + 2.f * ((float)p / (float)inc) : -1.f + (float)(~p) * K31) * f;
+        return;
+    case 2:
+        for (unsigned i = 0; i < n; i++, p += inc) {
+            int s = (int)p;
+            a[i] = (-1.f + (float)(s >= 0 ? s : ~s) * K30) * f;
+        }
+        return;
+    case 3: {
+        unsigned w = *(const unsigned *)(c + 0x18);
+        float dc = 1.f - (float)pend * 4.6566128730773926e-10f;          /* 1 - 2 pw: f32(pend) x 2^-31, one rounding (fma) */
+        for (unsigned i = 0; i < n; i++, p += inc) {
+            float y;
+            if (p < inc) { y = 1.f - 2.f * ((float)p / (float)inc); if (pend) { w = pend; pend = 0; } }
+            else if (p < w) y = -1.f;
+            else if (p < w + inc) y = -1.f + 2.f * ((float)(p - w) / (float)inc);
+            else y = 1.f;
+            a[i] = (y - dc) * f;
+        }
+        return;
+    }
+    case 4: {
+        const float *t = *(const float *const *)(c + 4);
+        for (unsigned i = 0; i < n; i++, p += inc) {
+            float x = t[p >> 20], y = t[(p + 0x100000u) >> 20];
+            a[i] = (x - (x - y) * ((float)(int)(p & 0xFFFFFu) * 9.5367431640625e-07f)) * f;
+        }
+        return;
+    }
+    case 5: {
+        const float *t = (const float *)S_SUB_NOISE_TABLE;
+        unsigned stride = *(const unsigned *)(c + 0x10);
+        for (unsigned i = 0; i < n; i++, p += stride) a[i] = t[p & 0xFFFu] * f;
+        return;
+    }
+    default:
+        for (unsigned i = 0; i < n; i++) a[i] = 0.f;
+    }
+}

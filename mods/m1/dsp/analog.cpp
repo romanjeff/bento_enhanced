@@ -24,7 +24,10 @@
  *     ramped over the block (a step every AN_RAMP frames, each with its correction: an_reshape);
  *   - P3 Q2 Bit Depth (docs/plan-p3-fm-bits.md 4.7, OD11): Full / 12 / 8 / 4 bits per oscillator, a two's-complement
  *     pass on the 96 kHz block before Level (an_crush, part by part about the kernel's dc: Q2b, OD12), counted in
- *     SA_FMSTATS (bits=).
+ *     SA_FMSTATS (bits=);
+ *   - P3 Q4 Sub FM's modulator (plan 4.2, OD10): the sub oscillator's block, copied once per voice-block into buffer A
+ *     (SA_FMBUF_A) by the first Analog oscillator with Sub FM, from the sub's state before its own render (stock's formulas,
+ *     its cache words put back: sub_fill). Q4: nothing plays it yet.
  * Four vtable words point at build.py's trampolines (in this window, before this ELF):
  *   A1  Wavetable root slot 18 (voice render): an_enter(root, voice), then stock's render
  *   A2  Wavetable oscillator slot 0 (render): an_osc(osc, scratch, out) != 0 means handled, else stock
@@ -85,6 +88,13 @@ typedef unsigned char u8;
 #define PARAM_COUNT 0x30u
 #define PARAM_CACHE 0x3Cu          /* PARAM_VALUE stores its result here (0x080A0A52 vstr s0, [r0, #0x3c]) (S) */
 #define SUB_DETUNE 0x04u           /* the sub oscillator's octave offset, reread by its render each block */
+/* P3 Q4: the sub oscillator (voice +0x4C, its own class; its render 0x080A0DE0, read by hand) as its render reads it */
+#define SUB_FINE_MILLI 0x0Cu       /* int, 1/1000 semitone (its key 3) */
+#define SUB_NOTE 0x10u
+#define SUB_PITCH_PARAM 0x84u      /* modulated parameter: pitch (octaves) */
+#define SUB_OCT_DIV 0xDCu          /* u32: the octaves its rate is below 48 kHz's, plus 1 (2 at the device's 2N: engine init) */
+#define SUB_PW_PARAM 0xE4u         /* modulated parameter: the Square's pulse width 0..1 */
+#define SUB_CORE 0x20u             /* its oscillator core: wave byte +0, sine table +4, phase +8, stride +0x10, width +0x18 */
 #define VOICE_OSC1 0x178u          /* the voice's oscillator pointers (stock's root ctor: WT1, WT2, sub; rc33 p0/probe3.py) */
 #define VOICE_OSC2 0x17Cu
 #define MSG_KEY 0x0Cu              /* a set_property message (SET_PROPERTY's layout): u16 key, u32 value */
@@ -105,8 +115,8 @@ struct Run {                       /* the hooks' running state, M7 private (two 
     u32 victim;
     u32 fmtag;                     /* P3 (docs/plan-p3-fm-bits.md 3.3): which FM buffer holds this voice-block's signal
                                     * (AN_FMTAG_A the sub's copy, AN_FMTAG_B OSC1's); 0 at every an_enter that names a voice,
-                                    * meaningful only while voice is the voice rendering. P3 Q1: cleared, never set */
-    u32 inc_sub;                   /* P3: buffer A's sub increment (float bits), for the golden checks */
+                                    * meaningful only while voice is the voice rendering. P3 Q4: A set by sub_fill */
+    u32 inc_sub;                   /* P3: buffer A's sub increment x 2^-32 (float bits), for the golden checks (Q4: set) */
     u32 r11, r12, r13, r14, r15;
 };
 static_assert(sizeof(Run) == 64, "two lines");
@@ -361,6 +371,39 @@ static float wt1_oct(void *o1) {
     return oct;
 }
 
+/* P3 Q4 (plan 4.2): the sub oscillator's increment this block, as its render will compute it: stock's formula in stock's
+ * order (0x080A0E18..0x080A0E68, then 0x08056E40: OCT_RATIO / 48000 x 2^32, vcvt.u32), from the fields an_enter already set
+ * (our glide is in +0x04). At +0xDC = 2 it is per 96 kHz sample, as the carrier's inc. */
+static u32 sub_inc(u8 *sub) {
+    float oct = (float)(int)W(sub, SUB_FINE_MILLI) / 1000.f / 12.f;
+    oct = oct + FN(S_PARAM_VALUE, param_fn)(sub + SUB_PITCH_PARAM);
+    oct = oct + F(sub, SUB_DETUNE);
+    oct = oct - (float)(W(sub, SUB_OCT_DIV) - 1u);
+    u32 note = W(sub, SUB_NOTE);
+    float hz = FN(S_OCT_RATIO, float (*)(float))(FN(S_NOTE_OCT, float (*)(void *))(&note) + oct);
+    return (u32)(hz / 48000.f * 4096.f * 1048576.f);
+}
+/* P3 Q4 (plan 4.2, OD10): buffer A for this voice-block: the sub's block in increment units, DC-free (an_sub_copy), and its
+ * increment x 2^-32 returned. PARAM_VALUE stores its result in the parameter (+0x3C): the pitch's (sub +0xC0) and the
+ * Square's width (sub +0x120) are put back, so the sub reaches its render byte for byte as stock left it (its render
+ * computes both again from the same inputs: test_analog SubCopy). The width as stock's 0x08056440: vcvt.u32 of pw x 2^32,
+ * held to 1..0xFFFFFFFE. Out of line: an_osc's other paths stay as they were (M1). */
+__attribute__((noinline)) static float sub_fill(u8 *sub, float *a, u32 n) {
+    param_fn param = FN(S_PARAM_VALUE, param_fn);
+    u32 keep = W(sub, SUB_PITCH_PARAM + PARAM_CACHE);
+    u32 inc = sub_inc(sub);
+    W(sub, SUB_PITCH_PARAM + PARAM_CACHE) = keep;
+    u32 pend = 0;
+    if (*(volatile u8 *)(sub + SUB_CORE) == 3u) {             /* the Square */
+        keep = W(sub, SUB_PW_PARAM + PARAM_CACHE);
+        pend = (u32)(param(sub + SUB_PW_PARAM) * 4294967296.f);
+        W(sub, SUB_PW_PARAM + PARAM_CACHE) = keep;
+        pend = pend > 0xFFFFFFFEu ? 0xFFFFFFFEu : pend < 1u ? 1u : pend;
+    }
+    an_sub_copy(sub + SUB_CORE, a, n, inc, pend);
+    return (float)inc * 2.3283064365386963e-10f;
+}
+
 /* S1, slot 2: the oscillator's note start (osc, ?, &note), before stock's. WT1 Wavetable starting a note with WTOscReset on
  * restarts stock's phase (its kernel reset zeroes index and fraction), so an Analog WT2 synced to it restarts its copy, and
  * its slave restarts with it (mrestart); with WTOscReset off stock's phase runs on (only its fraction is zeroed), so the
@@ -479,6 +522,18 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     }
     float inc = rate * (1.f / 2048.f);                        /* a 2048-sample cycle at the native rate */
     if (role != AN_FREE) STATS->synced++;                     /* the black box's synced= (B1: sync in chunks, below) */
+    /* P3 Q4 (plan 4.1, 4.2): Sub FM's modulator in buffer A, once per voice-block: the first oscillator that wants it fills it
+     * (OSC1; OSC2 when OSC1 did not: Wavetable, skipped, or no Sub FM) and tags it; valid for the whole voice-block, since
+     * nothing writes the sub before it renders. Only for the voice an_enter named (the tag is that voice's). Longer blocks
+     * than the buffer: no FM, counted (fmx=). Q4: nothing plays A yet (Q5). */
+    if (props(osc)->subfm || self->msub) {
+        if (n > AN_FM_FRAMES) FMSTATS->fm_skipped++;
+        else if (r->voice == (u32)v && !(r->fmtag & AN_FMTAG_A)) {
+            float f = sub_fill(v + S_VOICE_SUB, (float *)SA(SA_FMBUF_A), n);
+            __builtin_memcpy(&r->inc_sub, &f, 4);
+            r->fmtag |= AN_FMTAG_A;
+        }
+    }
 #if AN_E3
     if (silent) {                                             /* a silent master: only the wraps for WT2 */
         self->mshape = (u16)AN_NO_SHAPE;

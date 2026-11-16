@@ -91,5 +91,7 @@ extern "C" void an_reshape(AnOsc *o, float from, float to);
 extern "C" void an_crush(float *s, unsigned n, unsigned bits, float dc);   /* P3 Q2 Bit Depth: AnProps.bits 1..3, in
                                                                            * place; Q2b (OD12): on x + dc, dc taken off */
 extern "C" float an_dc(float shape);  /* P3 Q2b: the kernel's DC term at shape (the pulse's 2 width - 1), the part's dc */
+extern "C" void an_sub_copy(const void *core, float *a, unsigned n, unsigned inc, unsigned pend);   /* P3 Q4: the sub's
+                                                                           * block in increment units, DC-free (OD10) */
 
 #endif

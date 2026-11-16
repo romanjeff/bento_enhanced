@@ -932,6 +932,7 @@ REVIEWED = {
     'LEVEL_CURVE': dict(value=0x804f360, evidence=_AF),
     'SMOOTH_SET': dict(value=0x8071a20, evidence=_AF),
     'SMOOTH_APPLY': dict(value=0x8071820, evidence=_AF),
+    'SUB_NOISE_TABLE': dict(value=0x80cb9f8, evidence="P3 Q4: the sub oscillator core render 0x08056720's Noise case (wave byte 5, tbh entry 5 -> 0x08056AC0): out[i] = table[p & 0xFFF], p += the core's stride +0x10 (1: 0x08056AE0..F4, else 0x08056D60..72), then stride = rand() % 256 + 1 for the next block (0x08056AFE..10); the table the one literal 0x08056D78 (both loops), 4096 floats in -0.99939..0.99988 (S, scratch p3/q4 noise.py)"),
     'SCRATCH_PTR': dict(value=0x80523e0, evidence=_AF),
     'SCRATCH_SIZE': dict(value=0x8052fa0, evidence=_AF),
     'MIX_INTO': dict(value=0x8052760, evidence=_AF),

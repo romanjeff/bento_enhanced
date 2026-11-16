@@ -1684,7 +1684,7 @@ class P3Identity(unittest.TestCase):
     def setUpClass(cls):
         if not REF_OK:
             raise unittest.SkipTest(f"no BE4.40 reference build at {REF} (BE_REF)")
-        cls.costs = []
+        cls.costs, cls.copies = [], []
 
     @classmethod
     def tearDownClass(cls):
@@ -1693,6 +1693,9 @@ class P3Identity(unittest.TestCase):
             print(f"\n  P3Identity: {len(cls.costs)} cases, instructions this build / BE4.40: worst {worst[1] / worst[2]:.4f} "
                   f"({worst[0]}: {worst[1]} / {worst[2]}), total {sum(c[1] for c in cls.costs) / sum(c[2] for c in cls.costs):.4f}",
                   file=sys.stderr)
+        if getattr(cls, "copies", None):                      # P3 Q4: buffer A's fills, left out of the costs above
+            print(f"  P3Identity: sub_fill per call (the copy, Rig's zero sub where not stock's root): " + ", ".join(
+                f"{n} {t / c:.0f}" for n, c, t in cls.copies), file=sys.stderr)
 
     # Sub FM 70 %, Bit Depth Full, FM 1>2 33.3 %: test_q1_plays_no_amount. P3 Q2: Bit Depth 2 (8 bits) was in it through Q1;
     # it plays since Q2, so it left this tuple for BitDepth.test_the_amounts_cases_crush_and_nothing_else (same cases)
@@ -1788,17 +1791,28 @@ class P3Identity(unittest.TestCase):
         st = struct.unpack("<16I", r.u.mem_read(SA + SA_STATS, 64))
         return f32le(m.x1 + m.x2), bytes(r.u.mem_read(m.v, 0xB88)) + f32le(m.wr), [st[i] for i in ID_STATS], cyc
 
-    def check(self, name, run, dev, mask=()):
-        """mask: the Analog oscillators whose P3 settings bytes (stored on this build, not on BE4.40) the voice leaves out."""
-        a = run(Rig(dev=dev))
+    def check(self, name, run, dev, mask=(), fills=None, fill_max=None):
+        """mask: the Analog oscillators whose P3 settings bytes (stored on this build, not on BE4.40) the voice leaves out.
+        fills: P3 Q4, this build fills buffer A (Sub FM set) that many times: sub_fill's own instructions (Span, its stock
+        helpers included) are the copy's, recorded and left out of the +2 % bound, which holds for the rest (a carve-out,
+        6.7), and bounded on their own: fill_max instructions a call."""
+        ra = Rig(dev=dev)
+        span = Span(ra, dsp_sym("sub_fill")) if fills is not None else None
+        a = run(ra)
         b = run(Rig(img=REF_IMG, dev=dev, dsp=REF_DSP))
         self.assertGreater(max(abs(x) for x in struct.unpack(f"<{len(b[0]) // 4}f", b[0])), 0.05, f"{name}: control, it plays")
         same(self, a[0], b[0], f"{name}: the output")
         same(self, self.masked(a[1], mask), self.masked(b[1], mask),
              f"{name}: the voice (both oscillators, their kernel areas, the sub)")
         self.assertEqual(a[2], b[2], f"{name}: the stats words")
-        self.costs.append((name, a[3], b[3]))
-        self.assertLessEqual(a[3], b[3] * 1.02, f"{name}: instructions {a[3]} vs BE4.40's {b[3]} (M1: +2 %)")
+        copy = 0
+        if span:
+            self.assertEqual(span.calls, fills, f"{name}: buffer A filled once per voice-block (P3 Q4)")
+            copy = span.total
+            self.copies.append((name, span.calls, copy))
+            self.assertLessEqual(copy, span.calls * fill_max, f"{name}: sub_fill {copy / span.calls:.0f} a call (bound {fill_max})")
+        self.costs.append((name, a[3] - copy, b[3]))
+        self.assertLessEqual(a[3] - copy, b[3] * 1.02, f"{name}: instructions {a[3]} - {copy} (the copy) vs BE4.40's {b[3]} (M1: +2 %)")
 
     def test_free_running_shapes(self):
         """Cost / Voice: both oscillators Analog, Shape pairs across 45..127 (the saw plateau's new edge 45, the anchors; P3
@@ -1903,18 +1917,23 @@ class P3Identity(unittest.TestCase):
         for byte; only the stored settings bytes differ (masked). Control: this build stored them. Glide in Rig() only
         since Q0 (OD1: the dev rig's glide time changed on purpose; its amounts control is in
         test_glide_dev_is_the_expected_change). Q2 made Bit Depth's part its expected change: Bit Depth 2 left AMOUNTS,
-        and the same seven cases with it, in both rigs, are BitDepth.test_the_amounts_cases_crush_and_nothing_else. Q5
-        (Sub FM) and Q6 (FM 1>2) turn the rest into theirs (plan 7)."""
+        and the same seven cases with it, in both rigs, are BitDepth.test_the_amounts_cases_crush_and_nothing_else. Q4: Sub
+        FM 700 fills buffer A once per voice-block (still played by nothing): the output and the voice stay BE4.40's, and the
+        instruction bound is on everything but the copy (check's fills; the copy's own figures are SubCopy's). Q5 (Sub FM) and
+        Q6 (FM 1>2) turn the rest into their expected changes (plan 7)."""
         p3 = self.AMOUNTS
-        cases = (("free", lambda r: self.voice_case(r, shape=(48, 88), p3=p3), (0, 1)),
-                 ("sync", lambda r: self.voice_case(r, shape=(70, 100), sync=1, p3=p3), (0, 1)),
-                 ("sync silent master", lambda r: self.voice_case(r, shape=(48, 88), sync=1, level0=0.0, p3=p3), (0, 1)),
-                 ("glide", lambda r: self.voice_case(r, **self.GLIDE, p3=p3), (0, 1)),
-                 ("osc2 wavetable", lambda r: self.voice_case(r, shape=(64, 48), types=(1, 0), p3=p3), (0,)),
-                 ("root voice", lambda r: self.root_case(r, p3=p3), (0, 1)),
-                 ("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,)))
+        # sub_fill a call, upper bounds (M, Q4: Rig's zero sub (core wave 0) 606 / 1,118 at n = 128 / 256, stock's root's
+        # default sub 1,908 / 3,701; +5 %), keyed (stock's root, dev)
+        FILL_MAX = {(False, False): 640, (False, True): 1175, (True, False): 2005, (True, True): 3890}
+        cases = (("free", lambda r: self.voice_case(r, shape=(48, 88), p3=p3), (0, 1), 8),
+                 ("sync", lambda r: self.voice_case(r, shape=(70, 100), sync=1, p3=p3), (0, 1), 8),
+                 ("sync silent master", lambda r: self.voice_case(r, shape=(48, 88), sync=1, level0=0.0, p3=p3), (0, 1), 8),
+                 ("glide", lambda r: self.voice_case(r, **self.GLIDE, p3=p3), (0, 1), 11),
+                 ("osc2 wavetable", lambda r: self.voice_case(r, shape=(64, 48), types=(1, 0), p3=p3), (0,), 8),
+                 ("root voice", lambda r: self.root_case(r, p3=p3), (0, 1), 8),
+                 ("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,), 24))
         for dev in (False, True):
-            for name, run, oscs in cases:
+            for name, run, oscs, fills in cases:
                 if dev and name == "glide":
                     continue                                    # Q0: the dev rig's glide is an expected change (above)
                 with self.subTest(dev=dev, case=name):
@@ -1926,7 +1945,8 @@ class P3Identity(unittest.TestCase):
                                 self.assertEqual((s[3], s[5], s[6]), (0, 700, 333),
                                                  f"{name}: control, OSC{i + 1}'s Bit Depth, Sub FM, FM 1>2 as stored")
                         return x
-                    self.check(f"amounts {name} dev={dev}", stored, dev, mask=oscs)
+                    self.check(f"amounts {name} dev={dev}", stored, dev, mask=oscs, fills=fills,
+                               fill_max=FILL_MAX[(name == "root voice", dev)])
 
     def test_the_harness_goes_red(self):
         """The control (plan 6.2): the comparison fails on a one-ulp change of one output sample, and the replay itself
@@ -3061,6 +3081,407 @@ class ShapeLow(unittest.TestCase):
         for c, (v, e) in got.items():
             self.assertGreater(e, 8, f"centre {c}: AN_RAMP_LOW where an end is below the saw")
             self.assertLessEqual(v, ref, f"centre {c}")
+
+
+SA_FMBUF_A = 0x800          # buffer A, AN_FM_FRAMES floats (P3 3.3; Q4 fills it)
+AN_FM_FRAMES = 256
+RUN_INC_SUB = 40            # Run.inc_sub (float bits; P3 3.3: the run state's word 10)
+FM_SKIPPED = 8              # SaFmStats.fm_skipped (byte offset)
+SUB_SMOOTH = 0xCC           # the sub's level smoother: SMOOTH_APPLY's r0 in its render (stock's sub render, read by hand)
+# the sub oscillator's keys (its class slot 8, read by hand): 3 fine (1/1000 semitone, +0x0C), 0xC3 wave (stores value + 1,
+# the core's wave byte: 1 Rev Saw, 2 Triangle, 3 Square, 4 Sine, 5 Noise), 0xC4 level, 0xC5 pulse width (1/1000), 0xC6 retrigger
+SUB_FINE, SUB_WAVE, SUB_LEVEL, SUB_PW, SUB_RETRIG = 3, 0xC3, 0xC4, 0xC5, 0xC6
+SUB_WAVES = {1: "rev saw", 2: "triangle", 3: "square", 4: "sine", 5: "noise"}
+# sub_fill's instructions per voice-block, upper bounds (M, Q4 at 2N with its stock helpers: rev saw 3,724, triangle 2,952,
+# square 3,994, sine 5,256, noise 2,953; +5 %)
+SUB_COST_MAX = {1: 3910, 2: 3100, 3: 4190, 4: 5520, 5: 3100}
+
+
+class Span:
+    """P3 Q4: the instructions spent inside one function, its callees included (from its entry to its return address), and
+    its calls; a second hook on every instruction, so only on the rigs that measure."""
+    def __init__(self, r, fn):
+        self.r, self.entry, self.stack, self.total, self.calls = r, fn & ~1, [], 0, 0
+        r.u.hook_add(UC_HOOK_CODE, self.step)
+
+    def step(self, u, a, size, _):
+        if a == self.entry:
+            self.stack.append((self.r.n, u.reg_read(UC_ARM_REG_LR) & ~1))
+        elif self.stack and a == self.stack[-1][1]:
+            n0, _ = self.stack.pop()
+            self.total += self.r.n - n0; self.calls += 1
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class SubCopy(unittest.TestCase):
+    """P3 Q4 (docs/plan-p3-fm-bits.md 4.2, 6.4, OD10): buffer A, the sub oscillator's block in increment units, filled once
+    per voice-block by the first Analog oscillator with Sub FM, from the sub as it is before its own render. On the device's
+    path (stock's root ctor and engine init: the sub's +0xDC = 2, 2N = 256 frames; stock's voice render through the root's
+    vtable word: OSC1, OSC2, then stock's sub render), A at the sub render's entry is checked against the sub's raw core
+    output of that same block (taken at its Level smoother's input, SMOOTH_APPLY (sub + 0xCC, ..)): A = (raw - dc) inc 2^-32
+    in float32, bit for bit (worst 0), dc the Square's 1 - 2 pw (OD10), 0 for the others, inc the increment stock's render
+    set. And the copy changes nothing else: the same case with Sub FM 0 plays the same output and reaches the sub's render
+    with the same voice bytes (P3's settings bytes masked), PARAM_VALUE's two cache words included. Q4 plays nothing from A."""
+    BLOCKS = 12
+    NOTES = {0: 48, 4: 61, 8: 36, 10: 36}                       # block 10: the same note again (a retrigger)
+
+    def voice(self, r, wave, level, fm=(700, 0), types=(1, 1), glide=300, pw=300, retrig=1, fine=250, handle=0x4545,
+              index=0, root=None, sync=0):
+        """Stock's root (ctor, engine init) and its voice `index`; Type / Glide / Sub FM / OSC2's Sync through stock's root
+        property, the sub's own keys through its slot 8; a source routed to the sub's pitch (+0x84: its slot 10, key 3)."""
+        if root is None:
+            pool_alloc(r)
+            root = r.alloc(0x2F0); r.call(S.WT_ROOT_CTOR, root); r.call(S.WT_ENGINE_INIT, root)
+            r.w32(root + S.ROOT_HANDLE, handle)
+            for i in range(10):
+                vo = r.r32(root + 0x14 + 4 * i)
+                for o in (S.VOICE_WT1, S.VOICE_WT2):
+                    r.w32(vo + o + 0x18, r.nowav)
+            for i in (0, 1):
+                r.root_prop(root, K_TYPE, types[i], i)
+            r.root_prop(root, K_GLIDE, glide, 0)
+            if sync:
+                r.root_prop(root, K_SYNC, sync, 1)
+            for i in (0, 1):
+                r.root_prop(root, K_SUBFM, fm[i], i)
+        v = r.r32(root + 0x14 + 4 * index)
+        sub = v + S.VOICE_SUB
+        for k, x in ((SUB_WAVE, wave - 1), (SUB_LEVEL, level), (SUB_PW, pw), (SUB_RETRIG, retrig), (SUB_FINE, fine)):
+            r.prop(sub, k, x)
+        src = route(r, sub, 0, 1.0, key=SUB_FINE)
+        return root, v, sub, src
+
+    def note(self, r, v, sub, n):
+        """Stock's voice note start calls slot 2 of WT1, WT2 and the sub."""
+        r.note(v, n)
+        nw = r.alloc(4); r.w32(nw, n)
+        r.call(r.r32(r.r32(sub) + 8) & ~1, sub, 0, nw)
+
+    def taps(self, r, subs):
+        """Per sub (by address): at its render's entry the voice's bytes, buffer A and the run state; at its smoother the raw
+        core block. And sub_fill's calls: (the oscillator in the last an_osc entered, the sub it was given)."""
+        got = {s: dict(at=[], raw=[]) for s in subs}
+        last, fills = [None], []
+        def entry(uc, a, size, _):
+            s = uc.reg_read(UC_ARM_REG_R0)
+            if s in got:
+                got[s]["at"].append((bytes(uc.mem_read(s - S.VOICE_SUB, 0xB88)),
+                                     np.frombuffer(bytes(uc.mem_read(SA + SA_FMBUF_A, 4 * AN_FM_FRAMES)), dtype="<f4").copy(),
+                                     bytes(uc.mem_read(SA + SA_RUN, 64))))
+        def smooth(uc, a, size, _):
+            s = uc.reg_read(UC_ARM_REG_R0) - SUB_SMOOTH
+            if s in got:
+                p, n = uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R3)
+                got[s]["raw"].append(np.frombuffer(bytes(uc.mem_read(p, 4 * n)), dtype="<f4").copy())
+        def osc(uc, a, size, _): last[0] = uc.reg_read(UC_ARM_REG_R0)
+        def fill(uc, a, size, _): fills.append((last[0], uc.reg_read(UC_ARM_REG_R0)))
+        render = r.r32(r.r32(subs[0])) & ~1                     # the sub class's slot 0 (stock's sub render)
+        r.u.hook_add(UC_HOOK_CODE, entry, begin=render, end=render)
+        r.u.hook_add(UC_HOOK_CODE, smooth, begin=S.SMOOTH_APPLY, end=S.SMOOTH_APPLY)
+        r.u.hook_add(UC_HOOK_CODE, osc, begin=DSP["an_osc"] & ~1, end=DSP["an_osc"] & ~1)
+        f = dsp_sym("sub_fill")
+        r.u.hook_add(UC_HOOK_CODE, fill, begin=f, end=f)
+        return got, fills
+
+    def play(self, wave, level, blocks=BLOCKS, levels=None, msub=None, notes=None, each=None, **kw):
+        """One case on this build: (per-block records, the voice output, sub_fill's calls, instructions per block, Span,
+        (rig, voice, sub)). A holds a non-zero pattern before each block (a copy that writes nothing is seen); rec["arg"]
+        is the increment sub_inc gave an_sub_copy (its r3) this block, or None. notes: the blocks' note starts (NOTES);
+        each(r, sub, b): before block b's render."""
+        r = Rig()
+        notes = self.NOTES if notes is None else notes
+        root, v, sub, src = self.voice(r, wave, level, **kw)
+        self.assertEqual(r.r32(sub + 0xDC), 2, "the device's sub: +0xDC = 2 after stock's engine init")
+        got, fills = self.taps(r, [sub])
+        span = Span(r, dsp_sym("sub_fill"))
+        lo = dsp_sym("an_sub_copy")
+        args = []
+        r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: args.append(uc.reg_read(UC_ARM_REG_R3)), begin=lo, end=lo)
+        hi = min([a & ~1 for a in DSP.values() if (a & ~1) > lo] + [S.M7_DSP_LIMIT])
+        divs = [0]
+        def vdiv(uc, a, sz, _):
+            if sz == 4:
+                w0, w1 = struct.unpack("<HH", uc.mem_read(a, 4))
+                if w0 & 0xFFB0 == 0xEE80 and w1 & 0x0F50 == 0x0A00:   # VDIV.F32
+                    divs[0] += 1
+        r.u.hook_add(UC_HOOK_CODE, vdiv, begin=lo, end=hi - 1)
+        m = r.call(r.r32(r.r32(root) + 0x4C) & ~1, root)[0]
+        acc, ad = r.buf(DEV_N * m, 1024); scr, _ = r.buf(DEV_N * m, 1024); out, od = r.buf(DEV_N, 1024)
+        slot18 = r.r32(r.r32(root) + 0x48)
+        recs, outs, cyc = [], b"", []
+        for b in range(blocks):
+            if b in notes:
+                self.note(r, v, sub, notes[b])
+            if b == 6:
+                r.prop(sub, SUB_PW, 650)                         # the Square's width moves: stock latches it at the next wrap
+            for i, l in enumerate(levels(b) if levels else (1.0, 1.0)):
+                r.level(v, i, l)
+            if msub:
+                r.u.mem_write(r.osc(v, 0) + S.OSC_KERNEL + MSUB_AT, struct.pack("<H", msub))
+            r.wf(src + 4, 0.03 * math.sin(1.3 * b))              # pitch modulation on the sub's +0x84 (octaves)
+            if each:
+                each(r, sub, b)
+            r.w32(acc + 4, DEV_N * m); r.w32(scr + 4, DEV_N * m); r.u.mem_write(ad, bytes(4096)); r.w32(out + 4, DEV_N)
+            r.u.mem_write(SA + SA_FMBUF_A, b"\x5a" * (4 * AN_FM_FRAMES))
+            t0, d0, k0 = span.total, divs[0], len(args)
+            _, c = r.call(slot18 & ~1, root, v, 0, scr, sargs=(acc, 0, out))
+            outs += bytes(r.u.mem_read(od, 4 * DEV_N)); cyc.append(c)
+            recs.append(dict(fill=span.total - t0, divs=divs[0] - d0, arg=args[-1] if len(args) > k0 else None,
+                             inc=r.r32(sub + 0x20 + 0xC), pw=r.rf(sub + 0xE4 + 0x3C), pitch=r.rf(sub + 0x84 + 0x3C),
+                             wave=r.u.mem_read(sub + 0x20, 1)[0], detune=r.rf(sub + 4)))
+            r.block()
+        self.assertEqual(len(got[sub]["at"]), blocks); self.assertEqual(len(got[sub]["raw"]), blocks)
+        for k, rec in enumerate(recs):
+            rec["voice"], rec["a"], rec["run"] = got[sub]["at"][k]
+            rec["raw"] = got[sub]["raw"][k]
+            rec["phase"] = struct.unpack_from("<I", rec["voice"], S.VOICE_SUB + 0x28)[0]    # the core's, at the block's start
+        return recs, outs, fills, cyc, span, (r, v, sub)
+
+    @staticmethod
+    def expect(rec):
+        """A from the raw block in float32, as the DSP is to compute it, with the dc and inc x 2^-32 it uses."""
+        incf = np.float32(rec["inc"] * 2.0 ** -32)
+        dc = np.float32(0.0)
+        if rec["wave"] == 3:
+            x = float(np.float32(rec["pw"])) * 2.0 ** 32
+            pend = 0 if not x > 0 else 0xFFFFFFFF if x >= 2.0 ** 32 else int(x)   # vcvt.u32: truncation, saturating
+            pend = min(max(pend, 1), 0xFFFFFFFE)
+            dc = np.float32(1.0 - float(np.float32(pend)) * 2.0 ** -31)
+        return (rec["raw"] - dc) * incf, dc, incf
+
+    def check_block(self, name, rec):
+        """A = (raw - dc) inc 2^-32 bit for bit, Run.inc_sub and the tag; returns max |A / inc + dc - raw| and dc."""
+        want, dc, incf = self.expect(rec)
+        self.assertEqual(len(rec["raw"]), DEV_FRAMES, f"{name}: 2N frames")
+        got = rec["a"][:DEV_FRAMES]
+        bad = np.nonzero(got.view("<u4") != want.view("<u4"))[0]
+        self.assertEqual(len(bad), 0, f"{name}: A = (raw - dc) inc 2^-32 bit for bit; {len(bad)} differ, first at "
+                         f"{bad[:1]}: {got[bad[:1]]} / {want[bad[:1]]}")
+        run = struct.unpack("<16I", rec["run"])
+        self.assertEqual(run[RUN_INC_SUB // 4], int(incf.view("<u4")), f"{name}: Run.inc_sub")
+        self.assertEqual(run[RUN_FMTAG // 4] & 1, 1, f"{name}: Run.fmtag says A")
+        return float(np.max(np.abs(got.astype(np.float64) / float(incf) + float(dc) - rec["raw"]))), float(dc)
+
+    def test_the_copy_is_stocks_sub_up_to_its_dc(self):
+        """6.4: all 5 waves x the sub's Level 0 and 1000 (stock never skips the sub's core at Level 0), over 12 device blocks:
+        note changes (48, 61, 36) and a retrigger (the same note again, retrigger on), OSC1's glide (Glide 300: an_enter
+        writes the sub's +0x04 before the voice renders), fine 250, pitch modulation on the sub's +0x84, the Square at PW
+        30 % and from block 6 65 % (the width latches at the next wrap, mid-block: the case two 128-frame copies got wrong).
+        Each block's A as check_block; Sub FM on OSC1. The copy's cost (sub_fill with its stock helpers) is recorded."""
+        costs = {}
+        for wave in SUB_WAVES:
+            for level in (0, 1000):
+                with self.subTest(wave=SUB_WAVES[wave], level=level):
+                    recs, _, fills, _, span, (r, v, sub) = self.play(wave, level)
+                    name = f"{SUB_WAVES[wave]} level {level}"
+                    worst, dcs = 0.0, set()
+                    for b, rec in enumerate(recs):
+                        self.assertEqual(rec["wave"], wave, "control: the sub's wave byte")
+                        w, dc = self.check_block(f"{name} block {b}", rec)
+                        worst = max(worst, w); dcs.add(dc)
+                    self.assertEqual(fills, [(r.osc(v, 0), sub)] * self.BLOCKS, "one fill per voice-block, by OSC1")
+                    # controls: the case moves what it claims to
+                    self.assertEqual([rec["phase"] for b, rec in enumerate(recs) if b in self.NOTES], [0] * len(self.NOTES),
+                                     "control: each note start (retrigger on) restarts the sub's phase")
+                    self.assertGreater(len({rec["inc"] for rec in recs}), 6, "control: the increment moves (notes, glide, mod)")
+                    self.assertTrue(any(rec["detune"] != 0.0 for rec in recs), "control: the glide reaches the sub's +0x04")
+                    self.assertGreater(len({rec["pitch"] for rec in recs}), 6, "control: the pitch modulation reaches +0x84")
+                    if wave == 3:
+                        self.assertEqual(len(dcs), 2, "the Square's dc follows its width (30 %, then 65 %)")
+                        self.assertAlmostEqual(min(dcs), 1 - 2 * 0.65, delta=1e-6)
+                        self.assertAlmostEqual(max(dcs), 1 - 2 * 0.30, delta=1e-6)
+                    else:
+                        self.assertEqual(dcs, {0.0}, "dc 0 but for the Square")
+                    if level == 1000:
+                        self.assertGreater(float(np.max(np.abs(np.concatenate([rec["raw"] for rec in recs])))), 0.5,
+                                           "control: it plays")
+                    self.assertLess(worst, 2 ** -22, f"{name}: A / inc + dc against raw (two float32 roundings)")
+                    costs[(wave, level)] = span.total / span.calls
+        print("\n  sub_fill per voice-block (instructions at 2N = 256, its stock helpers included): " +
+              ", ".join(f"{SUB_WAVES[w]} {costs[(w, 1000)]:.0f}" for w in SUB_WAVES if (w, 1000) in costs), file=sys.stderr)
+        for (w, l), c in costs.items():
+            self.assertLess(c, SUB_COST_MAX[w], f"{SUB_WAVES[w]} level {l}: the copy's cost")
+
+    def test_the_squares_width_at_its_ends(self):
+        """4.2: the Square's width as stock's 0x08056440 holds it, 1..0xFFFFFFFE: PW 0 (0 x 2^32 -> 1) and PW 100 % (2^32,
+        vcvt.u32 saturates -> 0xFFFFFFFE), then 65 % from block 6 (play); A as check_block, its dc +-1 at the end."""
+        for pw in (0, 1000):
+            with self.subTest(pw=pw):
+                recs = self.play(3, 1000, blocks=8, pw=pw)[0]
+                dcs = {self.check_block(f"PW {pw} block {b}", rec)[1] for b, rec in enumerate(recs)}
+                self.assertIn(1.0 if pw == 0 else -1.0, {round(d, 6) for d in dcs}, "dc at the end")
+
+    def test_the_copy_divides_at_the_subs_edges_only(self):
+        """6.5: VDIV.F32 inside an_sub_copy, counted by PC, per block = the sub's edges from its phase law (p0 + i inc mod
+        2^32, p0 the core's phase at the block's start): the Rev Saw one per wrap sample (p < inc), the Square one per wrap
+        sample and one per rising-ramp sample (w <= p < w + inc, the width latched at the first wrap), the others none."""
+        for wave in SUB_WAVES:
+            with self.subTest(wave=SUB_WAVES[wave]):
+                recs = self.play(wave, 1000, blocks=8)[0]
+                for b, rec in enumerate(recs):
+                    p0, inc = rec["phase"], rec["inc"]
+                    w = struct.unpack_from("<I", rec["voice"], S.VOICE_SUB + 0x20 + 0x18)[0]
+                    pend = None
+                    if wave == 3:
+                        x = float(np.float32(rec["pw"])) * 2.0 ** 32
+                        pend = min(max(0 if not x > 0 else 0xFFFFFFFF if x >= 2.0 ** 32 else int(x), 1), 0xFFFFFFFE)
+                    want = 0
+                    for i in range(DEV_FRAMES):
+                        p = (p0 + i * inc) & 0xFFFFFFFF
+                        if wave in (1, 3) and p < inc:
+                            want += 1
+                            if pend:
+                                w, pend = pend, 0
+                        elif wave == 3 and w <= p < ((w + inc) & 0xFFFFFFFF):
+                            want += 1
+                    self.assertEqual(rec["divs"], want, f"block {b}: VDIVs")
+                if wave in (1, 3):
+                    self.assertGreater(sum(rec["divs"] for rec in recs), 1, "control: it divides at all (notes 48 / 61: a wrap every few blocks)")
+
+    def test_the_copy_changes_nothing_else(self):
+        """6.4: with Sub FM 700 on OSC1 (the copy runs) and with Sub FM 0 (it does not), the same case plays the same voice
+        output byte for byte, and the whole voice reaches the sub's render with the same bytes (P3's settings bytes masked):
+        the sub object byte-identical, PARAM_VALUE's cache words (+0xC0, +0x120) included, which move every block here
+        (pitch modulation, a width change). The rest of the instructions between the two is the gate and the call."""
+        for wave in SUB_WAVES:
+            with self.subTest(wave=SUB_WAVES[wave]):
+                a = self.play(wave, 1000)
+                b = self.play(wave, 1000, fm=(0, 0))
+                same(self, a[1], b[1], "the voice's output")
+                self.assertEqual(len(a[2]), self.BLOCKS); self.assertEqual(len(b[2]), 0, "control: Sub FM 0 does not fill")
+                for k, (x, y) in enumerate(zip(a[0], b[0])):
+                    same(self, P3Identity.masked(x["voice"], (0, 1)), P3Identity.masked(y["voice"], (0, 1)),
+                         f"block {k}: the voice at the sub's render")
+                cache = lambda x, at: x["voice"][S.VOICE_SUB + at:S.VOICE_SUB + at + 4]
+                self.assertGreater(len({cache(x, 0xC0) for x in a[0]}), 6, "control: the pitch cache moves")
+                if wave == 3:
+                    self.assertEqual(len({cache(x, 0x120) for x in a[0][1:]}), 2, "control: the width cache moves (30 %, 65 %)")
+                rest = [ca - cb - x["fill"] for ca, cb, x in zip(a[3], b[3], a[0])]
+                self.assertTrue(all(0 < d < 40 for d in rest), f"the gate and the call, per block: {rest}")
+
+    def test_which_oscillator_fills(self):
+        """4.1: A is filled once per voice-block, by OSC1 when it has Sub FM, else by OSC2: OSC2 alone, both (OSC2 uses OSC1's
+        A: one fill), OSC1 Wavetable (a mixed voice), OSC1 silent (its skip path: OSC2 fills), and msub (a ramp still to run,
+        Q5) with Sub FM 0. A silent sync master (OSC1 Level 0, OSC2 Sync on: E3's branch, not the skip path) fills itself,
+        Sub FM on OSC1 alone or on both (E3 (b), Q5). A is the sub's (check_block) in each."""
+        quiet = lambda b: (0.0, 1.0)
+        cases = (("OSC2 only", dict(fm=(0, 700)), 1), ("both", dict(fm=(700, 300)), 0),
+                 ("OSC1 Wavetable", dict(fm=(700, 700), types=(0, 1)), 1),
+                 ("OSC1 silent", dict(fm=(700, 700), levels=quiet), 1),
+                 ("msub", dict(fm=(0, 0), msub=40), 0),
+                 ("silent sync master", dict(fm=(700, 0), sync=1, levels=quiet), 0),
+                 ("silent sync master, both", dict(fm=(700, 700), sync=1, levels=quiet), 0))
+        for name, kw, who in cases:
+            with self.subTest(case=name):
+                recs, _, fills, _, _, (r, v, sub) = self.play(3, 1000, blocks=6, **kw)
+                for b, rec in enumerate(recs):
+                    self.check_block(f"{name} block {b}", rec)
+                self.assertEqual(fills, [(r.osc(v, who), sub)] * 6, f"{name}: one fill a block, by OSC{who + 1}")
+                if kw.get("sync"):
+                    self.assertEqual(r.settings(v, 1)[2], 1, "control: OSC2's Sync is on (OSC1 the master)")
+
+    def test_each_voice_fills_its_own(self):
+        """3.3: two voices of one root rendered in the same audio block (an_enter clears the tag for each): each voice's A, at
+        its own sub's render, is its own sub's block (different waves and notes), filled once per voice-block."""
+        r = Rig()
+        root, v0, s0, _ = self.voice(r, 4, 1000)
+        _, v1, s1, _ = self.voice(r, 1, 1000, root=root, index=1)
+        got, fills = self.taps(r, [s0, s1])
+        m = r.call(r.r32(r.r32(root) + 0x4C) & ~1, root)[0]
+        slot18 = r.r32(r.r32(root) + 0x48)
+        self.note(r, v0, s0, 60); self.note(r, v1, s1, 43)
+        for b in range(4):
+            for v in (v0, v1):
+                acc, ad = r.buf(DEV_N * m, 1024); scr, _ = r.buf(DEV_N * m, 1024); out, od = r.buf(DEV_N, 1024)
+                r.call(slot18 & ~1, root, v, 0, scr, sargs=(acc, 0, out))
+            r.block()
+        self.assertEqual([s for _, s in fills], [s0, s1] * 4, "one fill per voice-block, each voice its own sub")
+        for s, wave in ((s0, 4), (s1, 1)):
+            self.assertEqual((len(got[s]["at"]), len(got[s]["raw"])), (4, 4))
+            for k, ((voice, a, run), raw) in enumerate(zip(got[s]["at"], got[s]["raw"])):
+                incf = np.frombuffer(struct.pack("<I", struct.unpack("<16I", run)[RUN_INC_SUB // 4]), dtype="<f4")[0]
+                self.assertEqual(struct.unpack("<16I", run)[2], s - S.VOICE_SUB, "Run.voice")
+                want = raw * incf
+                self.assertEqual(int(np.sum(a[:DEV_FRAMES].view("<u4") != want.view("<u4"))), 0,
+                                 f"{SUB_WAVES[wave]} block {k}: the voice's own sub in A")
+
+    def test_the_increment_is_stocks(self):
+        """4.2: sub_inc's u32 (an_sub_copy's r3) = the increment stock's render then writes to the core (+0xC), every block of
+        a sweep: a note start each block over 0..127, the sub's fine over both signs and odd values (-999..999: the int
+        conversion and the /1000 /12 order), OSC1's glide (+0x04) and the pitch modulation (+0x84) under it; A exact
+        (check_block, Rev Saw: it divides by inc)."""
+        notes = (0, 127, 13, 108, 24, 95, 37, 84, 48, 71, 59, 60, 1, 126, 30, 90, 45, 66, 52, 77, 7, 115, 61, 36)
+        fines = (-333, 777, -999, 999, -1, 1, -500, 123, -777, 333, -250, 641, -641, 250, -12, 12, -901, 459, -459, 901,
+                 -88, 88, -666, 666)
+        recs = self.play(1, 1000, blocks=len(notes), notes=dict(enumerate(notes)),
+                         each=lambda r, sub, b: r.prop(sub, SUB_FINE, fines[b]))[0]
+        for b, rec in enumerate(recs):
+            self.assertEqual(struct.unpack_from("<i", rec["voice"], S.VOICE_SUB + 0x0C)[0], fines[b], "control: the fine")
+            self.assertEqual(rec["arg"], rec["inc"], f"block {b} (note {notes[b]}, fine {fines[b]}): sub_inc vs stock's")
+            self.check_block(f"block {b}", rec)
+        self.assertGreater(len({rec["inc"] for rec in recs}), 20, "control: the increment moves")
+
+    def test_only_the_named_voice_fills(self):
+        """3.3: the gate fills A only for the voice an_enter named (the tag is that voice's): voice 1's OSC1 rendered while
+        Run.voice names voice 0 fills nothing (A, fmtag as they were), and voice 0's OSC1 then fills its own sub's A."""
+        r = Rig()
+        root, v0, s0, _ = self.voice(r, 1, 1000)
+        _, v1, s1, _ = self.voice(r, 1, 1000, root=root, index=1)
+        _, fills = self.taps(r, [s0, s1])
+        self.note(r, v0, s0, 60); self.note(r, v1, s1, 43)
+        for v in (v0, v1):
+            r.level(v, 0, 1.0)
+        r.call(r.dsp["an_enter"], root, v0)
+        self.assertEqual(r.r32(SA + SA_RUN + 8), v0, "control: Run.voice names voice 0")
+        r.u.mem_write(SA + SA_FMBUF_A, b"\x5a" * (4 * AN_FM_FRAMES))
+        entered = []
+        r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: entered.append(uc.reg_read(UC_ARM_REG_R0)),
+                     begin=DSP["an_osc"] & ~1, end=DSP["an_osc"] & ~1)
+        def osc1(v):
+            out, _ = r.buf(DEV_FRAMES); scr, _ = r.buf(DEV_FRAMES)
+            o = r.osc(v, 0)
+            r.call(r.r32(r.r32(o)) & ~1, o, scr, out)
+            self.assertEqual(entered[-1:], [o], "control: through an_osc")
+        osc1(v1)
+        self.assertEqual(fills, [], "voice 1 while voice 0 is named: no fill")
+        self.assertEqual(bytes(r.u.mem_read(SA + SA_FMBUF_A, 4 * AN_FM_FRAMES)), b"\x5a" * (4 * AN_FM_FRAMES), "A untouched")
+        self.assertEqual(r.r32(SA + SA_RUN + RUN_FMTAG) & 1, 0, "Run.fmtag clear")
+        osc1(v0)
+        self.assertEqual(fills, [(r.osc(v0, 0), s0)], "voice 0's OSC1 fills its own")
+        self.assertEqual(r.r32(SA + SA_RUN + RUN_FMTAG) & 1, 1, "Run.fmtag says A")
+        self.assertNotEqual(bytes(r.u.mem_read(SA + SA_FMBUF_A, 4 * DEV_FRAMES)), b"\x5a" * (4 * DEV_FRAMES), "A written")
+
+    def test_other_waves_copy_silence(self):
+        """4.2: stock's core has 10 waves (its LFOs'); the sub's wave key stores value + 1 unclamped, so a hand-edited file
+        can give it 6..10, or 0 (key value 255: no render). Their copy is 0 (no Sub FM; A held a non-zero pattern before
+        each block: play), and the copy still changes nothing."""
+        for key in (5, 9, 255):
+            with self.subTest(wave_key=key):
+                a = self.play(key + 1, 1000, blocks=3)
+                b = self.play(key + 1, 1000, blocks=3, fm=(0, 0))
+                same(self, a[1], b[1], "the voice's output")
+                for rec in a[0]:
+                    self.assertEqual(rec["wave"], (key + 1) & 0xFF)
+                    self.assertEqual(rec["a"][:DEV_FRAMES].view("<u4").tolist(), [0] * DEV_FRAMES, "A: +0.0")
+
+    def test_longer_blocks_than_the_buffer_fill_nothing(self):
+        """4.2: a block longer than AN_FM_FRAMES gets no FM: A is not written, the tag stays clear and each render that wanted
+        it counts in fm_skipped (fmx=); at 2N the same voice fills A. (Rig's own voice: no stock sub, its core wave 0.)"""
+        for n, fill in ((2 * DEV_FRAMES, False), (DEV_FRAMES, True)):
+            with self.subTest(n=n):
+                r = Rig(dev=True); root, v = r.voice(0x6D)
+                for i in (0, 1):
+                    P3Identity.push(r, r.osc(v, i), 0x6D, i, (1, 48, 0, 0), (700, 0, 0))
+                r.note(v, 60)
+                r.u.mem_write(SA + SA_FMBUF_A, b"\x5a" * (4 * AN_FM_FRAMES))
+                for _ in range(3):
+                    r.render(root, v, n, (0, 1)); r.block()
+                a = bytes(r.u.mem_read(SA + SA_FMBUF_A, 4 * AN_FM_FRAMES))
+                self.assertEqual(r.r32(SA + SA_FMSTATS + FM_SKIPPED), 0 if fill else 6, "fm_skipped: both oscillators, 3 blocks")
+                self.assertEqual(r.r32(SA + SA_RUN + RUN_FMTAG) & 1, int(fill), "Run.fmtag")
+                self.assertEqual(a, bytes(4 * AN_FM_FRAMES) if fill else b"\x5a" * (4 * AN_FM_FRAMES),
+                                 "A: the zero sub's copy (wave 0)" if fill else "A untouched")
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])
