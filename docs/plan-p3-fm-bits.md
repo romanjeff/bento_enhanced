@@ -1743,6 +1743,106 @@ Full suite (wsl/test_m1.sh, O=~/bento/out/m1-be441) **green** (M): test_analog 1
 (2 skipped), test_keys 10, test_note0 32, test_diag 92, the rest as before; test_drums / test_drum_ui not run (drums omitted
 on 1.6.8).
 
+## BE4.42 (2026-11-16, worktree be442 on 435b2f0; build ~/bento/out/m1-be442; kit flash\bento_enhanced-v4.42)
+
+Device feedback (Jeff, BE4.41 on hardware, 2026-11-16): the Analog dial looks great; FM works but is "more moderate than
+expected" (the sub as a sine modulator); Bit Depth "isn't enough difference in practice": remove it unless very cheap.
+Decisions (Claude's, told to Jeff): (1) remove Bit Depth completely; (2) deeper FM, FD3 restated as
+**I = 16 (v/1000)^1.5** for Sub FM and FM 1>2 (50 % = 5.66, 100 % = 16; BE4.41: 2 and 8), the |inc| <= 0.45 clamp kept;
+(3) label 4.42, delta checklist docs/checklist-v4.42.txt.
+
+Why this curve (the road not taken): 16 x^2 (the old shape doubled) leaves 50 % at 4 and the bottom half nearly as flat
+as BE4.41's, which is what Jeff heard as "moderate"; 16 x (linear) puts I = 1.6 at 10 % and leaves no fine control near
+zero. x^1.5 sits between: 25 % = 2 (BE4.41's 50 %), 63 % = 8 (BE4.41's 100 %), so the old range fills the lower two thirds
+of the knob and the top third is new depth. A pitch-dependent cap was not added (see "What gets worse").
+
+What changed (M unless marked):
+- **Bit Depth removed.** m4_synth.c: Bit Depth's descriptor (0x1A4, "Bit Depth", Full / 12 / 8 / 4, bento_bits) out of
+  NP_KEYS (one group of six now, still all or none), its row slot (Analog rows' slot 6 stays empty, so FM 1>2 keeps knob
+  8), its labels, the resend list (five keys) and the black box's `bits=`. build.py: KEY_OSC_BITS out of the analog group's
+  names and NP_TEMPLATE_KEYS: 0x2FC + 6 = 0x302, padded to **0x304 with two type-0xFF entries** (the count, so the patched
+  immediates, are BE4.41's). dsp: an_crush, an_dc and part_post are gone, `ours()` / an_prop no longer take 0x1A4 (stock's
+  slot 8 gets it and does nothing), AnProps byte +3 is `spare3` (0), SaFmStats +4 is `r1` (0). DSP_REFUSED_LIBM stays (it
+  also guards the new VSQRT, below). stock_168.py keeps KEY_OSC_BITS as a reviewed empty key (test_keys: RETIRED, must
+  stay empty).
+- **FM 1>2's modulator B** is now OSC1's pre-Level block times its increment, no grid: `an_feed(s, b, n, inc)`,
+  b = f32(s inc) (BE4.41's Full branch). OD15 and OD18 are moot (no grid); OD17 stands (see below).
+- **Index law** (dsp/analog.cpp an_index): I = f32(f32(v sqrt(v)) K), K = f32(16 / 1000^1.5), the square root VSQRT
+  inline (`__builtin_sqrtf` keeps a sqrtf call for errno under -fno-builtin, which DSP_REFUSED_LIBM would refuse). Exact
+  2 at 250 and 16 at 1000; within 1.7e-7 relative of 16 (v/1000)^1.5 for every v (two roundings).
+- **Golden model (p3_golden.py):** the Q2 / Q2b quantiser (crush, levels, probe, mutants), OD15's crush_mod and
+  crush_drift, wave_dc and Voice12's q1 / q2 retired; b_buffer(s, inc1) without a grid (mutants after_level, b_late,
+  kin_fm); fm_index / an_index32 on the new law ("square" = BE4.41's law, kept as a mutant; "linear" 16 x); the drift
+  self-test also at I = 16; the Bessel case near I = 1 is an_index32(157) = 0.9953. Self-test: 36 tests.
+- **Tests (reviewed expected changes, no tolerance loosened):** test_keys (six descriptors; 0x1A4 RETIRED, empty);
+  test_native_props (template 0x304 with 2 pads; a project the BE4.41 build itself saves with Bit Depth 8 / 4 opens on
+  BE4.42 with every other value, no 0x1A4 property, none pushed to the M7, bento_bits dropped on save); test_synth_ui
+  (rows, titles, turns, resend list, black box without bits=); test_analog: BitDepth replaced by BitDepthGone (a BE4.41
+  Bit Depth 12 / 8 / 4 / 7 pushed with Sub FM 700 plays byte for byte as 0, instructions included, free, synced and
+  through stock's root; the FM stats clean; the libm refusal with an_index's VSQRT in fm_setup; the pulse width the FM
+  golden needs, now a float32 statement kernel_dc32 pinned to an_render's plateaus since an_dc is gone), Props (0x1A4
+  not ours), P3Identity's AMOUNTS (0, **2**, 333): a stale Bit Depth 2 plays BE4.40 byte for byte, check_feeds / Fm12
+  without the grid, the index tests on the new law, the drift test at I = 8 and 16, aliasing adds FM 1>2 at I = 16.
+  Fm12.test_cost gates the voice at the gate's own index (every amount 630: I = 7.998) and records 100 % (below).
+
+Sizes (M, manifests of m1-be441 and m1-be442):
+
+| Item | BE4.41 | BE4.42 | Limit / left |
+|---|---|---|---|
+| Image (bento1.bin) | 1,609,936 B | **1,609,816 B**, -120 | PROVEN_MAX 0x18D334: 17,116 B left |
+| DSP code (window 36,608 B) | 23,772 B | **22,532 B, -1,240** | P3 ceiling 24,044 B: 1,512 B left; window 14,076 B free |
+| Synth UI (M4) | 14,952 B | 14,830 B, -122 | in the image figure |
+| M4 / M7 / trampolines | 24,424 / 15,368 / 752 B | unchanged | |
+| Property template | 0x304, 1 pad | 0x304, 2 pads | |
+
+Costs (M; instructions per voice-block, 2N = 256, note 60, saws, sine sub; hooks only, offline, not device cycles):
+
+| Case | BE4.41 | BE4.42 | |
+|---|---|---|---|
+| FM off | 13,346 | 13,314 | -0.24 % (the FM gate's Bit Depth test gone) |
+| Full FM at index 8 (BE4.41 100 %; BE4.42 every amount 630) | 30,753 | 30,696 | gate 30,932: 0.992 (BE4.41 0.993) |
+| Full FM at 100 % (BE4.41 I = 8, BE4.42 I = 16) | 30,753 | **31,412** | +2.1 %; 1.016 x the gate (recorded, not gated) |
+| Full FM synced, 100 % | 32,928 | 33,988 | +3.2 % |
+| Full FM, triangle carriers, 100 % | 37,489 | **38,666** | +3.1 %; 1.25 x the gate: still the heaviest voice |
+| Sub FM on both, 100 % (gated) | 27,294 | 27,914 | +2.3 %; 0.932 of its gate 29,939 |
+| Sub FM synced / triangle carriers, 100 % | 29,191 / 33,150 | 30,005 / 34,321 | +2.8 % / +3.5 % |
+| FM 1>2 alone, 100 % | 18,974 | 19,065 | +0.5 % |
+| Full FM with OSC1 at 8 bits (Bit Depth's own cost) | 35,258 | gone | 4,505 a voice-block; <= 11 instructions a crushed sample |
+| P3Identity vs BE4.40 (FM off) | worst +1.68 %, total +0.88 % | worst +1.48 %, total +0.65 % | bound +2 % |
+
+The cost of an FM render grows with the index (through zero, more wraps and edges to correct, each a VDIV), so the new
+100 % costs about 2-3.5 % more than BE4.41's; at BE4.41's depth BE4.42 is marginally cheaper. **CPU freed by removing Bit
+Depth:** about 4.5k instructions a voice-block wherever it was set, 32 a block when not.
+
+Clamp and aliasing at the new depth (M, p3_golden, scratch be442/clamp_alias.py; sine modulator, device rate 96 kHz):
+- **The |inc| <= 0.45 clamp** engages where inc (1 + I r) > 0.45 (r = modulator / carrier increment). Lowest MIDI note
+  that reaches it: FM 1>2, OSC1 = OSC2: **100** at 100 % (BE4.41 111), 116 at 50 %; OSC1 a fifth up 93 (105); an octave up
+  88 (100); Sub FM, sub an octave down: **111** (121); two octaves down 121 (never); both routes on OSC2 at 100 %: 93
+  (105). Share of samples clamped: FM 1>2 OSC1 = OSC2 at note 108: 55 % at 100 % (BE4.41 0 %), at note 120: 79 % (55 %);
+  Sub FM an octave down at note 120: 55 % (0 %). Below those notes nothing is clamped. The clamp is per sample (no
+  state), so it flattens the swing rather than breaking the render (the kernel tests run into it: lowest di -0.45).
+- **Aliasing** (6.3's metric: off-harmonic / harmonic energy after 96 kHz, stock's FIR and decimation; FM 1>2 sine OSC1 =
+  OSC2; old 100 % I = 8 -> new 50 % I = 5.66 / new 100 % I = 16), dB:
+  - sine carrier: notes 48..72 below -265 dB at every depth; **note 84: -191 -> -256 / -71**; **note 96: -47 -> -73 /
+    -21**. So sine -> sine stays clean to C6 even at 100 %, and at C7 the top of the knob produces audible inharmonic
+    components (BE4.41's 100 % was already -47 dB there).
+  - saw carrier: note 60 -38.3 -> -39.0 / -35.4; note 72 -36.0 -> -35.7 / -31.3; note 96 -28.1 -> -29.0 / -21.3: 50 % is
+    as clean as BE4.41's 100 %; 100 % is 3-7 dB worse.
+  - Sub FM (sine sub an octave down) saw carrier: note 60 -41.9 -> -43.7 / -38.8; note 96 -34.9 -> -33.0 / -32.0; sine
+    carrier at note 96: -177 -> -239 / -63.
+  - Kernel against golden (Fm12.test_aliasing_after_the_fir_is_below_48k, new row): FM 1>2 149 / 149 cycles at I = 16,
+    48 kHz -18.9 -> 96 kHz + FIR -30.6 dB (the 96 kHz design still more than 3 dB better than 48 kHz).
+- **What gets worse, honestly:** the top third of the knob (above BE4.41's 100 %) aliases audibly on high notes (C7 and
+  up with sine carriers, earlier with saws), and from about E7 the deepest swings are clamped; up to BE4.41's depth
+  (63 %) nothing changed. **OD17's detune doubles at 100 %** (FM 1>2's I12 is 16, not 8, so OSC1's own Sub FM DC shifts
+  OSC2 twice as far; Jeff kept OD17 = (a)). CPU at 100 % is up 2-3.5 % (table). No pitch-dependent cap was added: the
+  checklist (section 5) asks Jeff where it becomes unusable; a cap (I limited so inc (1 + I r) <= 0.45, or an index
+  roll-off above a note) is the follow-up if he wants one.
+
+Kit: wsl/package_m1.sh with O=~/bento/out/m1-be442 (the script reads only the build dir and the stock images; its
+gen_carriers call runs only for a build with the drums, which 1.6.8 leaves out), then docs/checklist-v4.42.txt copied in as
+DEVICE_CHECKLIST.txt and SHA256SUMS.txt regenerated and checked with `sha256sum -c`.
+
 ## Release notes (BE4.41)
 
 New (Analog oscillators of a Wavetable track; plan 2, 4):
@@ -1847,6 +1947,8 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 ---
 
 ## Decisions (Jeff, 2026-11-15)
+- **BE4.42** (2026-11-16, after Jeff's BE4.41 device run; Claude's decisions, told to Jeff): Bit Depth removed (OD11,
+  OD12, OD15, OD18 moot from BE4.42 on); FD3 restated as I = 16 (v/1000)^1.5; section "BE4.42".
 - **OD17 = (a), OD18 = (a)** (Jeff, 2026-11-16: "FM sound design has tuning quirks by nature"): B stays OSC1's
   signal with its own FM and its rounding; FM 1>2 may shift OSC2's pitch as OSC1's Sub FM, Shape or Bit Depth move. No
   high-pass on B. Release note, checklist section 4 records it as expected behaviour.
