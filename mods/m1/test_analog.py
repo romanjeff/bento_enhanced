@@ -2075,6 +2075,23 @@ class BitDepthGone(unittest.TestCase):
                     self.assertEqual(r.r32(SA + SA_FMSTATS + 4), 0, f"{name}: word +4 (BE4.41's bits=) 0")
                     self.assertGreater(r.r32(SA + SA_FMSTATS), 0, f"{name}: control, Sub FM played")
 
+    def test_a_late_bit_depth_key_stores_nothing(self):
+        """Review (mutant: 0x1A4 back in ours() falls to an_prop's last branch, fm12): 0x1A4 pushed after the P3 settings
+        (Sub FM 700, FM 1>2 333), at 1, 2, 3, 7, 0 and 1000 on both oscillators, leaves every stored setting as it was
+        (fm12 333 included) and counts no property of ours (stock's slot 8 takes it)."""
+        r = Rig(dev=True)
+        root, v = r.voice(0x5A)
+        for i in (0, 1):
+            self.push(r, r.osc(v, i), 0x5A, i, (1, 48, 0, 0), (700, 0, 333))
+        before = [r.settings(v, i) for i in (0, 1)]
+        props = r.r32(SA + SA_STATS + 16)
+        for val in (1, 2, 3, 7, 0, 1000):
+            for i in (0, 1):
+                r.prop(r.osc(v, i), K_BITS, val, 0x5A, i)
+            self.assertEqual([r.settings(v, i) for i in (0, 1)], before, f"0x1A4 = {val}: nothing stored")
+        self.assertTrue(all(333 in st and 700 in st for st in before), f"control: Sub FM and FM 1>2 stored {before}")
+        self.assertEqual(r.r32(SA + SA_STATS + 16), props, "props: no 0x1A4 counted as ours")
+
     def test_the_fm_stats_line_is_cleaned_with_the_stats(self):
         """Q2 review, kept: finish() cleans SA_FMSTATS's line (DCCMVAC) wherever it cleans SA_STATS, after the block's counts,
         so the M4 reads fresh fm= / fmx= on the device (the emulator has no cache: the clean itself is what is checked). Both
@@ -3772,6 +3789,22 @@ class SubFm(unittest.TestCase):
         self.assertGreater(base, 0, "control: an_osc divides (rate_of)")
         self.assertEqual(dv, {b: base + (r.first + b in want) for b in dv}, "an_osc's VDIVs per block: + 1 with FM")
 
+    def test_the_device_index_is_an_index32_for_a_sweep(self):
+        """Review (FD3 on the device, BE4.42): OSC1's Sub FM stepped through 1, 250, 1000 and every 11th amount 3..999 (one a
+        block): each FM block's first call starts its line at p3_golden.an_index32(last block's amount), bit for bit, and the
+        line ends at an_index32(this block's) within float32 rounding: fm_setup's VSQRT / VMUL / VMUL is the golden law over
+        the whole range, not only at the voice tests' amounts."""
+        amts = (1, 250, 1000) + tuple(range(3, 1000, 11)) + (1000,)
+        calls, _, _, _, (r, v, sub) = self.play(fm=(0, 0), blocks=len(amts), amounts=lambda b: {0: amts[b]})
+        o1 = r.osc(v, 0)
+        firsts = {x["block"]: x for x in calls if x["osc"] == o1 and x["off"] == 0}
+        for b in range(1, len(amts)):
+            x = firsts[r.first + b]
+            self.assertEqual(np.float32(x["ia"]).tobytes(), np.float32(G.an_index32(amts[b - 1])).tobytes(),
+                             f"block {b}: the line starts at an_index32({amts[b - 1]})")
+            end = float(np.float32(x["ia"]) + np.float32(x["dia"]) * np.float32(DEV_FRAMES))
+            self.assertAlmostEqual(end, G.an_index32(amts[b]), delta=2e-5, msg=f"block {b}: ends at an_index32({amts[b]})")
+
     def test_sync_master_and_slave(self):
         """M6, both Analog (OSC2 Sync): OSC1 the MASTER with its own Sub FM, OSC2 the SLAVE with Sub FM (through zero: OSC1's
         backward wraps reset OSC2, OD5), Shapes (24, 100) and (48, 12): every call the golden's (the master's bytes its
@@ -4215,6 +4248,29 @@ class Fm12(unittest.TestCase):
                     self.assertEqual({x["off"] for x in calls if x["osc"] == o}, {0, AN_EVENTS_N}, "control: chunked")
                 self.blines(f"sync {shapes}", calls, o2, {r.first + b: (0 if b == 0 else 1000, 1000) for b in range(6)})
 
+    def test_level_input_is_the_fm_render(self):
+        """BE4.42 (review: BE4.41's test_bit_depth_crushes_the_fm_render without the crush): with nothing between the FM render
+        and Level any more, each block at Level's input (level_taps) is the concatenation, in off order, of that oscillator's
+        an_render_fm calls' own y in that block, bit for bit, for both oscillators: Sub FM on both and FM 1>2, saw and a
+        pulse (Shape 110), free and synced; every call the golden's; fm= counts every render."""
+        for sync in (0, 1):
+            with self.subTest(sync=sync):
+                calls, _, stats, tp, (r, v, sub) = self.play(fm=(1000, 1000), x12=1000, shapes=(48, 110), sync=sync,
+                                                             taps=True)
+                self.replay(f"level input sync={sync}", calls)
+                self.assertEqual(len(tp), 12)
+                self.assertEqual(sorted(tp.osc), [0] * 6 + [1] * 6, "both oscillators at Level each block")
+                seen = {0: 0, 1: 0}
+                for x, i in zip(tp, tp.osc):
+                    blk = r.first + seen[i]; seen[i] += 1
+                    parts = sorted((c for c in calls if c["osc"] == r.osc(v, i) and c["block"] == blk),
+                                   key=lambda c: c["off"])
+                    self.assertTrue(parts, f"OSC{i + 1} block {blk}: FM renders")
+                    y = np.concatenate([c["y"] for c in parts])
+                    self.assertEqual(x.tobytes(), np.asarray(y, dtype="<f4").tobytes(),
+                                     f"OSC{i + 1} block {blk}: Level's input is the FM render")
+                self.assertEqual(stats[FM_FM // 4], len(tp), "fm= every FM render (a block's parts are one render)")
+
     def test_a_silent_osc1_still_modulates(self):
         """E3 (a) (4.4, BD1): OSC1 at Level 0 with FM 1>2 on OSC2 (free, and synced: a silent master): OSC2's FM calls and
         its Level-input blocks are those of the same case with OSC1 heard, bit for bit, and so is B; OSC1 renders (it feeds
@@ -4544,10 +4600,13 @@ class Fm12(unittest.TestCase):
         oscillator, + 764 for writing B (3,364), the sine copy 4,398, sub_inc's stock part (measured here)). BE4.42: the gate
         was derived at index 8 (BE4.41's 100 %), and an FM render's cost grows with the index (more edge crossings through
         zero), so it gates the same workload: every amount 630 (I = 7.998, the new law's index 8). The new 100 % (index 16)
-        is recorded against it, not gated (BE4.42 plan section: its measured ratio). Recorded, not gated: FM 1>2 alone; the
-        full voice synced; the triangle carriers. 6.5: no VDIV inside an_feed (by PC)."""
+        is a workload BE4.41 had no knob for: it is gated by an expected-change budget, FM_DEPTH_ALLOW x the same gate (plan
+        section BE4.42, "Cost": the deeper index's extra edge corrections measured 1.6 % over plan 5's gate; a restated
+        budget for a new workload, put to Jeff, not a loosened bound: the index-8 workload keeps plan 5's gate). Recorded,
+        not gated: FM 1>2 alone; the full voice synced; the triangle carriers. 6.5: no VDIV inside an_feed (by PC)."""
         SPEC_OSC, SPEC_B, SPEC_COPY = 2600, 3364, 4398
         I8 = 630                                                 # an_index(630) = 7.998: the gate's index (8)
+        FM_DEPTH_ALLOW = 1.03                                    # BE4.42 expected change: index 16's budget (plan BE4.42)
         rows = {}
         for name, fm, x12, sync, shape in (("off", (0, 0), 0, 0, None), ("full", (I8, I8), I8, 0, None),
                                            ("full 100%", (1000, 1000), 1000, 0, None), ("fm12", (0, 0), 1000, 0, None),
@@ -4587,6 +4646,9 @@ class Fm12(unittest.TestCase):
               f"({rows['full tri'][0] / gate:.3f} of the gate, not gated)", file=sys.stderr)
         self.assertLessEqual(rows["full"][0], gate, "the cost gate (plan 5: Q6's full voice at index 8)")
         self.assertLessEqual(rows["full"][0], 30906, "and Q5's fixed figure for it (plan 5: 1.3 x (13,294 + 10,480), M)")
+        self.assertLessEqual(rows["full 100%"][0], FM_DEPTH_ALLOW * gate,
+                             "BE4.42: the full voice at 100 % (index 16) within its restated budget (plan BE4.42, Cost)")
+        self.assertGreater(rows["full 100%"][0], rows["full"][0], "control: index 16 costs more edges than index 8")
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

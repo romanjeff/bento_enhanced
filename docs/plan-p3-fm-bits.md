@@ -1783,7 +1783,8 @@ What changed (M unless marked):
   golden needs, now a float32 statement kernel_dc32 pinned to an_render's plateaus since an_dc is gone), Props (0x1A4
   not ours), P3Identity's AMOUNTS (0, **2**, 333): a stale Bit Depth 2 plays BE4.40 byte for byte, check_feeds / Fm12
   without the grid, the index tests on the new law, the drift test at I = 8 and 16, aliasing adds FM 1>2 at I = 16.
-  Fm12.test_cost gates the voice at the gate's own index (every amount 630: I = 7.998) and records 100 % (below).
+  Fm12.test_cost gates the voice at the gate's own index (every amount 630: I = 7.998) and the 100 % voice against a
+  restated budget (Cost, below).
 
 Sizes (M, manifests of m1-be441 and m1-be442):
 
@@ -1801,7 +1802,7 @@ Costs (M; instructions per voice-block, 2N = 256, note 60, saws, sine sub; hooks
 |---|---|---|---|
 | FM off | 13,346 | 13,314 | -0.24 % (the FM gate's Bit Depth test gone) |
 | Full FM at index 8 (BE4.41 100 %; BE4.42 every amount 630) | 30,753 | 30,696 | gate 30,932: 0.992 (BE4.41 0.993) |
-| Full FM at 100 % (BE4.41 I = 8, BE4.42 I = 16) | 30,753 | **31,412** | +2.1 %; 1.016 x the gate (recorded, not gated) |
+| Full FM at 100 % (BE4.41 I = 8, BE4.42 I = 16) | 30,753 | **31,412** | +2.1 %; 1.016 x the gate; gated at 1.03 x it (Cost) |
 | Full FM synced, 100 % | 32,928 | 33,988 | +3.2 % |
 | Full FM, triangle carriers, 100 % | 37,489 | **38,666** | +3.1 %; 1.25 x the gate: still the heaviest voice |
 | Sub FM on both, 100 % (gated) | 27,294 | 27,914 | +2.3 %; 0.932 of its gate 29,939 |
@@ -1813,6 +1814,20 @@ Costs (M; instructions per voice-block, 2N = 256, note 60, saws, sine sub; hooks
 The cost of an FM render grows with the index (through zero, more wraps and edges to correct, each a VDIV), so the new
 100 % costs about 2-3.5 % more than BE4.41's; at BE4.41's depth BE4.42 is marginally cheaper. **CPU freed by removing Bit
 Depth:** about 4.5k instructions a voice-block wherever it was set, 32 a block when not.
+
+**Cost (expected change, put to Jeff):** plan 5's gate (1.3 x (off + the specialised delta), fixed at Q5 for index 8) is
+kept, unchanged, on the workload it was derived for (the full voice at index 8, every amount 630: 0.992). Index 16 is a
+workload BE4.41 had no knob for, and it measures 1.016 x that gate. Rather than leave it ungated, Fm12.test_cost asserts it
+against an explicit restated budget, **FM_DEPTH_ALLOW = 1.03 x the gate** (31,860 at today's off voice), named in the test
+and here: the deeper index's extra edge corrections are accepted as the price of the depth Jeff asked for. 1.03 covers the
+measured +2.1 % with about 1.4 % to spare, so a regression at the top of the knob is still caught; it is not applied to the
+index-8 workload. If the device CPU line (checklist) shows the top of the knob is too heavy, the remedies are a lower
+maximum index or a per-note cap, not a wider budget. Review follow-ups (M): Fm12.test_level_input_is_the_fm_render
+(Level's input = the FM calls' y, both oscillators, free and synced: BE4.41's crush test without the crush; kills a
+post-render nudge and a hidden crush that the voice replays missed), BitDepthGone.test_a_late_bit_depth_key_stores_nothing
+(0x1A4 after FM 1>2 stores nothing; kills 0x1A4 back in `ours()`), SubFm.test_the_device_index_is_an_index32_for_a_sweep
+(fm_setup's index line = an_index32 bit for bit over 1, 250, 1000 and every 11th amount; kills a reassociated law).
+test_analog 133 -> 136.
 
 Clamp and aliasing at the new depth (M, p3_golden, scratch be442/clamp_alias.py; sine modulator, device rate 96 kHz):
 - **The |inc| <= 0.45 clamp** engages where inc (1 + I r) > 0.45 (r = modulator / carrier increment). Lowest MIDI note
