@@ -383,29 +383,33 @@ __attribute__((noinline)) unsigned char fm_slow(float *pp, float *pd, const Fx *
     *pp = p;
     return m;
 }
-/* The block's sample off + i: di = fma(I, a, inc), I = fma(dia, off + i, ia) (float32, each rounded once), then the clamp
+/* The block's sample off + i: di = fma(I, a, inc), I = fma(dia, off + i, ia) (float32, each rounded once; P3 Q6: then
+ * di = fma(J, b, di), J = fma(dib, off + i, ib), the second modulator: a zero line adds +0), then the clamp
  * (VMAXNM / VMINNM: a and the index are finite, so no NaN reaches it), then p + di. Most samples cross nothing: they stay
  * in [lo, hi), the edges either side of p (hi the next edge above, lo the one at or below: the inner edge mm, or the wrap at
  * 1 / 0; with no inner edge mm is 1, so p = 1.0, the left limit, takes the long way), and play out = delayed, delayed =
  * the wave at the new phase, with no correction; the others go the long way (fm_slow, which divides), after which lo and
  * hi are taken again. The carrier's terms are locals (in registers: out[] would alias the struct), and the loop is
- * versioned on the wave's form (LW: LOW's, else MIXED's), not per sample. */
-template <int ROLE, int LW> __attribute__((always_inline)) inline
+ * versioned on the wave's form (LW 1: LOW's, 0: MIXED's), not per sample (P3 Q6: LW 2, per sample, only in the two-term
+ * loops, TWO: run_fm). */
+template <int ROLE, int LW, int TWO> __attribute__((always_inline)) inline
 void fm_loop(AnOsc &o, const Fx &x, float inc, float *out, unsigned n, unsigned char *events, const FmIn &f) {
-    float p = o.phase, delayed = o.delayed, ia = f.ia, dia = f.dia;
+    float p = o.phase, delayed = o.delayed, ia = f.ia, dia = f.dia, ib = f.ib, dib = f.dib;
     const float A = x.A, B = x.B, C = x.C, w = x.w, tw = x.tw, ws = x.ws, wsaw = x.wsaw, mm = x.m < 1.f ? x.m : 1.f;
-    const float *a = f.a + f.off;
+    const float *a = f.a + f.off, *b = f.b + f.off;
+    const int low = x.low;
     float j = (float)f.off;
     float hi = p < mm ? mm : 1.f, lo = p >= mm ? mm : 0.f;
     for (unsigned i = 0; i < n; i++, j += 1.f) {
         float d = fma32(fma32(dia, j, ia), a[i], inc);
+        if (TWO) d = fma32(fma32(dib, j, ib), b[i], d);       /* (P3 Q6: + J b, after I a) */
         d = __builtin_fminf(__builtin_fmaxf(d, -FM_INC_MAX), FM_INC_MAX);
         float end = p + d;
         unsigned e = ROLE == SLAVE ? events[i] : AN_NO_EVENT;
         if ((ROLE != SLAVE || e == AN_NO_EVENT) && end < hi && end >= lo) {
             p = end;
             out[i] = delayed;
-            delayed = LW ? fm_low(p, tw, ws, wsaw) : fma32(A, p, B) + (p < w ? C : -C);
+            delayed = (LW == 2 ? low : LW) ? fm_low(p, tw, ws, wsaw) : fma32(A, p, B) + (p < w ? C : -C);
             if (ROLE == MASTER) events[i] = AN_NO_EVENT;
         } else {
             float lp = p, ld = delayed;      /* (copies: p, delayed with their address taken would live on the stack) */
@@ -418,10 +422,18 @@ void fm_loop(AnOsc &o, const Fx &x, float inc, float *out, unsigned n, unsigned 
     o.phase = p;
     o.delayed = delayed;
 }
+/* P3 Q6: a second term (FM 1>2 next to Sub FM: OSC2's, FREE or SLAVE) takes its own loop, the wave's form chosen per sample
+ * there (LW 2: a predictable branch; 4 instances fewer), so the one-term loops (Sub FM, or FM 1>2 alone) stay Q5's code
+ * and cost (a second term at a zero line costs ~4 instructions a sample for +0: the full-FM voice was 1.001 x its gate,
+ * M). MASTER has none: OSC1, the only master, never has FM 1>2, so FmIn's b is not read in that role (an_osc passes a
+ * zero line there; a master with a second line would play the first alone). */
 template <int ROLE> void run_fm(AnOsc &o, const Fx &x, float inc, float *out, unsigned n, unsigned char *events,
                                 const FmIn &f) {
-    if (x.low) fm_loop<ROLE, 1>(o, x, inc, out, n, events, f);
-    else fm_loop<ROLE, 0>(o, x, inc, out, n, events, f);
+    if constexpr (ROLE != MASTER) {
+        if (f.ib != 0.f || f.dib != 0.f) { fm_loop<ROLE, 2, 1>(o, x, inc, out, n, events, f); return; }
+    }
+    if (x.low) fm_loop<ROLE, 1, 0>(o, x, inc, out, n, events, f);
+    else fm_loop<ROLE, 0, 0>(o, x, inc, out, n, events, f);
 }
 
 }  // namespace
@@ -560,6 +572,29 @@ extern "C" void an_crush(float *s, unsigned n, unsigned bits, float dc) {
     float up = dc != 0.f ? dc : -0.f, down = dc != 0.f ? dc : 0.f;
     for (unsigned i = 0; i < n; i++)
         s[i] = __builtin_fminf(__builtin_fmaxf(__builtin_rintf((s[i] + up) * S), lo), hi) * r - down;
+}
+
+/* P3 Q6 FM 1>2's modulator (docs/plan-p3-fm-bits.md 4.1, 4.7 BD1, OD15 = (b), Jeff 2026-11-16): buffer B from one part of
+ * OSC1's block s (rendered, before its audio crush and before Level: a silent OSC1 feeds it too, E3 (a)), in increment
+ * units, b[i] = inc q[i], inc OSC1's base increment (before its own FM: kin = I inc, 4.1):
+ *   bits 0 (Full): q = s;
+ *   else q = clamp(rint((s + dc) S), -S, S) / S - dc, an_crush's grid with its top at S, not S - 1 (OD15 (b): B's grid only,
+ *   the audio keeps OD11 (b)'s): symmetric, 2^b + 1 levels, so a +1 high keeps its level and B carries only rounding, not
+ *   the top clip's -f_hi / S mean (an OSC2 detune of I inc f_hi / S at every depth).
+ * The level, the add and the subtract as an_crush's (dc 0 the identity, sign of zero included), then the product, one
+ * rounding: p3_golden.b_buffer, f32(f32(inc) q), bit for bit. (clang contracts level * r - down into one VFMA, here and in
+ * an_crush: still the separate roundings' result, as level * r, an integer of at most 2^11 times a power of 2, is exact;
+ * Q6 review, M: the disassembly.) */
+extern "C" void an_feed(const float *s, float *b, unsigned n, unsigned bits, float dc, float inc) {
+    if (!bits) {
+        for (unsigned i = 0; i < n; i++) b[i] = s[i] * inc;
+        return;
+    }
+    float S = bits == 1u ? 2048.f : bits == 2u ? 128.f : 8.f;
+    float r = bits == 1u ? 1.f / 2048.f : bits == 2u ? 1.f / 128.f : 1.f / 8.f;
+    float up = dc != 0.f ? dc : -0.f, down = dc != 0.f ? dc : 0.f;
+    for (unsigned i = 0; i < n; i++)
+        b[i] = (__builtin_fminf(__builtin_fmaxf(__builtin_rintf((s[i] + up) * S), -S), S) * r - down) * inc;
 }
 
 /* P3 Q2b (OD12): the DC term the kernel takes off its waveform at `shape`, set_shape's k.dc in the same arithmetic (the

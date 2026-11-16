@@ -79,7 +79,7 @@ typedef struct {
 /* +0x0100 M7 FM stats, one line (P3, docs/plan-p3-fm-bits.md 3.3: SaStats has no free word; M7 writes and cleans after each
  * block, as SA_STATS, M4 reads: an_print's fm= / bits= / fmx=). +0x0100..+0x0200 was undefined; the M7 zeroes +0x40..+0x200
  * when it takes the area (m7_polyat.c synth_take), so a build whose DSP does not count yet reads 0 (P3 Q2: bits counts; Q4:
- * fm_skipped for Sub FM's buffer A; Q5: fm, the renders with Sub FM; fm_missed comes with Q6) */
+ * fm_skipped for Sub FM's buffer A; Q5: fm, the renders with Sub FM; Q6: fm_missed, FM 1>2 without B) */
 #define SA_FMSTATS 0x0100u
 typedef struct {
     unsigned fm;              /* Analog renders with FM (Sub FM or FM 1>2) */
@@ -114,7 +114,8 @@ typedef struct {
 #define SA_ANCACHE 0x0600u
 #define SA_ANCACHE_N 16u
 /* +0x0800 M7 private (P3, docs/plan-p3-fm-bits.md 3.3): the FM modulator buffers of the voice-block being rendered, two x
- * AN_FM_FRAMES floats in increment units: A (+0x800) the sub oscillator's copy, B (+0xC00) OSC1's crushed pre-Level signal.
+ * AN_FM_FRAMES floats in increment units: A (+0x800) the sub oscillator's copy, B (+0xC00) OSC1's pre-Level block on Bit
+ * Depth's grid with its top at S (OD15: an_feed, before the audio crush; also for a silent OSC1), times OSC1's increment.
  * Valid only while the run state's voice is that voice and its fmtag bit says so (dsp/analog.cpp). The M4 never reads or
  * writes it (SA_UI, the M4's synth UI state, unused since the review: the M4's state is in AN4) */
 #define SA_FMBUF 0x0800u

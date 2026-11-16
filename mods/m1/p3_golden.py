@@ -5,7 +5,8 @@
 
 Written from the plan text only (4.6, 4.7, OD6, OD11, OD4), before and without reading the DSP sources. Q2's part is the
 Bit Depth quantiser, Q3's the shapes below the saw (after the Bit Depth notes), Q5's the sub waves as modulators (OD10),
-the through-zero FM phase, the sync roles with the slave reset rule (4.3, OD5) and the Bessel check (last). Q2b extends the quantiser with OD12's dc (written
+the through-zero FM phase, the sync roles with the slave reset rule (4.3, OD5) and the Bessel check; Q6's FM 1>2 (OD15's modulator
+grid, buffer B, the two-oscillator voice, the DC-drift and aliasing checks: last). Q2b extends the quantiser with OD12's dc (written
 from OD12's decision text, quoted below; the kernel's an_crush was already built, so this part is not "before the DSP").
 
 Bit Depth (Q2; 4.7, OD11 = (b), Jeff 2026-11-15): a true b-bit two's-complement grid on the oscillator's 96 kHz block s,
@@ -162,6 +163,80 @@ Tolerances, and why (M: the self-test; I where marked):
   (M). Against the worst-shaped errors of that size (a 3rd-harmonic and a lobed one) the check uses 5-8 % of it (M), so it
   is conservative; it still fails an index 2 % off, the modulator one sample late, and the linear law (M). At Sub FM's
   sine (stock's table, not sinq) pass that table's stated error as eps_m.
+
+FM 1>2, OSC1 -> OSC2 (Q6; 4.1, 4.4 E3 (a), 4.5, 4.7 BD1, OD5, OD15 = (b) Jeff 2026-11-16, 6.3, 6.6): written from the plan text,
+this file's Q2b / Q5 parts and test_analog's harness API (fm_golden, fm_capture, FmBench), before and without reading any
+FM 1>2 implementation (no DSP C/C++ read for it). Stock's FIR taps are stock data read off the 1.6.8 image (S, below).
+- Modulator (BD1, OD15): B[i] = f32(f32(inc1) q_B[i]), q_B = crush_mod(OSC1's pre-Level s, its Bit Depth, its part dc)
+  = clamp(rint((s + dc) S), -S, S) / S - dc (the top at S: B's grid only; the audio keeps crush()); s itself at Full. inc1
+  OSC1's base increment (kin = I inc1, 4.1), not its FM'd di1. Level never enters (E3 (a): OSC1 at Level 0 modulates the
+  same). b_buffer; mutants after_level, before_crush, audio_grid (OD15 not applied), b_late, kin_fm.
+- Index (FD3, Q5 as built): an_index32(v) = f32(f32(v^2) f32(8e-6)); index_line(v0, v1, N) = (ia, dia), dia = f32(f32(I1 - I0)
+  / N) or 0; line_values: I_j = f32(ia + dia j) over the block frame j (m12's ramp the same rule as msub's, I: 4.1).
+- Voice: fm12_voice(n, inc1, k1, inc2, k2, a, is1, is2, i12, bits, state1, state2, sync, level1, off, law, fma, widths, dc,
+  order, mutant) -> Voice12(y1, q1, B, di1, r1, di2, y2, q2, r2): OSC1 = inc1 + I_s1 A (master when sync), its audio crush
+  q1, B from y1, OSC2 = inc2 + I_s2 A + I_12 B folded in `order` ("ab" = 4.3's text), slave on OSC1's bytes when sync
+  (OD5), its audio crush q2. Chained calls with off and the returned states are one call (state is (phase, delayed)).
+  "no_b" mutant: OSC2 ignores B (useB false).
+- Drift (6.3): drift(di, inc, window) {L, travel, expect, cycles, cents, ok |cycles| <= DRIFT_BIN = 1}; whole_cycles(di_mod)
+  a window of whole forward modulator cycles; crush_drift(s, b, inc1, I12, inc2, dc, window) {mod, grid} in cents: the
+  crush's own share of OSC2's mean frequency, OD15's B and the audio grid on B (the mutant).
+- Aliasing (6.3): STOCK_FIR, decimate(y, taps) (circular, one output per two inputs), fir_response, alias_db(y, cycles)
+  (off-harmonic / harmonic energy, plan-analog-fm 4.3's metric), alias_case(route, cc, cm, I, k_c, k_m, wave, fs, n48).
+- Bessel (6.3): fm12_bessel(y2, cc, cm, I, pc0, qm0, walk): OSC1 at Shape 0 from qm0 plays -cos 2 pi (qm0 + i inc1), so B is
+  fm_sine_time's modulator with phi = pi; eps_m = FM12_EPS_M = SINQ_ERR + TOL_F32 (OSC1's stated sample error).
+
+Tolerances, and why (M: the self-test, scratch p3/q6g; I where marked):
+- **B: bit for bit (tolerance 0).** S a power of two, the product of two float32 values exact in float64, one rounding each
+  (M: crush_mod equals numpy float32 arithmetic in every bit on 65,536 random x and kernel-range dc). The form
+  f32(f32(inc1) q) is a statement of the kernel's arithmetic: if the kernel folds inc1 into the crush (inc1 g / S - inc1
+  dc, or one VFMA), restate it here from the disassembly; never a tolerance.
+- **OSC2 sample by sample: Q5's rules unchanged** (law "f32", fma, the same di bit for bit: feed the kernel's own A and B and
+  lines; end phase equal first; fm_tol by OSC2's k and role; master bytes +-1 on ev_near). The fold order of the two terms
+  ("ab" / "ba") changes di by at most 2^-24 (M) and is a statement: read it off the kernel.
+- **Bessel, sine -> sine (FM 1>2):** bessel_tol with FM12_EPS_M: 3.80e-4 a bin at I = 1 (0.34 dB on the J3 bin at ratio 1,
+  under 6.3's 0.5 dB), 6.68e-4 at I = 2. The golden's own f32 renders use 0.07-0.4 % of it (ratio 1 at I = 1 and
+  an_index32(354) = 1.0025280, 3:1 at I = 2, 1:3 at I = 1); B one sample late, the index 2 % off and y1 after a Level of
+  0.98 fail by 17-31 x it. OSC1 at Full only: a crushed modulator has no Bessel law.
+- **DC drift (6.3, 100 blocks, I = 8 through zero):** travel over whole modulator cycles within DRIFT_BIN (1 cycle, Q5's
+  Square-sub precedent): Sub FM by a DC-free Square at PW 30 %, a sine and a triangle sub pass, the raw Square fails (-106
+  cycles); FM 1>2 from a free OSC1 at Shapes 48 / 88 / 127 x Full / 12 / 8 / 4 passes (worst 0.03 cycles). The audio grid on
+  B (OD15 not applied) fails the bin at 8 and 4 bits on the square (-2.1 / -33.7 cycles) but not at 12 (-0.13: under a
+  bin over 100 blocks), so 12 bits is seen by crush_drift (-3.3 cents against CRUSH_DRIFT_CENTS 1) and by B bit for bit.
+  Over an arbitrary window a zero-mean modulator's partial cycle alone moves the travel by up to I max|m| / 2 cycles
+  (|integral of a zero-mean wave over a part cycle| <= P max|m| / 2), so use whole cycles or a coherent block.
+- **crush_drift bound: CRUSH_DRIFT_CENTS = 1 cent at 12 and 8 bits, a free OSC1** (M, sweep of Shapes 0..127 x notes
+  36..108, I12 = 8, OSC1 = OSC2: worst +0.25 / +0.32 cents). Measured, not derived: the only derived bound (|mean
+  rounding| <= 1 / 2S) is 702 cents at 4 bits, useless. The audio-grid mutant: -3.4 / -55 / -1190 cents on the square,
+  -2.5 / -40 / -790 at Shape 100, -0.5 / -8 / -136 at 127, -0.04 / -3 / -208 on the sine (12 / 8 / 4 bits).
+- **Aliasing (6.3): 96 kHz + stock's FIR + decimation against the same voice rendered at 48 kHz** (the old design; its
+  absolute figures, plan-analog-fm 4.3, had an unrecorded modulator, so the comparison is same-case): M at n48 16384, I = 4
+  ratio 1 unless noted, dB off/harmonic 48k -> 96k+FIR: FM 1>2 saw carrier, sine OSC1 436 Hz -29.8 -> -37.4, 1731 Hz -22.4
+  -> -27.6; saw OSC1 -25.1 -> -31.3, -18.0 -> -26.4; I = 8 -15.3 -> -26.1; square / square 436 Hz I = 8 -25.7 -> -34.8;
+  sine / sine 1731 Hz -119.5 -> -130.1; Sub FM saw carrier, sine sub an octave down 436 Hz -30.1 -> -38.2, 1731 Hz -24.1 ->
+  -31.6, I = 8 -15.7 -> -27.1; sine carrier -103.7 -> -114.3. 5.2 to 11.3 dB below; the self-test asserts > 3 dB at n48
+  8192. Plain decimation (no FIR) is worse than 48 kHz (-20.2 against -29.8): the FIR is load-bearing.
+- **STOCK_FIR (S):** 11 symmetric taps, DC gain 0.9511 (-0.44 dB), |H| -2.2 dB at 20 kHz, -10.0 at 24, -27.8 at 28, about
+  -20 from 32 to 48 kHz: a weak stopband (I: the old plan's "the decimator partly removes its images" holds, partly).
+
+Found in Q6 (for the plan; M unless marked):
+- **OSC1's own Sub FM puts a real DC into B.** The sub is an octave (or two) below OSC1, so OSC1's FM spectrum has its
+  sideband f1 - 2 f_sub at 0 Hz: the correct, band-limited y1 has a mean (M: +0.126 for a saw OSC1 at Sub FM 50 %, I = 2,
+  sine sub), and FM 1>2 turns it into an OSC2 detune of I12 inc1 mean(y1): about +1200 cents at FM 1>2 100 % (M). Sweep
+  (Shapes 0..127, notes 36..108, Sub FM I = 0.5 / 2 / 8 on OSC1): |mean(y1)| up to 0.37 (the square, note 108, I = 2), so
+  with OSC1 = OSC2 the mean increment 1 + I12 mean(y1) reaches 0.63 (-800 cents) at FM 1>2 35 % (I12 = 1) and reverses
+  sign at 100 %. Its sign follows the Shape and J_2(I). 4.5's "B is OSC1's
+  audible signal, including OSC1's own FM" makes this the specified behaviour, but it is a far larger detune than the
+  one OD15 removed. Options for Jeff (not this file's call): accept (FM character); a DC blocker on B (a one-pole high-pass
+  per block, a few instructions a sample, B no longer bit for bit OSC1's crushed s); or B from OSC1 before its own Sub FM
+  (not available: one render). The 6.3 drift check is therefore stated for a free OSC1; with OSC1's own FM the golden
+  predicts the drift exactly (I12 sum(B)) and a test should compare against it, not against 0.
+- **OD15 removes the grid's top-clip DC, not the rounding's own mean.** Where a wave's extreme falls between two levels the
+  rounding has a steady mean: Shape 36 peaks at 0.474, which 4 bits rounds up to 0.5 on every cycle: +16.6 cents at note
+  60, +30.0 at note 96 (FM 1>2 100 %, a free OSC1; a steady rate: +38.6 cycles over 400 blocks); with OSC1's own Sub FM
+  (I = 2) its phase dwells on a few values: -139 cents at 4 bits, -3.1 at 8. No sample reaches the top there, so OD15
+  changes nothing. 12 and 8 bits from a free OSC1 stay within 0.32 cents. So "no OSC2 detune at any depth" (OD15) holds
+  for the top clip's term at every depth, and in total only at 12 and 8 bits from a free OSC1.
 """
 import math, sys
 import numpy as np
@@ -205,17 +280,23 @@ def _on(x, d, f32):
     return np.where(d == 0, x, y)
 
 
+def _grid(x, b, f32, dc, top):
+    """clamp(rint((x + dc) S), -S, top) / S - dc, the add and the subtract one float32 rounding each, a zero dc the
+    identity. top S - 1: the audio grid (OD11 (b)); top S: FM 1>2's modulator grid (OD15 (b))."""
+    x = _x(x, f32)
+    if b is None: return x.copy()
+    S = scale(b); d = _dc(dc, x.shape)
+    g = np.clip(np.rint(_on(x, d, f32) * S), -S, S - 1 if top == "audio" else S) / S
+    out = g - d
+    if f32: out = _f32(out)
+    return np.where(d == 0, g, out)
+
+
 def crush(x, b, f32=True, dc=0.0):
     """The crushed block (float64 array; every value is an exact float32). b None (Full) returns x unchanged (any dc).
     f32: round x to float32 first, as the M7 holds s; pass False only to study a float64 signal on its own.
     dc (Q2b, OD12): the part's DC term, a float32 scalar or one per sample: the grid acts on x + dc, and dc comes off after."""
-    x = _x(x, f32)
-    if b is None: return x.copy()
-    S = scale(b); d = _dc(dc, x.shape)
-    g = np.clip(np.rint(_on(x, d, f32) * S), -S, S - 1) / S
-    out = g - d
-    if f32: out = _f32(out)
-    return np.where(d == 0, g, out)
+    return _grid(x, b, f32, dc, "audio")
 
 
 def crush_bits(x, b, dc=0.0):
@@ -917,6 +998,224 @@ def _fm_sine_with_errors(n, inc_c, inc_m, I, pc0, qm0, phi, eps_c, eps_m, e1):
     return -np.cos(2 * np.pi * p) + eps_c * e1(p)
 
 
+# ---- Q6: FM 1>2, OSC1 -> OSC2 (4.1, 4.4 E3 (a), 4.5, 4.7 BD1, OD5, OD15 = (b); 6.3, 6.6) ---------------------------------
+FM12_MUTANTS = ("after_level", "before_crush", "audio_grid", "b_late", "kin_fm", "no_b")
+FM12_EPS_M = SINQ_ERR + TOL_F32     # OSC1 as the Bessel modulator: sinq's stated error + its float32 sample bound (6.3)
+DRIFT_BIN = 1.0                     # 6.3 / Q5's precedent: the mean frequency within one bin of the window (1 cycle)
+CRUSH_DRIFT_CENTS = {12: 1.0, 8: 1.0, 4: None}   # OD15: the crush's share of OSC2's mean frequency, a free OSC1 (M: worst
+                                    # 0.25 / 0.32 cents); 4 bits has no bound: the extremes' rounding (Q6 notes, M: +30 cents)
+# Stock 1.6.8's 2x decimator 0x0807FCC0 (S: its 11 VFMA taps, the literals at 0x0807FDD0..0x0807FDE7 as its chain reads
+# them: x[1] s10, x[0] s11, x[2] s12, x[3] s13, x[4] s14, x[5] s0, x[6] s14, x[7] s13, x[8] s12, x[9] s10, x[10] s11; one
+# output per two inputs). Data read off the stock image, not our C; a test should re-read the six words and assert them.
+_FIR6 = (-0.044159356504678726, 0.05654638633131981, -0.09867829829454422, 0.027138808742165565, 0.30596286058425903,
+         0.4574306607246399)        # s10, s11, s12, s13, s14, s0
+STOCK_FIR = (_FIR6[1], _FIR6[0], _FIR6[2], _FIR6[3], _FIR6[4], _FIR6[5], _FIR6[4], _FIR6[3], _FIR6[2], _FIR6[0], _FIR6[1])
+
+
+def crush_mod(x, b, f32=True, dc=0.0):
+    """OD15 (b) (Jeff 2026-11-16): FM 1>2's modulator is crushed with its top clamp at S, not S - 1:
+    q_B = clamp(rint((x + dc) S), -S, S) / S - dc. The audio keeps crush() (OD11 (b)); only B takes this. The grid is then
+    symmetric (2^b + 1 levels, rint odd), so a +1 high keeps its level and B carries only rounding, no grid DC: the -f_hi / S
+    mean shift of crush() (Q2b) is gone at every depth. b None (Full) returns x (rounded to float32 when f32)."""
+    return _grid(x, b, f32, dc, "mod")
+
+
+def b_buffer(s, inc1, b=None, dc=0.0, level=1.0, mutant=None, di1=None, f32=True):
+    """Buffer B (4.1, BD1, OD15): B[i] = f32(f32(inc1) q_B[i]), q_B = crush_mod(OSC1's pre-Level block s, its Bit Depth b,
+    its part's dc) (s itself at Full), inc1 OSC1's base increment (before its own FM: kin = I inc1, 4.1). One rounding: the
+    product of two float32 values is exact in float64. Level never enters (BD1: before Level; E3 (a): a silent OSC1 still
+    modulates); `level` exists for the mutant. That form is a statement of the kernel's arithmetic (read it off the
+    disassembly): compare B bit for bit; if the kernel folds inc1 into the crush differently, restate the form here.
+    mutant (6.6 and plausible slips): "after_level" (B = inc1 f32(level q): y1 taken after Level), "before_crush" (B from s
+    with a Bit Depth set), "audio_grid" (B from crush(): OD15 not applied, the grid's DC), "b_late" (B[i] from OSC1's sample
+    i - 1), "kin_fm" (kin from OSC1's FM'd increment di1, not its base inc1). f32 False: all in float64 (law "f64")."""
+    if mutant not in (None,) + FM12_MUTANTS: raise ValueError(f"mutant must be one of {FM12_MUTANTS}")
+    r = _f32 if f32 else (lambda v: np.asarray(v, dtype=np.float64))
+    q = (crush(s, b, f32, dc) if mutant == "audio_grid" else _x(s, f32) if mutant == "before_crush"
+         else crush_mod(s, b, f32, dc))
+    if mutant == "after_level": q = r(q * float(r(level)))
+    if mutant == "b_late": q = np.r_[q[:1], q[:-1]]
+    k = r(di1) if mutant == "kin_fm" else float(r(inc1))
+    return r(k * q)
+
+
+def an_index32(v):
+    """FD3's index in the kernel's stated arithmetic (Q5 as built: an_index, `I(v) = f32(v^2) x f32(8e-6)`, one rounding):
+    fm_index within float32 rounding; exact 2 at 500 and 8 at 1000. v clamped 0..1000 as an_prop stores it."""
+    v = int(min(max(int(v), 0), 1000))
+    return float(np.float32(float(np.float32(v * v)) * float(np.float32(8e-6))))
+
+
+def index_line(v0, v1, N=256):
+    """The index line (ia, dia) of a 2N block whose amount moves v0 (msub / m12, last block's) -> v1, as Q5 states it for
+    Sub FM (an_osc: ia = I(v0), dia = f32(f32(I(v1) - ia) / N), 0 when they are equal; m12 the same rule, 4.1 / 4.4).
+    I_j = f32(ia + dia j) (one VFMA), j the block frame: line_values. The float64 form is index_ramp."""
+    i0, i1 = an_index32(v0), an_index32(v1)
+    return i0, (0.0 if i1 == i0 else float(np.float32(float(np.float32(i1 - i0)) / N)))
+
+
+def line_values(line, off, n):
+    """I_j = f32(ia + dia j) for the block frames j = off .. off + n - 1 (chunked parts continue one line). line: (ia, dia)
+    float32 values, or a scalar index (dia 0)."""
+    ia, dia = (line, 0.0) if np.ndim(line) == 0 else line
+    j = off + np.arange(n, dtype=np.float64)
+    return _fma32(np.full(n, float(np.float32(ia))), np.full(n, float(np.float32(dia))), j)
+
+
+def wave_dc(k, law="f32", width=None):
+    """A part's dc (OD12, the crush's argument): the pulse's 2 w - 1 above k = 0.5, 0 at and below (saw, square, LOW). The
+    kernel's own an_dc is the authority for a bit-for-bit check (pass it as dc=); this is FmWave's float32 form."""
+    return FmWave(k, law, width).dc if k > 0.5 else 0.0
+
+
+class Voice12(tuple):
+    """fm12_voice's result: (y1, q1, B, di1, r1, di2, y2, q2, r2). y1 OSC1's render (pre-crush, pre-Level), q1 its audio
+    crush (OD11 (b) grid), B buffer B, di1 / di2 the increments each oscillator rendered with, r1 / r2 their FmRender (end
+    state, master bytes, edges), y2 OSC2's render, q2 its audio crush."""
+    __slots__ = ()
+    _f = ("y1", "q1", "B", "di1", "r1", "di2", "y2", "q2", "r2")
+    def __new__(cls, *a): return tuple.__new__(cls, a)
+    def __getattr__(self, k):
+        try: return self[self._f.index(k)]
+        except ValueError: raise AttributeError(k) from None
+
+
+def fm12_voice(n, inc1, k1, inc2, k2, a=None, is1=0.0, is2=0.0, i12=0.0, bits=(None, None), state1=(0.0, None),
+               state2=(0.0, None), sync=False, level1=1.0, off=0, law="f32", fma=True, widths=(None, None), dc=(None, None),
+               order="ab", mutant=None):
+    """One voice-block (or a part of one: frames off .. off + n - 1) of OSC1 -> OSC2 (4.1), both oscillators Analog:
+    - OSC1: di1 = inc1 + I_s1 A (increments, law / fma as stated; no Sub FM: inc1 alone, clamped), rendered on k1 in role
+      "master" when sync else "free" (OD5: a byte at every wrap, either way). q1 = crush(y1, bits[0], dc1) (its audio).
+    - B = b_buffer(y1, inc1, bits[0], dc1) (BD1, OD15; level1 only reaches the "after_level" mutant: E3 (a)).
+    - OSC2: di2 = inc2 + I_s2 A + I_12 B, folded in `order` ("ab": A first, 4.3's text; "ba"), rendered on k2 in role
+      "slave" on OSC1's bytes when sync (OD5: any master wrap resets; backward to p = 1) else "free"; q2 its audio crush.
+    a: buffer A from frame off (increment units, the sub copy: sub_a-style or the kernel's own), None for 0. is1 / is2 /
+    i12: an index line (ia, dia) over the absolute frame (index_line), or a scalar. state1 / state2: (phase, delayed),
+    delayed None -> the wave at phase (a steady start). dc: each oscillator's part dc, None -> wave_dc(k). widths: the
+    kernel's float32 pulse widths (FmWave's width=). One call covers the whole range: chained calls on the returned states
+    (r1 / r2 .phase / .delayed) with the next off are the same render (the golden's state is (phase, delayed) only), so
+    AN_EVENTS chunks and Shape parts need no separate path here.
+    mutant: FM12_MUTANTS: b_buffer's, plus "no_b" (OSC2 ignores B: 4.1's useB false)."""
+    if order not in ("ab", "ba"): raise ValueError("order must be ab or ba")
+    a = np.zeros(n) if a is None else np.asarray(a, dtype=np.float64)
+    if a.size != n: raise ValueError("a must hold n samples (from frame off)")
+    w1, w2 = FmWave(k1, law, widths[0]), FmWave(k2, law, widths[1])
+    d1 = wave_dc(k1, "f32", widths[0]) if dc[0] is None else dc[0]          # a float32 constant in the kernel
+    d2 = wave_dc(k2, "f32", widths[1]) if dc[1] is None else dc[1]
+    I1, I2, I12 = (line_values(x, off, n) for x in (is1, is2, i12))
+    t1 = [(I1, a)] if np.any(I1 != 0) else []
+    di1 = np.broadcast_to(increments(inc1, t1, law=law, fma=fma), (n,)).copy()      # no terms: one value
+    p1, e1 = state1; p2, e2 = state2
+    r1 = fm_render(di1, k=k1, phase=p1, delayed=w1.value(p1 % 1.0 if p1 != 1.0 else 1.0) if e1 is None else e1,
+                   role="master" if sync else "free", law=law, fma=fma, width=widths[0])
+    f32 = law == "f32"
+    y1 = r1.y; q1 = crush(y1, bits[0], f32, d1)
+    B = b_buffer(y1, inc1, bits[0], d1, level1, None if mutant == "no_b" else mutant, di1, f32)
+    terms = [(I2, a), (I12, B)] if order == "ab" else [(I12, B), (I2, a)]
+    terms = [t for t in terms if np.any(t[0] != 0) and not (mutant == "no_b" and t[1] is B)]
+    di2 = np.broadcast_to(increments(inc2, terms, law=law, fma=fma), (n,)).copy()
+    r2 = fm_render(di2, k=k2, phase=p2, delayed=w2.value(p2 % 1.0 if p2 != 1.0 else 1.0) if e2 is None else e2,
+                   role="slave" if sync else "free", sync=r1.ev if sync else None, law=law, fma=fma, width=widths[1])
+    q2 = crush(r2.y, bits[1], f32, d2)
+    return Voice12(y1, q1, B, di1, r1, di2, r2.y, q2, r2)
+
+
+# ---- 6.3 DC drift (mean frequency) --------------------------------------------------------------------------------------
+def unwrapped(di, phase0=0.0):
+    """The unwrapped phase at the start of each sample and after the last (n + 1 values, float64 cumulative sum): what the
+    increments add up to, for windows and travel (the float32 phase law's own bias is fm_phase_walk's)."""
+    return float(phase0) + np.r_[0.0, np.cumsum(np.asarray(di, dtype=np.float64))]
+
+
+def whole_cycles(di_mod, phase0=0.0):
+    """[t0, t1): the window from the first to the last sample at which a modulator's unwrapped phase reaches a new integer
+    moving forward (a sub: always forward; OSC1 without through-zero FM of its own), so it holds whole modulator cycles up
+    to one sample's travel at each end. None if fewer than two."""
+    P = unwrapped(di_mod, phase0)[:-1]
+    fl = np.floor(P); up = np.flatnonzero((fl[1:] > fl[:-1]) & (np.diff(P) > 0)) + 1
+    return (int(up[0]), int(up[-1])) if up.size >= 2 else None
+
+
+def drift(di, inc, window=None):
+    """6.3's DC-drift figure for one carrier: over window [t0, t1) (default all), travel = sum(di) against the unmodulated
+    inc L. Returns {L, travel, expect, cycles (travel - inc L), cents (1200 log2(mean di / inc)), ok (|cycles| <= DRIFT_BIN)}.
+    'Within one bin' is Q5's criterion (the Square sub test). Use whole modulator cycles (whole_cycles), or a coherent block:
+    over an arbitrary window a zero-mean modulator's partial cycle alone moves the travel by up to I max|m| / 2 cycles."""
+    di = np.asarray(di, dtype=np.float64)
+    t0, t1 = (0, di.size) if window is None else window
+    L = t1 - t0; travel = float(np.sum(di[t0:t1])); expect = float(inc) * L
+    return dict(L=L, travel=travel, expect=expect, cycles=travel - expect,
+                cents=1200 * math.log2(travel / expect) if travel > 0 and expect > 0 else float("nan"),
+                ok=abs(travel - expect) <= DRIFT_BIN)
+
+
+def crush_drift(s, b, inc1, I12, inc2, dc=0.0, window=None):
+    """OD15's figure: the crush's own share of OSC2's mean frequency, in cents: 1200 log2(1 + I12 mean(B - B_Full) / inc2)
+    over the window, B_Full = f32(inc1 s) (BD1 at Full), for OD15 (b) ("mod", b_buffer) and for the audio grid on B
+    ("grid", the "audio_grid" mutant: 4.7's -3 / -55 / -1200 cents at 12 / 8 / 4 bits on a square, I = 8, OSC1 = OSC2).
+    s: OSC1's uncrushed float32 block."""
+    s = _x(s, True); t0, t1 = (0, s.size) if window is None else window
+    full = b_buffer(s, inc1)[t0:t1]
+    c = lambda B: 1200 * math.log2(1 + float(I12) * float(np.mean(B[t0:t1] - full)) / float(inc2))
+    return dict(mod=c(b_buffer(s, inc1, b, dc)), grid=c(b_buffer(s, inc1, b, dc, mutant="audio_grid")))
+
+
+# ---- 6.3 aliasing after the FIR model -----------------------------------------------------------------------------------
+def decimate(y, taps=STOCK_FIR):
+    """The 2x decimator on a periodic (coherent) 96 kHz block, circularly: out[j] = sum_k taps[k] y[(2 j + k) mod n], the
+    stock FIR's one output per two inputs (its group delay is a fixed shift: no effect on the spectral energies)."""
+    y = np.asarray(y, dtype=np.float64); n = y.size
+    if n % 2: raise ValueError("n must be even")
+    idx = (2 * np.arange(n // 2)[:, None] + np.arange(len(taps))[None, :]) % n
+    return y[idx] @ np.asarray(taps, dtype=np.float64)
+
+
+def fir_response(f, taps=STOCK_FIR, fs=96000.0):
+    """|H(f)| of the FIR at the 96 kHz input rate (f in Hz, array)."""
+    f = np.asarray(f, dtype=np.float64); k = np.arange(len(taps))
+    return np.abs(np.exp(-2j * np.pi * np.multiply.outer(f / fs, k)) @ np.asarray(taps, dtype=np.float64))
+
+
+def alias_db(y, cycles):
+    """The old plan's metric (plan-analog-fm 4.3): off-harmonic / harmonic energy, dB, of a coherent block holding `cycles`
+    periods of the voice's common fundamental (every FM sideband is a harmonic of it; aliases fall between)."""
+    sp = spectrum(y, cycles)
+    return 10 * math.log10(sp.off_energy / sp.harm_energy) if sp.off_energy > 0 else -np.inf
+
+
+def alias_case(route, cc, cm, I, k_c, k_m=-1.0, wave="sine", fs=96000, n48=16384, taps=STOCK_FIR):
+    """alias_db of one steady FM voice-block, the same sound at both rates: n48 output samples (0.34 s at n48 16384), the
+    carrier holding cc cycles and the modulator cm in that time (coherent; gcd(cc, cm) odd: the common fundamental), index I
+    (kin = I inc_mod, so I means the same at both rates), law f64 (a design figure).
+    route "fm12": the modulator is OSC1's band-limited render at k_m (B = inc_m y1); "sub": the sub's naive wave (stock's
+    sub has no BLEP) at inc_m, A = inc_m m. fs 96000: rendered at 2 n48 samples then decimate(taps) (the device); fs 48000:
+    rendered at n48 directly (the old 48 kHz design, plan-analog-fm 4.3's figures). Returns alias_db.
+    The sub's wave must be continuous (sine, triangle): a naive square or saw sampled coherently can put one sample exactly
+    on its jump, and that sample's rounding moves the carrier's block travel by I inc_m 2 cycles (M: 0.58 at cm 591, I 8),
+    so the block is no longer periodic and the leakage swamps the figure (+16 dB measured)."""
+    if fs not in (48000, 96000): raise ValueError("fs is 48000 or 96000")
+    n = n48 * (fs // 48000); inc_c, inc_m = cc / n, cm / n; g = math.gcd(cc, cm)
+    if route == "fm12":
+        m = steady_fm(inc_m, k_m, n)[0].y
+    elif route == "sub":
+        if wave not in ("sine", "triangle"): raise ValueError("alias_case's sub wave: sine or triangle (continuous)")
+        m = sub_mod(wave, inc_m, n)[0]
+    else: raise ValueError("route is fm12 or sub")
+    di = clamp_fm(inc_c + I * inc_m * m); wv = FmWave(k_c)
+    pre = fm_render(di, k=k_c, phase=0.0, delayed=wv.value(0.0))
+    y = fm_render(di, k=k_c, phase=pre.phase, delayed=pre.delayed).y
+    return alias_db(decimate(y, taps) if fs == 96000 else y, g)
+
+
+def fm12_bessel(y2, cc, cm, I, pc0, qm0, walk=0.0, eps_c=SINQ_ERR, eps_m=FM12_EPS_M, eps32=TOL_F32):
+    """6.3's Bessel check for FM 1>2, sine -> sine (OSC1 and OSC2 at Shape 0): bessel_check with OSC1's own sample as the
+    modulator. OSC1 at Shape 0 from phase qm0 (delayed = its wave there) plays y1[i] = -cos 2 pi (qm0 + i inc1), so
+    B[i] = inc1 y1[i] is fm_sine_time's m with phi = pi and inc_m = inc1 (= cm / n): OSC2 (from pc0, cc / n) sees exactly that
+    law. eps_m defaults to OSC1's stated per-sample error, sinq + float32 (FM12_EPS_M); B's own rounding (2^-24 relative)
+    is below it. Use OSC1 at Full: a crushed modulator has no Bessel law."""
+    return bessel_check(y2, cc, cm, I, pc0, qm0, np.pi, eps_c, eps_m, eps32, walk)
+
+
 # ---- self-test ----------------------------------------------------------------------------------------------------------
 def _selftest():
     import unittest
@@ -1304,8 +1603,235 @@ def _selftest():
             self.assertEqual(np.max(np.abs(hi)), INC_MAX)
             self.assertGreater(np.max(np.abs(increments(0.4, [(8.0, m / 64)], clamp=False))), 0.5)
 
+    class FM12(unittest.TestCase):                               # Q6 (4.1, 4.4 E3 (a), BD1, OD5, OD15 = (b), 6.3)
+        NOTE60 = float(np.float32(440 * 2 ** (-9 / 12) / 96000))   # note 60 at 96 kHz (the device's domain)
+        N100 = 100 * 256                                         # 100 device blocks (2N = 256)
+
+        def test_the_modulators_grid_keeps_the_top(self):        # OD15 (b): top at S, the audio grid untouched
+            x = np.array([1.0, 1.06, 0.9375, 0.875, -1.0, -1.06, -0.0625, 0.0])
+            self.assertTrue(np.array_equal(crush_mod(x, 4), [1.0, 1.0, 1.0, 0.875, -1.0, -1.0, -0.0, 0.0]))
+            self.assertTrue(np.array_equal(crush(x, 4), [0.875, 0.875, 0.875, 0.875, -1.0, -1.0, -0.0, 0.0]))
+            for b in BITS:
+                S = scale(b); x = probe(b); m, a = crush_mod(x, b), crush(x, b)
+                self.assertTrue(np.array_equal(crush_mod(-x, b).view(np.uint64), (-m).view(np.uint64)), b)   # odd: rint
+                hi = np.rint(x * S) >= S
+                self.assertTrue(np.array_equal(m[~hi], a[~hi]) and np.all(m[hi] == 1.0), b)   # differs only at the top
+                q = crush_mod(np.linspace(-1.3, 1.3, 200001), b)
+                self.assertEqual(np.unique(q).size, (1 << b) + 1, b)                 # 2^b + 1 levels, symmetric
+                self.assertEqual((q.min(), q.max()), (-1.0, 1.0))
+            rng = np.random.default_rng(4420)                     # float32-exact, about a kernel dc too
+            x32 = (rng.standard_normal(65536) * 0.9).astype(np.float32); d32 = (-0.84 * rng.random(65536)).astype(np.float32)
+            for b in BITS:
+                S = np.float32(scale(b))
+                with np.errstate(all="raise"):
+                    g = np.minimum(np.maximum(np.rint((x32 + d32) * S), -S), S) * (np.float32(1) / S)
+                self.assertTrue(np.array_equal((g - d32).view(np.uint32), _f32(crush_mod(x32, b, dc=d32)).astype(np.float32).view(np.uint32)))
+            self.assertTrue(np.array_equal(crush_mod([1.75, -0.25], 4, dc=-0.75), [1.75, -0.25]))   # the pulse's +1 high
+            self.assertTrue(np.array_equal(crush_mod(x, None), _f32(x)))
+
+        def test_the_square_carries_no_grid_dc(self):            # OD15's point, on the naive square (+-1 on the grid)
+            x = np.tile(np.r_[np.ones(200), -np.ones(200)], 20)
+            for b in BITS:
+                self.assertEqual(float(np.mean(crush_mod(x, b))), 0.0, b)
+                self.assertAlmostEqual(float(np.mean(crush(x, b))), -0.5 / scale(b), delta=1e-15)   # Q2b's -f_hi / S
+
+        def test_b_buffer(self):                                 # BD1 / OD15 form, one rounding; the mutants differ
+            rng = np.random.default_rng(4421); n = 512
+            s = _f32(np.sign(np.sin(2 * np.pi * np.arange(n) / 61)) * 0.999 + 0.001 * rng.standard_normal(n))
+            inc1 = 0.0027250234
+            for b in (None,) + BITS:
+                q = crush_mod(s, b).astype(np.float32)
+                want = (np.float32(inc1) * q).view(np.uint32)
+                self.assertTrue(np.array_equal(b_buffer(s, inc1, b).astype(np.float32).view(np.uint32), want), b)
+                self.assertTrue(np.array_equal(b_buffer(s, inc1, b, level=0.0), b_buffer(s, inc1, b)), b)   # Level never enters
+            di1 = _f32(inc1 * (1 + 0.5 * np.sin(np.arange(n) / 9)))
+            base = b_buffer(s, inc1, 4)
+            for mu in ("after_level", "before_crush", "audio_grid", "b_late", "kin_fm"):
+                got = b_buffer(s, inc1, 4, level=0.5, mutant=mu, di1=di1)
+                self.assertGreater(int(np.sum(got != base)), 0, mu)
+            self.assertTrue(np.array_equal(b_buffer(s, inc1, None, mutant="before_crush"), b_buffer(s, inc1)))   # Full: same
+            with self.assertRaises(ValueError): b_buffer(s, inc1, mutant="nope")
+
+        def test_the_index_line(self):                           # FD3 in the kernel's float32 form; parts continue it
+            for v in (0, 1, 250, 354, 500, 707, 999, 1000):
+                self.assertLessEqual(abs(an_index32(v) - fm_index(v)), 2.0 ** -22 * max(fm_index(v), 2.0 ** -20), v)
+            self.assertEqual((an_index32(500), an_index32(1000), an_index32(5000), an_index32(-3)), (2.0, 8.0, 8.0, 0.0))
+            ia, dia = index_line(0, 1000); self.assertEqual(ia, 0.0)
+            self.assertLessEqual(abs(ia + 256 * dia - 8.0), 1e-6 * 8)
+            self.assertEqual(index_line(700, 700), (an_index32(700), 0.0))
+            L = index_line(300, 900); Lv = line_values(L, 0, 256)
+            self.assertTrue(np.array_equal(np.r_[line_values(L, 0, 128), line_values(L, 128, 128)], Lv))
+            self.assertLessEqual(float(np.max(np.abs(Lv - (L[0] + L[1] * np.arange(256))))), 2.0 ** -21)   # one VFMA
+            self.assertLessEqual(abs(Lv[-1] + L[1] - an_index32(900)), 1e-6 * 8)   # it reaches the next block's I
+            self.assertTrue(np.array_equal(line_values(2.0, 5, 3), [2.0, 2.0, 2.0]))
+
+        def case(self, n=512, sync=False, sub=True, bits=(None, None), level1=1.0, mutant=None, k=(0.0, 0.25), law="f32",
+                 off=0, i12=(0.72, 0.0), states=((0.1, None), (0.3, None)), is1v=2.0):
+            inc = self.NOTE60 * 4; isub = float(np.float32(inc / 2))
+            m, _ = sub_mod("sine", isub, n, 0.2); a = _f32(isub * m) if sub else None
+            return fm12_voice(n, inc, k[0], inc * 1.5, k[1], a=a, is1=(is1v, 0.0) if sub else 0.0,
+                              is2=(8.0, 0.0) if sub else 0.0, i12=i12, bits=bits, state1=states[0], state2=states[1],
+                              sync=sync, level1=level1, off=off, law=law, mutant=mutant)
+
+        def test_a_silent_osc1_still_modulates(self):            # E3 (a), BD1: B is before Level
+            for sync in (False, True):
+                a, z = self.case(sync=sync), self.case(sync=sync, level1=0.0)
+                self.assertTrue(np.array_equal(a.y2, z.y2) and np.array_equal(a.B, z.B), sync)
+                m = self.case(sync=sync, level1=0.0, mutant="after_level")
+                self.assertTrue(np.array_equal(m.B, np.zeros_like(m.B)), sync)       # y1 after Level 0: no FM 1>2
+                nb = self.case(sync=sync, mutant="no_b")
+                self.assertTrue(np.array_equal(m.y2, nb.y2), sync)
+                self.assertGreater(float(np.max(np.abs(m.y2 - a.y2))), 1e-3, sync)
+
+        def test_the_voice_is_its_parts(self):                   # 4.1's composition, stated once; parts chain
+            for sync in (False, True):
+                for bits in ((None, None), (8, 4), (4, None)):
+                    v = self.case(sync=sync, bits=bits, k=(0.9, -0.3))
+                    inc = self.NOTE60 * 4; isub = float(np.float32(inc / 2))
+                    m, _ = sub_mod("sine", isub, 512, 0.2); a = _f32(isub * m)
+                    di1 = increments(inc, [(line_values((2.0, 0.0), 0, 512), a)], law="f32")
+                    r1 = fm_render(di1, k=0.9, phase=0.1, delayed=FmWave(0.9, "f32").value(0.1), role="master" if sync else "free", law="f32")
+                    d1 = wave_dc(0.9); B = b_buffer(r1.y, inc, bits[0], d1)
+                    di2 = increments(inc * 1.5, [(np.full(512, 8.0), a), (np.full(512, 0.72), B)], law="f32")
+                    r2 = fm_render(di2, k=-0.3, phase=0.3, delayed=FmWave(-0.3, "f32").value(0.3), role="slave" if sync else "free",
+                                   sync=r1.ev if sync else None, law="f32")
+                    for got, want in ((v.y1, r1.y), (v.B, B), (v.di2, di2), (v.y2, r2.y), (v.q1, crush(r1.y, bits[0], dc=d1)),
+                                      (v.q2, crush(r2.y, bits[1]))):
+                        self.assertTrue(np.array_equal(got, want), (sync, bits))
+                    p = self.case(n=256, sync=sync, bits=bits, k=(0.9, -0.3))  # two parts of 128 = one call of 256
+                    h = self.case(n=128, sync=sync, bits=bits, k=(0.9, -0.3))
+                    inc = self.NOTE60 * 4; isub = float(np.float32(inc / 2))
+                    m2, _ = sub_mod("sine", isub, 256, 0.2); a2 = _f32(isub * m2)
+                    h2 = fm12_voice(128, inc, 0.9, inc * 1.5, -0.3, a=a2[128:], is1=(2.0, 0.0), is2=(8.0, 0.0), i12=(0.72, 0.0),
+                                    bits=bits, state1=(h.r1.phase, h.r1.delayed), state2=(h.r2.phase, h.r2.delayed), sync=sync, off=128)
+                    self.assertTrue(np.array_equal(np.r_[h.y2, h2.y2], p.y2) and np.array_equal(np.r_[h.B, h2.B], p.B), (sync, bits))
+                    self.assertEqual((h2.r2.phase, h2.r2.delayed), (p.r2.phase, p.r2.delayed))
+
+        def test_the_fold_order_is_a_statement(self):            # ab / ba differ in rounding only: read it off the kernel
+            a = self.case(n=2048); inc = self.NOTE60 * 4
+            isub = float(np.float32(inc / 2)); m, _ = sub_mod("sine", isub, 2048, 0.2); A = _f32(isub * m)
+            ab = increments(inc * 1.5, [(np.full(2048, 8.0), A), (np.full(2048, 0.72), a.B)], law="f32")
+            ba = increments(inc * 1.5, [(np.full(2048, 0.72), a.B), (np.full(2048, 8.0), A)], law="f32")
+            self.assertTrue(np.array_equal(ab, a.di2))
+            d = np.abs(ab - ba); self.assertGreater(int(np.sum(d > 0)), 0)
+            self.assertLessEqual(float(np.max(d)), 2.0 ** -24)
+
+        def test_sync_master_and_slave_under_both_routes(self):  # OD5: every master wrap, either way, resets the slave
+            for sub, back in ((False, False), (True, True)):
+                v = self.case(n=2048, sync=True, sub=sub, i12=(8.0, 0.0), k=(-0.75, -0.5), is1v=8.0)   # OSC1 -1 at a wrap: di2 < 0
+                ev = v.r1.ev; e1, e2 = v.r1.edges, v.r2.edges
+                self.assertEqual(int(np.sum(ev != EV_NONE)), e1["wrap_f"] + e1["wrap_b"])
+                self.assertEqual(e1["wrap_b"] > 0, back, "OSC1's own through-zero Sub FM writes backward bytes")
+                self.assertEqual(e2["resets"], int(np.sum((ev != EV_NONE) & (v.di2 != 0))))
+                self.assertGreater(e2["resets_b"], 0, "the slave goes through zero at some resets (p = 1)")
+                self.assertTrue(np.any(v.di2 < 0) and np.any(v.di2 > 0))
+                free = self.case(n=2048, sync=False, sub=sub, i12=(8.0, 0.0), k=(-0.75, -0.5), is1v=8.0)
+                self.assertTrue(np.array_equal(free.y1, v.y1) and np.array_equal(free.B, v.B))   # the master's sound is its own
+                self.assertGreater(float(np.max(np.abs(free.y2 - v.y2))), 1e-2)
+                mu = fm_render(v.di2, k=-0.5, phase=0.3, delayed=FmWave(-0.5, "f32").value(0.3), role="slave", sync=ev,
+                               law="f32", mutant="reset_p0")
+                self.assertGreater(mu.edges["wrap_b"], e2["wrap_b"], "the double edge (6.6) counts")
+
+        def test_bessel_sine_to_sine(self):                      # 6.3: OSC1 Shape 0 -> OSC2 Shape 0, ratio 1 and 3:1
+            n = 4096
+            for cc, cm, I, law in ((11, 11, 1.0, "f64"), (11, 11, 1.0, "f32"), (11, 11, an_index32(354), "f32"),
+                                   (33, 11, 2.0, "f32"), (7, 21, 1.0, "f32")):
+                inc2, inc1 = cc / n, cm / n
+                v = fm12_voice(n, inc1, -1.0, inc2, -1.0, i12=I, state1=(0.13, None), state2=(0.29, None), law=law)
+                if law == "f64":
+                    chk = fm12_bessel(v.y2, cc, cm, I, 0.29, 0.13, eps_c=0, eps_m=0, eps32=1e-10)
+                else:
+                    chk = fm12_bessel(v.y2, cc, cm, I, 0.29, 0.13, walk=fm_phase_walk(v.di2, 0.29))
+                self.assertTrue(chk["ok"], (cc, cm, I, law, chk["worst"], chk["tol"]))
+                for mu, args in (("b_late", {}), (None, dict(i12=I * 1.02)), ("after_level", dict(level1=0.98))):
+                    kw = dict(i12=I, state1=(0.13, None), state2=(0.29, None), law=law, mutant=mu); kw.update(args)
+                    w = fm12_voice(n, inc1, -1.0, inc2, -1.0, **kw)
+                    self.assertFalse(fm12_bessel(w.y2, cc, cm, I, 0.29, 0.13)["ok"], (cc, cm, mu, args))
+            tol = bessel_tol(1.0, 11 / n, eps_m=FM12_EPS_M)          # 6.3's need: 0.5 dB on J3 at I = 1, ratio 1
+            j3 = 2 * abs(fm_sine_expect(n, 11, 11, 1.0, 0.0, 0.0)[4 * 11])
+            self.assertLess(20 * np.log10(1 + 2 * tol / j3), 0.5)
+
+        def test_no_dc_drift_over_100_blocks(self):              # 6.3, I = 8 through zero, OSC1 free (no own FM)
+            inc, N = self.NOTE60, self.N100
+            for shape in (48, 88, 127):
+                k = k_of_shape(shape)
+                for b in (None,) + BITS:
+                    v = fm12_voice(N, inc, k, inc, 0.0, i12=8.0, bits=(b, None), state1=(0.1, None), state2=(0.3, None))
+                    self.assertLess(float(v.di2.min()), 0.0, "through zero")
+                    w = whole_cycles(v.di1, 0.1); d = drift(v.di2, inc, w)
+                    self.assertTrue(d["ok"], (shape, b, d))
+                    c = crush_drift(v.y1, b, inc, 8.0, inc, dc=wave_dc(k), window=w)
+                    if CRUSH_DRIFT_CENTS.get(b) is not None:
+                        self.assertLessEqual(abs(c["mod"]), CRUSH_DRIFT_CENTS[b], (shape, b, c))
+                    else:
+                        self.assertLessEqual(abs(c["mod"]), 1.0, (shape, b, c))   # these Shapes' extremes are on the grid
+                    if shape == 88 and b is not None:             # the grid's DC (4.7: -3 / -55 / -1200 cents)
+                        self.assertLess(c["grid"], {12: -2.0, 8: -40.0, 4: -1000.0}[b], (b, c))
+                        g = fm12_voice(N, inc, k, inc, 0.0, i12=8.0, bits=(b, None), state1=(0.1, None), state2=(0.3, None),
+                                       mutant="audio_grid")
+                        self.assertEqual(drift(g.di2, inc, w)["ok"], b == 12, (b, "12 bits: under a bin; crush_drift sees it"))
+
+        def test_the_crush_dc_od15_leaves(self):                 # found in Q6 (M): rounding of extremes between levels
+            # OD15 removes the top clip's -f_hi / S. What is left is the rounding's own mean over the wave's values, nonzero
+            # where an extreme falls between two levels: Shape 36 peaks at tw = 0.474 (k = -0.237), which rounds up to 0.5 at
+            # 4 bits on every cycle; under OSC1's own Sub FM the phase also dwells (di1 -> 0) on a few values. A steady rate:
+            # travel grows with the window (M: +9.8 cycles in 100 blocks, +38.6 in 400, note 96).
+            for shape, note, I1, b, lo, hi in ((36, 96, 0.0, 4, 20.0, 40.0), (36, 60, 0.0, 4, 10.0, 25.0),
+                                               (75, 36, 2.0, 4, -160.0, -100.0), (36, 96, 0.0, 8, -1.0, 1.0),
+                                               (36, 96, 0.0, 12, -1.0, 1.0)):
+                inc = float(np.float32(440 * 2 ** ((note - 69) / 12) / 96000)); isub = float(np.float32(inc / 2))
+                m, _ = sub_mod("sine", isub, self.N100, 0.1); k = k_of_shape(shape)
+                v = fm12_voice(self.N100, inc, k, inc, 0.0, a=_f32(isub * m), is1=I1, i12=8.0, bits=(b, None),
+                               state1=(0.1, None), state2=(0.3, None))
+                c = crush_drift(v.y1, b, inc, 8.0, inc, dc=wave_dc(k))
+                self.assertTrue(lo < c["mod"] < hi, (shape, note, I1, b, c))      # M: +30.0, +16.6, -139.2, then < 1
+                if b == 4: self.assertEqual(c["mod"], c["grid"], "no sample reaches the top: OD15 changes nothing here")
+
+        def test_sub_fm_has_no_dc_drift(self):                   # 6.3 for Sub FM (carried from Q5): OD10's DC-free square
+            inc, N = self.NOTE60, self.N100; isub = float(np.float32(inc / 2))
+            for wave, pw, raw in (("square", 0.3, False), ("square", 0.3, True), ("sine", 0.5, False), ("triangle", 0.5, False)):
+                m, _ = sub_mod(wave, isub, N, 0.1, pw)
+                if raw: m = m + (2 * pw - 1)
+                v = fm12_voice(N, inc, 0.0, inc, 0.0, a=_f32(isub * m), is2=8.0, state1=(0.1, None), state2=(0.3, None))
+                self.assertLess(float(v.di2.min()), 0.0)
+                d = drift(v.di2, inc, whole_cycles(np.full(N, isub), 0.1))
+                self.assertEqual(d["ok"], not raw, (wave, raw, d))
+
+        def test_osc1s_own_sub_fm_puts_dc_in_b(self):            # found in Q6 (M): a real DC, not a crush artefact
+            # A sub an octave below OSC1 is commensurate: OSC1's FM spectrum has its sideband f1 - 2 f_sub at 0 Hz, so its
+            # (correct, band-limited) render has a mean, and FM 1>2 turns that mean into an OSC2 detune of I12 inc1 mean(y1).
+            inc, N = self.NOTE60, self.N100; isub = float(np.float32(inc / 2))
+            m, _ = sub_mod("sine", isub, N, 0.1); a = _f32(isub * m); w = whole_cycles(np.full(N, isub), 0.1)
+            v = fm12_voice(N, inc, 0.0, inc, 0.0, a=a, is1=2.0, i12=8.0, state1=(0.1, None), state2=(0.3, None))
+            t0, t1 = w; dc = float(np.mean(v.y1[t0:t1]))
+            self.assertGreater(dc, 0.1)                           # M: +0.126 (Sub FM 50 % on a saw OSC1)
+            d = drift(v.di2, inc, w)
+            self.assertFalse(d["ok"]); self.assertGreater(d["cents"], 1000)   # M: about +1200 cents at FM 1>2 100 %
+            self.assertAlmostEqual(d["cycles"], 8.0 * float(np.sum(v.B[t0:t1])), delta=1e-6 * abs(d["cycles"]) + 1e-9)
+            u = fm12_voice(N, inc, 0.0, inc, 0.0, a=a, is1=0.0, i12=8.0, state1=(0.1, None), state2=(0.3, None))
+            self.assertTrue(drift(u.di2, inc, whole_cycles(u.di1, 0.1))["ok"])  # without OSC1's own FM: none
+
+        def test_the_fir_and_decimate(self):
+            h = np.asarray(STOCK_FIR)
+            self.assertEqual(len(h), 11); self.assertTrue(np.array_equal(h, h[::-1]))
+            self.assertAlmostEqual(float(h.sum()), 0.95105146, delta=1e-7)     # S: a DC gain of -0.44 dB
+            n = 4096; j = np.arange(n)
+            for c in (11, 301, 1501):                             # a tone at c / n x 96 kHz: decimated, scaled by |H|
+                x = np.cos(2 * np.pi * c * j / n); y = decimate(x)
+                self.assertAlmostEqual(float(np.max(np.abs(np.fft.rfft(y)))) / (n / 4), float(fir_response(c / n * 96000)),
+                                       delta=1e-9)
+            self.assertTrue(np.array_equal(decimate(x, (0, 1)), x[1::2]))
+
+        def test_aliasing_after_the_fir_is_below_48k(self):      # 6.3: the same voice rendered at 48 kHz (the old design)
+            for case in (("fm12", 149, 149, 4.0, 0.0, -1.0), ("fm12", 591, 591, 4.0, 0.0, 0.0), ("sub", 1182, 591, 8.0, 0.0, -1.0)):
+                a48 = alias_case(*case, fs=48000, n48=8192); a96 = alias_case(*case, fs=96000, n48=8192)
+                self.assertLess(a96, a48 - 3.0, (case, a48, a96))     # M (n48 16384): 5.2 .. 11.3 dB below
+                if case[0] == "fm12" and case[1] == 149:            # the FIR is load-bearing: plain decimation is worse
+                    self.assertGreater(alias_case(*case, fs=96000, n48=8192, taps=(0, 1)), a48)
+            with self.assertRaises(ValueError): alias_case("sub", 298, 149, 4.0, 0.0, wave="square")
+
     L = unittest.defaultTestLoader
-    r = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([L.loadTestsFromTestCase(c) for c in (BitDepth, Shapes, FM)]))
+    r = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([L.loadTestsFromTestCase(c) for c in (BitDepth, Shapes, FM, FM12)]))
     return 0 if r.wasSuccessful() else 1
 
 
