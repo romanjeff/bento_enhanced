@@ -224,15 +224,25 @@ extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
     return 1;
 }
 
-/* Shape 0..127 to the kernel's shape (0 saw, 0.5 square, 1 an 8 % pulse). The kernel has no sine / triangle yet (the
- * Shape sprint adds them, plan-analog-fm 4.5): until then 0..48 plays the saw; 48..88 morphs saw to square, 88..127
- * narrows the square to the pulse (the anchors of plan-analog-fm "Shape control"). BE4.40: s is a float (Shape plus its
- * modulation, J4); for a whole s every result is the integer version's bit for bit (s - 48 and s - 88 are exact). */
+/* Shape 0..127 to the kernel's shape (-1 sine, -0.5 triangle, 0 saw, 0.5 square, 1 an 8 % pulse). Above 48 BE4.40's map,
+ * bit for bit: 48..88 morphs saw to square, 88..127 narrows the square to the pulse. P3 Q3 (docs/plan-p3-fm-bits.md 4.6,
+ * OD6): below it the kernel's LOW regime, linear between one-sided plateaus: 0..2 the sine, 22..26 the triangle, 45..48 the
+ * saw (BE4.40 played the saw on all of 0..48, so 45..127 plays as before). s is a float (Shape plus its modulation, J4); for
+ * a whole s every result is exact or one rounding (s - 48, s - 88, s - 45, s - 22 are exact). s is never below 0 or NaN here
+ * (the stored Shape is unsigned and an_osc clamps a modulated one to 0..127 first), so the sine for those is only the
+ * fall-through, not a behaviour (Q3 review: a mutation to the saw there is equivalent). */
 static float an_shape(float s) {
-    if (!(s > (float)AN_SHAPE_SAW_END)) return 0.f;                              /* (NaN too) */
-    if (s <= (float)AN_SHAPE_SQUARE) return (s - (float)AN_SHAPE_SAW_END) * (0.5f / (float)(AN_SHAPE_SQUARE - AN_SHAPE_SAW_END));
-    if (s > (float)AN_SHAPE_MAX) s = (float)AN_SHAPE_MAX;
-    return 0.5f + (s - (float)AN_SHAPE_SQUARE) * (0.5f / (float)(AN_SHAPE_MAX - AN_SHAPE_SQUARE));
+    if (s > (float)AN_SHAPE_SAW_END) {
+        if (s <= (float)AN_SHAPE_SQUARE) return (s - (float)AN_SHAPE_SAW_END) * (0.5f / (float)(AN_SHAPE_SQUARE - AN_SHAPE_SAW_END));
+        if (s > (float)AN_SHAPE_MAX) s = (float)AN_SHAPE_MAX;
+        return 0.5f + (s - (float)AN_SHAPE_SQUARE) * (0.5f / (float)(AN_SHAPE_MAX - AN_SHAPE_SQUARE));
+    }
+    if (s >= (float)AN_SHAPE_SAW_LO) return 0.f;
+    if (s > (float)AN_SHAPE_TRI_HI) return (s - (float)AN_SHAPE_SAW_LO) * (0.5f / (float)(AN_SHAPE_SAW_LO - AN_SHAPE_TRI_HI));
+    if (s >= (float)AN_SHAPE_TRI_LO) return -0.5f;
+    if (s > (float)AN_SHAPE_SINE_END)
+        return (s - (float)AN_SHAPE_TRI_LO) * (0.5f / (float)(AN_SHAPE_TRI_LO - AN_SHAPE_SINE_END)) - 0.5f;
+    return -1.f;
 }
 
 /* J4 (Track M): the modulation stock routes to a parameter, without the parameter's own value: the sum PARAM_VALUE takes over
@@ -489,14 +499,15 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
         STATS->shape_mods++;                                  /* the black box's shape_mods= */
     }
     /* Review M7 (rev_m7_1 m7.py: a step once per block, 375 Hz, a bare pulse edge at the block start): a Shape that changed
-     * since the last block (modulation, or the knob) ramps there over this block, a step every AN_RAMP frames, each step's
-     * jump corrected (an_reshape); the last part plays the new Shape exactly. Unchanged: one shape, as before. */
+     * since the last block (modulation, or the knob) ramps there over this block, a step every AN_RAMP frames (P3 Q3:
+     * AN_RAMP_LOW where either end is below the saw), each step's jump corrected (an_reshape); the last part plays the new
+     * Shape exactly. Unchanged: one shape, as before. */
     u32 sq = (u32)(shape * (float)AN_SHAPE_Q), sq0 = self->mshape;
     self->mshape = (u16)sq;
     float k1 = an_shape(shape);
     int ramp = sq0 != AN_NO_SHAPE && sq0 != sq;
     float k0 = ramp ? an_shape((float)sq0 * (1.f / (float)AN_SHAPE_Q)) : k1, kp = k0;
-    u32 step = ramp ? AN_RAMP : role == AN_FREE ? n : AN_EVENTS;
+    u32 step = ramp ? (k0 < 0.f || k1 < 0.f ? AN_RAMP_LOW : AN_RAMP) : role == AN_FREE ? n : AN_EVENTS;   /* (P3 Q3: LOW) */
     u32 parts = step ? (n + step - 1u) / step : 0u;
     float *s = FN(S_SCRATCH_PTR, float *(*)(void *))(scratch);
     FN(S_SCRATCH_SIZE, void (*)(void *, u32))(scratch, n);

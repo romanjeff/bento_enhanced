@@ -31,6 +31,9 @@ P3 Q1 (docs/plan-p3-fm-bits.md 2.4, 3.3, 6.1, 6.2): Props stores Sub FM, Bit Dep
 P3 Q2 (plan 4.7, OD11): BitDepth checks an_crush against p3_golden.py (numpy) bit for bit, and in the voice path takes the
 block at Level's input (stock's SMOOTH_APPLY, called from the DSP) to prove the crush is the golden grid on the
 oscillator's own signal and the only change.
+P3 Q3 (plan 4.6, OD6): ShapeLow checks the five shapes' LOW regime (sine, triangle and their morphs below the saw) against
+p3_golden.py sample by sample and by spectrum, an_shape's map in the voice path, the sync roles and the Shape ramp across the
+new plateaus; P3Identity covers 45..127 against BE4.40.
 """
 import json, math, os, random, struct, sys, unittest
 from fractions import Fraction
@@ -1434,8 +1437,10 @@ class ShapeMod(unittest.TestCase):
         pulse, _ = self.run_(127)
         same(self, top, pulse, "clamped at 127")
         low, _ = self.run_(20, -1.0)
-        saw, _ = self.run_(0)
-        same(self, low, saw, "clamped at 0")
+        sine, _ = self.run_(0)
+        same(self, low, sine, "clamped at 0: the sine (P3 Q3; BE4.40's 0 was on its saw plateau)")
+        saw, _ = self.run_(48)
+        self.assertNotEqual(sine, saw, "P3 Q3: Shape 0 is not the saw")
 
     def test_an_lfo_sweeps_the_width_over_time(self):
         xs, _ = self.run_(100, lambda b: 0.2 * math.sin(2 * math.pi * b / 32), blocks=64)
@@ -1794,10 +1799,11 @@ class P3Identity(unittest.TestCase):
         self.assertLessEqual(a[3], b[3] * 1.02, f"{name}: instructions {a[3]} vs BE4.40's {b[3]} (M1: +2 %)")
 
     def test_free_running_shapes(self):
-        """Cost / Voice: both oscillators Analog, Shape pairs across 45..127 (the saw plateau's new edge 45, the anchors);
-        and Cost's square with Shape modulation (a constant 0.1 on Position)."""
+        """Cost / Voice: both oscillators Analog, Shape pairs across 45..127 (the saw plateau's new edge 45, the anchors; P3
+        Q3: every whole Shape 45..51, so a saw plateau centred on 48 (6.6) is seen); and Cost's square with Shape modulation
+        (a constant 0.1 on Position)."""
         for dev in (False, True):
-            for shape in ((45, 127), (48, 88), (64, 100), (88, 48), (100, 64), (127, 45)):
+            for shape in ((45, 127), (48, 88), (64, 100), (88, 48), (100, 64), (127, 45), (46, 49), (47, 50), (51, 45)):
                 with self.subTest(dev=dev, shape=shape):
                     self.check(f"free {shape} dev={dev}", lambda r: self.voice_case(r, shape=shape), dev)
             with self.subTest(dev=dev, case="square + shape mod"):
@@ -2174,6 +2180,393 @@ class BitDepth(unittest.TestCase):
             self.assertIn(m, ins, f"an_crush: {m}")
         self.assertEqual([m for m in ins if m in ("bl", "blx") or m.startswith("vdiv")], [], "an_crush: no call, no VDIV")
 
+
+SINQ_ERR = 8.1e-5           # dsp/analog_kernel.cpp sinq: its stated design maximum (the fit's), not a residual of the kernel
+SINQ_THD_DB = -81.87        # sinq of the triangle, THD (plan 6.3: measured first, in numpy, before the kernel: scratch p3/q3/impl)
+SINQ = (1.570243, -0.641711175, 0.0714682192)   # its stated coefficients (sin(pi/2 x) ~ x (c0 + x^2 (c1 + x^2 c2)), rc26)
+
+
+def k_of(sh):
+    """Shape (whole or 1/512-held) -> the kernel's shape, float64: p3_golden's map below 48 (P3 Q3), BE4.40's above."""
+    return G.kcoord(sh) if sh <= 48 else (sh - 48) * (0.5 / 40) if sh <= 88 else 0.5 + (min(sh, 127) - 88) * (0.5 / 39)
+
+
+def low_slave(inc, shape, n, ev, phase, delayed, reset_blamp=True):
+    """Test-local model of the LOW regime's slave role (p3_golden does not model sync: its module notes), built from the
+    golden model's own pieces (weights, naive, _blep, _blamp) and the kernel's phase law (float32 steps): at an event the
+    phase runs to the event's fraction at = e / 254, the wave steps to wave(0) (a BLEP) and its slope from wave'(p) to
+    wave'(0) (a BLAMP, P3 Q3's own addition: the plan's 4.6 names none, I), then runs on from 0. wave' per cycle: sine
+    2 pi sin 2 pi p, triangle +4 below 1/2 and -4 above, saw 2. reset_blamp False: the step's BLEP only (the control).
+    Returns y (float64)."""
+    ws, wt, wsaw = G.weights(shape)
+    r32 = lambda v: float(np.float32(v))
+    inc = r32(G.clamp_inc(inc)); p = r32(phase); d = float(delayed)
+    K = 8.0 * wt * inc
+    slope = lambda q: ws * 2 * math.pi * math.sin(2 * math.pi * q) + wt * (4.0 if q < 0.5 else -4.0) + 2.0 * wsaw
+    y = np.empty(n)
+    def part(p, begin, length, c):
+        end = p + inc * length
+        if p < 0.5 <= end:
+            a, b = G._blamp(begin + (0.5 - p) / inc, -K); c[0] += a; c[1] += b
+        if end >= 1.0:
+            fr = begin + (1.0 - p) / inc
+            for a, b in (G._blep(fr, -2.0 * wsaw), G._blamp(fr, K)):
+                c[0] += a; c[1] += b
+            end -= 1.0
+        return r32(end)
+    for i in range(n):
+        c = [0.0, 0.0]
+        if ev[i] != 255 and inc > 0:
+            at = r32(ev[i] * r32(1 / 254))
+            p = part(p, 0.0, at, c)
+            for a, b in (G._blep(at, float(G.naive(0.0, shape)) - float(G.naive(p, shape))),
+                         G._blamp(at, inc * (slope(0.0) - slope(p)) if reset_blamp else 0.0)):
+                c[0] += a; c[1] += b
+            p = part(0.0, at, 1.0 - at, c)
+        else:
+            p = part(p, 0.0, 1.0, c)
+        y[i] = d + c[0]
+        d = float(G.naive(p, shape)) + c[1]
+    return y
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class ShapeLow(unittest.TestCase):
+    """P3 Q3 (docs/plan-p3-fm-bits.md 4.6, 6.3, OD6): the five shapes. Below Shape 48 the kernel's LOW regime (sine 0,
+    triangle 24, saw 48, plateaus 0..2 / 22..26 / 45..48) against p3_golden.py (numpy, written from the plan alone: its
+    Q3 section), sample by sample on the kernel's float32 phase law (law "f32") with the golden's tolerance (6.3's 1e-5
+    plus the sine's weight times sinq's stated error), and by spectrum; an_shape's map through the voice; sync roles; the
+    Shape ramp across the new plateaus against BE4.40's saw > square ramp. Identity at 45..127 is P3Identity's."""
+    INCS = (f32(261.6256 / DEV_RATE), f32(0.0123), f32(0.2), f32(0.45))
+    SHAPES = (0, 1, 12, 23, 24, 36, 44, 47)
+
+    def kernel(self, r, st, inc, k, n, role=0, events=None):
+        out = r.alloc(4 * n); ev = r.alloc(max(n, 128))
+        r.u.mem_write(ev, bytes(events) if events is not None else bytes([255]) * max(n, 128))
+        _, cnt = r.call(DSP["an_render"], st, out, n, ev, sargs=(role,), fargs=(inc, k))
+        y = np.frombuffer(bytes(r.u.mem_read(out, 4 * n)), dtype="<f4").astype(np.float64)
+        phase, delayed = struct.unpack("<ff", r.u.mem_read(st + 4, 8))
+        return y, phase, delayed, bytes(r.u.mem_read(ev, n)), cnt
+
+    def state(self, r, phase, delayed):
+        st = r.alloc(176); r.u.mem_write(st, struct.pack("<Iff", AN_MAGIC, phase, delayed))
+        return st
+
+    def test_the_kernel_is_the_golden_model(self):
+        """Shapes 0, 1 (the sine plateau), 12 (sine > triangle), 23, 24 (the triangle), 36 (triangle > saw), 44 and 47 (the
+        saw plateau: BE4.40's SAW regime, k = 0) at note 60 on the device (inc 0.0027), 0.0123, 0.2 and the clamp 0.45,
+        from phase 0.37 (and 0 at note 60), 1024 samples in two chained calls: every sample within tol_time(law "f32",
+        sinq_err = SINQ_ERR), the phase after each call the golden's exactly (the same float32 law), and the lowest sample
+        printed (Q2's note: the bottom clip; the BLAMP rounds the triangle's trough inward, sinq(-1) is -1 in float32)."""
+        lowest, worst = 0.0, (0.0, None)
+        for shape in self.SHAPES:
+            for inc in self.INCS:
+                for ph in ((0.0, 0.37) if inc == self.INCS[0] else (0.37,)):
+                    with self.subTest(shape=shape, inc=inc, phase=ph):
+                        r = Rig(); k = f32(k_of(shape)); p0 = f32(ph); d0 = f32(float(G.naive(p0, shape)))
+                        st = self.state(r, p0, d0)
+                        g = G.render(inc, shape, 1024, phase=p0, delayed=d0, law="f32")
+                        y1, q1, _, _, _ = self.kernel(r, st, inc, k, 512)
+                        y2, q2, _, _, _ = self.kernel(r, st, inc, k, 512)
+                        gp = G.render(inc, shape, 512, phase=p0, delayed=d0, law="f32").phase
+                        self.assertEqual((q1, q2), (f32(gp), f32(g.phase)), "the phase: the golden's float32 law")
+                        y = np.r_[y1, y2]
+                        tol = G.tol_time(shape, inc, 1024, "f32", SINQ_ERR)
+                        err = float(np.max(np.abs(y - g.y)))
+                        self.assertLessEqual(err, tol, f"worst {err:.3g} > {tol:.3g} at {int(np.argmax(np.abs(y - g.y)))}")
+                        lowest = min(lowest, float(y.min()))
+                        if err / tol > worst[0]:
+                            worst = (err / tol, (shape, inc, ph, err))
+        print(f"\n  LOW vs golden: worst {worst[1][3]:.3g} = {worst[0]:.2f} of its tolerance at Shape {worst[1][0]}, inc "
+              f"{worst[1][1]:.5f}; lowest sample {lowest:.7f}", file=sys.stderr)
+
+    def test_master_events_are_the_golden_wraps(self):
+        """MASTER (n <= 128, the harness's event buffer): the LOW regime writes an event byte at each wrap; the bytes are
+        the golden's round(fr 254) within one step (E2: the fraction multiplies by 1 / inc), none missing or extra; the
+        output is the free render's, bit for bit (the role only records)."""
+        for shape in (0, 12, 24, 36):
+            for inc in (f32(0.0123), f32(0.073), f32(0.3)):
+                with self.subTest(shape=shape, inc=inc):
+                    r = Rig(); k = f32(k_of(shape))
+                    y, _, _, ev, _ = self.kernel(r, self.state(r, 0.37, 0.0), inc, k, 128, role=1)
+                    yf, _, _, _, _ = self.kernel(r, self.state(r, 0.37, 0.0), inc, k, 128)
+                    g = G.render(inc, shape, 128, phase=f32(0.37), law="f32")
+                    got, want = list(ev), list(g.ev)
+                    self.assertEqual([e == 255 for e in got], [e == 255 for e in want], "the wraps")
+                    self.assertLessEqual(max(abs(a - b) for a, b in zip(got, want)), 1)
+                    self.assertTrue(np.array_equal(y, yf), "the master's output is the free render's")
+
+    def test_slave_resets_band_limit_the_value_and_the_slope(self):
+        """SLAVE at the master's events (a golden master at inc 0.031: four or five resets in 128 samples): the kernel
+        against low_slave (above), within 1e-5 + 2 x the sine's weight x sinq's error (the step's two waves are sinq's);
+        no events: the free render, bit for bit. Control: the kernel against low_slave without the reset's BLAMP is off by
+        more than 10 x 1e-5 for the triangle (so the slope correction is what is measured; at inc 0.0123 every reset lands
+        before the top, where the triangle's slope does not step, so 0.02 is in the set)."""
+        _, _, _, mev, _, _ = G.render(f32(0.031), 48, 128, phase=0.2, law="f32")
+        self.assertGreaterEqual(sum(e != 255 for e in mev), 4)
+        for shape in (0, 12, 24, 36):
+            for inc, ph in ((f32(0.0123), 0.37), (f32(0.02), 0.81), (f32(0.07), 0.6)):
+                with self.subTest(shape=shape, inc=inc, phase=ph):
+                    r = Rig(); k = f32(k_of(shape)); d0 = f32(float(G.naive(ph, shape)))
+                    y, _, _, _, _ = self.kernel(r, self.state(r, ph, d0), inc, k, 128, role=2, events=list(mev))
+                    want = low_slave(inc, shape, 128, mev, ph, d0)
+                    ws = G.weights(shape)[0]
+                    tol = G.TOL_F32 + 2 * ws * SINQ_ERR
+                    self.assertLessEqual(float(np.max(np.abs(y - want))), tol)
+                    yf, _, _, _, _ = self.kernel(r, self.state(r, ph, d0), inc, k, 128, role=2)
+                    yg, _, _, _, _ = self.kernel(r, self.state(r, ph, d0), inc, k, 128)
+                    self.assertTrue(np.array_equal(yf, yg), "no events: the free render")
+        # control: without the reset's BLAMP the model leaves the kernel by far more than the tolerance (triangle at inc 0.02:
+        # its resets land past the top, p 0.645 a master period after the first, where the slope steps by 8 x 0.02)
+        r = Rig(); y, _, _, _, _ = self.kernel(r, self.state(r, 0.81, 0.0), f32(0.02), f32(k_of(24)), 128, role=2, events=list(mev))
+        off = float(np.max(np.abs(y - low_slave(f32(0.02), 24, 128, mev, 0.81, 0.0, reset_blamp=False))))
+        self.assertGreater(off, 10 * G.TOL_F32, f"control: the reset's slope correction is seen ({off:.3g})")
+
+    def test_an_shape_through_the_voice(self):
+        """an_shape (dsp/analog.cpp) in the voice path, Rig(dev=True): the shape an_render is called with, for every whole
+        Shape 0..48 and for 1/512-held modulated ones next to each plateau edge (1.998, 2.002, 21.998, 22.002, 25.998, 26.002,
+        44.998, 45.002, 47.998), is the golden map's (kcoord) in float32 within 2 ulp of 1 (one rounding of a product, one of
+        a sum); exactly -1, -0.5 and 0 on the plateaus. The 6.6 mutation "plateau centred on 48" moves 45..47 off 0 (and
+        P3Identity's 49..51). The block of each change ramps in AN_RAMP_LOW parts where an end is below the saw."""
+        got = {}
+        r = Rig(dev=True); root, v = r.voice(0x76); r.table(0, 0x76, 1); r.note(v, 60); o = r.osc(v, 0)
+        cap = []
+        r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: cap.append(struct.unpack("<f", struct.pack("<I", uc.reg_read(UC_ARM_REG_S1)))[0]),
+                     begin=DSP["an_render"] & ~1, end=DSP["an_render"] & ~1)
+        parts = {}
+        for s in range(49):
+            r.prop(o, K_SHAPE, s); cap.clear(); r.render(root, v, oscs=(0,)); r.block()
+            parts[s] = len(cap)                                          # the change's block: its ramp's parts
+            cap.clear(); r.render(root, v, oscs=(0,)); r.block()        # the block after it: no ramp, one part
+            self.assertEqual(len(cap), 1)
+            got[float(s)] = cap[-1]
+        self.assertEqual(parts, {s: 1 if s == 0 else 16 if s <= 45 else 8 for s in range(49)},
+                         "a ramp's parts: AN_RAMP_LOW (16 a 2N block) where an end is below the saw (k < 0: Shape < 45), "
+                         "else AN_RAMP (8); none on the first block")
+        r2 = Rig(dev=True); root2, v2 = r2.voice(0x77); r2.table(0, 0x77, 1); r2.note(v2, 60); o2 = r2.osc(v2, 0)
+        r2.prop(o2, K_SHAPE, 0)
+        src = route(r2, o2, 0, 1.0)
+        r2.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: cap.append(struct.unpack("<f", struct.pack("<I", uc.reg_read(UC_ARM_REG_S1)))[0]),
+                      begin=DSP["an_render"] & ~1, end=DSP["an_render"] & ~1)
+        fma = lambda a, b, c: f32(float(Fraction(a) * Fraction(b) + Fraction(c)))
+        for want in (1.998, 2.002, 21.998, 22.002, 25.998, 26.002, 44.998, 45.002, 47.998):
+            x = f32(want / 127)
+            sh = fma(x, 127.0, 0.0); sh = f32(float(int(fma(sh, 512.0, 0.5))) * f32(1 / 512))
+            r2.wf(src + 4, x)
+            for _ in range(2):
+                cap.clear(); r2.render(root2, v2, oscs=(0,)); r2.block()
+            got[sh] = cap[-1]
+        for sh, k in got.items():
+            with self.subTest(shape=sh):
+                want = f32(k_of(sh))
+                if want in (-1.0, -0.5, 0.0):
+                    self.assertEqual(k, want)
+                self.assertLessEqual(abs(k - want), 2 * 2.0 ** -24 * max(abs(want), 0.5), f"{k!r} vs {want!r}")
+
+    def test_spectra(self):
+        """Coherent 4096-sample blocks, no window, after a 4096-sample warm-up (p3_golden.spectrum / steady, law "f32").
+        Shape 0 (the sine): its THD is sinq's (SINQ_THD_DB, measured in numpy before the kernel) within 1 dB, and below the
+        -55 dB the Bessel check of 6.3 needs; its off-harmonic energy is sinq's (the stated polynomial on the float32 phase,
+        numpy, no BLEP: at 301 cycles its 7th harmonic and up fold past Nyquist, so not the golden's < -120 dB) within 1 dB.
+        Shapes 12, 24, 36, 47 at 11 and 301
+        cycles: the off-harmonic energy (aliasing) the golden's within 0.1 dB (the golden notes: I there, measured here),
+        and the band-limited golden below its naive render's (the BLEP/BLAMP buy what they should)."""
+        n = 4096
+        for cycles in (11, 301):
+            inc = G.coherent_inc(cycles, n)
+            for shape in (0, 12, 24, 36, 47):
+                with self.subTest(shape=shape, cycles=cycles):
+                    g, ph0 = G.steady(inc, shape, n, law="f32")
+                    r = Rig(); st = self.state(r, f32(0.0), f32(float(G.naive(0.0, shape))))
+                    self.kernel(r, st, f32(inc), f32(k_of(shape)), n)
+                    y, _, _, _, _ = self.kernel(r, st, f32(inc), f32(k_of(shape)), n)
+                    ks, gs = G.spectrum(y, cycles, ph0), G.spectrum(g.y, cycles, ph0)
+                    if shape == 0:
+                        print(f"\n  Shape 0, {cycles} cycles: THD {ks.thd_db:.2f} dB (sinq {SINQ_THD_DB}), off {ks.off_db:.1f} dB",
+                              file=sys.stderr)
+                        self.assertLess(abs(ks.thd_db - SINQ_THD_DB), 1.0)
+                        self.assertLess(ks.thd_db, -55.0)
+                        t = 1 - 4 * np.abs((np.float32(ph0) + np.arange(n) * np.float64(f32(inc))) % 1.0 - 0.5)
+                        sq = G.spectrum(t * (SINQ[0] + t * t * (SINQ[1] + t * t * SINQ[2])), cycles, ph0)
+                        print(f"  (sinq alone: off {sq.off_db:.1f} dB)", file=sys.stderr)
+                        self.assertLess(abs(ks.off_db - sq.off_db), 1.0)
+                        continue
+                    naive = G.spectrum([float(G.naive((ph0 + j * inc) % 1.0, shape)) for j in range(n)], cycles, ph0)
+                    print(f"\n  Shape {shape}, {cycles} cycles: off {ks.off_db:.2f} dB (golden {gs.off_db:.2f}, naive "
+                          f"{naive.off_db:.2f})", file=sys.stderr)
+                    self.assertLess(abs(ks.off_db - gs.off_db), 0.1)
+                    self.assertLess(gs.off_db, naive.off_db - 5)
+
+    def test_one_division_per_render(self):
+        """6.5 (FM off): the LOW regime divides once per an_render call (the block's 1 / inc, E2), never per sample or per
+        edge: VDIV.F32 executed inside an_render counted by PC, Shapes 0 / 24 / 36 at inc 0.2 (an edge every few samples),
+        256 samples, free, master and slave."""
+        lo = DSP["an_render"] & ~1
+        hi = min(a & ~1 for a in DSP.values() if (a & ~1) > lo)
+        for shape in (0, 24, 36):
+            for role, n in ((0, 256), (1, 128), (2, 128)):
+                with self.subTest(shape=shape, role=role):
+                    r = Rig(); divs = []
+                    def h(uc, a, sz, _):
+                        if sz == 4:
+                            w0, w1 = struct.unpack("<HH", uc.mem_read(a, 4))
+                            if w0 & 0xFFB0 == 0xEE80 and w1 & 0x0F50 == 0x0A00:
+                                divs.append(a)
+                    r.u.hook_add(UC_HOOK_CODE, h, begin=lo, end=hi - 1)
+                    ev = list(G.render(f32(0.031), 48, 128, phase=0.2, law="f32").ev) if role == 2 else None
+                    self.kernel(r, self.state(r, 0.1, 0.0), f32(0.2), f32(k_of(shape)), n, role=role, events=ev)
+                    self.assertEqual(len(divs), 1, f"{len(divs)} VDIVs")
+
+    def test_cost(self):
+        """Instructions per voice-block (both oscillators Analog at one Shape, an_enter + WT1 + WT2, median of 6), n = 256 in
+        Rig(dev=True) and 128 in Rig(): the LOW regime at Shapes 0, 12, 24, 36, free and synced; and Shape 24 ramping every
+        block (an LFO on Position: AN_RAMP_LOW parts) next to Shape 68 under the same LFO (BE4.40's saw > square ramp, AN_RAMP
+        parts). The LOW loop is generic (plan 4.6: one regime, not four), so it pays the triangle, sinq and the saw term
+        every sample. Bounds, guards against a per-sample division or a lost specialisation rather than budgets: a held LOW
+        Shape 1.3 x Cost's mixed (saw > square) voice in the same rig; the LOW ramp 1.5 x the saw > square ramp (twice the
+        parts, each with reshape_low). M, Q3: the sine 12.5 k at n = 128 against mixed 10.7 k and saw 7.4 k."""
+        mixed = {dev: Cost.cost(Cost(), 0.25, dev=dev)[0] for dev in (False, True)}
+        rows = {}
+        for dev in (False, True):
+            for name, shape, flags, mod in (("sine", 0, 1, None), ("sine>tri", 12, 1, None), ("tri", 24, 1, None),
+                                            ("tri>saw", 36, 1, None), ("tri+sync", 24, 3, None), ("tri+ramp", 24, 1, "lfo"),
+                                            ("saw>sq+ramp", 68, 1, "lfo")):
+                r = Rig(dev=dev); root, v = r.voice(0x32); r.table(0, 0x32, flags); r.note(v, 60)
+                srcs = []
+                for i in (0, 1):
+                    r.prop(r.osc(v, i), K_SHAPE, shape, 0x32, i)
+                    if mod:
+                        srcs.append(route(r, r.osc(v, i), 0, 1.0))
+                totals = []
+                for b in range(6):
+                    for src in srcs:
+                        r.wf(src + 4, 0.02 * math.sin(b))
+                    _, c = r.render(root, v, None, (0, 1)); r.block(); totals.append(sum(c))
+                rows[(name, r.frames)] = sorted(totals)[len(totals) // 2]
+            f = DEV_FRAMES if dev else FRAMES
+            for name in ("sine", "sine>tri", "tri", "tri>saw", "tri+sync"):
+                self.assertLess(rows[(name, f)], 1.3 * mixed[dev], f"{name} n={f}: {rows[(name, f)]} vs mixed {mixed[dev]}")
+            self.assertLess(rows[("tri+ramp", f)], 1.5 * rows[("saw>sq+ramp", f)], f"n={f}: the LOW ramp")
+        print("\n  LOW hooks per voice-block (instructions): " + ", ".join(f"{n} n={f} {c}" for (n, f), c in rows.items())
+              + f"; mixed n=128 {mixed[False]}, n=256 {mixed[True]}", file=sys.stderr)
+
+    @staticmethod
+    def sinq(x):
+        """The kernel's stated polynomial (SINQ), float64."""
+        x = np.asarray(x, dtype=np.float64)
+        return x * (SINQ[0] + x * x * (SINQ[1] + x * x * SINQ[2]))
+
+    @classmethod
+    def wave_k(cls, p, k):
+        """The naive wave at phase p for kernel shape k (float64): below 0 p3_golden's blend with the sine as the stated
+        sinq of the triangle (so the kernel's polynomial, not -cos); at and above 0 BE4.40's MIXED form (test_analog
+        model(): blend min(1, 2k), width 0.5 - 0.84 (k - 0.5) above 0.5, dc 2 width - 1)."""
+        if k < 0:
+            tw = G.tri_weight(k); ws, wsaw = (1 - tw, 0.0) if k <= -0.5 else (0.0, 1 - tw)
+            return ws * float(cls.sinq(G.tri(p))) + tw * float(G.tri(p)) + wsaw * float(G.saw(p))
+        blend = min(1.0, 2 * k); width = 0.5 - (k - 0.5) * 0.84 if k > 0.5 else 0.5
+        return (2 * p - 1) * (1 - blend) + ((1.0 if p < width else -1.0) - (2 * width - 1)) * blend
+
+    def test_an_reshape_takes_each_side_in_its_own_form(self):
+        """Q3 review (4.6's must: wave<MIXED> unchanged for k >= 0, the LOW form only for k < 0): an_reshape(from, to) adds
+        half the waveform's step at the phase to `delayed`, 0.5 (wave_to(p) - wave_from(p)), each side in its own form:
+        LOW > LOW, LOW > MIXED and MIXED > LOW across k = 0 both ways (k = 0 itself is MIXED: the saw), at phases 0.12 /
+        0.37 / 0.81, against wave_k within 1e-6 (the sine as the stated sinq); k >= 0 pairs also bit for bit as BE4.40's
+        own an_reshape (BE_REF), same state in, same state out. Before this test the mutation "LOW only when the target is
+        below 0" (a LOW Shape read through wave<MIXED>: blend / width / dc unset) and a wrong correction on the one step
+        that crosses 0 were seen by the aggregate click test alone, or not at all."""
+        low = ((-1.0, -0.5), (-0.75, -0.25), (-0.25, -0.75), (-0.5, -0.02))
+        across = ((-0.75, 0.3), (-0.02, 0.0), (0.3, -0.75), (0.0, -0.02), (-0.5, 0.8), (0.9, -1.0), (-0.25, 0.5))
+        mixed = ((0.2, 0.7), (0.0, 0.5), (0.6, 0.1), (1.0, 0.25))
+        def reshape(r, fn, ph, a, b):
+            st = r.alloc(176); r.u.mem_write(st, struct.pack("<Iff", AN_MAGIC, ph, f32(0.1)))
+            r.call(fn, st, fargs=(a, b))
+            return bytes(r.u.mem_read(st, 176))
+        r = Rig(); ref = Rig(img=REF_IMG, dsp=REF_DSP) if REF_OK else None
+        for a, b in low + across + mixed:
+            for ph in (0.12, 0.37, 0.81):
+                a32, b32, p32 = f32(a), f32(b), f32(ph)
+                with self.subTest(frm=a, to=b, phase=ph):
+                    got = reshape(r, DSP["an_reshape"], p32, a32, b32)
+                    phase, delayed = struct.unpack_from("<ff", got, 4)
+                    self.assertEqual(phase, p32, "the phase is not moved")
+                    want = 0.5 * (self.wave_k(p32, b32) - self.wave_k(p32, a32))
+                    self.assertLessEqual(abs((delayed - f32(0.1)) - want), 1e-6, f"step {delayed - f32(0.1):.7g} vs {want:.7g}")
+                    if (a, b) in mixed and ref:
+                        self.assertEqual(got, reshape(ref, REF_DSP["an_reshape"], p32, a32, b32), "BE4.40's an_reshape")
+        if not ref:
+            print(f"\n  (no BE4.40 reference build at {REF}: the k >= 0 identity part not run)", file=sys.stderr)
+
+    def test_the_sine_is_the_stated_sinq(self):
+        """Q3 review: sinq's coefficients pinned, not only its error budget (SINQ_ERR lets a c1 off by 1e-5 through). Shape
+        0 is the pure sine (tw = wsaw = 0: no BLEP or BLAMP, so each output sample is the wave at the previous sample's
+        phase): from phase 0.37 at incs 0.0123, 0.0731 and 0.2, 512 samples, sample i + 1 = the stated polynomial at the
+        triangle of the kernel's float32 phase after i + 1 steps (numpy float64; the phase law: p + inc, minus 1 at >= 1,
+        each rounded to float32), within 1e-6. Shape 12 (half sine) likewise against the golden render (law f32) with its
+        sine replaced by sinq at the delayed sample's phase."""
+        for shape in (0, 12):
+            for inc in (f32(0.0123), f32(0.0731), f32(0.2)):
+                with self.subTest(shape=shape, inc=inc):
+                    r = Rig(); p0 = f32(0.37); d0 = f32(float(G.naive(p0, shape)))
+                    y, _, _, _, _ = self.kernel(r, self.state(r, p0, d0), inc, f32(k_of(shape)), 512)
+                    ps, p = [], np.float32(p0)
+                    for _ in range(512):
+                        p = np.float32(p + np.float32(inc))
+                        if p >= 1: p = np.float32(p - np.float32(1))
+                        ps.append(float(p))
+                    ps = np.array(ps[:-1])
+                    ws = G.weights(shape)[0]
+                    if shape == 0:
+                        want = self.sinq(G.tri(ps))
+                    else:
+                        g = G.render(inc, shape, 512, phase=p0, delayed=d0, law="f32")
+                        want = g.y[1:] + ws * (self.sinq(G.tri(ps)) - G.sine(ps))
+                    err = float(np.max(np.abs(y[1:] - want)))
+                    self.assertLessEqual(err, 1e-6, f"worst {err:.3g}")
+
+    def test_the_ramp_across_the_plateaus_clicks_no_more_than_saw_to_square(self):
+        """6.4: Shape under an 8 Hz LFO of +-19 (as ShapeMod.test_the_ramp_is_close_to_a_per_sample_one, here from its trough,
+        so the 24 blocks sweep the whole range up: centre - 19 to centre + 19), ramped as an_osc
+        does (an_reshape between parts, the shape linear in the kernel's coordinate; AN_RAMP = 32 frames a step, AN_RAMP_LOW
+        = 16 where either end of the block's ramp is below the saw), against a step every sample. The click energy: the
+        first difference of (ramp - per-sample) at the two samples around each part edge, summed per block, RMS over the
+        blocks (so 16 edges a block count as 16). Across 22..26 (centre 24), the triangle > saw morph (28, the worst at
+        AN_RAMP) and 45 / 48 (46) it is at most the saw > square ramp's (centre 68, BE4.40's: that path is bit-identical to
+        BE4.40's, P3Identity). Q3, M: with AN_RAMP below the saw too the 6.4 criterion failed (per edge 1.02 / 1.08 / 0.95 x
+        saw > square's at 24 / 28 / 46: the LOW map moves k twice as fast a Shape step), hence AN_RAMP_LOW."""
+        r = Rig(); N, B = 256, 24
+        def run(centre, step):
+            """step 0: as an_osc (16 / 32); 1: a step every sample. (samples, the diff indices around each part edge)"""
+            st = r.alloc(176); out = r.alloc(4 * N); ev = r.alloc(128)
+            r.u.mem_write(st, struct.pack("<Iff", AN_MAGIC, 0.0, 0.0)); r.u.mem_write(ev, bytes([255]) * 128)
+            xs, kp, at = [], None, []
+            for b in range(B):
+                k1 = f32(k_of(centre - 127 * 0.15 * math.cos(2 * math.pi * 8 * b * N / DEV_RATE)))
+                k0 = k1 if kp is None else kp
+                P = N // (step or (16 if k0 < 0 or k1 < 0 else 32))
+                cur = k0
+                for j in range(P):
+                    k = k1 if j + 1 == P else f32(k0 + (k1 - k0) * ((j + 1) / P))
+                    if k != cur:
+                        r.call(DSP["an_reshape"], st, fargs=(cur, k))
+                        at += [b * N + j * (N // P) - 1, b * N + j * (N // P)]
+                    cur = k
+                    r.call(DSP["an_render"], st, out + 4 * j * (N // P), N // P, ev, sargs=(0,), fargs=(f32(130.81 / DEV_RATE), k))
+                kp = k1
+                xs += struct.unpack(f"<{N}f", r.u.mem_read(out, 4 * N))
+            return np.array(xs), [i for i in at if N <= i < B * N - 1]
+        def click(centre):
+            (x, at), (ref, _) = run(centre, 0), run(centre, 1)
+            d = np.diff(x - ref)
+            return math.sqrt(float(np.sum(d[at] ** 2)) / (B - 1)), len(at) / (B - 1) / 2
+        ref, re = click(68)
+        got = {c: click(c) for c in (24, 28, 46)}
+        print(f"\n  ramp click per block: saw > square (68) {ref:.3g} ({re:.0f} edges a block); "
+              + "; ".join(f"centre {c} {v:.3g} ({e:.0f})" for c, (v, e) in got.items()), file=sys.stderr)
+        self.assertLessEqual(re, 8, "saw > square: AN_RAMP")
+        for c, (v, e) in got.items():
+            self.assertGreater(e, 8, f"centre {c}: AN_RAMP_LOW where an end is below the saw")
+            self.assertLessEqual(v, ref, f"centre {c}")
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

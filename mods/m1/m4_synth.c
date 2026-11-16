@@ -671,11 +671,12 @@ __attribute__((used, retain)) void an_browse(void *view, void *ev, u32 h) {
 
 /* ---- D1 / D2: the Shape dial in an Analog pane (after Bento Playground's pane hook, GPL-3.0-or-later: the paint slot
  * 0x081B3A18 + 4 on 1.6.1; this one is drawn with stock's rect fill only) -------------------------------------------------
- * J3: only what the kernel plays (dsp/analog.cpp an_shape: Shape 0..AN_SHAPE_SAW_END is one saw, then a saw > square morph to
- * AN_SHAPE_SQUARE, then the pulse narrows to 8 % at 127): a 270-degree ring open at the bottom with the saw sector
- * (0..48) drawn wider, glyphs for saw (in the sector), square (88) and pulse (127), each lit only while it has 3/4 of the
- * blend (none in the middle of a morph), and an orange pointer at Shape. The five-shape table comes with sine / triangle
- * (the FM sprint), in the same commit as the kernel. Integer only; pane coordinates have y up (M). */
+ * J3: only what the kernel plays (dsp/analog.cpp an_shape; P3 Q3, docs/plan-p3-fm-bits.md 4.6: the sine at 0, a sine >
+ * triangle morph to the triangle at 24, a triangle > saw morph to the saw at 48, a saw > square morph to AN_SHAPE_SQUARE,
+ * then the pulse narrows to 8 % at 127, each pure shape on its plateau, synth_shared.h): a 270-degree ring open at the
+ * bottom, the five glyphs at their anchors (AT), each lit only while it has 3/4 of the blend (none in the middle of a
+ * morph), and an orange pointer at Shape. BE4.40 drew 0..48 as one wide saw sector; that is gone with the saw plateau.
+ * Integer only; pane coordinates have y up (M). */
 static void fill(int x, int y, int w, int h, u32 c, u32 surf) {
     int r[4] = {x, y, w, h};
     FN(S_GFX_FILL, void (*)(const int *, u32, u32))(r, c, surf);
@@ -688,33 +689,43 @@ static int sin64(int a) {                     /* a in 1/64 turn, Q12 */
 static int sin256(int a) { int lo = a >> 2, f = a & 3; return (sin64(lo) * (4 - f) + sin64(lo + 1) * f) >> 2; }
 static int angle(u32 shape) { return 160 - (int)(shape * 192u / AN_SHAPE_MAX); }   /* 1/256 turn: 0 -> 225 deg, 127 -> -45 */
 #define C_DIM 0xF3u                           /* stock's palette entries (pane paint 0x08184550 / render.py, M) */
-#define C_SECTOR 0xF5u
 #define C_LIT 0xF2u
 #define C_POINTER 0xF6u
-/* Two cycles of glyph k (0 saw, 1 square, 2 pulse) over 24 columns, amplitude 9, centred on (cx, cy), y up: the saw rises
- * and falls back at each cycle's end as the kernel's 2p - 1 (analog_kernel.cpp), the square and the pulse show both edges;
- * the pulse is high for 3 of a cycle's 12 columns (8 % would be one: too thin to read), review rev_m4_1. Each column joins
- * the last one's level, which draws the vertical edges. */
+/* Glyph k (0 sine, 1 triangle, 2 saw, 3 square, 4 pulse) over 24 columns, amplitude 9, centred on (cx, cy), y up, in the
+ * kernel's phase (analog_kernel.cpp): the sine -cos 2 pi p and the triangle 1 - 4 |p - 1/2| start at the bottom and peak
+ * at the middle, ONE cycle each (Q3 review: at two cycles, 6 columns a half cycle, the two drew alike; at 12 the sine's
+ * round top, 3 columns at the peak (rounded to nearest: >> 12 floors x + 1/2), and the triangle's point read apart, M
+ * snapshot; the triangle's (16 - d) 9 / 16 truncates, as before); the saw rises and falls back at each
+ * cycle's end as 2p - 1; the square and the pulse show both edges, two cycles each; the pulse is high for 3 of a cycle's
+ * 12 columns (8 % would be one: too thin to read), review rev_m4_1. Each column joins the last one's level, which draws
+ * the vertical edges. */
 #define GLYPH_N 24
 #define GLYPH_AMP 9
 static void glyph(u32 k, int cx, int cy, u32 c, u32 surf) {
     int prev = 0;
     for (int i = 0; i <= GLYPH_N; i++) {
-        int p = i * 128 / GLYPH_N & 63;
-        int y = cy + (k == 0u ? (p - 32) * GLYPH_AMP / 32 : p < (k == 1u ? 32 : 16) ? GLYPH_AMP : -GLYPH_AMP);
+        int p = i * (k < 2u ? 64 : 128) / GLYPH_N & 63, d = p < 32 ? 32 - p : p - 32;
+        int y = cy + (k == 0u ? (sin64(p - 16) * GLYPH_AMP + 2048) >> 12 : k == 1u ? (16 - d) * GLYPH_AMP / 16
+                      : k == 2u ? (p - 32) * GLYPH_AMP / 32 : p < (k == 3u ? 32 : 16) ? GLYPH_AMP : -GLYPH_AMP);
         int lo = i && prev < y ? prev : y, hi = i && prev > y ? prev : y;
         fill(cx - GLYPH_N / 2 + i, lo, 2, hi - lo + 2, c, surf);
         prev = y;
     }
 }
-/* lit glyphs for Shape s: bit k when glyph k has at least 3/4 of the blend (saw 0..58, square 78..97, pulse 118..127) */
+/* lit glyphs for Shape s: bit k when glyph k has at least 3/4 of the blend (sine 0..7, triangle 17..30, saw 41..58, square
+ * 78..97, pulse 118..127; P3 Q3: the morphs SIN_TRI and TRI_SAW run between the plateaus' inner ends) */
+#define SIN_TRI (AN_SHAPE_TRI_LO - AN_SHAPE_SINE_END)
+#define TRI_SAW (AN_SHAPE_SAW_LO - AN_SHAPE_TRI_HI)
 #define MORPH (AN_SHAPE_SQUARE - AN_SHAPE_SAW_END)
 #define NARROW (AN_SHAPE_MAX - AN_SHAPE_SQUARE)
 static u32 lit(u32 s) {
     u32 m = 0;
-    if (s <= AN_SHAPE_SAW_END + MORPH / 4u) m |= 1u;
-    if (s >= AN_SHAPE_SQUARE - MORPH / 4u && (s <= AN_SHAPE_SQUARE || 4u * (s - AN_SHAPE_SQUARE) <= NARROW)) m |= 2u;
-    if (s > AN_SHAPE_SQUARE && 4u * (s - AN_SHAPE_SQUARE) >= 3u * NARROW) m |= 4u;
+    if (s <= AN_SHAPE_SINE_END || 4u * (s - AN_SHAPE_SINE_END) <= SIN_TRI) m |= 1u;
+    if ((s >= AN_SHAPE_TRI_LO || 4u * (AN_SHAPE_TRI_LO - s) <= SIN_TRI) &&
+        (s <= AN_SHAPE_TRI_HI || 4u * (s - AN_SHAPE_TRI_HI) <= TRI_SAW)) m |= 2u;
+    if ((s >= AN_SHAPE_SAW_LO || 4u * (AN_SHAPE_SAW_LO - s) <= TRI_SAW) && s <= AN_SHAPE_SAW_END + MORPH / 4u) m |= 4u;
+    if (s >= AN_SHAPE_SQUARE - MORPH / 4u && (s <= AN_SHAPE_SQUARE || 4u * (s - AN_SHAPE_SQUARE) <= NARROW)) m |= 8u;
+    if (s > AN_SHAPE_SQUARE && 4u * (s - AN_SHAPE_SQUARE) >= 3u * NARROW) m |= 16u;
     return m;
 }
 static void dial(void *w, u32 s, u32 surf) {
@@ -723,12 +734,11 @@ static void dial(void *w, u32 s, u32 surf) {
     int cx = x + wd / 2, cy = y + ht / 2;
     u32 m = lit(s);
     for (u32 v = 0; v <= AN_SHAPE_MAX; v += 2u) {                     /* the ring, in 2/127 steps of Shape */
-        int an = angle(v), sector = v <= AN_SHAPE_SAW_END, t = sector ? 5 : 3;
-        fill(cx + sin256(an + 64) * 42 / 4096 - t / 2, cy + sin256(an) * 42 / 4096 - t / 2, t, t,
-             sector ? (s <= AN_SHAPE_SAW_END ? C_LIT : C_SECTOR) : C_DIM, surf);
+        int an = angle(v);
+        fill(cx + sin256(an + 64) * 42 / 4096 - 1, cy + sin256(an) * 42 / 4096 - 1, 3, 3, C_DIM, surf);
     }
-    static const u8 AT[3] = {AN_SHAPE_SAW_END / 2u, AN_SHAPE_SQUARE, AN_SHAPE_MAX};
-    for (u32 k = 0; k < 3u; k++) {
+    static const u8 AT[5] = {AN_SHAPE_SINE, AN_SHAPE_TRI, AN_SHAPE_SAW_END, AN_SHAPE_SQUARE, AN_SHAPE_MAX};
+    for (u32 k = 0; k < 5u; k++) {
         int an = angle(AT[k]);
         glyph(k, cx + sin256(an + 64) * 70 / 4096, cy + sin256(an) * 57 / 4096, m & (1u << k) ? C_LIT : C_DIM, surf);
     }
@@ -816,13 +826,20 @@ static void dial_tick(volatile An4 *a, void *view, u32 now) {
  * At the widget's own text writes (an_value_text) and in the tick, before and after stock's. Y1: a Type value stock's two-label
  * list cannot name (not 0 / 1: the oscillator plays Wavetable) reads "Wavetable"; nothing is written to the model, so a
  * later version's value survives a save. V1: an Analog oscillator's Shape reads what the kernel plays (dsp/analog.cpp an_shape,
- * analog_kernel.cpp: blend = 2 shape, pulse width 0.5 - 0.84 (shape - 0.5)). Only widgets bound to our keys: Type and Shape
+ * analog_kernel.cpp: P3 Q3 the triangle's weight below the saw, blend = 2 shape, pulse width 0.5 - 0.84 (shape - 0.5)). Only widgets bound to our keys: Type and Shape
  * are only in the oscillator rows. */
+static void morph(Out *o, const char *name, u32 s, u32 from, u32 to) {   /* "name n%": n the share of the next shape */
+    puts_(o, name); dec(o, ((s - from) * 200u / (to - from) + 1u) / 2u); puts_(o, "%");
+}
 static void shape_text(u32 s, char *t) {
     u32 len = 0;
     Out o = {t, &len, 15u};
-    if (s <= AN_SHAPE_SAW_END) puts_(&o, "Saw");
-    else if (s < AN_SHAPE_SQUARE) { puts_(&o, "Saw>Sq "); dec(&o, ((s - AN_SHAPE_SAW_END) * 200u / MORPH + 1u) / 2u); puts_(&o, "%"); }
+    if (s <= AN_SHAPE_SINE_END) puts_(&o, "Sine");                    /* P3 Q3: sine and triangle below the saw */
+    else if (s < AN_SHAPE_TRI_LO) morph(&o, "Sin>Tri ", s, AN_SHAPE_SINE_END, AN_SHAPE_TRI_LO);
+    else if (s <= AN_SHAPE_TRI_HI) puts_(&o, "Tri");
+    else if (s < AN_SHAPE_SAW_LO) morph(&o, "Tri>Saw ", s, AN_SHAPE_TRI_HI, AN_SHAPE_SAW_LO);
+    else if (s <= AN_SHAPE_SAW_END) puts_(&o, "Saw");
+    else if (s < AN_SHAPE_SQUARE) morph(&o, "Saw>Sq ", s, AN_SHAPE_SAW_END, AN_SHAPE_SQUARE);
     else if (s == AN_SHAPE_SQUARE) puts_(&o, "Square");
     else { puts_(&o, "Pulse "); dec(&o, (100u * NARROW - 84u * (s - AN_SHAPE_SQUARE) + NARROW) / (2u * NARROW)); puts_(&o, "%"); }
     t[len] = 0;

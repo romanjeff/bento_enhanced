@@ -306,12 +306,17 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
   - The saw part's BLEP at the wrap is scaled by (1 - tw).
   - The triangle's corners at p = 0 and 0.5 get a 2-point polyBLAMP, scaled by tw * the slope change.
   - The sine uses the prototype's polynomial `sinq` (no table). Its accuracy (THD) is not stated anywhere yet. The golden
-    model measures it first in Q3, and the Bessel tolerance (6.3) is set from that figure.
+    model measures it first in Q3, and the Bessel tolerance (6.3) is set from that figure. **Measured (Q3, M):** max error
+    8.1e-5, THD -81.9 dB (largest harmonic the 5th, -82.2 dB): 27 dB under the -55 dB the Bessel check needs.
+  - **Q3 as built, beyond this text:** a SLAVE reset in LOW also steps the slope (triangle -4 -> +4 past its top, the
+    sine's 2 pi sin 2 pi p -> 0), so it gets a BLAMP next to the value BLEP (one sinq per reset). See "Q3 as built".
   - k = 0 still dispatches to SAW, so Shape 45..127 runs today's instances (bit identity).
 - `an_reshape` (analog_kernel.cpp:222-227): replace `wave<MIXED>` with `wave_any(p, Shape)`. It must call
   `wave<MIXED>` unchanged for k >= 0 (bit for bit) and the LOW form only for k < 0. The correction is still a value jump
   only. At AN_RAMP = 32-frame steps the slope change per step is tiny (I), so the reshape gets no BLAMP. Test 6.4
-  measures the click energy against BE4.40's saw->square ramp.
+  measures the click energy against BE4.40's saw->square ramp. **Q3 (M): at AN_RAMP the criterion failed** (the LOW map
+  moves k twice as fast a Shape step); a slope BLAMP in the reshape changed nothing measurable, so the fix is
+  `AN_RAMP_LOW` = 16-frame steps for a ramp with either end below the saw ("Q3 as built").
 - M4 (m4_synth.c):
   - synth_shared.h gains `AN_SHAPE_SINE 0` and `AN_SHAPE_TRI 24`, with the plateau constants beside them. Update the
     AN_SHAPE_SAW_END comment ("0..48 plays one saw").
@@ -382,7 +387,7 @@ sub inc and the carrier inc are per-96 kHz-sample cycles, so kin is domain-invar
 | AnProps | 12 B | 0 | 12 B | S |
 | Shared area | SA_UI 2 KB unused; SA+0x100..0x200 undefined | A 1 KB + B 1 KB in SA_UI; SA_FMSTATS 32 B at SA+0x100 | | S |
 | Run | r9..r15 spare | r9 fmtag, r10 inc_sub | r11..r15 spare | S |
-| CPU per voice-block, n = 256 (hooks only) | saw 13,192; mixed 19,840; saw+sync 15,785; mixed+sync 22,180 | full FM voice (sine sub -> both, 1>2, saw) | **Gate (FD6 restated): generic full-FM saw voice <= 1.3 x the specialised full-FM voice at 2N, provisionally ~31 k** | M / I |
+| CPU per voice-block, n = 256 (hooks only) | saw 13,192; mixed 19,840; saw+sync 15,785; mixed+sync 22,180 | full FM voice (sine sub -> both, 1>2, saw). **Q3 (M), FM off:** a held LOW Shape (sine, triangle or a blend) ~23,470 = 1.18 x mixed, 1.77 x saw; tri+sync 25,833; a LOW Shape ramping every block 29,554 = 1.29 x the saw > square ramp (22,859) | **Gate (FD6 restated): generic full-FM saw voice <= 1.3 x the specialised full-FM voice at 2N, provisionally ~31 k** | M / I |
 | Block budget | 1.28 M cycles per 128 output frames | per root with 10 full-FM voices: ~+110-130 k **instructions** (I). Device CPI is unmeasured (code runs from flash), so this is not a cycle figure. Worst case: several Analog tracks with FM chords multiply it, and it is not bounded offline. | | I |
 | Message load | 4 set_property per oscillator per push | +3 per oscillator per push or resend | the ring blocks, it never drops (2.4) | S |
 
@@ -456,7 +461,8 @@ How the CPU gate is derived:
 - **Square sub DC case (new):** Sub FM, Square sub at PW 30 %, I = 8. The mean carrier frequency equals the unmodulated
   one (DC-free), within one bin.
 - Spectral checks:
-  - First measure `sinq`'s THD in the golden model.
+  - First measure `sinq`'s THD in the golden model. (Q3, M: -81.9 dB in numpy before the kernel; the kernel's Shape 0
+    measures -81.86 / -82.11 dB at 11 / 301 cycles. The Bessel tolerance can be set from that in Q6.)
   - FM 1>2 with **OSC1 and OSC2 both at Shape 0 (sine)**, ratio 1, I = 1: Bessel J0..J3 within a tolerance set from the
     measured THD. J3(1) = 0.0196 (-34 dB), so 0.5 dB on J3 needs the sine's harmonics and BLEP residue at about -55 dB
     (I: arithmetic).
@@ -478,7 +484,9 @@ How the CPU gate is derived:
 - Ramp: an amount step 0 -> 1000 -> 0 gives a per-sample index that is linear across the 2N, and the block after is
   bit-identical non-FM. After a silent skip, `msub` and `m12` are 0.
 - Shape ramps across the 45/48 boundary and across 22..26: click energy (high-pass RMS at the part edges) <= BE4.40's
-  saw->square ramp figure.
+  saw->square ramp figure. **Q3 as built:** the metric is the first difference of (ramp - per-sample ramp) at the two
+  samples around each part edge, summed per block, RMS over the blocks (the same metric for both ramps, so 16 edges a
+  block count as 16); it holds only with `AN_RAMP_LOW` = 16-frame steps for a ramp with either end below the saw (OD13).
 - Glide in Rig(dev=True): Glide 500 (1 s) reaches 0.001 of the interval at 1 s +- 1 block. This fails at HEAD (OD1).
 
 ### 6.5 VDIV and cost counts
@@ -787,6 +795,158 @@ Review fixes (two reviews, 2026-11-15; rebuilt clean into ~/bento/out/m1-p3q2, s
   - OSC1's Bit Depth for both: 14, 12 of them in the new per-oscillator test. OSC2's for both: 14 (12).
   - Plain fmaxf and plain floorf (compiler_rt links both): build refused by DSP_REFUSED_LIBM.
 
+
+### Q3 as built (2026-11-15, working tree on d21225d; build ~/bento/out/m1-p3q3)
+
+OD6 as recommended (plateaus sine 0..2, triangle 22..26, saw 45..48). p3_golden.py's Q3 section (written independently from
+4.6 / 6.3 / 6.5 / 6.6 / OD6, before the kernel) is used unchanged; no bug was found in it.
+
+What was built:
+- **sinq measured first** (M, numpy, scratch p3/q3/impl/sinq.py, before any kernel code): the prototype's odd 5th-order
+  `sin(pi/2 x)` has max error 8.07e-5 (8.08e-5 evaluated in float32), sinq(1) = 1 in float32; as the sine of the triangle
+  its THD is **-81.9 dB**, the largest harmonic the 5th at -82.2 dB. SINQ_ERR = 8.1e-5 is the stated design figure the
+  tests use (never a kernel residual).
+- **M7 kernel** (analog_kernel.cpp): `set_shape` k < 0 -> `low` with tw / ws / wsaw (sum 1; NaN is not < 0, so the saw
+  as BE4.40); `wave<LOW>` = tw tri + ws sinq(tri) + wsaw (2p - 1), tri = 1 - 4 |p - 1/2| (`__builtin_fabsf`, VABS) and the
+  sine computed from it, so -cos 2 pi p in phase with the triangle, the polarity p3_golden chose; `advance<LOW>`: a
+  polyBLAMP `corner()` of -8 inc tw at p = 1/2 and +8 inc tw at the wrap, the saw part's BLEP -2 wsaw; `by_regime` sends
+  `low` to `run<LOW, ROLE>` before BE4.40's dispatch (one generic regime x 3 roles). k >= 0 is BE4.40's code path.
+- **Beyond 4.6, SLAVE:** a reset in LOW steps the slope as well as the value (the triangle's -4 -> +4 when the reset lands
+  past its top, the sine's 2 pi sin 2 pi p -> 0), so it adds a BLAMP `inc (wt (p < 1/2 ? 0 : 8) - ws 2 pi sinq(tri(p +
+  1/4)))` at the event's fraction next to BE4.40's value BLEP. One sinq per reset, nothing per sample. The golden model
+  does not cover sync (its own notes), so the test model `low_slave` (test_analog) is built from the golden's pieces.
+- **an_reshape:** `wave_any` (LOW below 0, `wave<MIXED>` at and above), still a value jump only. The LOW branch is chosen on
+  the two floats before any Shape is built and runs out of line (`reshape_low`): deciding after both `set_shape` calls cost
+  an_reshape +41 % on P3Identity's mod case and the case +2.2 % (over M1's +2 %, M); this way an_reshape is +9 % and the
+  case +0.98 %.
+- **M7 hook** (analog.cpp): `an_shape` below 48 per OD6 (linear between the knots, -1 / -0.5 / 0 exactly on the plateaus;
+  48..127 BE4.40's arithmetic unchanged). Its "s < 0 and NaN: the sine" is a fall-through only: the stored Shape is
+  unsigned and an_osc clamps a modulated one to 0..127 first, so no caller passes either (review: an equivalent mutation).
+- **Found, and changed (deviation from 4.6, flag for review): `AN_RAMP_LOW` = 16.** 6.4's click criterion failed with
+  AN_RAMP for LOW too: per part edge 1.02 / 1.08 / 0.95 x the saw > square ramp's at LFO centres 24 / 28 / 46 (M, scratch
+  p3/q3/impl/clicks.py), because the LOW map moves k twice as fast a Shape step (0.5 over 20 / 19 Shapes; saw > square
+  0.5 over 40). A slope BLAMP in the reshape (tried, scratch exp_blamp.py) changed the figure in the third digit, nothing
+  else: 4.6's "no BLAMP" stands (I -> M). **For Jeff: OD13.** So a ramp with either end below the saw (k0 < 0 or k1 < 0) steps every 16
+  frames (`step = ... ? AN_RAMP_LOW : AN_RAMP`, static_assert: a divisor of AN_EVENTS); 45..127 ramps keep AN_RAMP
+  (identity). Result (the test's metric, click energy per block): saw > square 0.0163, LOW 0.0083 / 0.0089 / 0.0135 at 24
+  / 28 / 46. Cost: twice the parts in a LOW ramp block (below). One line to revert if Jeff prefers 4.6 as written.
+- **synth_shared.h:** AN_SHAPE_SINE 0, _SINE_END 2, _TRI_LO 22, _TRI 24, _TRI_HI 26, _SAW_LO 45 beside _SAW_END 48 (the
+  saw's anchor), _SQUARE 88; one comment rule for both cores.
+- **M4** (m4_synth.c): V1 `shape_text` Sine, `Sin>Tri n%` (the triangle's share, (s - 2) / 20), Tri, `Tri>Saw n%` (the
+  saw's, (s - 26) / 19), Saw, then BE4.40's three (a shared `morph()` keeps their rounding); the J3 dial: five glyphs
+  (sine and triangle new, in the kernel's phase), `AT[5] = {0, 24, 48, 88, 127}`, `lit()` the 3/4 rule per segment (sine
+  0..7, triangle 17..30, saw 41..58, square 78..97, pulse 118..127), the ring one uniform dotted arc (BE4.40's wide saw
+  sector and C_SECTOR gone).
+
+Tests:
+- **test_analog `ShapeLow`** (8 tests, new):
+  - `test_the_kernel_is_the_golden_model`: an_render at k = kcoord(Shape) for Shapes 0, 1, 12, 23, 24, 36, 44, 47, incs
+    0.0027 (note 60), 0.0123, 0.2, 0.45, 1024 samples in two chained calls, against `render(law="f32")`: every sample within
+    `tol_time(.., "f32", SINQ_ERR)` (worst 8.08e-5 = 0.89 of its tolerance, at Shape 0: sinq), the phase after each call
+    equal to the golden's. Lowest sample -1.0000000 (Q2's note: LOW does not pass the bottom clip either).
+  - `test_master_events_are_the_golden_wraps` (n = 128: the harness's event buffer), `test_slave_resets_band_limit_the_
+    value_and_the_slope` (against `low_slave`, 1e-5 + 2 ws SINQ_ERR; no events = the free render bit for bit; control:
+    `low_slave` without the reset BLAMP is > 1e-4 off), `test_one_division_per_render` (VDIV.F32 by PC inside an_render: 1
+    per call, free / master / slave, Shapes 0 / 24 / 36 at inc 0.2).
+  - `test_an_shape_through_the_voice` (Rig(dev=True)): the shape an_render gets for every whole Shape 0..48 and for
+    1/512-held values next to each plateau edge = f32(kcoord) within 2 ulp, exact on the plateaus; the change's block has
+    16 parts where an end is below the saw, else 8.
+  - `test_spectra` (coherent 4096, no window, after 4096 warm-up): Shape 0's THD -81.86 dB at 11 cycles and -82.11 at 301
+    (sinq's -81.87 within 1 dB; far below 6.3's -55 dB); its off-harmonic energy is sinq's own (-129.7 dB at 11, -94.4 at
+    301: the 7th harmonic and up fold past Nyquist, so not the golden's < -120 dB) within 1 dB. Triangle and blends: the
+    kernel's off_db = the golden's within 0.1 dB (golden note: I; M here, all within 0.08 dB): Shape 12 -95.07 / -48.74,
+    24 -88.17 / -41.66, 36 -42.50 / -26.71, 47 -38.85 / -23.15 dB at 11 / 301 cycles; each at least 5 dB under the naive
+    render (10 to 16 dB measured).
+  - `test_cost`, `test_the_ramp_across_the_plateaus_clicks_no_more_than_saw_to_square` (6.4; figures above).
+- **Reviewed edits (6.7 Q3, expected changes, no tolerance loosened):**
+  - `ShapeMod.test_lfo_to_position_moves_the_pulse_width`: `run_(20, -1.0)` still equals `run_(0)`, now **the sine** (label
+    "clamped at 0: the sine"); added: it differs from Shape 48 (the saw).
+  - test_synth_ui `Defensive.test_out_of_range_values_on_the_page`: a negative Shape reads **`Sine`** (was `Saw`).
+  - `ValueTexts.test_shape_texts`: **0 / 1 / 2 Sine, 3 `Sin>Tri 5%`, 12 `Sin>Tri 50%`, 21 `Sin>Tri 95%`, 22 / 24 / 26 Tri,
+    27 `Tri>Saw 5%`, 36 `Tri>Saw 53%`, 44 `Tri>Saw 95%`, 45 / 46 / 48 Saw**; 49.. unchanged.
+  - `Dial.test_pointer_and_lit_glyphs`: per-glyph lit sets at 24 Shapes (was: any LIT pixel at 11); `test_the_saw_sector_
+    lights_as_one` -> **`test_each_plateau_lights_as_one`** (0 = 1 = 2, 22 = 24 = 26, 45 = 46 = 48, the three differ);
+    `test_the_glyphs_read_as_the_sound`: the saw drawn at 48 (its glyph moved off the sector), sine and triangle added
+    (start at the bottom, two peaks, no edge: span < 16 px, the 18-px edge test the saw and pulse already use).
+  - P3Identity `test_free_running_shapes`: + (46, 49), (47, 50), (51, 45), so every whole Shape 45..51 is compared with
+    BE4.40 (6.6's "plateau centred on 48").
+- The `test_q1_plays_no_amount` cases all play Shape >= 48, so Q3 changes none of them (as the Q2 note expected).
+
+Measured (M):
+- Sizes: DSP **12,748 B**: +2,576 on Q2's 10,172, **+3,040 on BE4.40's 9,708: P3 has used 3.0 KB of its 14 KB ceiling**,
+  23,860 B free in the window. an_render +1,792 B (3 LOW instances, ~600 B each, against 4.6/5's ~2 KB for "LOW x 3 + shape
+  code"), reshape_low 660 B, an_shape 240 B (now out of line; an_osc -140), an_reshape +28. Image **0x1890C8** (+336 on
+  Q2), **17,004 B under PROVEN_MAX** 0x18D334; synth UI 14,944 B (+338). Q3 is about 1 KB over 5's estimate for its part;
+  with Q4 (~2 KB) and Q5's three FM instances (~1.5-2.5 KB each) the ceiling still holds on 5's figures (I), but Q5's
+  measurement now matters.
+- Cost, off (Shape >= 45): `Cost` at n = 256 saw 13,242 (Q2 13,214), mixed 19,882, saw+sync 15,843, mixed+sync 22,224; n =
+  128 saw 7,354. P3Identity: **59 cases**, worst **+0.98 %** (mod dev=False, 110,971 vs 109,899: a ramp's 8 an_reshape
+  calls, each two float compares more), total +0.35 % (M1 +2 %).
+- Cost, LOW (`ShapeLow.test_cost`, hooks per voice-block, both oscillators): n = 256 sine 23,472, sine>tri 23,482, tri
+  23,464, tri>saw 23,464, tri+sync 25,833, tri ramping 29,554 (saw > square ramping 22,859); n = 128 sine 12,549. So a
+  held LOW shape costs **1.18 x the mixed saw > square voice** (19,882) and 1.77 x the saw: the generic loop pays the
+  triangle, sinq and the saw term every sample (~20 instructions a sample more than the saw). A LOW ramp block 1.29 x the
+  saw > square ramp (AN_RAMP_LOW's 16 parts). Specialising ST / TS (4.6's rejected alternative) would cut that at ~2 KB
+  more code; not done (I: not needed by any budget yet).
+- Dial (M4): one draw 116,784 instructions, 206 fills (BE4.40 / Q2: 96,446, 156): two more glyphs. Snapshots: scratch
+  p3/q3/snap/dial_*.png (0, 2, 12, 24, 36, 48, 68, 88, 108, 127) and montage.png. **Note for the checklist:** at 24
+  columns x amplitude 9 the sine and triangle glyphs are hard to tell apart (6 samples a half cycle: sine -9 -7 -5 0 5 7 9,
+  triangle -9 -6 -3 0 2 5 9); the text (`Sine` / `Tri`) is exact. Device item 9 should judge it; one cycle a glyph for
+  those two would separate them.
+- Mutations (scratch p3/q3/mut/mutate.py, each built from a copy and run against its suite; logs in p3/q3/mut/logs): all
+  red. Failures, test_cost's (an earlier draft's bound) left out:
+  - an_shape's saw plateau centred on 48 (6.6): 6, P3Identity free shapes (49..51).
+  - Triangle BLAMP sign flipped: 39 (golden 25, slave 9, spectra 5). BLAMP at the wrap missing: 36.
+  - Saw BLEP not scaled by 1 - tw: 14. Triangle plateau dropped: 25 (an_shape through the voice).
+  - Sine = the triangle (no sinq): 25. Sine polarity flipped (+cos): 52.
+  - Slave reset BLAMP removed: 11 (slave test). reshape_low with wave<MIXED>: 1 (the click test only).
+  - AN_RAMP_LOW = AN_RAMP: 1 (the voice's part count; the click test models the rule itself). The LOW decision made after
+    `set_shape` (all reshapes through reshape_low): 4, P3Identity mod cost (worst +2.6 %).
+  - AN_SHAPE_TRI_HI 27 in synth_shared.h (both cores): test_analog 20, test_synth_ui 4.
+  - M4: glyphs sine / triangle swapped in AT: 6; `Sin>Tri` percent from 0 not 2: 2; the sine's 3/4 rule as 1/2: 2.
+- Full suite (wsl/test_m1.sh, O=~/bento/out/m1-p3q3) green; test_analog 88 tests (Q2 80 + 8), test_synth_ui 62 (one test
+  renamed); p3_golden.py self-test 17 tests OK.
+
+Found during Q3 (corrections to this plan):
+- **6.4's click criterion fails at AN_RAMP for the LOW map** (above); fixed with AN_RAMP_LOW, a deviation from 4.6 to review.
+- **6.3's "Shape 0 off-harmonic below -120 dB" holds only for the exact sine:** with sinq, at 301 cycles its harmonics fold
+  to -94 dB. Harmless for the Bessel check (6.3 counts harmonics), but Q6's tolerance must count sinq's aliases at high
+  carriers.
+- **4.6 / 5 size estimate** for LOW x 3 + shape code (~2 KB) was low by ~1 KB (3.0 KB measured including reshape_low and
+  the out-of-line an_shape).
+- **Golden harness note confirmed:** the master role stays at n <= 128 in the tests (128-byte event buffer).
+- 4.7 already states OD11's two's-complement grid (Q2 rewrote it); no mid-tread text is left in 4.7.
+
+Review fixes (two reviews; each issue checked, build ~/bento/out/m1-p3q3, clean):
+- **an_reshape's routing had no direct test (major).** The review's mutant "LOW only when the target is below 0" (a LOW
+  Shape read through wave<MIXED>, blend / width / dc unset) stayed green; the old wave<MIXED> mutant and a wrong correction
+  on the one step that crosses 0 were seen only by the aggregate click test. New `ShapeLow.test_an_reshape_takes_each_
+  side_in_its_own_form`: LOW > LOW, LOW <> MIXED both ways across 0 (k = 0 is MIXED), at three phases, the step in
+  `delayed` = 0.5 (wave_to - wave_from) within 1e-6 (the LOW side with the stated sinq), and k >= 0 pairs bit for bit as
+  BE4.40's an_reshape (BE_REF).
+- **sinq was pinned only to its error budget.** c1 off by 1e-5 (SINQ_ERR is 8.1e-5) stayed green. New `ShapeLow.test_the_
+  sine_is_the_stated_sinq`: Shape 0 sample by sample = the stated polynomial at the kernel's float32 phases within 1e-6,
+  Shape 12 the golden with its sine replaced by sinq, likewise.
+- **The sine and triangle glyphs drew alike** (snapshot, and the mutant "sine drawn as the triangle" stayed green). Now one
+  cycle each (12 columns a half cycle), the sine rounded to nearest: its top holds 5 columns, the triangle's point 3
+  (the 2-px fill); their top profiles differ by 2 px in 18 of 26 columns (M). `Dial.test_the_glyphs_read_as_the_sound`:
+  one peak in the middle (was two: the reviewed expected change), plus the profile and peak-width checks. OD14. Snapshots:
+  scratch p3/q3fix/snap. Dial draw 115,481 instructions, 206 fills.
+- **Deviations not on the decision list:** OD13 (AN_RAMP_LOW) and OD14 (the reset BLAMP, the one-cycle glyphs) added;
+  6.4 records the 16-frame rule and the per-block metric.
+- **LOW's CPU cost was only in this section:** now in 5 (CPU row), 9 (a risk row) and device item 12 (Shape 0 / 24 chords).
+- **an_shape's "s < 0 / NaN: the sine" is unreachable** (equivalent mutation): comment and the note above reworded; no
+  code change.
+- Not taken: rebuilding the click test on the voice path's captured parts (review 1, optional). The ramp rule it models
+  is pinned against the firmware by test_an_shape_through_the_voice's part count, and the new reshape test covers the
+  per-step correction directly, so a voice-path capture would add harness, not coverage.
+- Mutations rerun against the fixes (scratch p3/q3fix/mut, each built from a copy): reshape LOW only on the target 12
+  failures, only on the source 9, reshape_low through wave<MIXED> 34, its correction zeroed 34, sinq c1 -.6417 6, c0
+  1.5703 38, glyph sine = triangle 1, sine and triangle back at two cycles 3, sine phase 2, triangle inverted 2: all red.
+  an_shape's negative branch to the saw stays green (equivalent, above).
+- After the fixes: DSP 12,748 B (unchanged), image **0x1890D8** (+16 B, 16,988 B under PROVEN_MAX), synth UI 14,960 B
+  (+16); test_analog 90 tests (+2), test_synth_ui 62.
+
 ---
 
 ## 8. Device checklist (BE4.41; BE4.40's own checklist runs first, as it is not flashed yet)
@@ -803,12 +963,15 @@ Review fixes (two reviews, 2026-11-15; rebuilt clean into ~/bento/out/m1-p3q2, s
 8. Sync 1>2 on plus Sub FM on OSC1: the slave follows the FM'd master. Also mixed sync (OSC1 Wavetable) with Sub FM on
    OSC2.
 9. Shape sweep 0..127 by knob and by modulation (Position routed): sine, triangle, saw at 48, square, pulse. The dial
-   glyphs light.
+   glyphs light. Judge whether the sine and triangle glyphs read apart (Q3 review: one cycle each now, the sine's round
+   top against the triangle's point; offline their top profiles differ by 2 px in 18 of 26 columns, but at 24 x 9 px the
+   difference stays small), and listen for clicks while an LFO sweeps 5..45 (Q3's AN_RAMP_LOW, OD13).
 10. Save, reload, copy/paste a track, save and load a preset **file**: all three values are kept. Stock 1.6.8 opens the
     project. BE4.40 opens it too, and drops the three values on its next save (expected).
 11. Glide 50 % = 1 s (stopwatch or tuner; Q0 shipped). BE4.40 took 0.5 s for the same setting.
 12. CPU: an 8-voice chord with full FM, then the same on several tracks. Record DSP %, `peak`, `voices_peak`, `fm=` and
-    `bits=`, with no `OVER`.
+    `bits=`, with no `OVER`. Also (Q3) an 8-voice chord at Shape 0 and at Shape 24, FM off, on one and then several
+    tracks (LOW costs ~1.77 x a saw voice), and the same with an LFO on Position (a LOW ramp, 1.29 x): peak, no `OVER`.
 13. An old BE4.40 project with Shape < 45 now plays sine or triangle (expected; no migration).
 
 ---
@@ -828,6 +991,7 @@ Review fixes (two reviews, 2026-11-15; rebuilt clean into ~/bento/out/m1-p3q2, s
 | Backward wraps and slave resets | resets that sound wrong under deep through-zero sync; double edges at di < 0 | golden model; the one-edge reset rule; OD5 | I |
 | The Shape remap changes J4 and old projects below 45 | an audible change | checklist item 13; no migration (decided); 6.7 edits | S |
 | LOW regime BLAMP / sinq quality | aliasing on bright blends; Bessel test too strict | THD measured first; spectral checks | I |
+| LOW regime cost (Q3, M) | every sine / triangle patch costs ~1.77 x a saw voice with FM off (the generic loop pays tri, sinq and the saw term every sample); dense sine / triangle chords across tracks, and FM on top in Q5, near OVER | device item 12's Shape 0 / 24 chords; if it fails, specialise LOW into ST / TS (4.6's rejected alternative, ~2 KB more code) | M / I |
 | The type-0xFF pad entry is reachable | a one-property object from a crafted file | reader-type scan and injected-element load test (Q1) | S |
 | Rollback to BE4.40 | the 3 values silently dropped on its next save | BE4.40-opens-P3 test; release note; checklist item 10 | S/I |
 | M7 key-flag path 0x08059960 never run | a new key mirrored to handle 0xFFFFFFFE | static reading (only 0x05/0x27/0x31 flagged); runtime test (OD7) | S |
@@ -876,6 +1040,8 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 | OD10 | DC of the Square sub as an FM modulator | (a) DC-free (subtract 1 - 2*pw, the prototype's `dcfree`); (b) raw (bit-exact copy, the carrier detunes with PW and depth: +3.2*inc_sub at I = 8, PW 30 %) | **(a) DC-free**. Turning Sub FM up should not change the pitch centre, and PW then shapes the timbre only. Exactness is still tested, up to the known DC constant. (b) is the analog-linear-FM behaviour, if you want it as a feature. |
 | OD11 | Bit Depth grid | (a) mid-tread, S = 2^(b-1): 2^b + 1 levels, symmetric, no clip; (b) true b-bit two's complement, clamped to [-S, S-1] | **(a)** (superseded: Jeff chose (b), Decisions above; 4.7). It has no DC and no top clip, and at 12/8 bits the extra level is inaudible. At 4 bits it is 17 levels instead of 16, so the label is nominal. Choose (b) if you want a stricter "4-bit" grit with an asymmetric top clip. |
 | OD12 | Bit Depth's clip of the DC-free pulse (Q2, 4.7) | Every Bit Depth, 12 bits too, clips the pulse's high (2 - 2w, 1.84 at Shape 127) for Shape > 88: 4.7 to 6 dB less peak to peak, and no longer DC-free, so under FM 1>2 (B = crushed s, BD1) OSC1 detunes OSC2 by I * inc1 * mean(q) (about -0.4 to -0.8 x inc1 at I = 8). (a) accept the clip as grit; then Q6 either subtracts B's mean (known only per block, or from the clipped levels) or accepts the detune as a feature. (b) crush `s + dc`, then subtract dc (the pulse's own range sits on the grid's [-1, 1)): B stays nearly DC-free and 12 / 8 bits nearly transparent (the +1 high still loses one step: 0.9995 at 12 bits, 0.875 at 4), but the dc must follow a Shape ramp part by part (the kernel knows it per part) and the output is offset from the grid by dc. (c) no clamp above S - 1: more than 2^b levels, so it is OD11 (a) again, not a variant | **(b)**, to be confirmed. It keeps OD11 (b)'s grid for the signal the grid was meant for, keeps B DC-free as OD10 chose for the sub, and costs one add and one subtract per sample (the dc per part is already computed). (a) with a mean subtracted in Q6 is the fallback. Q2 ships (a) as built, pinned by its tests; the answer is needed before Q6 writes B. |
+| OD13 | Shape ramp step below the saw (Q3, deviation from 4.6) | (a) `AN_RAMP_LOW` = 16 frames for a ramp with either end below the saw (k0 < 0 or k1 < 0), AN_RAMP = 32 elsewhere; (b) 4.6 as written, AN_RAMP = 32 for every ramp | **(a)**, as built. At 32 frames 6.4's criterion fails: per part edge 1.02 / 1.08 / 0.95 x the saw > square ramp's click at LFO centres 24 / 28 / 46 (the LOW map moves k twice as fast a Shape step). At 16, per block (6.4's metric) 0.0083 / 0.0089 / 0.0135 against saw > square's 0.0163. A slope BLAMP in an_reshape changed nothing measurable, so it is not the fix. Cost: a LOW ramp block 29,554 instructions against 22,859 for the saw > square ramp (1.29 x); ramps at Shape >= 45 are untouched (identity). (b) is one line in an_osc plus the expected part count in ShapeLow; 6.4 would then need a looser criterion for the LOW map. |
+| OD14 | Taken as built in Q3 (beyond 4.6, listed so you see them) | the SLAVE reset's slope BLAMP in LOW; the sine and triangle dial glyphs drawn one cycle each (the others two) | **Keep both.** The reset BLAMP is the value BLEP's missing half: without it a synced triangle is off the exact band-limited wave by up to 0.12, with it ~1e-4 (both reviews measured it against a brute-force reference); one sinq per reset, nothing per sample. The glyphs: at two cycles the sine and triangle drew alike (snapshot); one cycle gives the sine a round top. Device item 9 judges it; reverting is one expression in `glyph()`. |
 | CPU gate | (not a new decision; FD6 restated) | | The draft's 27.5 k was tighter than FD6. The plan now uses FD6 faithfully: 1.3 x the specialised voice at 2N (~31 k, I), measured in Q5. Say so if you want the tighter target instead. |
 
 ---

@@ -548,7 +548,7 @@ class Defensive(unittest.TestCase):
                 r.view = r.malloc(0x13000); r.call(S.SYNTH_VIEW_CTOR, r.view); r.notify(0xA8)
                 r.tick(); r.tick()
                 self.assertEqual(r.rows(), [AN_ROW1, AN_ROW2])
-                self.assertEqual(r.wvalue(2), "Saw" if shape < 0 else "Pulse 8%", "V1 reads the clamped Shape")
+                self.assertEqual(r.wvalue(2), "Sine" if shape < 0 else "Pulse 8%", "V1 reads the clamped Shape (P3 Q3: 0 sine)")
                 r.show_row(1)
                 self.assertIn(r.wvalue(4), ("Off", "On"))
                 self.assertEqual(r.turn(2, -0x3200), [], "stock's widget holds a value it cannot place at its bottom")
@@ -823,9 +823,24 @@ def angle_of(px, centre):
 
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
 class Dial(unittest.TestCase):
-    """D1 / D2: the Shape dial, drawn with stock's GFX_FILL into the frame buffer and read back as pixels. J3: one saw sector
-    for 0..48 and the morphs after it (dsp/analog.cpp an_shape: 48 saw, 88 square, 127 the 8 % pulse, typed here), a
-    pointer over 270 degrees (225 at 0 to -45 at 127), glyphs lit only with 3/4 of the blend."""
+    """D1 / D2: the Shape dial, drawn with stock's GFX_FILL into the frame buffer and read back as pixels. J3, P3 Q3: five
+    glyphs at the anchors (docs/plan-p3-fm-bits.md 4.6, typed here: 0 sine, 24 triangle, 48 saw, 88 square, 127 the 8 %
+    pulse; plateaus 0..2, 22..26, 45..48), a pointer over 270 degrees (225 at 0 to -45 at 127), glyphs lit only with 3/4
+    of the blend."""
+    # where the glyphs sit: at their anchor's angle, 70 px across and 57 px up from the dial's centre (m4_synth.c dial)
+    AT = (0, 24, 48, 88, 127)
+
+    @staticmethod
+    def lit_glyphs(g, c):
+        """The glyphs (0 sine .. 4 pulse) with lit pixels in a 30 x 24 box around their place."""
+        import math
+        got = set()
+        for k, s in enumerate(Dial.AT):
+            a = math.radians(225 - s * 270 / 127)
+            x, y = round(c[0] + 70 * math.cos(a)), round(c[1] - 57 * math.sin(a))
+            if (g[y - 12:y + 12, x - 15:x + 15] == LIT).any():
+                got.add(k)
+        return got
     def draw(self, shape, pane=0, types=(1, 0)):
         r = Rig(types=types); r.tick()
         r.set((r.w1, r.w2)[pane], SHAPE, shape)
@@ -834,24 +849,34 @@ class Dial(unittest.TestCase):
         return r, n
 
     def test_pointer_and_lit_glyphs(self):
+        """P3 Q3: which glyph is lit, from the plan's weights (4.6, OD6) and the 3/4 rule: the sine's 1 - (s - 2) / 20 >= 3/4 up
+        to 7, the triangle's from 17 to 30 (1 - (s - 26) / 19), the saw's from 41 ((s - 26) / 19) to 58 (BE4.40's saw >
+        square: 48 + 40 / 4), the square 78..97, the pulse 118..127; nothing lit in the middle of a morph; nothing but the
+        glyphs is lit (BE4.40's wide saw sector is gone)."""
         import numpy as np
-        for shape, lit in ((0, True), (24, True), (48, True), (58, True), (68, False), (78, True), (88, True), (97, True),
-                           (108, False), (118, True), (127, True)):
+        for shape, want in ((0, {0}), (2, {0}), (7, {0}), (8, set()), (12, set()), (16, set()), (17, {1}), (24, {1}),
+                            (30, {1}), (31, set()), (36, set()), (40, set()), (41, {2}), (45, {2}), (48, {2}), (58, {2}),
+                            (59, set()), (68, set()), (78, {3}), (88, {3}), (97, {3}), (108, set()), (118, {4}), (127, {4})):
             with self.subTest(shape=shape):
                 r, n = self.draw(shape)
                 self.assertGreater(n, 100, "drawn with stock's fills")
                 self.assertEqual(r.stock_paints, [], "stock's wavetable paint is skipped on an Analog pane")
                 g, c = r.glass(0)
-                want = (225 - shape * 270 / 127) % 360
+                pw = (225 - shape * 270 / 127) % 360
                 got = angle_of(np.nonzero(g == ORANGE), c)
-                self.assertLess(min(abs(got - want), 360 - abs(got - want)), 8, f"pointer at {got:.0f}, want {want:.0f}")
-                self.assertEqual(bool((g == LIT).any()), lit, "a glyph (or the saw sector) lit")
+                self.assertLess(min(abs(got - pw), 360 - abs(got - pw)), 8, f"pointer at {got:.0f}, want {pw:.0f}")
+                self.assertEqual(self.lit_glyphs(g, c), want, "the lit glyphs")
+                self.assertEqual(bool((g == LIT).any()), bool(want), "nothing else lit")
 
-    def test_the_saw_sector_lights_as_one(self):
-        """0..48 is one saw: the sector and glyph look the same at 0 and 48 (only the pointer moves)."""
+    def test_each_plateau_lights_as_one(self):
+        """P3 Q3 (OD6): on a plateau (0..2 sine, 22..26 triangle, 45..48 saw) the lit pixels are the same (only the pointer
+        moves), and each plateau's differ from the others'. Replaces BE4.40's "0..48 is one saw"."""
         import numpy as np
-        a, b = (self.draw(s)[0].glass(0)[0] for s in (0, 48))
-        self.assertTrue(np.array_equal(a == LIT, b == LIT))
+        lit = {s: self.draw(s)[0].glass(0)[0] == LIT for s in (0, 1, 2, 22, 24, 26, 45, 46, 48)}
+        for a, b in ((0, 1), (0, 2), (22, 24), (26, 24), (45, 48), (46, 48)):
+            self.assertTrue(np.array_equal(lit[a], lit[b]), f"{a} and {b}")
+        for a, b in ((0, 24), (24, 48), (0, 48)):
+            self.assertFalse(np.array_equal(lit[a], lit[b]), f"{a} and {b}")
 
     def test_out_of_range_shapes_clamp(self):
         import numpy as np
@@ -974,11 +999,37 @@ class Dial(unittest.TestCase):
 
     def test_the_glyphs_read_as_the_sound(self):
         """Review rev_m4_1: the saw rises (the kernel's 2p - 1, analog_kernel.cpp) and falls back at each cycle's end, two
-        cycles per glyph; the pulse shows both edges and a high run of at least 3 px. Glass Y is down."""
+        cycles per glyph; the pulse shows both edges and a high run of at least 3 px. P3 Q3: the sine and the triangle start
+        at the bottom (the kernel's phase: -cos 2 pi p, 1 - 4 |p - 1/2|), peak in the middle, and have no edge; Q3 review:
+        one cycle each (was two, which drew them alike: the review's mutation "the sine drawn as the triangle" stayed green),
+        and they read apart: their top profiles (each from its own bottom) differ by 2 px in at least 12 of the 26 columns
+        (M: 18), and the sine's round top holds its peak for at least 5 columns where the triangle's point holds 3 (the
+        2-px fill). Glass Y is down. Each anchor lights only its own glyph (test_pointer_and_lit_glyphs), so all lit pixels
+        are it."""
         import numpy as np
-        r, _ = self.draw(0)
-        g, (cx, cy) = r.glass(0)
-        ys, xs = np.nonzero(g[:, :cx - 50] == LIT)        # the saw glyph (left of the ring)
+        prof = {}
+        for s in (0, 24):
+            with self.subTest(shape=s):
+                r, _ = self.draw(s)
+                ys, xs = np.nonzero(r.glass(0)[0] == LIT)
+                cols = sorted(set(xs))
+                top = [ys[xs == x].min() for x in cols]
+                span = [ys[xs == x].max() - ys[xs == x].min() for x in cols]
+                self.assertLess(max(span), 16, "no edge (an edge spans the glyph's 18 px, below)")
+                lows = [i for i in range(len(top)) if top[i] == max(top)]
+                highs = [i for i in range(len(top)) if top[i] == min(top)]
+                self.assertIn(0, lows, "the cycle starts at the bottom")
+                self.assertEqual(len([i for i in range(1, len(highs)) if highs[i] - highs[i - 1] > 3]) + 1, 1, "one peak")
+                self.assertLessEqual(abs((highs[0] + highs[-1]) / 2 - (len(top) - 1) / 2), 1.5, "in the middle")
+                self.assertGreater(max(top) - min(top), 14, "full height")
+                prof[s] = (np.array(top[0]) - np.array(top), len(highs))
+        (sine, sp), (tri, tp) = prof[0], prof[24]
+        self.assertEqual(len(sine), len(tri))
+        self.assertGreaterEqual(int(np.sum(np.abs(sine - tri) >= 2)), 12, f"the sine and the triangle differ: {sine} / {tri}")
+        self.assertGreaterEqual(sp, 5, "the sine's round top")
+        self.assertLessEqual(tp, 3, "the triangle's point")
+        r, _ = self.draw(48)
+        ys, xs = np.nonzero(r.glass(0)[0] == LIT)          # the saw glyph
         top = {x: ys[xs == x].min() for x in set(xs)}
         cols = sorted(top)
         up = sum(top[b] < top[a] for a, b in zip(cols, cols[1:]))
@@ -1010,10 +1061,14 @@ class Dial(unittest.TestCase):
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
 class ValueTexts(unittest.TestCase):
     """V1: an Analog oscillator's Shape value reads what the kernel plays (typed here from dsp/analog.cpp an_shape and
-    analog_kernel.cpp: blend 2 shape to 48..88, pulse width 50 % - 42 % (s - 88) / 39 above)."""
+    analog_kernel.cpp: blend 2 shape to 48..88, pulse width 50 % - 42 % (s - 88) / 39 above; P3 Q3, plan 4.6 / OD6: the
+    triangle's share (s - 2) / 20 between the sine and the triangle plateaus, the saw's (s - 26) / 19 after it, rounded)."""
     def test_shape_texts(self):
         r = Rig(types=(1, 0)); r.tick()
-        for shape, want in ((0, "Saw"), (48, "Saw"), (49, "Saw>Sq 3%"), (64, "Saw>Sq 40%"), (87, "Saw>Sq 98%"), (88, "Square"),
+        for shape, want in ((0, "Sine"), (1, "Sine"), (2, "Sine"), (3, "Sin>Tri 5%"), (12, "Sin>Tri 50%"), (21, "Sin>Tri 95%"),
+                            (22, "Tri"), (24, "Tri"), (26, "Tri"), (27, "Tri>Saw 5%"), (36, "Tri>Saw 53%"),
+                            (44, "Tri>Saw 95%"), (45, "Saw"), (46, "Saw"),
+                            (48, "Saw"), (49, "Saw>Sq 3%"), (64, "Saw>Sq 40%"), (87, "Saw>Sq 98%"), (88, "Square"),
                             (89, "Pulse 49%"), (100, "Pulse 37%"), (127, "Pulse 8%")):
             with self.subTest(shape=shape):
                 r.set(r.w1, SHAPE, shape); r.tick()

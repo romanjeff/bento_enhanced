@@ -96,12 +96,18 @@ typedef struct {
 #define AN_FM_MAX 1000u                                     /* P3: Sub FM, FM 1>2 0..1000 (0..100.0 % of the knob; the FM
                                                                sprint plays index 8 (v / 1000)^2) */
 #define AN_BITS_MAX 3u                                      /* P3: Bit Depth 0 Full, 1 12, 2 8, 3 4 bits (the list's labels) */
-#define AN_SHAPE_MAX 127u                                   /* Shape 0..127 (4.40: saw > square > pulse; sine and triangle
-                                                               below the saw come with the FM sprint) */
-#define AN_SHAPE_SAW_END 48u                                /* 0..48 plays one saw (dsp/analog.cpp an_shape), */
+#define AN_SHAPE_MAX 127u                                   /* Shape 0..127: sine > triangle > saw > square > pulse (P3 Q3,
+                                                               docs/plan-p3-fm-bits.md 4.6; BE4.40: saw > square > pulse) */
+#define AN_SHAPE_SINE 0u                                    /* P3 Q3 (OD6), one-sided plateaus: 0..2 plays the sine, */
+#define AN_SHAPE_SINE_END 2u
+#define AN_SHAPE_TRI_LO 22u                                 /* 2..22 morphs it to the triangle, 22..26 the triangle, */
+#define AN_SHAPE_TRI 24u
+#define AN_SHAPE_TRI_HI 26u
+#define AN_SHAPE_SAW_LO 45u                                 /* 26..45 morphs it to the saw, 45..48 the saw (BE4.40: 0..48), */
+#define AN_SHAPE_SAW_END 48u                                /* 48 the saw's anchor (dsp/analog.cpp an_shape), */
 #define AN_SHAPE_SQUARE 88u                                 /* 48..88 morphs it to a square, 88..127 narrows the pulse:
                                                                the kernel's map and the M4's dial / value text (m4_synth.c)
-                                                               read these, so they change together */
+                                                               read these, so they change together (both cores, one kit) */
 #define AN_SHAPE_DEFAULT 48u                                /* saw (the BE4.22..BE4.31 sound); N1's template default */
 /* +0x0600 Analog per-root glide lines, 16 x 32 B (M7 private): the track's last note (glide starts from it) and the
  * glide coefficient cache */

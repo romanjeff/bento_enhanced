@@ -22,6 +22,10 @@ enum { AN_LIVE_NEW = 1, AN_LIVE_RUNS = 2, AN_LIVE_FROZEN = 3 };   /* AnOsc.mlive
 #define AN_SHAPE_Q 512u               /* a modulated Shape is held to 1/512 of a step (a whole Shape is exact) */
 #define AN_NO_SHAPE 0xFFFFu
 #define AN_RAMP 32u                   /* a Shape change ramps over its block in steps of AN_RAMP frames */
+#define AN_RAMP_LOW 16u               /* P3 Q3: ... and of AN_RAMP_LOW where it starts or ends below the saw (k < 0): that map
+                                       * moves k twice as fast a Shape step (0.5 over 19 / 20 Shapes, saw > square 0.5 over 40),
+                                       * so at AN_RAMP its click was up to 1.08 x saw > square's, at this 0.5 to 0.75 x (M,
+                                       * test_analog ShapeLow); a divisor of AN_EVENTS */
 
 struct AnOsc {
     unsigned magic;
@@ -66,6 +70,7 @@ struct AnProps {
 };
 static_assert(sizeof(AnProps) == 12, "settings: 12 bytes");
 static_assert(AN_PROPS_OFF + sizeof(AnProps) == AN_AREA, "the settings end where stock's own fields start (+0x1CC)");
+static_assert(AN_EVENTS % AN_RAMP == 0 && AN_EVENTS % AN_RAMP_LOW == 0, "a ramp's parts tile the sync chunks");
 
 /* A float's exact value as a 64-bit fraction (2^64 = 1): m x 2^(e - 150) x 2^64 = m << (e - 86). For x < 0.5 the shift
  * is at most 39 (no overflow; callers clamp to 0.45); below 2^-40 low bits go (0.04 Hz at 96 kHz). 0 for 0, a denormal or a negative. */

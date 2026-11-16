@@ -9,6 +9,10 @@
  * Shape 0..1: blend = min(1, 2 shape) fades saw into pulse; above 0.5 the pulse narrows from 50 % to
  * 8 % (width = 0.5 - 0.84 (shape - 0.5)). A sample's correction straddles it and the next one, hence
  * `delayed`.
+ * P3 Q3 (docs/plan-p3-fm-bits.md 4.6): shape -1..0 is the LOW regime below the saw: -1 sine, -0.5 triangle, 0 saw, tw the
+ * triangle's weight (2 shape + 2 on [-1, -0.5], the rest sine; -2 shape above, the rest saw). The triangle 1 - 4 |p - 0.5|
+ * (-1 at p = 0, +1 at 0.5) gets a two-point polyBLAMP at both corners, the saw part its BLEP scaled by 1 - tw, the sine
+ * (sinq of the triangle: -cos 2 pi p, in phase with it) none. Shape >= 0 is BE4.40's code and result, bit for bit.
  *
  * Efficiency (docs/plan-synths-168.md section 6, measured by test_analog.py):
  *   E1  the loop is specialised by template: the shape regime (pure saw, pure pulse, mixed) and the
@@ -31,14 +35,34 @@
 
 namespace {
 
-enum Regime { SAW, PULSE, MIXED };
+enum Regime { SAW, PULSE, MIXED, LOW };
 enum Role { FREE, MASTER, SLAVE };
 
 struct Shape {
     float inc, rinc, blend, width, dc;
+    float tw, ws, wsaw;               /* LOW: the triangle's, the sine's and the saw's weights (they sum to 1) */
+    int low;                          /* shape < 0: the LOW regime (one generic loop per role, plan 4.6) */
 };
 
+/* sin(pi/2 x), x in [-1, 1]: odd 5th order (rc26 fm_proto.cpp, its fit.py), p(1) = 1 in float32. Design maximum error
+ * 8.1e-5 (M: 8.07e-5 dense in float64, 8.08e-5 evaluated in float32); as the sine of the triangle, THD -81.9 dB, the largest
+ * harmonic the 5th at -82.2 dB (M, scratch p3/q3/impl/sinq.py, measured before this kernel). No table, no division. */
+inline float sinq(float x) {
+    float x2 = x * x;
+    return x * (1.570243f + x2 * (-.641711175f + x2 * .0714682192f));
+}
+inline float tri(float p) { return 1.f - 4.f * __builtin_fabsf(p - .5f); }   /* VABS (plain fabsf is libm: plan 4.7) */
+
 inline void set_shape(Shape &k, float shape) {
+    k.low = shape < 0.f;
+    if (k.low) {                      /* P3 Q3: -1 sine .. -0.5 triangle .. 0 saw (NaN is not < 0: the saw, as BE4.40) */
+        if (shape < -1.f) shape = -1.f;
+        int st = shape <= -.5f;
+        k.tw = st ? 2.f * shape + 2.f : -2.f * shape;
+        k.ws = st ? 1.f - k.tw : 0.f;
+        k.wsaw = st ? 0.f : 1.f - k.tw;
+        return;                       /* (blend, width and dc are not read by LOW, nor the weights by the others) */
+    }
     if (!(shape >= 0.f)) shape = 0.f;
     if (shape > 1.f) shape = 1.f;
     k.blend = shape * 2.f > 1.f ? 1.f : shape * 2.f;
@@ -55,6 +79,7 @@ inline float recip(const Shape &k, float x) {      /* x / inc */
 }
 
 template <int R> inline float wave(float p, const Shape &k) {
+    if (R == LOW) { float t = tri(p); return k.tw * t + k.ws * sinq(t) + k.wsaw * (2.f * p - 1.f); }
     if (R == SAW) return 2.f * p - 1.f;
     if (R == PULSE) return (p < k.width ? 1.f : -1.f) - k.dc;
     return (2.f * p - 1.f) * (1.f - k.blend) + ((p < k.width ? 1.f : -1.f) - k.dc) * k.blend;
@@ -67,12 +92,33 @@ inline void edge(float fraction, float jump, float &now, float &next) {
     next -= jump * .5f * fraction * fraction;
 }
 
+/* A slope change of `kink` (output units per sample) at `fraction` of this sample: the two-point polyBLAMP, the same kernel
+ * as edge()'s integrated once (P3 Q3: the triangle's corners). */
+inline void corner(float fraction, float kink, float &now, float &next) {
+    float t = 1.f - fraction;
+    now += kink * (1.f / 6.f) * t * t * t;
+    next += kink * (1.f / 6.f) * fraction * fraction * fraction;
+}
+
 /* Advance the phase over [begin, begin + length) of one sample; corrections into now / next. Returns the
  * wrap position in the sample (0..1), or -1 if the phase did not wrap. */
 template <int R> inline float advance(float &p, const Shape &k, float begin, float length, float &now, float &next) {
     float wrap = -1.f;
     if (length <= 0.f) return wrap;
     float end = p + k.inc * length;
+    if (R == LOW) {                   /* the triangle's top at 0.5 (slope +4 -> -4 a cycle); at the wrap its bottom (-4 -> +4)
+                                       * and the saw part's step; with inc <= 0.45 at most one of the two places a sample */
+        float kink = 8.f * k.inc * k.tw;
+        if (p < .5f && end >= .5f) corner(begin + recip(k, .5f - p), -kink, now, next);
+        if (end >= 1.f) {
+            wrap = begin + recip(k, 1.f - p);
+            corner(wrap, kink, now, next);
+            edge(wrap, -2.f * k.wsaw, now, next);
+            end -= 1.f;
+        }
+        p = end;
+        return wrap;
+    }
     if (R != SAW && p < k.width && end >= k.width)
         edge(begin + recip(k, k.width - p), R == PULSE ? -2.f : -2.f * k.blend, now, next);
     if (end >= 1.f) {
@@ -95,6 +141,13 @@ void run(AnOsc &o, const Shape &k, float *out, unsigned n, unsigned char *events
             float at = (float)e * (1.f / 254.f);
             advance<R>(p, k, 0.f, at, now, next);
             edge(at, wave<R>(0.f, k) - wave<R>(p, k), now, next);
+            /* P3 Q3, LOW: the slope steps too (the saw's does not, the pulse's is 0): from the triangle's -4 past its top and
+             * the sine's 2 pi sin 2 pi p (= 2 pi sinq(tri(p + 1/4))) to the triangle's +4 and the sine's 0 at p = 0 */
+            if (R == LOW) {
+                float q = p + .25f;
+                corner(at, k.inc * ((p < .5f ? 0.f : 8.f) * k.tw - 6.2831853f * k.ws * sinq(tri(q < 1.f ? q : q - 1.f))),
+                       now, next);
+            }
             p = 0.f;
             advance<R>(p, k, at, 1.f - at, now, next);
         } else {
@@ -113,6 +166,7 @@ void run(AnOsc &o, const Shape &k, float *out, unsigned n, unsigned char *events
 }
 
 template <int ROLE> void by_regime(AnOsc &o, const Shape &k, float *out, unsigned n, unsigned char *events) {
+    if (k.low) { run<LOW, ROLE>(o, k, out, n, events); return; }   /* P3 Q3: one generic regime below the saw */
 #if AN_E1
     if (k.blend <= 0.f) run<SAW, ROLE>(o, k, out, n, events);
     else if (k.blend >= 1.f) run<PULSE, ROLE>(o, k, out, n, events);
@@ -201,8 +255,8 @@ extern "C" void an_master(AnOsc *o, float inc, unsigned char *events, unsigned n
     o->mphase_lo = (unsigned)pe;
 }
 
-/* inc: cycles per sample. shape 0..1. master: write this oscillator's wraps into events; slave: reset at
- * the events (n <= AN_EVENTS when either is set). */
+/* inc: cycles per sample. shape -1..1 (P3 Q3: below 0 the LOW regime). master: write this oscillator's wraps into events;
+ * slave: reset at the events (n <= AN_EVENTS when either is set). */
 extern "C" void an_render(AnOsc *o, float inc, float shape, float *out, unsigned n, unsigned char *events, int role) {
     Shape k;
     if (!(inc > 0.f)) inc = 0.f;
@@ -231,8 +285,20 @@ extern "C" void an_crush(float *s, unsigned n, unsigned bits) {
 /* BE4.40 Shape modulation (J4): the shape changes between two an_render calls (from -> to) at the current phase. The
  * waveform steps there by wave_to(p) - wave_from(p) (a pulse edge too, where the width moved past p); this is that step's
  * correction at fraction 0 of the next sample (edge(0, jump): half of it now, none in the one after), added to the sample
- * already in `delayed`. The MIXED form is every regime's waveform (blend 0 / 1 give the saw's / the pulse's). */
+ * already in `delayed`. The MIXED form is every regime's waveform at shape >= 0 (blend 0 / 1 give the saw's / the
+ * pulse's). P3 Q3 wave_any: the LOW form below 0, MIXED (unchanged, bit for bit) at and above. Still a value jump only, no
+ * BLAMP for the slope change of one AN_RAMP step (plan 4.6: small, I; ShapeLow's click test measures the result). */
+static float wave_any(float p, const Shape &k) { return k.low ? wave<LOW>(p, k) : wave<MIXED>(p, k); }
+/* (out of line, and chosen before any Shape is built: deciding after both set_shape calls made an_reshape +41 % (+56 % with
+ * the Shapes passed to an out-of-line form) on P3Identity's mod case, the case +2.2 % against M1's +2 % (M); this way +9 %,
+ * the case +0.9 %) */
+__attribute__((noinline)) static void reshape_low(AnOsc *o, float from, float to) {
+    Shape a, b;
+    set_shape(a, from); set_shape(b, to);
+    o->delayed += .5f * (wave_any(o->phase, b) - wave_any(o->phase, a));
+}
 extern "C" void an_reshape(AnOsc *o, float from, float to) {
+    if (from < 0.f || to < 0.f) { reshape_low(o, from, to); return; }
     Shape a, b;
     set_shape(a, from); set_shape(b, to);
     float p = o->phase;
