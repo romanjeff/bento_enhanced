@@ -33,10 +33,9 @@ Behaviour changes (expected, no migration): a BE4.40 project with Shape < 45 now
 saw there); every Glide is twice as long as on BE4.40; going back to BE4.40 drops the three new values on its next save.
 NOT in it: the drum synth (BE4.50+), FM 1>2 from a Wavetable OSC1, OSC2 -> OSC1, FM amounts as Mod Matrix destinations.
 
-Two open questions this kit leaves as the plan wrote them (section 5 and 6 below ask you to listen; docs\plan-p3-fm-bits.md
-OD17 / OD18):
+Two FM tuning quirks, kept on purpose (Jeff, OD17 / OD18 = keep; docs\plan-p3-fm-bits.md):
   - OD17: OSC1's own Sub FM gives OSC1's signal a DC, and FM 1>2 turns that into a pitch shift of OSC2 (up to about an
-    octave at FM 1>2 100 %, moving with OSC1's Sub FM and Shape). The alternative is a high-pass on the modulator.
+    octave at FM 1>2 100 %, moving with OSC1's Sub FM and Shape). Expected: FM's own character, not a fault.
   - OD18: at 4 bits some Shapes give OSC2 a small pitch shift under FM 1>2 (about +17 cents at Shape 36, note 60).
 
 Offline measured cost (instructions per voice-block of 256 frames, note 60, both oscillators saws, a sine sub; the
@@ -102,9 +101,9 @@ Section 8 checks these on the device.
     FM 1>2 with OSC1 at Level 0: it still works.
 [ ] OSC2 Pitch +12 st, then +19 st: the ratio changes the timbre, the pitch is OSC2's.
 [ ] OSC1 Shape 48 (saw), then 88 (square), then 127 (pulse) with FM 1>2 50 %: each a different, harsher modulator.
-[ ] OD17 listening: OSC1 Shape 48, OSC2 FM 1>2 100 %, then OSC1's own Sub FM 0 -> 50 % (sine sub an octave down): does
+[ ] OD17 check: OSC1 Shape 48, OSC2 FM 1>2 100 %, then OSC1's own Sub FM 0 -> 50 % (sine sub an octave down): does
     OSC2's pitch shift (the plan expects a large shift, up to about an octave, moving with OSC1's Sub FM)? Write down
-    whether it is usable or annoying; it decides OD17 (keep, or high-pass the modulator).
+    whether it matches (expected: yes). A shift with OSC1's Sub FM at 0 would be a fault: write it down.
 [ ] Save: fm= above 0, fmx= "0/0" (a non-zero second figure means FM 1>2 missed OSC1's signal: write it down).
 
 5. Bit Depth (FM_A, track 3: OSC1 Analog Shape 48, OSC2 Analog Level 0)
@@ -192,4 +191,4 @@ Section 8 checks these on the device.
 Bring back: BENTO_SAVES.log (every save's ANALOG line with fm= / bits= / fmx=, the LOAD / AUDIO lines of section 8),
 BENTO_CRASHES.log if any, the photos (sections 2, 7), section 8's figures (DSP %, peak, voices, the track count at the
 first OVER), FM_A's project.xml and the preset file (section 9), FM_A_40's project.xml after BE4.40's save, and notes
-for every item that did not match, plus the two judgements: OD17 (section 4) and the triangle / saw glyphs (section 7).
+for every item that did not match, plus the OD17 check (section 4) and the triangle / saw glyph judgement (section 7).

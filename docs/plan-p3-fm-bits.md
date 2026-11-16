@@ -1847,6 +1847,9 @@ reviewers' labels (M and S). No issue was dropped. One was applied in a differen
 ---
 
 ## Decisions (Jeff, 2026-11-15)
+- **OD17 = (a), OD18 = (a)** (Jeff, 2026-11-16: "FM sound design has tuning quirks by nature"): B stays OSC1's
+  signal with its own FM and its rounding; FM 1>2 may shift OSC2's pitch as OSC1's Sub FM, Shape or Bit Depth move. No
+  high-pass on B. Release note, checklist section 4 records it as expected behaviour.
 - **OD16 = (a)** (recorded in Q6, 2026-11-16): an oscillator heard again ramps its FM index in from 0 (msub / m12 = 0 after
   the silent skip), as built in Q5. Claude's recommendation, Jeff told, no objection yet.
 - **OD15 = (b)** (Jeff, 2026-11-16): FM 1>2's modulator B is written from the crush with its top clamp at S, not
