@@ -1,0 +1,2155 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<document>
+    <session version="2">
+        <track type="multisamtrack">
+            <params selcellpos="0" celldisppos="1" cellname="Classic 5ths" selseqpos="0" seqplayenable="1" trkgain="-3000" trkpan="0" trkmute="0" trksolo="0" trkfx1send="0" trkfx2send="1000" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" midiinport="0" midiinchan="16" cc1inport="0" cc1inchan="0" cc2inport="0" cc2ininchan="0" midioutport="0" midioutchan="0" padrowoffset="-1" outputbus="0"/>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="1" loopmodes="1" reverse="0" envattack="668" envdecay="0" envsus="1000" envrel="536" velamount="0" outputbus="0" polymode="1" chokegrp="0" dualfilcutoff="-180" res="192" fx1send="0" fx2send="0" overdrive="10" multisammode="1" interpqual="0" loopfadeamt="0" lfowave="4" lforate="784" lfoamount="838" lfokeytrig="1" lfobeatsync="1" lforatebeatsync="10" legatomode="0" celldisppos="0" padmute="0"/>
+                <modsource dest="gaindb" src="lfo1" slot="0" amount="46"/>
+                <modsource dest="dualfilcutoff" src="lfo1" slot="0" amount="186"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_100_0_127.wav" rootnote="100" keyrangebottom="100" keyrangetop="100" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="89782" loopstart="51357" loopend="66768"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_101_0_127.wav" rootnote="101" keyrangebottom="101" keyrangetop="101" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="91189" loopstart="51292" loopend="70856"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_102_0_127.wav" rootnote="102" keyrangebottom="102" keyrangetop="102" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="88890" loopstart="42456" loopend="59852"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_103_0_127.wav" rootnote="103" keyrangebottom="103" keyrangetop="103" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="88981" loopstart="45706" loopend="68463"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_104_0_127.wav" rootnote="104" keyrangebottom="104" keyrangetop="104" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="88169" loopstart="45495" loopend="64077"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_105_0_127.wav" rootnote="105" keyrangebottom="105" keyrangetop="105" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="90737" loopstart="40362" loopend="56711"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_106_0_127.wav" rootnote="106" keyrangebottom="106" keyrangetop="106" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="87928" loopstart="48492" loopend="51803"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_107_0_127.wav" rootnote="107" keyrangebottom="107" keyrangetop="107" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="88155" loopstart="48275" loopend="64608"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_108_0_127.wav" rootnote="108" keyrangebottom="108" keyrangetop="127" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="87314" loopstart="49462" loopend="68141"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_24_0_127.wav" rootnote="24" keyrangebottom="0" keyrangetop="24" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112794" loopstart="81669" loopend="89767"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_25_0_127.wav" rootnote="25" keyrangebottom="25" keyrangetop="25" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="113434" loopstart="54584" loopend="69897"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_26_0_127.wav" rootnote="26" keyrangebottom="26" keyrangetop="26" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="110483" loopstart="47990" loopend="62441"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_27_0_127.wav" rootnote="27" keyrangebottom="27" keyrangetop="27" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112175" loopstart="90961" loopend="95481"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_28_0_127.wav" rootnote="28" keyrangebottom="28" keyrangetop="28" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="109848" loopstart="36979" loopend="102496"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_29_0_127.wav" rootnote="29" keyrangebottom="29" keyrangetop="29" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="110589" loopstart="61398" loopend="79614"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_30_0_127.wav" rootnote="30" keyrangebottom="30" keyrangetop="30" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112843" loopstart="84796" loopend="92405"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_31_0_127.wav" rootnote="31" keyrangebottom="31" keyrangetop="31" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111328" loopstart="57901" loopend="72328"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_32_0_127.wav" rootnote="32" keyrangebottom="32" keyrangetop="32" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112490" loopstart="98324" loopend="100023"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_33_0_127.wav" rootnote="33" keyrangebottom="33" keyrangetop="33" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111194" loopstart="87691" loopend="92513"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_34_0_127.wav" rootnote="34" keyrangebottom="34" keyrangetop="34" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="110885" loopstart="89792" loopend="94340"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_35_0_127.wav" rootnote="35" keyrangebottom="35" keyrangetop="35" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111266" loopstart="92986" loopend="95844"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_36_0_127.wav" rootnote="36" keyrangebottom="36" keyrangetop="36" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111392" loopstart="80155" loopend="86896"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_37_0_127.wav" rootnote="37" keyrangebottom="37" keyrangetop="37" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111196" loopstart="86163" loopend="89985"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_38_0_127.wav" rootnote="38" keyrangebottom="38" keyrangetop="38" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111073" loopstart="85429" loopend="91442"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_39_0_127.wav" rootnote="39" keyrangebottom="39" keyrangetop="39" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="104839" loopstart="80634" loopend="86310"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_40_0_127.wav" rootnote="40" keyrangebottom="40" keyrangetop="40" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111369" loopstart="94779" loopend="97984"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_41_0_127.wav" rootnote="41" keyrangebottom="41" keyrangetop="41" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="110990" loopstart="85202" loopend="92286"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_42_0_127.wav" rootnote="42" keyrangebottom="42" keyrangetop="42" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111252" loopstart="90807" loopend="96535"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_43_0_127.wav" rootnote="43" keyrangebottom="43" keyrangetop="43" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111342" loopstart="77893" loopend="85098"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_44_0_127.wav" rootnote="44" keyrangebottom="44" keyrangetop="44" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111441" loopstart="99097" loopend="99946"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_45_0_127.wav" rootnote="45" keyrangebottom="45" keyrangetop="45" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="110726" loopstart="88018" loopend="92032"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_46_0_127.wav" rootnote="46" keyrangebottom="46" keyrangetop="46" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111718" loopstart="84476" loopend="89781"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_47_0_127.wav" rootnote="47" keyrangebottom="47" keyrangetop="47" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111929" loopstart="44435" loopend="86927"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_48_0_127.wav" rootnote="48" keyrangebottom="48" keyrangetop="48" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111515" loopstart="49923" loopend="82683"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_49_0_127.wav" rootnote="49" keyrangebottom="49" keyrangetop="49" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111351" loopstart="85457" loopend="91835"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_50_0_127.wav" rootnote="50" keyrangebottom="50" keyrangetop="50" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111668" loopstart="43559" loopend="80573"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_51_0_127.wav" rootnote="51" keyrangebottom="51" keyrangetop="51" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111367" loopstart="51516" loopend="82485"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_52_0_127.wav" rootnote="52" keyrangebottom="52" keyrangetop="52" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111252" loopstart="50499" loopend="78141"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_53_0_127.wav" rootnote="53" keyrangebottom="53" keyrangetop="53" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="110948" loopstart="63162" loopend="81145"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_54_0_127.wav" rootnote="54" keyrangebottom="54" keyrangetop="54" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111390" loopstart="94450" loopend="95404"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_55_0_127.wav" rootnote="55" keyrangebottom="55" keyrangetop="55" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111615" loopstart="83875" loopend="90635"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_56_0_127.wav" rootnote="56" keyrangebottom="56" keyrangetop="56" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112695" loopstart="51064" loopend="83209"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_57_0_127.wav" rootnote="57" keyrangebottom="57" keyrangetop="57" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111198" loopstart="49683" loopend="78794"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_58_0_127.wav" rootnote="58" keyrangebottom="58" keyrangetop="58" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111645" loopstart="53819" loopend="76744"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_59_0_127.wav" rootnote="59" keyrangebottom="59" keyrangetop="59" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111530" loopstart="50464" loopend="80198"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_60_0_127.wav" rootnote="60" keyrangebottom="60" keyrangetop="60" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111989" loopstart="34511" loopend="72544"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_61_0_127.wav" rootnote="61" keyrangebottom="61" keyrangetop="61" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112126" loopstart="92226" loopend="93500"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_62_0_127.wav" rootnote="62" keyrangebottom="62" keyrangetop="62" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112014" loopstart="53164" loopend="81282"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_63_0_127.wav" rootnote="63" keyrangebottom="63" keyrangetop="63" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111285" loopstart="49208" loopend="81419"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_64_0_127.wav" rootnote="64" keyrangebottom="64" keyrangetop="64" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111073" loopstart="55029" loopend="75547"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_65_0_127.wav" rootnote="65" keyrangebottom="65" keyrangetop="65" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111935" loopstart="54286" loopend="79366"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_66_0_127.wav" rootnote="66" keyrangebottom="66" keyrangetop="66" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111419" loopstart="52284" loopend="77494"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_67_0_127.wav" rootnote="67" keyrangebottom="67" keyrangetop="67" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111489" loopstart="85176" loopend="86528"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_68_0_127.wav" rootnote="68" keyrangebottom="68" keyrangetop="68" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112123" loopstart="49488" loopend="77664"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_69_0_127.wav" rootnote="69" keyrangebottom="69" keyrangetop="69" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111498" loopstart="93013" loopend="95016"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_70_0_127.wav" rootnote="70" keyrangebottom="70" keyrangetop="70" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111401" loopstart="94025" loopend="95161"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_71_0_127.wav" rootnote="71" keyrangebottom="71" keyrangetop="71" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112566" loopstart="32008" loopend="62641"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_72_0_127.wav" rootnote="72" keyrangebottom="72" keyrangetop="72" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111031" loopstart="26221" loopend="71060"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_73_0_127.wav" rootnote="73" keyrangebottom="73" keyrangetop="73" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="112961" loopstart="43335" loopend="75102"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_74_0_127.wav" rootnote="74" keyrangebottom="74" keyrangetop="74" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="109233" loopstart="84720" loopend="87878"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_75_0_127.wav" rootnote="75" keyrangebottom="75" keyrangetop="75" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111697" loopstart="49522" loopend="68171"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_76_0_127.wav" rootnote="76" keyrangebottom="76" keyrangetop="76" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111270" loopstart="52688" loopend="74703"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_77_0_127.wav" rootnote="77" keyrangebottom="77" keyrangetop="77" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111194" loopstart="58086" loopend="82111"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_78_0_127.wav" rootnote="78" keyrangebottom="78" keyrangetop="78" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="110663" loopstart="54440" loopend="79349"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_79_0_127.wav" rootnote="79" keyrangebottom="79" keyrangetop="79" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="110659" loopstart="59813" loopend="80488"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_80_0_127.wav" rootnote="80" keyrangebottom="80" keyrangetop="80" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="110930" loopstart="49582" loopend="68018"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_81_0_127.wav" rootnote="81" keyrangebottom="81" keyrangetop="81" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="111787" loopstart="91130" loopend="95540"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_82_0_127.wav" rootnote="82" keyrangebottom="82" keyrangetop="82" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="108620" loopstart="53903" loopend="74814"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_83_0_127.wav" rootnote="83" keyrangebottom="83" keyrangetop="83" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="109807" loopstart="50464" loopend="81044"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_84_0_127.wav" rootnote="84" keyrangebottom="84" keyrangetop="84" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="109733" loopstart="48428" loopend="71210"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_85_0_127.wav" rootnote="85" keyrangebottom="85" keyrangetop="85" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="100489" loopstart="51026" loopend="72940"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_86_0_127.wav" rootnote="86" keyrangebottom="86" keyrangetop="86" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="98162" loopstart="46416" loopend="72498"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_87_0_127.wav" rootnote="87" keyrangebottom="87" keyrangetop="87" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="98929" loopstart="85047" loopend="86391"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_88_0_127.wav" rootnote="88" keyrangebottom="88" keyrangetop="88" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="98403" loopstart="45212" loopend="64730"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_89_0_127.wav" rootnote="89" keyrangebottom="89" keyrangetop="89" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="98307" loopstart="47302" loopend="69660"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_90_0_127.wav" rootnote="90" keyrangebottom="90" keyrangetop="90" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="98569" loopstart="46144" loopend="68884"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_91_0_127.wav" rootnote="91" keyrangebottom="91" keyrangetop="91" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="98910" loopstart="47552" loopend="72823"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_92_0_127.wav" rootnote="92" keyrangebottom="92" keyrangetop="92" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="98866" loopstart="55187" loopend="73656"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_93_0_127.wav" rootnote="93" keyrangebottom="93" keyrangetop="93" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="99737" loopstart="55068" loopend="74530"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_94_0_127.wav" rootnote="94" keyrangebottom="94" keyrangetop="94" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="97625" loopstart="50511" loopend="67010"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_95_0_127.wav" rootnote="95" keyrangebottom="95" keyrangetop="95" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="92146" loopstart="47676" loopend="63249"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_96_0_127.wav" rootnote="96" keyrangebottom="96" keyrangetop="96" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="89594" loopstart="42809" loopend="59144"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_97_0_127.wav" rootnote="97" keyrangebottom="97" keyrangetop="97" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="89619" loopstart="51068" loopend="70802"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_98_0_127.wav" rootnote="98" keyrangebottom="98" keyrangetop="98" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="89678" loopstart="42337" loopend="67573"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Classic 5ths\Classic5ths_OB_99_0_127.wav" rootnote="99" keyrangebottom="99" keyrangetop="99" velroot="63" velrangebottom="0" velrangetop="127" samstart="0" samlen="89478" loopstart="41378" loopend="60003"/>
+                <slices/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="6" notestepcount="16" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence>
+                    <seqevent step="8" type="note" strtks="7680" pitch="55" lencount="8" lentks="7680" velocity="76"/>
+                    <seqevent step="0" type="note" strtks="0" pitch="59" lencount="8" lentks="7680" velocity="9"/>
+                </sequence>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 2" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="1" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 6" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="5" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+        </track>
+        <track type="multisamtrack">
+            <params selcellpos="0" celldisppos="2" cellname="Dream Poly" selseqpos="1" seqplayenable="1" trkgain="-6900" trkpan="0" trkmute="0" trksolo="0" trkfx1send="572" trkfx2send="878" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" midiinport="0" midiinchan="3" cc1inport="0" cc1inchan="0" cc2inport="0" cc2ininchan="0" midioutport="0" midioutchan="0" padrowoffset="0" outputbus="0"/>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="1" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="390" velamount="0" outputbus="0" polymode="2" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="1" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="0" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-036-120.wav" rootnote="36" keyrangebottom="0" keyrangetop="36" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150380" loopstart="0" loopend="1150380"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-037-120.wav" rootnote="37" keyrangebottom="37" keyrangetop="37" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150361" loopstart="0" loopend="1150361"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-038-120.wav" rootnote="38" keyrangebottom="38" keyrangetop="38" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150345" loopstart="0" loopend="1150345"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-039-120.wav" rootnote="39" keyrangebottom="39" keyrangetop="39" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150375" loopstart="0" loopend="1150375"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-040-120.wav" rootnote="40" keyrangebottom="40" keyrangetop="40" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150328" loopstart="0" loopend="1150328"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-041-120.wav" rootnote="41" keyrangebottom="41" keyrangetop="41" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150299" loopstart="0" loopend="1150299"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-042-120.wav" rootnote="42" keyrangebottom="42" keyrangetop="42" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150277" loopstart="0" loopend="1150277"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-043-120.wav" rootnote="43" keyrangebottom="43" keyrangetop="43" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150233" loopstart="0" loopend="1150233"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-044-120.wav" rootnote="44" keyrangebottom="44" keyrangetop="44" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150260" loopstart="0" loopend="1150260"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-045-120.wav" rootnote="45" keyrangebottom="45" keyrangetop="45" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150344" loopstart="0" loopend="1150344"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-046-120.wav" rootnote="46" keyrangebottom="46" keyrangetop="46" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150152" loopstart="0" loopend="1150152"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-047-120.wav" rootnote="47" keyrangebottom="47" keyrangetop="47" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150238" loopstart="0" loopend="1150238"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-048-120.wav" rootnote="48" keyrangebottom="48" keyrangetop="48" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150340" loopstart="0" loopend="1150340"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-049-120.wav" rootnote="49" keyrangebottom="49" keyrangetop="49" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150323" loopstart="0" loopend="1150323"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-050-120.wav" rootnote="50" keyrangebottom="50" keyrangetop="50" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150308" loopstart="0" loopend="1150308"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-051-120.wav" rootnote="51" keyrangebottom="51" keyrangetop="51" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150395" loopstart="0" loopend="1150395"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-052-120.wav" rootnote="52" keyrangebottom="52" keyrangetop="52" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150305" loopstart="0" loopend="1150305"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-053-120.wav" rootnote="53" keyrangebottom="53" keyrangetop="53" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150223" loopstart="0" loopend="1150223"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-054-120.wav" rootnote="54" keyrangebottom="54" keyrangetop="54" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150322" loopstart="0" loopend="1150322"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-055-120.wav" rootnote="55" keyrangebottom="55" keyrangetop="55" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150274" loopstart="0" loopend="1150274"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-056-120.wav" rootnote="56" keyrangebottom="56" keyrangetop="56" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150208" loopstart="0" loopend="1150208"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-057-120.wav" rootnote="57" keyrangebottom="57" keyrangetop="57" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150316" loopstart="0" loopend="1150316"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-058-120.wav" rootnote="58" keyrangebottom="58" keyrangetop="58" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150248" loopstart="0" loopend="1150248"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-059-120.wav" rootnote="59" keyrangebottom="59" keyrangetop="59" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150254" loopstart="0" loopend="1150254"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-060-120.wav" rootnote="60" keyrangebottom="60" keyrangetop="60" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150255" loopstart="0" loopend="1150255"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-061-120.wav" rootnote="61" keyrangebottom="61" keyrangetop="61" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150284" loopstart="0" loopend="1150284"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-062-120.wav" rootnote="62" keyrangebottom="62" keyrangetop="62" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150210" loopstart="0" loopend="1150210"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-063-120.wav" rootnote="63" keyrangebottom="63" keyrangetop="63" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150297" loopstart="0" loopend="1150297"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-064-120.wav" rootnote="64" keyrangebottom="64" keyrangetop="64" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150379" loopstart="0" loopend="1150379"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-065-120.wav" rootnote="65" keyrangebottom="65" keyrangetop="65" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150315" loopstart="0" loopend="1150315"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-066-120.wav" rootnote="66" keyrangebottom="66" keyrangetop="66" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150337" loopstart="0" loopend="1150337"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-067-120.wav" rootnote="67" keyrangebottom="67" keyrangetop="67" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150332" loopstart="0" loopend="1150332"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-068-120.wav" rootnote="68" keyrangebottom="68" keyrangetop="68" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150355" loopstart="0" loopend="1150355"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-069-120.wav" rootnote="69" keyrangebottom="69" keyrangetop="69" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150286" loopstart="0" loopend="1150286"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-070-120.wav" rootnote="70" keyrangebottom="70" keyrangetop="70" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150283" loopstart="0" loopend="1150283"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-071-120.wav" rootnote="71" keyrangebottom="71" keyrangetop="71" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150206" loopstart="0" loopend="1150206"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-072-120.wav" rootnote="72" keyrangebottom="72" keyrangetop="72" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150265" loopstart="0" loopend="1150265"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-073-120.wav" rootnote="73" keyrangebottom="73" keyrangetop="73" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150319" loopstart="0" loopend="1150319"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-074-120.wav" rootnote="74" keyrangebottom="74" keyrangetop="74" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150312" loopstart="0" loopend="1150312"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-075-120.wav" rootnote="75" keyrangebottom="75" keyrangetop="75" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150338" loopstart="0" loopend="1150338"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-076-120.wav" rootnote="76" keyrangebottom="76" keyrangetop="76" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150402" loopstart="0" loopend="1150402"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-077-120.wav" rootnote="77" keyrangebottom="77" keyrangetop="77" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150344" loopstart="0" loopend="1150344"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-078-120.wav" rootnote="78" keyrangebottom="78" keyrangetop="78" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150336" loopstart="0" loopend="1150336"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-079-120.wav" rootnote="79" keyrangebottom="79" keyrangetop="79" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150382" loopstart="0" loopend="1150382"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-080-120.wav" rootnote="80" keyrangebottom="80" keyrangetop="80" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150377" loopstart="0" loopend="1150377"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-081-120.wav" rootnote="81" keyrangebottom="81" keyrangetop="81" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150393" loopstart="0" loopend="1150393"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-082-120.wav" rootnote="82" keyrangebottom="82" keyrangetop="82" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150284" loopstart="0" loopend="1150284"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-083-120.wav" rootnote="83" keyrangebottom="83" keyrangetop="83" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150250" loopstart="0" loopend="1150250"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-084-120.wav" rootnote="84" keyrangebottom="84" keyrangetop="84" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150336" loopstart="0" loopend="1150336"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-085-120.wav" rootnote="85" keyrangebottom="85" keyrangetop="85" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150271" loopstart="0" loopend="1150271"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-086-120.wav" rootnote="86" keyrangebottom="86" keyrangetop="86" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150230" loopstart="0" loopend="1150230"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-087-120.wav" rootnote="87" keyrangebottom="87" keyrangetop="87" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150269" loopstart="0" loopend="1150269"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-088-120.wav" rootnote="88" keyrangebottom="88" keyrangetop="88" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150279" loopstart="0" loopend="1150279"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-089-120.wav" rootnote="89" keyrangebottom="89" keyrangetop="89" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150190" loopstart="0" loopend="1150190"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-090-120.wav" rootnote="90" keyrangebottom="90" keyrangetop="90" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150293" loopstart="0" loopend="1150293"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-091-120.wav" rootnote="91" keyrangebottom="91" keyrangetop="91" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150308" loopstart="0" loopend="1150308"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-092-120.wav" rootnote="92" keyrangebottom="92" keyrangetop="92" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150262" loopstart="0" loopend="1150262"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-093-120.wav" rootnote="93" keyrangebottom="93" keyrangetop="93" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150372" loopstart="0" loopend="1150372"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-094-120.wav" rootnote="94" keyrangebottom="94" keyrangetop="94" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150314" loopstart="0" loopend="1150314"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-095-120.wav" rootnote="95" keyrangebottom="95" keyrangetop="95" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150333" loopstart="0" loopend="1150333"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-096-120.wav" rootnote="96" keyrangebottom="96" keyrangetop="96" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150402" loopstart="0" loopend="1150402"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-097-120.wav" rootnote="97" keyrangebottom="97" keyrangetop="97" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150440" loopstart="0" loopend="1150440"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-098-120.wav" rootnote="98" keyrangebottom="98" keyrangetop="98" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150353" loopstart="0" loopend="1150353"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-099-120.wav" rootnote="99" keyrangebottom="99" keyrangetop="99" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150400" loopstart="0" loopend="1150400"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-100-120.wav" rootnote="100" keyrangebottom="100" keyrangetop="100" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150331" loopstart="0" loopend="1150331"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-101-120.wav" rootnote="101" keyrangebottom="101" keyrangetop="101" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150343" loopstart="0" loopend="1150343"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-102-120.wav" rootnote="102" keyrangebottom="102" keyrangetop="102" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150301" loopstart="0" loopend="1150301"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-103-120.wav" rootnote="103" keyrangebottom="103" keyrangetop="103" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150263" loopstart="0" loopend="1150263"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-104-120.wav" rootnote="104" keyrangebottom="104" keyrangetop="104" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150282" loopstart="0" loopend="1150282"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-105-120.wav" rootnote="105" keyrangebottom="105" keyrangetop="105" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150200" loopstart="0" loopend="1150200"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-106-120.wav" rootnote="106" keyrangebottom="106" keyrangetop="106" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150227" loopstart="0" loopend="1150227"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-107-120.wav" rootnote="107" keyrangebottom="107" keyrangetop="107" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150279" loopstart="0" loopend="1150279"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\SampInst\Dream Poly\Dream Poly-108-120.wav" rootnote="108" keyrangebottom="108" keyrangetop="127" velroot="64" velrangebottom="0" velrangetop="127" samstart="0" samlen="1150304" loopstart="0" loopend="1150304"/>
+                <slices/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 4" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="3" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 3" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="2" quantsizeseq="1" bp_uiSeqKnobMode="0" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="7" notestepcount="64" seqstepmode="1" celldisppos="1" quantsizeseq="6" bp_uiSeqKnobMode="0" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence>
+                    <seqevent step="0" type="note" strtks="0" pitch="59" lencount="12" lentks="11520" velocity="22"/>
+                    <seqevent step="12" type="note" strtks="11520" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="14" type="note" strtks="13440" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="16" type="note" strtks="15360" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="28" type="note" strtks="26880" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="30" type="note" strtks="28800" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="32" type="note" strtks="30720" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="44" type="note" strtks="42240" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="46" type="note" strtks="44160" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="48" type="note" strtks="46080" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="60" type="note" strtks="57600" pitch="69" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="62" type="note" strtks="59520" pitch="67" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="64" type="note" strtks="61440" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="76" type="note" strtks="72960" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="78" type="note" strtks="74880" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="80" type="note" strtks="76800" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="92" type="note" strtks="88320" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="94" type="note" strtks="90240" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="96" type="note" strtks="92160" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="108" type="note" strtks="103680" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="110" type="note" strtks="105600" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="112" type="note" strtks="107520" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="124" type="note" strtks="119040" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="126" type="note" strtks="120960" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="16" type="note" strtks="15360" pitch="59" lencount="12" lentks="11520" velocity="22"/>
+                    <seqevent step="28" type="note" strtks="26880" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="30" type="note" strtks="28800" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="44" type="note" strtks="42240" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="48" type="note" strtks="46080" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="76" type="note" strtks="72960" pitch="69" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="80" type="note" strtks="76800" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="94" type="note" strtks="90240" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="108" type="note" strtks="103680" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="112" type="note" strtks="107520" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="126" type="note" strtks="120960" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="140" type="note" strtks="134400" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="40" type="note" strtks="38400" pitch="61" lencount="1" lentks="960"/>
+                    <seqevent step="32" type="note" strtks="30720" pitch="59" lencount="12" lentks="11520" velocity="22"/>
+                    <seqevent step="44" type="note" strtks="42240" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="46" type="note" strtks="44160" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="48" type="note" strtks="46080" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="76" type="note" strtks="72960" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="80" type="note" strtks="76800" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="94" type="note" strtks="90240" pitch="67" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="108" type="note" strtks="103680" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="112" type="note" strtks="107520" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="126" type="note" strtks="120960" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="140" type="note" strtks="134400" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="144" type="note" strtks="138240" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="158" type="note" strtks="151680" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="56" type="note" strtks="53760" pitch="61" lencount="1" lentks="960"/>
+                    <seqevent step="48" type="note" strtks="46080" pitch="59" lencount="12" lentks="11520" velocity="22"/>
+                    <seqevent step="80" type="note" strtks="76800" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="108" type="note" strtks="103680" pitch="69" lencount="2" lentks="1920" velocity="62"/>
+                    <seqevent step="126" type="note" strtks="120960" pitch="69" lencount="2" lentks="1920" velocity="36"/>
+                    <seqevent step="144" type="note" strtks="138240" pitch="59" lencount="13" lentks="12480" velocity="22"/>
+                    <seqevent step="172" type="note" strtks="165120" pitch="71" lencount="2" lentks="1920" velocity="62"/>
+                </sequence>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 6" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="5" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 5" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="4" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+        </track>
+        <track type="samtrack">
+            <params selcellpos="3" celldisppos="0" cellname="LoFi Kit" selseqpos="0" seqplayenable="1" trkgain="-12900" trkpan="0" trkmute="0" trksolo="0" trkfx1send="590" trkfx2send="803" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" midiinport="0" midiinchan="1" padrec="0" cc1inport="0" cc1inchan="0" cc2inport="0" cc2ininchan="0" midioutport="0" midioutchan="0" padrowoffset="0" outputbus="0" uiSequencerType="0" recactive="0" recinput="0" recgain="0" recautoplay="0" recpresetlen="0" recquant="3" recmonmode="1" recusethres="0" recthresh="-30000"/>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="8" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Kick_1_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="8597" loopstart="0" loopend="8597"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="2900" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="0" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Kick_2_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="29610" loopstart="0" loopend="29610"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="2500" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="9" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Snare_1_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="47493" loopstart="0" loopend="47493"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="5800" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="1" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Snare_2_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="80251" loopstart="0" loopend="80251"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="2900" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="10" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Rim_1_LoFI.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="27776" loopstart="0" loopend="27776"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="1800" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="2" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Rim_2_LoFI.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="12294" loopstart="0" loopend="12294"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="4500" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="11" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Clap_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="75893" loopstart="0" loopend="75893"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="3100" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="3" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Snap_2_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="11869" loopstart="0" loopend="6352"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="4200" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="12" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\CH_1_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="12152" loopstart="0" loopend="12152"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="2400" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="4" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\CH_2_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="31070" loopstart="0" loopend="31070"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="13" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\OH_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="15624" loopstart="0" loopend="15624"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="2500" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="5" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Snap_1_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="6352" loopstart="0" loopend="6352"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="6200" pitch="0" panpos="355" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="14" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Ride_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="16471" loopstart="0" loopend="16471"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="2000" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="6" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Shaker_1_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="8770" loopstart="0" loopend="8770"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="7" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Shaker_2_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="30112" loopstart="0" loopend="30112"/>
+                <slices/>
+            </cell>
+            <cell type="saminst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="0" samtrigtype="0" loopmodes="0" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="1000" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" multisammode="0" interpqual="0" loopfadeamt="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="15" padmute="0"/>
+                <modsource dest="gaindb" src="velocity" slot="0" amount="1000"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="Patches\OneShots\LoFi Kit\Shaker_3_LoFi.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="23324" loopstart="0" loopend="23324"/>
+                <slices/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="6" notestepcount="16" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence>
+                    <seqevent step="0" chan="12" type="note" strtks="0" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="2" chan="11" type="note" strtks="1920" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="4" chan="14" type="note" strtks="3840" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="6" chan="12" type="note" strtks="5760" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="8" chan="10" type="note" strtks="7680" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="9" chan="10" type="note" strtks="8640" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="12" chan="9" type="note" strtks="11520" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="0" type="note" strtks="0" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="1" type="note" strtks="960" pitch="0" lencount="1" lentks="960" velocity="108"/>
+                    <seqevent step="2" type="note" strtks="1920" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="4" type="note" strtks="3840" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="6" type="note" strtks="5760" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="8" type="note" strtks="7680" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="9" type="note" strtks="8640" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="12" type="note" strtks="11520" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="13" type="note" strtks="12480" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="14" type="note" strtks="13440" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="0" chan="4" type="note" strtks="0" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="4" chan="4" type="note" strtks="3840" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="7" chan="4" type="note" strtks="6720" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="8" chan="4" type="note" strtks="7680" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="11" chan="4" type="note" strtks="10560" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="13" chan="4" type="note" strtks="12480" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="14" chan="4" type="note" strtks="13440" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="4" chan="9" type="note" strtks="3840" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="6" chan="1" type="note" strtks="5760" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="12" chan="1" type="note" strtks="11520" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="3" type="note" strtks="2880" pitch="0" lencount="1" lentks="960" velocity="100"/>
+                    <seqevent step="4" chan="3" type="note" strtks="3840" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="5" chan="3" type="note" strtks="4800" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="6" chan="3" type="note" strtks="5760" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="12" chan="3" type="note" strtks="11520" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="13" chan="3" type="note" strtks="12480" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="14" chan="3" type="note" strtks="13440" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="15" chan="3" type="note" strtks="14400" pitch="0" lencount="1" lentks="960"/>
+                    <seqevent step="15" chan="5" type="note" strtks="14400" pitch="0" lencount="1" lentks="960" cond="82"/>
+                </sequence>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 4" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="3" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 3" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="2" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 2" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="1" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 6" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="5" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+        </track>
+        <track type="looptrack">
+            <params selcellpos="0" celldisppos="3" cellname="Track 4" selseqpos="0" seqplayenable="1" trkgain="-2000" trkpan="0" trkmute="0" trksolo="0" trkfx1send="0" trkfx2send="0" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" midiinport="0" midiinchan="4" padrec="0" cc1inport="0" cc1inchan="0" cc2inport="0" cc2ininchan="0" midioutport="0" midioutchan="0" padrowoffset="0" outputbus="0" recactive="1" recinput="5" recgain="0" recautoplay="1" recpresetlen="6" recquant="7" recmonmode="1" recusethres="1" recthresh="-13000"/>
+            <cell type="loopgroup">
+                <params cellname="CRUISING IN SPACE DRUM LOOP" lgindex="0" lgmask="1" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="CRUI+" lgindex="1" lgmask="5" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="CRUI+" lgindex="2" lgmask="9" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="CRUI+" lgindex="3" lgmask="3" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="4" lgmask="0" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="CRUISING IN SPACE DRUM LOOP" lgindex="5" lgmask="49" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="6" lgmask="64" lgcustom="0"/>
+            </cell>
+            <cell type="loopgroup">
+                <params cellname="" lgindex="7" lgmask="128" lgcustom="0"/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="-12010" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="191" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="183" res="706" fx1send="388" fx2send="309" overdrive="291" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="0" padmute="0" quantsize="7" synctype="5" beatcount="16" cliplength="15360"/>
+            </cell>
+            <cell type="samasst">
+                <params filename=".\CRUISING IN SPACE DRUM LOOP.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="217249" loopstart="0" loopend="217249"/>
+                <slices/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="11" padmute="0" quantsize="3" synctype="5" beatcount="0" cliplength="7864320"/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="-6000" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="90" fx2send="130" overdrive="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="1" padmute="0" quantsize="7" synctype="5" beatcount="8" cliplength="7680"/>
+            </cell>
+            <cell type="samasst">
+                <params filename=".\CRUISING IN SPACE DRUM LOOP.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="217249" loopstart="0" loopend="217249"/>
+                <slices/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="160" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="93" fx2send="315" overdrive="257" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="8" padmute="0" quantsize="7" synctype="5" beatcount="8" cliplength="7680"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="217411" loopstart="0" loopend="217411"/>
+                <slices/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="9" padmute="0" quantsize="3" synctype="5" beatcount="0" cliplength="7864320"/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="10" padmute="0" quantsize="3" synctype="5" beatcount="0" cliplength="7864320"/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="-4500" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="157" envdecay="0" envsus="1000" envrel="316" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="-466" res="700" fx1send="320" fx2send="162" overdrive="0" lfowave="2" lforate="29" lfoamount="828" lfokeytrig="1" lfobeatsync="1" lforatebeatsync="1" celldisppos="2" padmute="0" quantsize="7" synctype="4" beatcount="128" cliplength="122880"/>
+                <modsource dest="dualfilcutoff" src="lfo1" slot="0" amount="199"/>
+            </cell>
+            <cell type="samasst">
+                <params filename=".\RC000011.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="3477711" loopstart="0" loopend="3477711"/>
+                <slices/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="-3000" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="736" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="-447" res="275" fx1send="0" fx2send="511" overdrive="696" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="4" padmute="0" quantsize="7" synctype="5" beatcount="32" cliplength="30720"/>
+            </cell>
+            <cell type="samasst">
+                <params filename=".\RC000024.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="448068" loopstart="0" loopend="448068"/>
+                <slices/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="157" envdecay="0" envsus="1000" envrel="316" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="-388" res="700" fx1send="320" fx2send="162" overdrive="0" lfowave="2" lforate="29" lfoamount="1000" lfokeytrig="1" lfobeatsync="1" lforatebeatsync="1" celldisppos="3" padmute="0" quantsize="7" synctype="5" beatcount="64" cliplength="61440"/>
+                <modsource dest="dualfilcutoff" src="lfo1" slot="0" amount="199"/>
+            </cell>
+            <cell type="samasst">
+                <params filename=".\RC000011.wav" rootnote="0" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="3477711" loopstart="0" loopend="3477711"/>
+                <slices/>
+            </cell>
+            <cell type="loopinst">
+                <params gaindb="0" pitch="0" panpos="0" cellmode="1" samtrigtype="2" loopmode="1" reverse="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymode="0" chokegrp="0" dualfilcutoff="0" res="500" fx1send="0" fx2send="0" overdrive="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="5" padmute="0" quantsize="3" synctype="5" beatcount="0" cliplength="7864320"/>
+            </cell>
+        </track>
+        <track type="multisamtrack">
+            <params selcellpos="0" celldisppos="4" cellname="Track 5" selseqpos="3" seqplayenable="1" trkgain="-5000" trkpan="0" trkmute="0" trksolo="0" trkfx1send="0" trkfx2send="467" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" midiinport="0" midiinchan="5" cc1inport="0" cc1inchan="0" cc2inport="0" cc2ininchan="0" midioutport="0" midioutchan="0" padrowoffset="0" outputbus="0"/>
+            <cell type="saminst">
+                <params gaindb="-9000" pitch="-890" panpos="180" cellmode="0" samtrigtype="1" loopmodes="1" reverse="0" envattack="145" envdecay="210" envsus="720" envrel="475" velamount="0" outputbus="0" polymode="2" chokegrp="0" dualfilcutoff="-276" res="702" fx1send="0" fx2send="0" overdrive="0" multisammode="1" interpqual="0" loopfadeamt="90" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" legatomode="0" celldisppos="0" padmute="0"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A#-1.wav" rootnote="22" keyrangebottom="22" keyrangetop="22" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="366317" loopstart="143327" loopend="366253"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A#0.wav" rootnote="34" keyrangebottom="34" keyrangetop="34" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="170509" loopstart="12133" loopend="170445"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A#1.wav" rootnote="46" keyrangebottom="46" keyrangetop="46" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="160506" loopstart="33674" loopend="160442"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A#2.wav" rootnote="58" keyrangebottom="58" keyrangetop="58" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="100564" loopstart="64630" loopend="100500"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A#3.wav" rootnote="70" keyrangebottom="70" keyrangetop="70" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="118556" loopstart="19358" loopend="118492"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A#4.wav" rootnote="82" keyrangebottom="82" keyrangetop="82" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="97594" loopstart="61926" loopend="97530"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A#5.wav" rootnote="94" keyrangebottom="94" keyrangetop="94" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="87997" loopstart="8834" loopend="87933"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A-1.wav" rootnote="21" keyrangebottom="21" keyrangetop="21" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="210001" loopstart="90579" loopend="209937"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A0.wav" rootnote="33" keyrangebottom="33" keyrangetop="33" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="137657" loopstart="83465" loopend="137593"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A1.wav" rootnote="45" keyrangebottom="45" keyrangetop="45" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="199658" loopstart="64846" loopend="199594"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A2.wav" rootnote="57" keyrangebottom="57" keyrangetop="57" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="162586" loopstart="111319" loopend="162522"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A3.wav" rootnote="69" keyrangebottom="69" keyrangetop="69" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="101767" loopstart="57657" loopend="101703"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A4.wav" rootnote="81" keyrangebottom="81" keyrangetop="81" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="53781" loopstart="10200" loopend="53717"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead A5.wav" rootnote="93" keyrangebottom="93" keyrangetop="93" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="76923" loopstart="41237" loopend="76859"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead B-1.wav" rootnote="23" keyrangebottom="23" keyrangetop="23" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="364292" loopstart="49256" loopend="364228"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead B0.wav" rootnote="35" keyrangebottom="35" keyrangetop="35" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="121098" loopstart="22261" loopend="121034"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead B1.wav" rootnote="47" keyrangebottom="47" keyrangetop="47" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="175697" loopstart="104477" loopend="175633"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead B2.wav" rootnote="59" keyrangebottom="59" keyrangetop="59" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="119601" loopstart="28080" loopend="119537"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead B3.wav" rootnote="71" keyrangebottom="71" keyrangetop="71" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="80938" loopstart="9552" loopend="80874"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead B4.wav" rootnote="83" keyrangebottom="83" keyrangetop="83" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="77921" loopstart="26410" loopend="77857"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead B5.wav" rootnote="95" keyrangebottom="95" keyrangetop="95" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="111331" loopstart="24039" loopend="111267"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C#0.wav" rootnote="25" keyrangebottom="25" keyrangetop="25" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="118054" loopstart="26645" loopend="117990"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C#1.wav" rootnote="37" keyrangebottom="37" keyrangetop="37" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="154680" loopstart="20580" loopend="154616"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C#2.wav" rootnote="49" keyrangebottom="49" keyrangetop="49" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="198602" loopstart="135104" loopend="198538"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C#3.wav" rootnote="61" keyrangebottom="61" keyrangetop="61" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="84412" loopstart="12833" loopend="84348"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C#4.wav" rootnote="73" keyrangebottom="73" keyrangetop="73" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="75065" loopstart="31673" loopend="75001"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C#5.wav" rootnote="85" keyrangebottom="85" keyrangetop="85" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="124848" loopstart="81236" loopend="124784"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C#6.wav" rootnote="97" keyrangebottom="97" keyrangetop="97" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="109571" loopstart="30419" loopend="109507"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C0.wav" rootnote="24" keyrangebottom="24" keyrangetop="24" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="244212" loopstart="145949" loopend="244148"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C1.wav" rootnote="36" keyrangebottom="36" keyrangetop="36" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="118231" loopstart="23279" loopend="118167"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C2.wav" rootnote="48" keyrangebottom="48" keyrangetop="48" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="166528" loopstart="31742" loopend="166464"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C3.wav" rootnote="60" keyrangebottom="60" keyrangetop="60" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="99740" loopstart="56144" loopend="99676"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C4.wav" rootnote="72" keyrangebottom="72" keyrangetop="72" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="119638" loopstart="68047" loopend="119574"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C5.wav" rootnote="84" keyrangebottom="84" keyrangetop="84" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="98514" loopstart="47105" loopend="98450"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead C6.wav" rootnote="96" keyrangebottom="96" keyrangetop="96" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="62010" loopstart="26292" loopend="61946"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D#0.wav" rootnote="27" keyrangebottom="27" keyrangetop="27" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="120855" loopstart="38277" loopend="120791"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D#1.wav" rootnote="39" keyrangebottom="39" keyrangetop="39" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="172441" loopstart="93207" loopend="172377"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D#2.wav" rootnote="51" keyrangebottom="51" keyrangetop="51" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="179208" loopstart="48695" loopend="179144"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D#3.wav" rootnote="63" keyrangebottom="63" keyrangetop="63" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="111924" loopstart="76352" loopend="111860"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D#4.wav" rootnote="75" keyrangebottom="75" keyrangetop="75" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="54091" loopstart="10450" loopend="54027"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D#5.wav" rootnote="87" keyrangebottom="87" keyrangetop="87" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="84981" loopstart="14632" loopend="84917"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D#6.wav" rootnote="99" keyrangebottom="99" keyrangetop="99" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="44729" loopstart="9051" loopend="44665"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D0.wav" rootnote="26" keyrangebottom="26" keyrangetop="26" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="131235" loopstart="43794" loopend="131171"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D1.wav" rootnote="38" keyrangebottom="38" keyrangetop="38" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="101350" loopstart="18100" loopend="101286"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D2.wav" rootnote="50" keyrangebottom="50" keyrangetop="50" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="189235" loopstart="89795" loopend="189171"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D3.wav" rootnote="62" keyrangebottom="62" keyrangetop="62" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="98958" loopstart="31685" loopend="98894"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D4.wav" rootnote="74" keyrangebottom="74" keyrangetop="74" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="115919" loopstart="28753" loopend="115855"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D5.wav" rootnote="86" keyrangebottom="86" keyrangetop="86" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="52160" loopstart="8375" loopend="52096"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead D6.wav" rootnote="98" keyrangebottom="98" keyrangetop="98" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="106760" loopstart="55234" loopend="106696"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead E0.wav" rootnote="28" keyrangebottom="28" keyrangetop="28" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="169395" loopstart="14997" loopend="169331"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead E1.wav" rootnote="40" keyrangebottom="40" keyrangetop="40" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="163347" loopstart="52357" loopend="163283"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead E2.wav" rootnote="52" keyrangebottom="52" keyrangetop="52" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="180084" loopstart="21744" loopend="180020"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead E3.wav" rootnote="64" keyrangebottom="64" keyrangetop="64" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="95985" loopstart="44647" loopend="95921"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead E4.wav" rootnote="76" keyrangebottom="76" keyrangetop="76" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="56805" loopstart="22275" loopend="56741"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead E5.wav" rootnote="88" keyrangebottom="88" keyrangetop="88" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="92732" loopstart="13500" loopend="92668"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead E6.wav" rootnote="100" keyrangebottom="100" keyrangetop="100" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="120891" loopstart="13979" loopend="120827"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F#-1.wav" rootnote="18" keyrangebottom="18" keyrangetop="18" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="335950" loopstart="51714" loopend="335886"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F#0.wav" rootnote="30" keyrangebottom="30" keyrangetop="30" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="167487" loopstart="99670" loopend="167423"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F#1.wav" rootnote="42" keyrangebottom="42" keyrangetop="42" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="177603" loopstart="15427" loopend="177539"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F#2.wav" rootnote="54" keyrangebottom="54" keyrangetop="54" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="188450" loopstart="17977" loopend="188386"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F#3.wav" rootnote="66" keyrangebottom="66" keyrangetop="66" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="116959" loopstart="49503" loopend="116895"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F#4.wav" rootnote="78" keyrangebottom="78" keyrangetop="78" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="119738" loopstart="40790" loopend="119674"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F#5.wav" rootnote="90" keyrangebottom="90" keyrangetop="90" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="117773" loopstart="30599" loopend="117709"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F-1.wav" rootnote="17" keyrangebottom="0" keyrangetop="17" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="292887" loopstart="138192" loopend="292823"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F0.wav" rootnote="29" keyrangebottom="29" keyrangetop="29" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="178474" loopstart="106667" loopend="178410"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F1.wav" rootnote="41" keyrangebottom="41" keyrangetop="41" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="152185" loopstart="13871" loopend="152121"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F2.wav" rootnote="53" keyrangebottom="53" keyrangetop="53" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="120616" loopstart="21826" loopend="120552"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F3.wav" rootnote="65" keyrangebottom="65" keyrangetop="65" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="119868" loopstart="48429" loopend="119804"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F4.wav" rootnote="77" keyrangebottom="77" keyrangetop="77" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="124942" loopstart="10056" loopend="124878"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F5.wav" rootnote="89" keyrangebottom="89" keyrangetop="89" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="97857" loopstart="34481" loopend="97793"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead F6.wav" rootnote="101" keyrangebottom="101" keyrangetop="127" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="126421" loopstart="11555" loopend="126357"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G#-1.wav" rootnote="20" keyrangebottom="20" keyrangetop="20" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="190729" loopstart="62418" loopend="190665"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G#0.wav" rootnote="32" keyrangebottom="32" keyrangetop="32" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="87690" loopstart="27441" loopend="87626"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G#1.wav" rootnote="44" keyrangebottom="44" keyrangetop="44" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="184382" loopstart="69670" loopend="184318"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G#2.wav" rootnote="56" keyrangebottom="56" keyrangetop="56" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="171807" loopstart="116461" loopend="171743"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G#3.wav" rootnote="68" keyrangebottom="68" keyrangetop="68" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="97603" loopstart="18366" loopend="97539"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G#4.wav" rootnote="80" keyrangebottom="80" keyrangetop="80" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="124279" loopstart="25328" loopend="124215"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G#5.wav" rootnote="92" keyrangebottom="92" keyrangetop="92" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="93920" loopstart="42418" loopend="93856"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G-1.wav" rootnote="19" keyrangebottom="19" keyrangetop="19" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="332485" loopstart="194475" loopend="332421"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G0.wav" rootnote="31" keyrangebottom="31" keyrangetop="31" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="92921" loopstart="30040" loopend="92857"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G1.wav" rootnote="43" keyrangebottom="43" keyrangetop="43" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="201744" loopstart="110513" loopend="201680"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G2.wav" rootnote="55" keyrangebottom="55" keyrangetop="55" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="166881" loopstart="64069" loopend="166817"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G3.wav" rootnote="67" keyrangebottom="67" keyrangetop="67" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="93970" loopstart="30570" loopend="93906"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G4.wav" rootnote="79" keyrangebottom="79" keyrangetop="79" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="82030" loopstart="10620" loopend="81966"/>
+                <slices/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Multisamples\Sy Polivoks Propeet Lead\Polivoks Propeet Lead G5.wav" rootnote="91" keyrangebottom="91" keyrangetop="91" velroot="0" velrangebottom="0" velrangetop="127" samstart="0" samlen="90048" loopstart="38552" loopend="89984"/>
+                <slices/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 3" notesteplen="8" notestepcount="64" seqstepmode="1" celldisppos="4" quantsizeseq="4" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence>
+                    <seqevent step="0" type="note" strtks="0" pitch="67" lencount="1" lentks="960" velocity="3"/>
+                    <seqevent step="1" type="note" strtks="960" pitch="63" lencount="1" lentks="960" velocity="7"/>
+                    <seqevent step="2" type="note" strtks="1920" pitch="65" lencount="1" lentks="960" velocity="6"/>
+                    <seqevent step="3" type="note" strtks="2880" pitch="67" lencount="1" lentks="960" velocity="35"/>
+                    <seqevent step="5" type="note" strtks="4800" pitch="63" lencount="1" lentks="960" velocity="8"/>
+                    <seqevent step="6" type="note" strtks="5760" pitch="65" lencount="1" lentks="960" velocity="4"/>
+                    <seqevent step="7" type="note" strtks="6720" pitch="60" lencount="1" lentks="960" velocity="9"/>
+                    <seqevent step="8" type="note" strtks="7680" pitch="67" lencount="1" lentks="960" velocity="29"/>
+                    <seqevent step="9" type="note" strtks="8640" pitch="63" lencount="1" lentks="960" velocity="24"/>
+                    <seqevent step="10" type="note" strtks="9600" pitch="65" lencount="1" lentks="960" velocity="8"/>
+                    <seqevent step="11" type="note" strtks="10560" pitch="67" lencount="1" lentks="960" velocity="47"/>
+                    <seqevent step="12" type="note" strtks="11520" pitch="63" lencount="1" lentks="960" velocity="20"/>
+                    <seqevent step="13" type="note" strtks="12480" pitch="65" lencount="1" lentks="960" velocity="13"/>
+                    <seqevent step="14" type="note" strtks="13440" pitch="60" lencount="1" lentks="960" velocity="35"/>
+                    <seqevent step="16" type="note" strtks="15360" pitch="67" lencount="1" lentks="960" velocity="32"/>
+                    <seqevent step="17" type="note" strtks="16320" pitch="63" lencount="1" lentks="960" velocity="17"/>
+                    <seqevent step="18" type="note" strtks="17280" pitch="65" lencount="1" lentks="960" velocity="10"/>
+                    <seqevent step="19" type="note" strtks="18240" pitch="65" lencount="1" lentks="960" velocity="17"/>
+                    <seqevent step="21" type="note" strtks="20160" pitch="60" lencount="1" lentks="960" velocity="66"/>
+                    <seqevent step="22" type="note" strtks="21120" pitch="63" lencount="1" lentks="960" velocity="39"/>
+                    <seqevent step="23" type="note" strtks="22080" pitch="60" lencount="1" lentks="960" velocity="79"/>
+                    <seqevent step="24" type="note" strtks="23040" pitch="67" lencount="1" lentks="960" velocity="44"/>
+                    <seqevent step="25" type="note" strtks="24000" pitch="63" lencount="1" lentks="960" velocity="17"/>
+                    <seqevent step="26" type="note" strtks="24960" pitch="65" lencount="1" lentks="960" velocity="11"/>
+                    <seqevent step="27" type="note" strtks="25920" pitch="67" lencount="1" lentks="960" velocity="21"/>
+                    <seqevent step="28" type="note" strtks="26880" pitch="63" lencount="1" lentks="960" velocity="54"/>
+                    <seqevent step="29" type="note" strtks="27840" pitch="65" lencount="1" lentks="960" velocity="18"/>
+                    <seqevent step="30" type="note" strtks="28800" pitch="60" lencount="1" lentks="960" velocity="80"/>
+                    <seqevent step="32" type="note" strtks="30720" pitch="67" lencount="4" lentks="3840" velocity="68"/>
+                    <seqevent step="32" type="note" strtks="30720" pitch="63" lencount="3" lentks="2880" velocity="12"/>
+                    <seqevent step="36" type="note" strtks="34560" pitch="60" lencount="4" lentks="3840" velocity="62"/>
+                    <seqevent step="5" type="note" strtks="4800" pitch="63" lencount="59" lentks="56640" velocity="81"/>
+                    <seqevent step="40" type="note" strtks="38400" pitch="63" lencount="23" lentks="22080" velocity="10"/>
+                    <seqevent step="40" type="note" strtks="38400" pitch="70" lencount="5" lentks="4800" velocity="28"/>
+                    <seqevent step="46" type="note" strtks="44160" pitch="68" lencount="2" lentks="1920" velocity="22"/>
+                    <seqevent step="48" type="note" strtks="46080" pitch="67" lencount="15" lentks="14400" velocity="14"/>
+                    <seqevent step="38" type="note" strtks="36480" pitch="65" lencount="2" lentks="1920"/>
+                </sequence>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 2" notesteplen="8" notestepcount="32" seqstepmode="1" celldisppos="3" quantsizeseq="4" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence>
+                    <seqevent step="0" type="note" strtks="0" pitch="67" lencount="1" lentks="960" velocity="3"/>
+                    <seqevent step="1" type="note" strtks="960" pitch="63" lencount="1" lentks="960" velocity="7"/>
+                    <seqevent step="2" type="note" strtks="1920" pitch="65" lencount="1" lentks="960" velocity="6"/>
+                    <seqevent step="3" type="note" strtks="2880" pitch="67" lencount="1" lentks="960" velocity="35"/>
+                    <seqevent step="5" type="note" strtks="4800" pitch="63" lencount="1" lentks="960" velocity="8"/>
+                    <seqevent step="6" type="note" strtks="5760" pitch="65" lencount="1" lentks="960" velocity="4"/>
+                    <seqevent step="7" type="note" strtks="6720" pitch="60" lencount="1" lentks="960" velocity="9"/>
+                    <seqevent step="8" type="note" strtks="7680" pitch="67" lencount="1" lentks="960" velocity="29"/>
+                    <seqevent step="9" type="note" strtks="8640" pitch="63" lencount="1" lentks="960" velocity="24"/>
+                    <seqevent step="10" type="note" strtks="9600" pitch="65" lencount="1" lentks="960" velocity="8"/>
+                    <seqevent step="11" type="note" strtks="10560" pitch="67" lencount="1" lentks="960" velocity="47"/>
+                    <seqevent step="12" type="note" strtks="11520" pitch="63" lencount="1" lentks="960" velocity="20"/>
+                    <seqevent step="13" type="note" strtks="12480" pitch="65" lencount="1" lentks="960" velocity="13"/>
+                    <seqevent step="14" type="note" strtks="13440" pitch="60" lencount="1" lentks="960" velocity="35"/>
+                    <seqevent step="16" type="note" strtks="15360" pitch="67" lencount="1" lentks="960" velocity="32"/>
+                    <seqevent step="17" type="note" strtks="16320" pitch="63" lencount="1" lentks="960" velocity="17"/>
+                    <seqevent step="18" type="note" strtks="17280" pitch="65" lencount="1" lentks="960" velocity="10"/>
+                    <seqevent step="19" type="note" strtks="18240" pitch="65" lencount="1" lentks="960" velocity="17"/>
+                    <seqevent step="21" type="note" strtks="20160" pitch="60" lencount="1" lentks="960" velocity="66"/>
+                    <seqevent step="22" type="note" strtks="21120" pitch="63" lencount="1" lentks="960" velocity="39"/>
+                    <seqevent step="23" type="note" strtks="22080" pitch="60" lencount="1" lentks="960" velocity="79"/>
+                    <seqevent step="24" type="note" strtks="23040" pitch="67" lencount="1" lentks="960" velocity="44"/>
+                    <seqevent step="25" type="note" strtks="24000" pitch="63" lencount="1" lentks="960" velocity="17"/>
+                    <seqevent step="26" type="note" strtks="24960" pitch="65" lencount="1" lentks="960" velocity="11"/>
+                    <seqevent step="27" type="note" strtks="25920" pitch="67" lencount="1" lentks="960" velocity="21"/>
+                    <seqevent step="28" type="note" strtks="26880" pitch="63" lencount="1" lentks="960" velocity="54"/>
+                    <seqevent step="29" type="note" strtks="27840" pitch="65" lencount="1" lentks="960" velocity="18"/>
+                    <seqevent step="30" type="note" strtks="28800" pitch="60" lencount="1" lentks="960" velocity="80"/>
+                    <seqevent step="32" type="note" strtks="30720" pitch="67" lencount="4" lentks="3840" velocity="68"/>
+                    <seqevent step="32" type="note" strtks="30720" pitch="63" lencount="3" lentks="2880" velocity="12"/>
+                    <seqevent step="36" type="note" strtks="34560" pitch="60" lencount="4" lentks="3840" velocity="62"/>
+                    <seqevent step="5" type="note" strtks="4800" pitch="63" lencount="59" lentks="56640" velocity="81"/>
+                    <seqevent step="40" type="note" strtks="38400" pitch="63" lencount="23" lentks="22080" velocity="10"/>
+                    <seqevent step="40" type="note" strtks="38400" pitch="70" lencount="5" lentks="4800" velocity="28"/>
+                    <seqevent step="46" type="note" strtks="44160" pitch="68" lencount="2" lentks="1920" velocity="22"/>
+                    <seqevent step="48" type="note" strtks="46080" pitch="67" lencount="15" lentks="14400" velocity="14"/>
+                    <seqevent step="38" type="note" strtks="36480" pitch="65" lencount="2" lentks="1920"/>
+                </sequence>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="6" notestepcount="64" seqstepmode="1" celldisppos="2" quantsizeseq="10" bp_uiSeqKnobMode="0" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence>
+                    <seqevent step="0" type="note" strtks="0" pitch="63" lencount="4" lentks="3840" velocity="9"/>
+                    <seqevent step="4" type="note" strtks="3840" pitch="67" lencount="4" lentks="3840" velocity="17"/>
+                    <seqevent step="8" type="note" strtks="7680" pitch="60" lencount="8" lentks="7680" velocity="42"/>
+                    <seqevent step="16" type="note" strtks="15360" pitch="63" lencount="3" lentks="2880" velocity="62"/>
+                    <seqevent step="19" type="note" strtks="18240" pitch="68" lencount="1" lentks="960" velocity="37"/>
+                    <seqevent step="20" type="note" strtks="19200" pitch="67" lencount="2" lentks="1920" velocity="55"/>
+                    <seqevent step="22" type="note" strtks="21120" pitch="63" lencount="2" lentks="1920" velocity="15"/>
+                    <seqevent step="24" type="note" strtks="23040" pitch="60" lencount="8" lentks="7680" velocity="96"/>
+                    <seqevent step="32" type="note" strtks="30720" pitch="63" lencount="4" lentks="3840" velocity="51"/>
+                    <seqevent step="36" type="note" strtks="34560" pitch="67" lencount="4" lentks="3840" velocity="41"/>
+                    <seqevent step="40" type="note" strtks="38400" pitch="60" lencount="8" lentks="7680" velocity="25"/>
+                    <seqevent step="48" type="note" strtks="46080" pitch="63" lencount="3" lentks="2880" velocity="97"/>
+                    <seqevent step="51" type="note" strtks="48960" pitch="68" lencount="1" lentks="960" velocity="13"/>
+                    <seqevent step="52" type="note" strtks="49920" pitch="67" lencount="2" lentks="1920" velocity="44"/>
+                    <seqevent step="54" type="note" strtks="51840" pitch="63" lencount="2" lentks="1920" velocity="72"/>
+                    <seqevent step="56" type="note" strtks="53760" pitch="60" lencount="8" lentks="7680" velocity="24"/>
+                </sequence>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 2" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="1" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 6" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="5" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+        </track>
+        <track type="grainchoptrack">
+            <params selcellpos="0" celldisppos="5" cellname="Track 6" selseqpos="1" seqplayenable="1" trkgain="-7800" trkpan="0" trkmute="0" trksolo="0" trkfx1send="303" trkfx2send="1000" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0" midiinport="0" midiinchan="6" cc1inport="0" cc1inchan="0" cc2inport="0" cc2ininchan="0" midioutport="0" midioutchan="0" padrowoffset="2" outputbus="0" recactive="0" recinput="0" recgain="0" recautoplay="0" recpresetlen="0" recquant="3" recmonmode="1" recusethres="0" recthresh="-30000"/>
+            <cell type="granslicer">
+                <params gaindb="0" pitch="-7830" panpos="0" cellmode="2" samtrigtype="0" loopmode="0" envattack="0" envdecay="0" envsus="1000" envrel="200" velamount="0" outputbus="0" polymodeslice="0" chokegrp="0" dualfilcutoff="-192" res="675" fx1send="0" fx2send="0" overdrive="0" lfowave="0" lforate="100" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="0" celldisppos="0" actslice="1" slicestepmode="0" slicerquantsize="13" beatcount="0" playthru="0" synctype="6" slicepadstart="1" slicersync="0" gransplaymode="1" gransgrainsize="817" gransgraindensity="731" gransgrainjitter="301" gransgrainwindow="0" gransgraindetune="0" gransgrainbeatsync="0" granssyncrate="0" gransspeed="521"/>
+            </cell>
+            <cell type="samasst">
+                <params filename="\Loops\Soundopolis\Misc\PingPong_001.wav" rootnote="60" keyrangebottom="0" keyrangetop="0" velroot="0" velrangebottom="0" velrangetop="0" samstart="0" samlen="2124664" loopstart="0" loopend="2124664"/>
+                <slices>
+                    <slice pos="128"/>
+                    <slice pos="9344"/>
+                    <slice pos="41344"/>
+                    <slice pos="54144"/>
+                    <slice pos="66048"/>
+                    <slice pos="78336"/>
+                    <slice pos="105856"/>
+                    <slice pos="112000"/>
+                    <slice pos="121088"/>
+                    <slice pos="126464"/>
+                    <slice pos="141568"/>
+                    <slice pos="148736"/>
+                    <slice pos="166016"/>
+                    <slice pos="199424"/>
+                    <slice pos="209920"/>
+                    <slice pos="218880"/>
+                    <slice pos="228864"/>
+                    <slice pos="235776"/>
+                    <slice pos="256640"/>
+                    <slice pos="261504"/>
+                    <slice pos="269824"/>
+                    <slice pos="285184"/>
+                    <slice pos="308864"/>
+                    <slice pos="329728"/>
+                    <slice pos="346880"/>
+                    <slice pos="356864"/>
+                    <slice pos="367360"/>
+                    <slice pos="375168"/>
+                    <slice pos="384896"/>
+                    <slice pos="408064"/>
+                    <slice pos="464768"/>
+                    <slice pos="480000"/>
+                    <slice pos="489216"/>
+                    <slice pos="497408"/>
+                    <slice pos="508672"/>
+                    <slice pos="522112"/>
+                    <slice pos="544768"/>
+                    <slice pos="557440"/>
+                    <slice pos="577408"/>
+                    <slice pos="591104"/>
+                    <slice pos="633216"/>
+                    <slice pos="649600"/>
+                    <slice pos="681472"/>
+                    <slice pos="696064"/>
+                    <slice pos="713984"/>
+                    <slice pos="724608"/>
+                    <slice pos="737152"/>
+                    <slice pos="754176"/>
+                    <slice pos="759040"/>
+                    <slice pos="776704"/>
+                    <slice pos="785920"/>
+                    <slice pos="792576"/>
+                    <slice pos="808832"/>
+                    <slice pos="840704"/>
+                    <slice pos="853376"/>
+                    <slice pos="869888"/>
+                    <slice pos="881792"/>
+                    <slice pos="886912"/>
+                    <slice pos="899840"/>
+                    <slice pos="910464"/>
+                    <slice pos="932224"/>
+                    <slice pos="944384"/>
+                    <slice pos="965120"/>
+                    <slice pos="975872"/>
+                    <slice pos="1006720"/>
+                    <slice pos="1012352"/>
+                    <slice pos="1027456"/>
+                    <slice pos="1035520"/>
+                    <slice pos="1071744"/>
+                    <slice pos="1076096"/>
+                    <slice pos="1100416"/>
+                    <slice pos="1115264"/>
+                    <slice pos="1133184"/>
+                    <slice pos="1148800"/>
+                    <slice pos="1166720"/>
+                    <slice pos="1178880"/>
+                    <slice pos="1198208"/>
+                    <slice pos="1204480"/>
+                    <slice pos="1214592"/>
+                    <slice pos="1251328"/>
+                    <slice pos="1268096"/>
+                    <slice pos="1288576"/>
+                    <slice pos="1305088"/>
+                    <slice pos="1338112"/>
+                    <slice pos="1354240"/>
+                    <slice pos="1373056"/>
+                    <slice pos="1385856"/>
+                    <slice pos="1399168"/>
+                    <slice pos="1415040"/>
+                    <slice pos="1425408"/>
+                    <slice pos="1444736"/>
+                    <slice pos="1456256"/>
+                    <slice pos="1479808"/>
+                    <slice pos="1486976"/>
+                    <slice pos="1492480"/>
+                    <slice pos="1501312"/>
+                    <slice pos="1519744"/>
+                    <slice pos="1561600"/>
+                    <slice pos="1577216"/>
+                    <slice pos="1591680"/>
+                    <slice pos="1600256"/>
+                    <slice pos="1613952"/>
+                    <slice pos="1644544"/>
+                    <slice pos="1659136"/>
+                    <slice pos="1679488"/>
+                    <slice pos="1695744"/>
+                    <slice pos="1727360"/>
+                    <slice pos="1763712"/>
+                    <slice pos="1780992"/>
+                    <slice pos="1787648"/>
+                    <slice pos="1826176"/>
+                    <slice pos="1843584"/>
+                    <slice pos="1863168"/>
+                    <slice pos="1869952"/>
+                    <slice pos="1876224"/>
+                    <slice pos="1910912"/>
+                    <slice pos="1929472"/>
+                    <slice pos="1951616"/>
+                    <slice pos="1958912"/>
+                    <slice pos="1991424"/>
+                    <slice pos="2009984"/>
+                    <slice pos="2027136"/>
+                    <slice pos="2042240"/>
+                    <slice pos="2058240"/>
+                    <slice pos="2070528"/>
+                    <slice pos="2085504"/>
+                    <slice pos="2104832"/>
+                    <slice pos="2115328"/>
+                </slices>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 3" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="2" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="10" notestepcount="72" seqstepmode="1" celldisppos="1" quantsizeseq="6" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence>
+                    <seqevent step="80" type="note" strtks="76800" pitch="60" lencount="4473917" lentks="-6720" velocity="83"/>
+                    <seqevent step="12" type="note" strtks="11520" pitch="60" lencount="1" lentks="960" velocity="105"/>
+                    <seqevent step="16" type="note" strtks="15360" pitch="62" lencount="1" lentks="960" velocity="11"/>
+                    <seqevent step="24" type="note" strtks="23040" pitch="63" lencount="7" lentks="6720" velocity="42"/>
+                    <seqevent step="32" type="note" strtks="30720" pitch="65" lencount="11" lentks="10560" velocity="84"/>
+                    <seqevent step="48" type="note" strtks="46080" pitch="66" lencount="1" lentks="960" velocity="98"/>
+                    <seqevent step="56" type="note" strtks="53760" pitch="62" lencount="2" lentks="1920" velocity="95"/>
+                    <seqevent step="64" type="note" strtks="61440" pitch="63" lencount="2" lentks="1920" velocity="53"/>
+                    <seqevent step="28" type="note" strtks="26880" pitch="61" lencount="1" lentks="960" velocity="47"/>
+                    <seqevent step="30" type="note" strtks="28800" pitch="61" lencount="1" lentks="960" velocity="11"/>
+                    <seqevent step="32" type="note" strtks="30720" pitch="61" lencount="1" lentks="960" velocity="52"/>
+                    <seqevent step="34" type="note" strtks="32640" pitch="61" lencount="1" lentks="960" velocity="23"/>
+                    <seqevent step="36" type="note" strtks="34560" pitch="61" lencount="1" lentks="960" velocity="80"/>
+                    <seqevent step="46" type="note" strtks="44160" pitch="60" lencount="1" lentks="960" velocity="79"/>
+                    <seqevent step="62" type="note" strtks="59520" pitch="52" lencount="1" lentks="960" velocity="55"/>
+                    <seqevent step="78" type="note" strtks="74880" pitch="52" lencount="1" lentks="960" velocity="107"/>
+                    <seqevent step="10" type="note" strtks="9600" pitch="64" lencount="1" lentks="960" velocity="10"/>
+                    <seqevent step="76" type="note" strtks="72960" pitch="60" lencount="1" lentks="960" velocity="73"/>
+                </sequence>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 5" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="4" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 6" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="5" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+        </track>
+        <track type="wttrack">
+            <params bento_analog="1" bento_analog_sync="0" bento_analog_glide="0" selcellpos="0" celldisppos="6" cellname="Track 7" selseqpos="0" seqplayenable="1" trkgain="0" trkpan="0" trkmute="0" trksolo="0" trkfx1send="0" trkfx2send="0" duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="8" outputbus="0" midiinport="0" midiinchan="7" cc1inport="0" cc1inchan="0" cc2inport="0" cc2ininchan="0" midioutport="0" midioutchan="0" padrowoffset="0" recactive="0" recinput="0" recgain="0" recautoplay="0" recpresetlen="0" recquant="3" recmonmode="1" recusethres="0" recthresh="-30000"/>
+            <cell type="wavetable">
+                <params pitch="0" level="1000" wavesel="0" wavepos="0" samlen="0" filename=""/>
+            </cell>
+            <cell type="wavetable">
+                <params pitch="0" level="1000" wavesel="0" wavepos="0" samlen="0" filename=""/>
+            </cell>
+            <cell type="osc">
+                <params pitch="0" level="1000" waveform="1" dutycyc="500"/>
+            </cell>
+            <cell type="filter">
+                <params filtertype="0" cutoff="600" res="400" filtenable="0" filtparallel="0"/>
+            </cell>
+            <cell type="filter">
+                <params filtertype="0" cutoff="600" res="400" filtenable="0" filtparallel="0"/>
+            </cell>
+            <cell type="env">
+                <params envattack="50" envdecay="100" envsus="900" envrel="100" velamount="0"/>
+            </cell>
+            <cell type="env">
+                <params envattack="50" envdecay="100" envsus="900" envrel="100" velamount="0"/>
+            </cell>
+            <cell type="lfo">
+                <params lfowave="2" lforate="500" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="6"/>
+            </cell>
+            <cell type="lfo">
+                <params lfowave="2" lforate="500" lfoamount="1000" lfokeytrig="0" lfobeatsync="0" lforatebeatsync="6"/>
+            </cell>
+            <cell type="seqmod">
+                <params steplen="4" seqsteps="16" seqkeytrig="0" seqquant="0" seqslide="0" quantsize="0"/>
+                <sequence/>
+            </cell>
+            <cell type="partparms">
+                <params globtempo="120" midibend="2" wtblusepolymode="1" wtblpolymode="10" unisonmode="0" unisonvcount="4" oscphasereset="1" unisondetune="0" unisonspread="0" macroxsnap="0" macroysnap="0"/>
+            </cell>
+            <cell type="noteseq">
+                <params cellname="Seq 1" notesteplen="10" notestepcount="16" seqstepmode="1" celldisppos="0" quantsizeseq="1" bp_uiSeqKnobMode="1" uiPadFrameOffset="0" seqslide="0"/>
+                <sequence/>
+            </cell>
+        </track>
+        <track type="mastrack">
+            <params globtempo="106" swing="50" keymode="3" keyroot="3" metroopts="0" metoutbus="0" reccountdown="1" maingain="0" selscenepos="0" projmidiinport="3" projmidiinchan="16" songmode="0" quantsizesong="1" songSceneHold="0" songloop="0" fxliveatype="2" fxlivebtype="3" fxholda="0" fxholdb="0"/>
+            <cell type="fxdelay">
+                <params feedback="400" filtenable="1" cutoffFx="933" filtquality="668" delaypingpong="1" dealybeatsync="1" delay="400" delaymustime="5"/>
+            </cell>
+            <cell type="fxbluereverb">
+                <params r2style="7" r2metatime="798" r2metalevel="1000" r2highcut="759" r2lowcut="411" r2predelay="280" r2freeze="0" rvbalgo="0" shimshift="0" shimfeedbk="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 1" celldisppos="0" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 2" celldisppos="1" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 3" celldisppos="2" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 4" celldisppos="3" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 5" celldisppos="4" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 6" celldisppos="5" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 7" celldisppos="6" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 8" celldisppos="7" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="compressor">
+                <params globcomp="1" cattack="50" crelease="1600" cthreshdb="-10000" cratio="4" cgaindb="0" cautomakeup="1" peaklimit="1"/>
+            </cell>
+            <cell type="fxlemon">
+                <params flangeamount="0" flangelforate="500" flangefeedback="600" distamount="0" phaseamount="0" phaselforate="500" phasefeedback="500" chorusamount="606" chorusrate="289" fx1send="0" fx2send="551" fx3type="1"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 9" celldisppos="8" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 10" celldisppos="9" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 11" celldisppos="10" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 12" celldisppos="11" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 13" celldisppos="12" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 14" celldisppos="13" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 15" celldisppos="14" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="scene">
+                <params cellname="Scene 16" celldisppos="15" sceneplaycount="1"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="0" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="1" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="2" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="3" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="4" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="5" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="6" sceneseqindex="0"/>
+            </cell>
+            <cell type="sceneEntry">
+                <params scenetrackindex="7" sceneseqindex="0"/>
+            </cell>
+            <cell type="ducker">
+                <params duckattack="1" duckhold="10" duckrelease="100" duckdepth="500" ducktrig="1" duckclkdiv="1" ducktrkin="0" duckthresh="500" duckmidinote="36" duckmidich="1" duckextin="0" duckbypass="1" duckpadtrk="0" duckpad="0"/>
+            </cell>
+        </track>
+    </session>
+</document>
