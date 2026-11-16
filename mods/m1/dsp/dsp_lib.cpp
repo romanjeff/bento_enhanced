@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The small C library of the hard-float DSP ELF (S6a, S6c): memset / memcpy (the compiler may emit calls to them) and
- * the single-precision math the vendored DaisySP files call (daisysp/README.md). No libc or libm is linked, and the
+ * the single-precision math the vendored DaisySP files call (daisysp/README.md), named be_powf / be_sinf / be_log10f:
+ * the shim's <cmath> maps powf / sinf / log10f to them (P4-D1), so the ELF never defines a libm name and build.py's
+ * DSP_REFUSED_LIBM stays strict. No libc or libm is linked, and the
  * build refuses any soft-float or double helper (build.py check_dsp_elf), so everything here is float only.
  *
  * Accuracy, measured in the emulator against the host's libm (test_drums.py Math asserts these bounds): powf(2, x)
@@ -60,7 +62,7 @@ static float log2_(float a) {
 /* powf for the bases DaisySP uses (2 for its envelope and tone coefficients, the filter resonance 0..1): a <= 0 gives
  * 0 (no complex results, no negative bases in the Kick), a == 1 or b == 0 gives exactly 1, 2^b skips the logarithm
  * and is remembered (above). A zeroed memo entry (b's bits 0) could only match b == +0, which has returned already. */
-extern "C" float powf(float a, float b) {
+extern "C" float be_powf(float a, float b) {
     if (b == 0.f || a == 1.f) return 1.f;
     if (!(a > 0.f)) return 0.f;
     if (a != 2.f) return exp2_(b * log2_(a));
@@ -77,12 +79,12 @@ extern "C" float powf(float a, float b) {
     return y.f;
 }
 
-extern "C" float log10f(float x) { return x > 0.f ? log2_(x) * 0.3010299957f : -1e30f; }
+extern "C" float be_log10f(float x) { return x > 0.f ? log2_(x) * 0.3010299957f : -1e30f; }
 
 /* sin(x): reduced to (-pi, pi] by whole turns, then to [-pi/2, pi/2] by symmetry, Taylor to x^13 (error < 1e-8 there).
  * Exact enough for |x| up to a few hundred (the Kick passes 2 pi (phase + 0.75), phase in [0, 1); its click filter
  * passes at most pi / 4). */
-extern "C" float sinf(float x) {
+extern "C" float be_sinf(float x) {
     const float pi = 3.1415926536f, twopi = 6.2831853072f;
     x -= (float)floor_int(x * 0.1591549431f) * twopi;
     if (x > pi) x -= twopi;

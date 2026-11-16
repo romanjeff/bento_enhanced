@@ -1,18 +1,25 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Freestanding stand-in for <cmath> / <math.h> (S6c): only what the vendored DaisySP files (../daisysp) use, single
  * precision only. The DSP ELF has no libm: sinf / powf / log10f are ours (../dsp_lib.cpp); no double overloads
- * are declared, so a double can only come from the code itself (and build.py refuses any __aeabi_d* helper). */
+ * are declared, so a double can only come from the code itself (and build.py refuses any __aeabi_d* helper).
+ *
+ * P4-D1 (docs/plan-p4-drums.md): ours are defined as be_sinf / be_powf / be_log10f, and the libm names the vendored
+ * files call are inline forwarders to them below (C++ linkage, always inlined), so the ELF never defines or calls an
+ * extern "C" libm name and build.py's DSP_REFUSED_LIBM stays strict: a libm-named symbol is compiler_rt's, never ours. */
 #pragma once
 extern "C" {
-float sinf(float x);
-float powf(float base, float exponent);
-float log10f(float x);
+float be_sinf(float x);
+float be_powf(float base, float exponent);
+float be_log10f(float x);
 /* declared only: dsp.h's inline helpers name them, the files we build never call them (a call would be an undefined
  * symbol, which build.py refuses) */
 float floorf(float x);
 float expf(float x);
 float frexpf(float x, int *e);
 }
+__attribute__((always_inline)) inline float sinf(float x) { return be_sinf(x); }
+__attribute__((always_inline)) inline float powf(float base, float exponent) { return be_powf(base, exponent); }
+__attribute__((always_inline)) inline float log10f(float x) { return be_log10f(x); }
 inline float fabsf(float x) { return __builtin_fabsf(x); }
 namespace std {
 /* DaisySP's TestFloat (never called by the Kick) asks for it */

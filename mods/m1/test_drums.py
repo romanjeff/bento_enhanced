@@ -793,16 +793,16 @@ class Math(unittest.TestCase):
         worst = {"sin": 0.0, "pow2": 0.0, "pow": 0.0}
         for i in range(400):
             x = f32(-50 + 100 * i / 399)
-            worst["sin"] = max(worst["sin"], abs(fcall(DSP["sinf"], x) - math.sin(x)))
+            worst["sin"] = max(worst["sin"], abs(fcall(DSP["be_sinf"], x) - math.sin(x)))
             e = f32(-20 + 40 * i / 399)
-            worst["pow2"] = max(worst["pow2"], abs(fcall(DSP["powf"], 2.0, e) / 2 ** e - 1))
+            worst["pow2"] = max(worst["pow2"], abs(fcall(DSP["be_powf"], 2.0, e) / 2 ** e - 1))
             a = f32(0.01 + 0.98 * i / 399)
-            worst["pow"] = max(worst["pow"], abs(fcall(DSP["powf"], a, f32(3.7)) / a ** f32(3.7) - 1))
+            worst["pow"] = max(worst["pow"], abs(fcall(DSP["be_powf"], a, f32(3.7)) / a ** f32(3.7) - 1))
         print(f"\n  libm stand-ins: {worst}", file=sys.stderr)
         self.assertLess(worst["sin"], 4e-6)
         self.assertLess(worst["pow2"], 1e-6)
         self.assertLess(worst["pow"], 2e-6)
-        self.assertEqual(fcall(DSP["powf"], 2.0, 0.0), 1.0)
+        self.assertEqual(fcall(DSP["be_powf"], 2.0, 0.0), 1.0)
 
 
 @unittest.skipUnless(ON, "drums not on in this image")

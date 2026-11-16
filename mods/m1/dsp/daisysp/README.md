@@ -23,9 +23,10 @@ How they are built (S6c, `docs/plan-synths-168.md`): inside the hard-float DSP E
 `../shim/` standing in for the C/C++ library headers they include (`<cmath>`, `<math.h>`, `<stdlib.h>`, `<cassert>`,
 `<cstdint>`, `<random>`). The library functions they call come from our own code, not from a libc or libm:
 
-- `sinf`, `powf`, `log10f`: `../dsp_lib.cpp` (single precision polynomials; no double, no table of stock's;
-  `powf(2, b)` remembers its last two results in the drum run state, because the Kick's two per-sample envelope
-  coefficients are constant within a block);
+- `sinf`, `powf`, `log10f`: `../dsp_lib.cpp`, defined there as `be_sinf` / `be_powf` / `be_log10f` and mapped by
+  inline forwarders in `../shim/cmath` (P4-D1: the ELF never defines a libm name); single precision polynomials, no
+  double, no table of stock's; `powf(2, b)` remembers its last two results in the drum run state, because the
+  Kick's two per-sample envelope coefficients are constant within a block;
 - `rand()`: `../drums.cpp`, a xorshift32 whose state is the drum cell being rendered (per voice, in the synth area),
   so voices never share a noise sequence and the ELF keeps no RAM data of its own (upstream's global `rand()` state
   would need `.data`, which the build refuses).

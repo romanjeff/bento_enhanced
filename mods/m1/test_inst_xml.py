@@ -1,17 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""bento_analog* through stock's own instrument writer, XML library and instrument reader (S6a, X1 / X2).
+"""Our instrument XML hooks (X1 / X2) through stock's own instrument writer, XML library and instrument reader.
 
     python test_inst_xml.py <stock bento1.bin> <m1 build dir>
 
-An instrument object (type Wavetable, its handle at +0x10, no properties of its own) goes through stock's
-instrument writer (the function around INST_SAVE_SITE) into a document built by stock's XML code; our save hook
-adds bento_analog / _sync / _glide to the params element for a track the M4's Analog table (AN4, our slice + 0xE20,
-typed here: a 128 B header, then 16 x {handle, flags | glide << 4}) names. Then the table is
-cleared and stock's instrument reader (INST_LOAD) reads the element back: our load hook restores the entry, with or
-without the M7 (review 2026-11-08: a load before the M7 has taken the synth area is kept and published at the
-handshake, by the UI tick).
+History: BE4.22-4.31 saved and loaded the Analog table AN4 (bento_analog / _sync / _glide) here. P1 (BE4.40) retired AN4
+(Analog is a native Type, its keys saved by stock: test_native_props), and since then X1 / X2 serve only the drums' DK4
+(a BE_ENABLE=drums build), whose pad round trips are test_drum_ui's (Xml class). P4-0 (docs/plan-p4-drums.md 5,
+"Retired / fixed") retired this file's three AN4 round-trip cases with test_handles'. What stays, true today:
+- a Wavetable instrument (type 0x12, the object our X1 sees for a synth track) gets no attribute of ours from the writer;
+- stock's own reader (the base image's code, no hooks) reads a params element carrying the drums' attributes
+  (bento_drum_engine, bento_drum_k1..k7) without a fault and leaves the object as it was. The object is the same
+  Wavetable, not a saminst (where the drums' attributes really sit), so this is a smoke check of the reader, not the
+  checklist's rollback item: stock reading a real drum pad is P4-1's (stock 1.6.8 opens the drum project).
+An instrument object (type Wavetable, its handle at +0x10, no properties of its own) goes through stock's instrument
+writer (the function around INST_SAVE_SITE) into a document built by stock's XML code.
 Rig after test_step_xml.py (the step-data investigator's): every allocator starts from the M4's own .data image.
-Skipped on a build without the analog group (1.6.1).
+Skipped on a build without the X1 / X2 hooks (1.6.1, a default 1.6.8 build).
 """
 import json, struct, sys, unittest
 from pathlib import Path
@@ -35,9 +39,8 @@ DOC = 0xC0000000                        # the document object  # addr-ok: harnes
 OBJ = 0xC0300000                        # the instrument object  # addr-ok: harness
 HEAP = 0xC1000000                       # harness heap for the registry builder's allocations  # addr-ok: harness
 SA = S.REGION - 0x8000 if HAVE else 0   # the synth area (synth_shared.h, typed here)
-TAB = SA + 0x200
-AN4 = S.D2_SLICE + 0xE20 if HAVE else 0
 HANDLE = 0x5150
+OURS = ["bento_analog", "bento_analog_sync", "bento_analog_glide", "bento_drum_engine"] + [f"bento_drum_k{i}" for i in range(1, 8)]
 
 
 class Rig:
@@ -52,9 +55,8 @@ class Rig:
         self.blocks = set()
         u.hook_add(UC_HOOK_BLOCK, lambda uc, a, sz, _: self.blocks.add(a) if 0x08100000 <= a < S.APPEND_FROM else None)
         self.w32(S.D2_SLICE + 0x1E0, 0x31474144); self.w32(S.D2_SLICE + 0x1E0 + 12, 1)   # CFG: our boot generation 1
-        self.take()                                                                        # the M7 took the area (gen 1)
-        if HAVE:                                  # stock's handle counter: HANDLE is an object of this boot (BE4.22, H1)
-            self.w32(S.OBJ_HANDLE_CTR, HANDLE + 1)
+        u.mem_write(SA, struct.pack("<5I", 0x37534542, 1, 2, 0xC000, 1))                  # the M7 took the area (gen 1)
+        self.w32(S.OBJ_HANDLE_CTR, HANDLE + 1)    # stock's handle counter: HANDLE is an object of this boot (H1)
         u.mem_write(STRS, b"instrument\0")
         # the object: vtable[0] = type getter (movs r0, #0x12; bx lr), no properties, its handle at +0x10
         u.mem_write(STRS + 0x40, bytes([S.TYPE_WAVETABLE, 0x20, 0x70, 0x47]))
@@ -68,6 +70,7 @@ class Rig:
         self.mh = u.hook_add(UC_HOOK_CODE, malloc, begin=S.M4_MALLOC, end=S.M4_MALLOC)
         self.call(S.REG_BUILD, OBJ + 0x100, count=20_000_000)
         u.hook_del(self.mh)
+        self.call(SYM["an_tick"])                 # our tables exist (as after the first UI tick)
 
     def w32(self, a, x): self.u.mem_write(a, struct.pack("<I", x & 0xFFFFFFFF))
     def r32(self, a): return struct.unpack("<I", self.u.mem_read(a, 4))[0]
@@ -108,81 +111,37 @@ class Rig:
         r = self.call(S.XML_GET_U32, a, STRS + 0x300)
         return self.r32(STRS + 0x300) if r == 0 else "?"
 
-    def take(self): self.u.mem_write(SA, struct.pack("<5I", 0x37534542, 1, 2, 0xC000, 1))   # M7 header, for M4 boot 1
-    def line(self, i=0): return struct.unpack("<8I", self.u.mem_read(TAB + 32 * i, 32))
-    def entry(self, i=0):
-        h, w = struct.unpack("<2I", self.u.mem_read(AN4 + 0x80 + 8 * i, 8))
-        return h, w & 15, (w >> 4) & 0x3FF
-    def put(self, handle, flags, glide, i=0):
-        """An AN4 entry (as the menu or a load leaves it)."""
-        self.call(SYM["an_tick"])
-        self.w32(AN4 + 0x80 + 8 * i, handle); self.w32(AN4 + 0x84 + 8 * i, flags | glide << 4)
-        self.w32(AN4 + 8, self.r32(AN4 + 8) + 1)
-    def clear(self): self.u.mem_write(AN4 + 0x80, bytes(0x80))
+    def add(self, params, name, value):
+        """An attribute written by stock's XML library (as our X1 writes one)."""
+        self.u.mem_write(STRS + 0x200, name.encode() + b"\0")
+        a = self.call(S.XML_ADD, params, STRS + 0x200)
+        self.call(S.XML_SET_U32, a, value)
 
 
-@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
-class RoundTrip(unittest.TestCase):
-    def test_analog_track_saves_and_loads(self):
+@unittest.skipUnless(HAVE, "no X1 / X2 hooks in this image (1.6.1, or a default 1.6.8 build)")
+class Writer(unittest.TestCase):
+    def test_a_wavetable_writes_nothing_of_ours(self):
         r = Rig(IMG)
-        r.put(HANDLE, 3, 370)                                     # Analog, Sync on, Glide 370 (of 1000)
         parent, params = r.save()
         self.assertTrue(params, "stock wrote the params element")
-        self.assertEqual([r.attr(params, n) for n in ("bento_analog", "bento_analog_sync", "bento_analog_glide")], [1, 1, 370])
-        r.clear()                                                 # forget it
-        r.call(S.INST_LOAD, parent, OBJ)
-        self.assertEqual(r.entry(), (HANDLE, 3, 370), "handle, Analog | Sync, Glide back from the XML")
-        r.call(SYM["an_tick"])
-        line = r.line()
-        self.assertEqual((line[1], line[2], line[3]), (HANDLE, 3, 370), "and published for the M7 by the UI tick")
-        self.assertEqual(line[0], line[7], "a complete seqlocked line")
-        self.assertFalse(line[0] & 1)
-        self.assertGreater(len(r.blocks), 100, "stock's writer, XML library and reader ran")
-
-    def test_plain_wavetable_writes_nothing_of_ours(self):
-        r = Rig(IMG)
-        r.put(0x9999, 1, 0)                                       # another track is Analog, not this one
-        _, params = r.save()
-        self.assertEqual([r.attr(params, n) for n in ("bento_analog", "bento_analog_sync", "bento_analog_glide")], [None] * 3)
-
-    def test_loading_a_plain_track_clears_a_stale_line(self):
-        r = Rig(IMG)
-        parent, _ = r.save()                                      # no entry yet: a plain params element
-        r.put(HANDLE, 1, 0)
-        r.call(S.INST_LOAD, parent, OBJ)
-        self.assertEqual(r.entry(), (0, 0, 0), "the handle is not Analog after loading a plain Wavetable")
-
-    def test_a_load_before_the_m7_took_the_area_is_kept(self):
-        """Review B1/B2: the boot's project load can come before the M7 has taken the synth area (the storage task runs
-        on its own; the M7 takes the area once the config line is up). The entry waits in AN4, nothing is written into
-        the area until the M7 header is there, then the UI tick publishes it."""
-        r = Rig(IMG)
-        r.put(HANDLE, 3, 370)
-        parent, _ = r.save()
-        r.clear(); r.u.mem_write(SA, bytes(0x8000))               # a new boot: the M7 has not taken the area yet
-        r.call(S.INST_LOAD, parent, OBJ)
-        r.call(SYM["an_tick"])
-        self.assertEqual(bytes(r.u.mem_read(SA, 0x8000)), bytes(0x8000), "the handshake: not one M4 write into the area")
-        self.assertEqual(r.entry(), (HANDLE, 3, 370), "but the M4 has it")
-        _, params = r.save()
-        self.assertEqual(r.attr(params, "bento_analog"), 1, "and a save before the handshake still writes it")
-        r.take(); r.call(SYM["an_tick"])
-        self.assertEqual(r.line()[1:4], (HANDLE, 3, 370), "published at the handshake")
+        self.assertEqual([r.attr(params, n) for n in OURS], [None] * len(OURS))
+        self.assertGreater(len(r.blocks), 100, "stock's writer and XML library ran")
 
 
 class Stock(unittest.TestCase):
-    """The base's own firmware: what it does with our attributes (it ignores them when loading, and drops them on
-    its next save: the checklist's rollback items)."""
-    @unittest.skipUnless(HAVE, "needs this build's document to read")
-    def test_stock_reader_ignores_our_attributes(self):
+    """The base's own firmware: its reader ignores our attributes on a Wavetable object (a smoke check; the rollback
+    item on a real saminst is P4-1's)."""
+    @unittest.skipUnless(HAVE, "needs this build's writer for the document")
+    def test_stock_reader_ignores_the_drums_attributes(self):
         r = Rig(IMG)
-        r.put(HANDLE, 3, 370)
-        parent, _ = r.save()
+        parent, params = r.save()
+        for i, n in enumerate(OURS[3:]):
+            r.add(params, n, [1, 64, 20, 64, 0, 90, 30, 0][i])
+        self.assertEqual(r.attr(params, "bento_drum_k1"), 64, "the document carries them")
+        before = bytes(r.u.mem_read(OBJ, 0x40))
         r.u.mem_write(BASE, STOCK)                                # the same memory, stock's code (no hooks)
-        r.clear()
         r.call(S.INST_LOAD, parent, OBJ)
-        self.assertEqual(r.r32(OBJ + 0x10), HANDLE, "read without a fault; the object untouched")
-        self.assertEqual(r.entry(), (0, 0, 0), "stock does not know the attributes: nothing restored")
+        self.assertEqual(bytes(r.u.mem_read(OBJ, 0x40)), before, "read without a fault; the object untouched")
 
 
 if __name__ == "__main__":

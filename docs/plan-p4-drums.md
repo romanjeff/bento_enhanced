@@ -10,7 +10,7 @@ Labels: **M** measured (emulator on stock 1.6.8 or a real build), **S** static (
 
 ### 0.1 Verdict
 
-**GO, with an offline gate sprint (P4-0) first.** No fixed requirement looks impossible to meet cleanly. Three preconditions (A, B, C) still need an end-to-end run in the emulator. Static evidence now covers most of A and B (0.4). Precondition C is turned into a planned feature, the M4 re-push (3.6), so it no longer depends on what stock happens to do.
+**GO, confirmed by P4-0 (2026-11-16, 0.6).** The original verdict was "GO, with an offline gate sprint (P4-0) first". No fixed requirement looks impossible to meet cleanly. Three preconditions (A, B, C) still need an end-to-end run in the emulator. Static evidence now covers most of A and B (0.4). Precondition C is turned into a planned feature, the M4 re-push (3.6), so it no longer depends on what stock happens to do.
 
 If B fails after all, the knobs can't be edited. That is NO-GO, and drums are dropped (Jeff's rule).
 
@@ -30,8 +30,8 @@ Review raised three design problems the draft had missed, and all three are now 
 | Engine key | 0x1A0, 0x1A2, 0x1A4, 0x1A7, 0x1AB | 0x1A4/0x1A7/0x1AB went to P3. Use **0x1A8 = engine index, 0x1A2 = track flag** | S / M |
 | Engine values | "1..5" / ids 1, 3, 5, 7, 9 | Key 0x1A8 stores a dense **index 0..5** (0 = none, 1 Kick, 2 Snare, 3 HiHat, 4 Clap, 5 Tom). The M7 maps it to synth_shared.h's ids 1/3/5/7/9 (3.1) | S |
 | Menu | Drum Synth = cell 9, count 8 -> 10 | Analog's entry is gone (BE4.40). Drum Synth = **cell 8** (0x0819ADD0), count 8 -> **9** | S |
-| Build state | The drums group was assumed to build | **Broken since d21225d** (P3 Q2): DSP_REFUSED_LIBM refuses dsp_lib.cpp's own `powf`/`sinf`. With a scratch exemption it builds and the drum suites pass | M (build.py:661/719, dsp_lib.cpp:63/85) |
-| Stale tests | none noted | test_handles (10) and test_inst_xml (3) fail on every drums build because they assert BE4.22-4.31 Analog state | M |
+| Build state | The drums group was assumed to build | **Broken since d21225d** (P3 Q2): DSP_REFUSED_LIBM refuses dsp_lib.cpp's own `powf`/`sinf`. With a scratch exemption it builds and the drum suites pass. **Fixed in P4-0** (P4-D1 (a), 0.5) | M (build.py:661/719, dsp_lib.cpp:63/85) |
+| Stale tests | none noted | test_handles (10) and test_inst_xml (3) fail on every drums build because they assert BE4.22-4.31 Analog state. **Retired in P4-0** (0.5) | M |
 | DSP window | "+0.5 KB binder, 1-3 KB per engine" | 6,772 B free with today's Kick. Four more engines plus the crossfade and the efficiency pass **do not reliably fit** in the window (4) | M / I |
 | Re-strike | S7: handoff at render; orphan freed "on its next render"; crossfade as a known-risk fix | Handoff **at VOICE_START** (binder site), orphan freed in the re-strike block, one-block crossfade **in scope** | S (re-checked: S7 plan lines 199-206) |
 | Copy paths (D9) | needed H2/H4 | NODE_CLONE, CHILD_DUP, STORE_COPY_ALL and STORE_CLONE_H carry keys and flag natively (M). A drum pad pasted into a plain One-Shot keeps engine != 0, so it needs a normalizer that recognises the clipboard's two-step copy (3.2) | M / S |
@@ -56,6 +56,8 @@ Review raised three design problems the draft had missed, and all three are now 
 | **6** Note-off 0x1C / desc+4 | Closed. The M7 handles 0x1C itself (flag[0x1C] = 1, ENGINE_CTOR 0x0805B61A). The sentinel 0xD5000000\|id stays as free defence | M + S |
 
 ### 0.4 Preconditions (P4-0 must answer them)
+
+All answered by P4-0; the results and the corrections they forced are in 0.6. The text below is the pre-P4-0 state.
 
 - **A. Pad keys reach the pad's M7 root: S, likely.**
   - The transport is traced end to end on paper (S):
@@ -86,6 +88,105 @@ Review raised three design problems the draft had missed, and all three are now 
   - the model handler cases for 0x3F / 0x102D / 0x103B (3.3, event filter), and template 2 ("Sample Dashboard") header actions;
   - every place a 0x0E track's instrument kind is shown (F1 identity, P4-D8);
   - whether Bank-view hardware-pad play and step entry depend on anything other than PAD_HAS_FILE.
+
+### 0.5 P4-0 repair (BE4.50 P4-0, 2026-11-16)
+
+**P4-D1 = (a), done.** dsp_lib.cpp defines `be_powf` / `be_sinf` / `be_log10f`. dsp/shim/cmath declares them and maps `powf` / `sinf` / `log10f` to them with `always_inline` C++ forwarders, so the vendored DaisySP files (unchanged, hashes still pass) call ours. DSP_REFUSED_LIBM is unchanged and strict. The drums ELF has no libm-named symbol and no `_Z4sinff`-style leftover forwarder, and DSP code stays 29,836 B (M). test_drums Math calls `be_sinf` / `be_powf`. Default build: `cmp` against m1-be441 is identical (M).
+
+**Retired: the 13 stale cases.** On a drums build each one failed, and each asserted BE4.22-4.31 AN4 state (slice + 0xE20) that P1/BE4.40 retired. Today the H/X sites serve DK4 only (M).
+- test_handles Copies.test_a_loaded_analog_track_is_analog_and_saves_again: deleted. It covered the AN4 load/save through H2/X1/X2, and DK4's version is test_drum_ui Xml.test_a_project_round_trip_through_stocks_copies.
+- test_handles Copies.test_without_h2_the_load_loses_analog: deleted. It was the H2 mutation on AN4, and DK4's is test_drum_ui test_without_h2_a_load_loses_the_knobs.
+- test_handles Copies.test_paste_carries_analog_and_a_plain_source_makes_no_entry: deleted. It covered AN4 paste, and DK4's is test_drum_ui test_a_track_copy_and_paste_carries_its_pads_knobs.
+- test_handles Copies.test_eight_analog_tracks_survive_a_load_and_a_save: deleted. It tested AN4's 16-entry capacity, and DK4's is test_drum_ui test_a_full_table_gives_up_copies_never_live_pads.
+- test_handles Destroy.test_remove_and_a_commit_free_the_entries: deleted. It covered AN4's H3, and DK4's is test_drum_ui test_removing_a_track_drops_its_pads_entries.
+- test_handles Destroy.test_a_thirteenth_object_is_destroyed_by_stock_and_its_entry_with_it: deleted. It asserted the AN4 entry, and **Not covered on DK4:** no test_drum_ui case drives STORE_CREATE's refusal path (the 13th object destroyed through slot 2). Left uncovered because P4-3 removes H3 (review, S).
+- test_handles NewObjects.test_a_stale_entry_for_the_next_handle_is_not_inherited [create], [copy], [clone_h] (3): rewritten on DK4 (slice + 0x2000), since H1 is live code in drums builds until P4-3 and test_drum_ui had no such case.
+- test_handles NewObjects.test_entries_from_an_earlier_boot_are_gone_at_boot: deleted. It covered AN4's header, and DK4's is test_drum_ui test_entries_from_an_earlier_boot_are_gone_at_boot.
+- test_inst_xml RoundTrip.test_analog_track_saves_and_loads: deleted. The bento_analog* X1/X2 round trip no longer exists (P1: native keys, test_native_props), and DK4's is test_drum_ui Xml.
+- test_inst_xml RoundTrip.test_loading_a_plain_track_clears_a_stale_line: deleted. It covered AN4's X2, and DK4's is test_drum_ui test_a_pad_read_without_attributes_loses_a_stale_entry.
+- test_inst_xml RoundTrip.test_a_load_before_the_m7_took_the_area_is_kept: deleted. It covered AN4's handshake. **Partly covered:** test_drum_ui Edits/Tick cover an edit or tick before the handshake, but no DK4 case does an XML load (X2) before it. Left so because P4-3 removes X2 (review, S).
+
+**Also retired: seven cases that passed vacuously** (review count, M: the HEAD files pass exactly these seven on a drums build). They only touched the dead AN4 layout, so they could not fail.
+- test_handles Copies.test_only_a_wavetable_saves_our_attributes, Destroy.test_without_h3_the_entry_stays: deleted. They had no AN4 to act on, and the DK4 H3 mutation is test_drum_ui's.
+- test_handles NewObjects.test_without_h1_the_new_object_inherits, test_nothing_happens_at_a_cold_boot and test_the_constructor_wrapper_keeps_every_register (its slow path): rewritten on DK4.
+- test_inst_xml test_plain_wavetable_writes_nothing_of_ours: became Writer.test_a_wavetable_writes_nothing_of_ours (no bento_analog* or bento_drum_* attribute).
+- test_inst_xml Stock.test_stock_reader_ignores_our_attributes: became test_stock_reader_ignores_the_drums_attributes. Stock's reader reads a params element that carries bento_drum_engine / k1..k7 without a fault, and the object is untouched. It is a smoke check on a Wavetable object, not the rollback item: no test yet runs stock's reader on a saminst carrying the drum keys (P4-1, stock 1.6.8 opens the drum project).
+
+Kept as is: test_handles Sites (the three sites, the bisect case) and Stock (stock's handle findings).
+
+### 0.6 P4-0 results (2026-11-16)
+
+**Verdict: GO (M).** A and B hold end to end in the emulator on stock code, C is confirmed as needing 3.6, and nothing found is a NO-GO criterion. Several plan sections changed (3.2, 3.3, 3.4, 5, 7, 8, decisions); they are listed at the end of this section. Gate work ran on scratch copies of the working tree with the repair in place (`scratch/p4-0/{A,B,model,kick}`); an independent review re-checked A, B, C and the repair (`scratch/p4-0/V`).
+
+**Repair (M).** P4-D1 (a) done (0.5). Drums build (`BE_ENABLE=drums`): DSP code 29,836 B, image 0x18AA98, every suite green including analog's no-libm test. Default build: `cmp` against m1-be441 identical.
+
+**A. Pad keys reach the pad's M7 root on a menu-built track: holds (M).**
+- Track made by stock's create 0x0813F730 (kind 4), 16 (saminst, samasst) pairs by a builder prototype, then PROP_PUSH(model, track, 0), no save/reload.
+- PROP_PUSH posted 1,172 ring messages with 40 flow-control waits (M). Per pad: one 0x48, 55 × 0x3E to the **pad handle** ending ...0x1DF, 0x1A8, 0x1AE..0x1B4, then 10 × 0x3F. It also sends one {0x3E, handle 0xFFFFFFFE, key 0xAC, value = pad handle} per pad: **this is what gives each pad an M7 root** (M).
+- M7 (stock's ENGINE_CTOR, engine init and H_INPUT 0x08059960; SAMPLER_PROCESS per root per block): all 16 pads own a root, and all 8 keys arrive at the trampoline site 0x0808FEA2 with the right value and root (880 hits), at CHUNK 1/28/64/2000 and on the drums image (M). Case 0xAC = 0x08059CE0 takes the first root with +0xC == 0xFFFFFF00 (S+M).
+- **PROP_PUSH pushes zero values** (pad 3 left all-zero: eight zeros arrive) (M).
+- A mailbox holds 64 entries and a pad gets 66 per push. Only the flow-control-free CHUNK 2000 run lost messages (each pad's trailing 0x3F); our keys come earlier (M).
+- First note {0x12, pad, 60, 100} reached the binder site 0x08095656 with r5 = the pad's root, on a pad with no sample (root+0x674 = 0) (M; binder not built).
+- **Caveat (review, S): the binder site is conditional.** VOICE_START tests root+0x625 at 0x08095644 (`ldrb r3,[r5,#0x625]`; `bne.w 0x08095900`); when it is nonzero, allocation goes through 0x08087D60 and rejoins at 0x08095660, after the site. root+0x625 is SAMPLER_PROCESS key **0x3A** (dispatch 0x08091902 stores value != 0; cleared at init 0x0808FC8E), registry name **"MultiSam"** (bool). A tested only MultiSam = 0. Whether 0x080949E2's function has the same split is I. See 3.4 and P4-D11.
+- Limits (I): create called directly (not through MENU_HANDLER); builder is a Python prototype; ring drain and once-per-block mailbox clear are harness; the note went straight to the mailbox, not through the sequencer.
+
+**B. Pad-page edits store the value and reach ENGINE_PROPERTY: holds (M).**
+- Slot handle = saminst: stock page select 0x081547EA picks the type-1 child whose 0x73 = pad, INST_CELL = saminst, and the cell-set loop 0x081545BC..0x081545F0 copies it into all 24 slots (S); every slot widget's +0x34 = the saminst (M).
+- With D6 restored to stock INST_EVENT and an N1 prototype template: ENC_TURN on Kick Dec → stock INST_EVENT 0x08154970 → UI_POST 0x08154AB2 → page host 0x081702F4 → MODEL_HANDLER → case 0xCF 0x0813D7B0 → 0x0812ECF4(store, saminst, 0x1AF, 66) → ENGINE_PROPERTY(engine, saminst, 0x1AF, 66) at 0x0813D832 → 0xC3 tail. Only that saminst changed (M). Same for 0x1AE, 0x2E, 0x1A8, 0x1B4.
+- Read-back with X3 at stock bytes: CONTEXT_GET returns the stored values (M).
+- Without N1 the setter can't add the key: nothing stored, ENGINE_PROPERTY still sent (M). So N1 (P4-1) is required.
+- D6 as built swallows the edit (expected; P4-3 removes it). **D6 forwarding and X3 removal must ship together**, or the page shows DK4's stale values (M); a P4-3 test pins the pair.
+- Case 0xCF is key-agnostic for our keys: special keys are 0x22..0x25, 0x61, 0x188, 0x1DF, 0x14E; key 6 goes to the engine as 5 (S, matches M).
+- Limits: the page host is a fake parent around stock's handler; the rig has no engine object (ENGINE_PROPERTY r0 = 0), so arrival at the M7 is A's evidence (I).
+
+**C. Stock re-push after an M7 restart: none (S; review S).**
+- PROP_PUSH 0x0813E4B8 has exactly 7 direct callers and LOAD_PUSH_ALL 0x0813FEC8 exactly 2; neither is in a literal pool (S, review bl scan). They are preset apply 0x0813F440 (two), menu create, Paste Track (function 0x0813F8EC, gate [model+0xC351] == 3, only caller model case **0x1003**, menu cell 0x0819AC18), bank finalize 0x0813FA1C, LOAD_PUSH_ALL itself (two), the project loader and the bank-load / New Project path. None is an M7-status path.
+- After an M7-only restart all 128 roots come back free and stock never re-sends 0xAC, so stock sample pads would lose their roots too (I). 3.6's re-push is required; since PROP_PUSH re-sends 0xAC it also restores root assignment (S/M).
+
+**Trace items (M on stock 1.6.8 with a One-Shot fixture, S otherwise).**
+- **Sample actions: no single model choke point (M/S).**
+  - 0x3F (Bank header Load, case 0x08142682) only does NAVIGATE(0x14) to the browser. Page-8 Load WAV / Load WAVs post **0xD** (case 0x08142816, NAV 0x14). INST_EVENT ignores 0x3F.
+  - 0x102D (Unload, case 0x081426A0) calls UNLOAD 0x0813BC6C (M: the file cleared).
+  - 0x103B (Rename) **has no model case**; three views call RENAME 0x08141974 directly (0x081533A2, 0x0815508C, 0x08146A9E) (S).
+  - Two more file actions: 'WAV' tab 0x8 (case 0x0814261C, NAV 0x11 waveform) and Edit WAV 0x31 (case 0x08142288, NAV 0x24: Normalize/Save rewrite the file) (M/S).
+  - The real choke points are the operations: **SAMPLE_ASSIGN 0x0813B514** (browser 0x08164320/0x08164436, Load All 0x0813BAA4, view 0x0814ABEC, rename 0x08141C54), **UNLOAD 0x0813BC6C** (0x102D, Cut 0x0813BDD0, Paste 0x0813BE38, 0x0813E08C), **RENAME 0x08141974** (S). Plus NAVIGATE 0x08143D44 to pages 0x14 / 0x11 / 0x24 (S).
+- **Template 2** (0x0819BEF8, page 8): header = four empty slots, 'Dashboard'/0x3 and 'WAV'/0x8; no file action in the header. The page-8 file actions are menu rows 0x0819AEC0 / 0x0819B050 / 0x0819B9B0 (S).
+- **One-Shot preset importer: found, no normalizer needed (S/M).** Preset apply 0x0813F440 clones the whole preset track with STORE_CLONE_H 0x0812E600, copies a fixed key list (no 0x1A2) from an old track if one exists, CHILD_DUPs the old track's 0x18/0x1D children, then PROP_PUSH. Run with a marker key: a new 0x0E track carrying the preset's track and pad keys (M). Flag and pad engines come from the same preset, so a stock kit gives a plain sample track and a drum patch a drum track. Not run: the old-track branch with a real 0xC434 record.
+- **Undo is sequence-only (S/M).** Undo 0x1034 → 0x0813C9C2 restores the UNDO_SNAP 0x08134D38 snapshot, which only sequence edits take (11 callers). A knob edit through 0xCF then Undo: value unchanged, snapshot invalid (M). Device item 7's "Undo after a knob edit" tested nothing (changed below).
+- **PAD_HAS_FILE 0x081525AC is touchscreen-only (S).** Its three callers are touch toggle / cell display. Hardware pad play routes on the M7 (0x08085FC0), and the step-entry / record inserts (NOTE_INSERT 0x0812EF64 callers 0x0813CAB0, 0x081383EC, 0x08138B16, 0x0813CE5C) read no Filename (S, scan).
+- **New hardware dependency: BUTTON_EVENT 0x08144750, BTN_INST (id 10) on page 7** reads the selected pad's Filename at 0x0814490E: empty → NAV 0x14 (browser), loaded → NAV 8 (M). A drum pad would open the WAV browser; it needs a stub like PAD_OPEN's (3.3). Whether NAV 8 from there runs D5's page conversion is I.
+
+**P4-D8 surface list (where the kind or sample identity shows).**
+
+| # | Surface | Where | Prominence | Label |
+|---|---|---|---|---|
+| 1 | Bank page title "<track>: One-Shots" | format 0x0818E5EC, header builder 0x081435BC, type 0x0E at 0x081437A6 → 0x081437E2 | **high** (the track's main page) | M ('LoFi Kit: One-Shots') |
+| 2 | Step-view pad labels "No WAV" for an empty Filename | 0x0818F098, literals 0x0815FAA4 / 0x0815FFC8 (in 0x0815FED4 / 0x0815F758) | **high** (every drum pad would read "No WAV") | S; the page (likely 0x27) is I |
+| 3 | Instrument menu cell "One-Shot" | 0x0819AD44 (id 0x1026, label 0x0818E334) | medium; a current-instrument marker is I | S |
+| 4 | Page-8 title "Sample Dashboard", 'WAV' tab; INST title = file name (blank on drum pads) | template 2; 0x0815403C → +0x80B4 | medium | S / M |
+| 5 | Patch browser type filter "One-Shot" | 0x081A2060 in 0x081A2050..0x081A206C | low-medium; preselect is I | S |
+| 6 | Patch folder 'UserPatches\OneShots' | 0x0818E21C | low | S |
+| 7 | Track Config, Load/Save Track, pages 0x14 / 0x17 / 0x27 headers | — | none (track name only) | M |
+| 8 | M7 type-name copy | 0x080AA430..0x080AA468 | none (no display) | I |
+
+**Kick profile and efficiency candidates (M; for the DaisySP Kick in today's drums build).**
+- One Kick voice-block = **52,608 instructions** (test_drums Cost). Split: SyntheticBassDrum::Process 25,344; be_powf 7,936 (2 calls/sample, memo hit); Svf::Process 6,144 (5 outputs, 1 used); be_sinf 5,211; rand 3,328; render loop 3,144; stock calls 1,114 (M, per-PC over blocks 1-11).
+- About 113 instructions/sample are block-constant work done per sample (2 powf, setup, 3 of 5 vdivs) (S). Filter coefficients are not recomputed per sample (S). The first block after a start costs ~12 k more (M).
+- Prototypes (own block renderer of the same algorithm), all passing test_drums:
+  - **KF1** block-rate coefficients, state in locals, inline xorshift, SVF low only: 29,245 (−44 %), **bit-identical** over 49,536 samples, 29,016 B DSP.
+  - **KF2** KF1 + polynomial sine: 26,039 (−50 %), max diff 1.56e-7.
+  - **KF3** KF2 + click/SVF gate below 1e-7: 17,895 in tail blocks; one whole hit 20.33 M → **7.17 M (−65 %)**; +280 B DSP. Today's Cost test (blocks 1-11) never sees the gate.
+- Not built (I): vmaxnm/vminnm output stage (~1.2 k/block), register tuning (10-20 %). The 2 soft-clip divides are the sound.
+- **Overtaken by docs/p4-engine-spec.md** (Jeff, 2026-11-16: own engines, no DaisySP): its lean Kick runs at ≤ 45 instructions/sample against KF3's ~140 ungated. The KF prototypes stay as reference and as a BE4.50 fallback (P4-D12). Device CPI, denormal behaviour and FPSCR.FZ remain device item 12.
+
+**Plan changes made by P4-0** (applied below in place):
+- 3.2: the track flag *is* pushed (handle −2, SET_PROPERTY), but nothing on the M7 uses it (M/S); the importer bullet is resolved; Paste Track noted.
+- 3.3: sample-action filter moved from model cases to SAMPLE_ASSIGN / UNLOAD / RENAME entry + a NAVIGATE gate; new INST-button stub; step-view "No WAV" label and Bank title sites (P4-D8).
+- 3.4: the binder requires MultiSam (0x3A) = 0 on drum pads (P4-D11).
+- 5 / 7 / 8 / decisions: tests, device items 7, 14 and 15, risks, P4-D8 and P4-D10..D12.
+- 5's DaisySP goldens: superseded for P4-5 by docs/p4-engine-spec.md (own engines, each with its own reference). BE4.50's Kick keeps today's kick_ref golden.
+
+**Not done in P4-0 (I):** the real menu path through MENU_HANDLER; the preset importer's old-track branch; the 0x080949E2 MultiSam split; the INST-button NAV 8 page conversion; full re-runs of A's harnesses by the reviewer (outputs and code re-checked instead).
 
 ---
 
@@ -196,16 +297,17 @@ The 7 knob values are shared across engines, and turning Engine resets them to t
 ### 3.2 Track flag, pad engine and the binding rule
 
 - **Who reads what.**
-  - The track flag 0x1A2 is **M4-only**: menu identity, UI hooks, the page. PROP_PUSH pushes children, not the track's own keys (M).
+  - The track flag 0x1A2 is **M4-only in practice**: menu identity, UI hooks, the page. PROP_PUSH does push the track's own keys, under handle 0xFFFFFFFE through SET_PROPERTY (0x1A2 at create and again in the builder's push, M), and H_INPUT posts them to the −2 mailbox (0x080599C0 → 0x08059A80). The only −2 consumer found, 0x080672A0, acts on keys 0x27, 0xBD and 5 only (S; other consumers not searched exhaustively, I). So the flag carries no track identity on the M7. P4-1's key review records the −2 path (P4-0 correction).
   - **The M7 binds a voice to a drum engine if and only if** its root's settings line has the current M4 boot generation, a handle equal to root+0x0C, and engine != 0 (3.5).
 - **Invariant, kept by the M4: engine != 0 only on pads of a flagged track.** How each path keeps it:
   - **Builder:** writes the engine on flagged tracks only.
   - **CHILD_DUP normalizer** at the old H4 site 0x0812F91E: zero 0x1A8 **only when OBJ_TYPE(parent) == 0x0E and its 0x1A2 == 0**. Any other parent is left alone, in particular the clipboard's type-0x17 holder (STORE_CREATE(0x17) at 0x08124E66, no 0x1A2 key), since a clipboard copy is two CHILD_DUPs: copy into the clipboard store (0x08124DF0, CHILD_DUP at 0x08124E4C..50), then paste into the destination (0x08124EE2 / 0x08124FA8) (S). Other CHILD_DUP callers: instrument replace 0x0813F6A2/0x0813F6F2 (S). Knobs are left as they are; they're harmless at engine 0.
   - **NODE_CLONE / STORE_COPY_ALL / STORE_CLONE_H:** whole-track copies move flag and pads together (M).
-  - **Preset / kit importer:** untraced (0.4). If it can bring pads onto an unflagged 0x0E track, the same normalizer test goes there. If it isn't found, it's recorded as a risk, covered by device item 7.
+  - **Preset / kit importer** 0x0813F440: clones the whole preset track (STORE_CLONE_H), so flag and engines arrive together; no normalizer (P4-0, S/M). The old-track branch copies a fixed key list without 0x1A2 and CHILD_DUPs only 0x18/0x1D children (S).
+  - **Paste Track** (model case 0x1003 → 0x0813F8EC) re-runs PROP_PUSH, which re-sends 0xAC (S, P4-0 review).
   - **Hand-edited XML:** out of scope (I).
 - **Why the gate isn't on the M7 side.**
-  - The M7 would need the track flag per root, and stock doesn't push it (M).
+  - The M7 would need the track flag per root. Stock pushes it only to the −2 (global) mailbox, with no track identity (P4-0, M/S).
   - Gating on "engine != 0 and no sample id" was rejected: a stale root+0x674 sample id on a reused root can play an old sample (S7 3.3).
 
 ### 3.3 M4 sites
@@ -239,7 +341,10 @@ The 7 knob values are shared across engines, and turning Engine resets them to t
 | Builder | 16 × (saminst, samasst) in child order [1,5,1,5,...]. Each saminst: 0x73 = pad index, engine = 1 (Kick), knobs = Kick defaults, Attack 0 / Sustain full. Each samasst: 0x81 = "". Then **PROP_PUSH(model, track, 0)**, as stock does after a preset apply (0x0813F476) | Stock's create pushes the track at 0x0813F858 before any pad exists (S). Pad order isn't handle order (g25: pad 0 = handle 45, pad 8 = handle 43, M), so 0x73 is set explicitly. Type 5 has no 0x73 (tpl.txt, M) |
 | PAD_OPEN 0x08152DB6 | `ldrb.w r3,[sp,#0x40]` -> `bl` stub: load the byte; if the track (+0x6B50) is flagged and the pad's engine != 0, r3 = 1 | branch A can't fire once the builder has run; build.py checks the original bytes |
 | PAD_HAS_FILE 0x081525AC | entry hook: return 1 for engine != 0 pads on flagged tracks, else stock | one hook covers its three callers: 0x081525FE (posts {0xCF, pad, 0x1DF, v}), 0x081526A8, and cell refresh 0x0815277C via 0x081527C6 (S) |
-| Sample-action filter | **choke point:** the model handler cases for Load 0x3F, Unload 0x102D and Rename 0x103B drop the action when the target pad has engine != 0 on a flagged track. The enables (0x6C builds at 0x08145EB6/0x08145ECE and the page-8 menu build 0x0815419C/0x0815420C) are greyed for drum pads (P4-D5) | The pad page posts 0x102D itself (0x08154E08 -> UI_POST 0x08154E1C), and 0x08147034 posts it from another view, so a Bank-view-only filter misses them (S). The model case addresses are a P4-0 trace item. Fallback if there is no single choke point: wrap the Bank view slot 0x081A14BC, INST_EVENT and the page-8 menu build. Template 2's header actions are listed in P4-0 and any file action is covered |
+| Sample-action filter (P4-0 corrected) | **entry hooks on the operations**: SAMPLE_ASSIGN 0x0813B514, UNLOAD 0x0813BC6C and RENAME 0x08141974 return without acting when the target pad has engine != 0 on a flagged track; **NAVIGATE 0x08143D44** to pages 0x14 (browser), 0x11 (waveform) and 0x24 (Edit WAV) is dropped for such a pad. The enables (0x6C builds at 0x08145EB6/0x08145ECE and the page-8 menu build 0x0815419C/0x0815420C) are greyed for drum pads (P4-D5) | No model choke point exists (P4-0, M/S): Load is 0x3F / 0xD (NAV only), Unload 0x102D, Rename has no model case (views call RENAME directly), 'WAV' 0x8 and Edit WAV 0x31 navigate. Each operation's callers are listed in 0.6. Cut (0x0813BDD0 → UNLOAD) would copy without clearing a drum pad (P4-D10). SAMPLE_ASSIGN already returns early on a locked track (0x0813B55C), so an early return there is a stock-shaped path (S) |
+| INST button 0x0814490E (BUTTON_EVENT 0x08144750, BTN_INST on page 7) | stub at the Filename read: a drum pad on a flagged track reads as loaded, so it goes to NAV 8 (the drum page) instead of NAV 0x14 | P4-0 (M): empty → browser, loaded → page 8. Whether NAV 8 from here runs D5's conversion is checked in P4-3 (I) |
+| Step-view pad label "No WAV" (0x0815FAA4 / 0x0815FFC8 in 0x0815F758 / 0x0815FED4), per P4-D8 | S1-style label hook: the engine name for drum pads on a flagged track | P4-0 (S); the page (likely 0x27) is confirmed in P4-3 |
+| Bank title "<track>: One-Shots" (0x081437E2), per P4-D8 | "<track>: Drum Synth" on a flagged track | P4-0 (M); only if P4-D8 says hook it |
 | GRID_REBUILD loop exit 0x081539A0 | `add.w r3,r6,#0x6b00` -> `bl` stub: on a flagged track, PADCELL_SET_NAME(view+0x50+0x400p, engine name) for each pad with a handle; replay the add.w | refresh after an engine change: post 0xC3 (key != 0x1DF) to 0x08153C58 |
 | LED refresh 0x0813AF68 | `bl 0x0810B898` -> wrapper. It **saves r0-r3** (they hold ENGINE_PROPERTY(engine, 0xFFFFFFFE, 0xC0, 1), set up at 0x0813AF5C..66). On a flagged track: 0x08125ADE(r5, p, 0x08142A98(r6)) for each pad **without 0x1DF set**. Then it restores r0-r3 and tail-calls | reached only for type 0x0E (cmp at 0x0813AF3C, S) |
 | CHILD_DUP normalizer 0x0812F91E | see 3.2 | |
@@ -260,6 +365,7 @@ The stubs at 0x081539A0 (r6 = view) and 0x0813AF68 (r4/r5/r6) rely on callee-sav
 - If the root's line binds (3.2): desc+0 = &dr_provider, desc+4 = 0xD5000000|id, desc+0x24 = 0, **and do the handoff here** (below).
 - Otherwise: stock.
 - Lookup is O(1): the line is indexed by root slot (3.5).
+- **MultiSam (P4-0 review, S).** The 0x08095656 site runs only when root+0x625 == 0: VOICE_START branches at 0x08095644 to 0x08095900 / 0x08087D60 when it is set, rejoining at 0x08095660. root+0x625 is key 0x3A "MultiSam". Per P4-D11, drum pads pin 0x3A = 0 (builder, normalizer; the page never shows it), and a Rig test sets 0x3A = 1 on a drum pad to show what happens. Whether 0x080949E2's function has the same split is checked in P4-2.
 
 **Re-strike handoff (F6), at voice start, not render.** Stock renders a root's voices in list order and VOICE_START appends the new voice (0x08095540..0x08095550; render loop 0x08090772..0x080907B8) (S). A render-time handoff therefore lets the old voice run the engine first in the re-strike block, which plays the engine twice and jumps the body (S, the draft's flaw). Instead, at the binder:
 1. If the root has no live cell: take a free one, zero its engine state (the only zeroing point), owner = v_new, trigger pending.
@@ -359,7 +465,7 @@ If pad-handle messages don't reach the root, the M4 publishes the table itself: 
   - passes 0x1DF and all other keys to stock, checked byte for byte against stock's 0x1DF store;
   - reads the value as an int;
   - drops (and counts) writes before area_ok.
-- Binder binds if and only if: gen current, handle == root+0x0C, engine != 0.
+- Binder binds if and only if: gen current, handle == root+0x0C, engine != 0. A drum pad with MultiSam (0x3A) = 1: pinned back to 0, or the outcome documented (P4-D11).
 - Stale lines:
   - lines written under boot gen N don't bind under N+1;
   - a reused root with a different handle doesn't bind;
@@ -387,7 +493,9 @@ If pad-handle messages don't reach the root, the M4 publishes the table itself: 
   - sample pad: stock's sequence.
 - PAD_HAS_FILE: 1 for drum pads on flagged tracks, stock otherwise. 0x1DF toggle posts on a drum pad.
 - Sample-action filter:
-  - 0x3F, 0x102D, 0x103B posted from the Bank view, from page 8 and from 0x08147034's view: no effect on drum pads;
+  - SAMPLE_ASSIGN / UNLOAD / RENAME on a drum pad do nothing, reached through their real callers (browser Load, Load All, Unload 0x102D from the Bank view, page 8 and 0x08147034's view, Cut, Paste, the three rename views);
+  - NAVIGATE to 0x14 / 0x11 / 0x24 for a drum pad is dropped (Bank Load 0x3F, page-8 0xD, 'WAV' 0x8, Edit WAV 0x31);
+  - the INST button on page 7 with a drum pad selected goes to the drum page;
   - normal on sample One-Shot and Loop tracks;
   - 0x6C enables greyed.
 - Labels named. LEDs: dim track colour, 0 when 0x1DF is set. **0xC0 ENGINE_PROPERTY arguments unchanged** on drum and sample One-Shot LED refreshes.
@@ -404,13 +512,14 @@ If pad-handle messages don't reach the root, the M4 publishes the table itself: 
 - binder: ignores the engine; ignores the handle; ignores the boot gen;
 - re-strike: handoff at render instead of start; engine run twice per block; body reset; orphan not released; release on same-voice reuse; no crossfade; cells keyed by voice;
 - cap ignored;
-- UI: normalizer removed; normalizer that tests "parent flag == 0" without the type check; PAD_OPEN stub ignores the flag; PAD_HAS_FILE hook ignores the flag; filter only at the Bank view; label stub skips SET_NAME; LED wrapper clobbers r0-r3;
+- UI: filter on SAMPLE_ASSIGN only (UNLOAD/RENAME unhooked); NAVIGATE gate removed; INST-button stub ignores the flag; normalizer removed; normalizer that tests "parent flag == 0" without the type check; PAD_OPEN stub ignores the flag; PAD_HAS_FILE hook ignores the flag; filter only at the Bank view; label stub skips SET_NAME; LED wrapper clobbers r0-r3;
 - template/menu: template count 0x30B; a misspelled token; MENU_COUNT left at 8;
 - builder: builder without PROP_PUSH; DRUN overlapping the cells.
 
 **Retired / fixed.**
-- The 13 AN4-era Analog cases in test_handles and test_inst_xml are deleted (the state they assert was retired in P1).
-- test_analog's no-libm test follows the guard fix (P4-D1).
+- The 13 AN4-era Analog cases in test_handles and test_inst_xml are retired (the state they assert was retired in P1). Done in P4-0; the per-case reasons are in 0.5.
+- test_analog's no-libm test follows the guard fix (P4-D1). Done in P4-0: it passes unchanged on the drums ELF (0.5).
+- B's pairing: a P4-3 test shows D6 forwarding with X3 still in place reads stale values, so both ship together (0.6).
 
 ---
 
@@ -420,7 +529,7 @@ Each sprint ends offline-green and is committed (standing OK). Nothing is pushed
 
 | Sprint | Kit | Work | Exit (offline) |
 |---|---|---|---|
-| **P4-0 gates + repair** | none | fix the libm guard (P4-D1); retire the 13 stale tests; emulate A on a menu-built track (builder prototype + PROP_PUSH, no reload); measure B (0xCF with a pad handle through 0x0813D7B0; slot handle = saminst); measure PROP_PUSH zero values; trace the model cases for 0x3F/0x102D/0x103B and template 2's header actions; find the One-Shot preset importer; run undo; audit instrument-kind surfaces (P4-D8); trace hardware-pad play / step entry for PAD_HAS_FILE dependencies; record whether stock re-pushes after an M7 restart | drums build green on every suite; A and B answered M with addresses; GO confirmed or NO-GO written here |
+| **P4-0 gates + repair** (done 2026-11-16, GO; 0.6) | none | fix the libm guard (P4-D1); retire the 13 stale tests; emulate A on a menu-built track (builder prototype + PROP_PUSH, no reload); measure B (0xCF with a pad handle through 0x0813D7B0; slot handle = saminst); measure PROP_PUSH zero values; trace the model cases for 0x3F/0x102D/0x103B and template 2's header actions; find the One-Shot preset importer; run undo; audit instrument-kind surfaces (P4-D8); trace hardware-pad play / step entry for PAD_HAS_FILE dependencies; record whether stock re-pushes after an M7 restart | drums build green on every suite; A and B answered M with addresses; GO confirmed or NO-GO written here |
 | **P4-1 native keys** | internal | N1 (generalised np_template, drums-only), N2 integer descriptors, key reviews, test_keys ALLOW | template and XML tests; stock 1.6.8 and BE4.41 open the project; default build unchanged |
 | **P4-2 M7** | internal | trampoline + gen/area_ok checks, root-indexed table + zero in synth_take, binder by engine, provider, D1 by provider, handoff at start, once-per-block engine, scratch buffer, crossfade, reclaim, cap constant, SA layout move; detector and `knob_entry` removed; vendor nothing new yet | test_drums including the new groups; Kick golden vs kick_ref; click test after post chain; mutations red |
 | **P4-3 track + grid + edit** | **BE4.50** | menu (with lock check), builder (recipe + PROP_PUSH), PAD_OPEN, PAD_HAS_FILE, sample-action filter, label and LED post-passes, normalizer, M7-take re-push, **D6 forwarding** + engine knob (1..5) so Jeff can edit the Kick; remove DK4, H1-H4, X1-X3, the name match, carriers | test_drum_ui green; clipboard round trips; XML round trips across firmware; every mutation red; `checklist-v4.50.txt` |
@@ -438,14 +547,15 @@ Each sprint ends offline-green and is committed (standing OK). Nothing is pushed
 4. Kicks play from the sequencer with conditions, retrigs, choke, mute and sends. Live hardware-pad play and step entry on drum pads work. The per-pad 0x1DF toggle (mute?) works and the LED follows it.
 5. Re-strike: fast rolls and retrigs on one pad, in Poly and Mono, with Cutoff down, short Decay, mixed velocities and an LFO: no click, no double ring.
 6. Knob edits survive save, power cycle and reload.
-7. Copy/paste a drum pad within the track, and onto a sample One-Shot (it becomes an empty sample pad). Duplicate the track. Undo after a knob edit. Load a One-Shot preset/kit onto a drum track and a sample track if the firmware offers it.
+7. Copy/paste a drum pad within the track, and onto a sample One-Shot (it becomes an empty sample pad). Duplicate the track, and Paste Track. Undo after a step edit on the drum track (stock's undo is sequence-only, P4-0). Load a One-Shot preset/kit onto a drum track and a sample track if the firmware offers it.
 8. Pack, then reload (gate 1 on a builder-made track).
 9. Open the project on stock 1.6.8: silent, no crash, no toast. Re-save it, then reopen on BE4.50.
 10. Load a project with 8 One-Shot sample tracks: load time, no glitches (push load).
 11. M7 reset or retake, if one can be provoked: pads still sound afterwards (re-push). Otherwise note that it couldn't be provoked.
 12. DRUMS stats line with 1, 6 and the cap's worth of ringing Kicks on SPACED: LOAD numbers (first device CPI). Check that the cap steal is inaudible as a click.
 13. On a *stock* One-Shot track, is only the selected empty pad white? (Settles the gate-5 inference.)
-14. Where does the track show its kind (header, track list, instrument menu current marker)? Record what reads "One-Shot" (P4-D8).
+14. Where does the track show its kind? Check P4-0's list (0.6): the Bank title, the step-view pad labels, the instrument menu (current marker?), the patch browser filter. Record what still reads "One-Shot" or "No WAV" (P4-D8).
+15. The INST button on the Bank page with a drum pad selected opens the drum page, not the WAV browser (P4-0).
 
 **BE4.51:** every row on every engine; turning Engine updates the titles, the label and the defaults; stock keys on rows 2 and 3 act; no sample control anywhere on a drum pad.
 
@@ -465,9 +575,11 @@ Each sprint ends offline-green and is committed (standing OK). Nothing is pushed
 | Old engine lines bind to new sample pads (handle reuse across M4 boot, root reuse) | low-medium / high (breaks M3/M5) | boot-gen + handle check per line; table zeroed on take |
 | Pushes before the M7 take lost; M7 retake empties the table | medium / medium | trampoline area_ok + drop counter; M4 re-push on generation change |
 | Sample actions reachable from page 8 or other views | was certain with a Bank-only filter / medium | model choke-point filter; fallback wraps |
-| Per-pad behaviour (0x1DF, play, step entry) gated on "has file" | medium / medium | PAD_HAS_FILE hook; P4-0 trace; device item 4 |
+| Per-pad behaviour (0x1DF, play, step entry) gated on "has file" | low (P4-0: touchscreen only, plus the INST button) / medium | PAD_HAS_FILE hook; INST-button stub; device items 4, 15 |
 | Clipboard copy zeroes the engine (type-0x17 holder) | was certain with the naive normalizer / medium | type-0x0E test; real copy/paste tests |
-| The preset/kit importer moves an engine onto an unflagged track | unknown / medium | normalizer at that site once found; device item 7 |
+| The preset/kit importer moves an engine onto an unflagged track | low (P4-0: whole-track clone) / medium | old-track branch not run; device item 7 |
+| A drum pad with MultiSam (0x3A) set skips the binder site | low / medium (pad silent or plays as sample) | pin 0x3A = 0 (P4-D11); Rig test |
+| A file action reaches a drum pad through a caller the entry hooks miss | low (P4-0 lists all callers, S) / medium | hooks at the operations, not the posters; NAVIGATE gate |
 | Push and XML load on **every** One-Shot project | low / low-medium | flow control (latency, not loss); device item 10 |
 | CPU: busy kit over budget at an unknown CPI | high / high | BE4.50 cap 6-8; stats line; efficiency pass; earlier quiet-end option |
 | DSP window: four engines don't reliably fit | high / medium | C slice / -Os for non-hot code from P4-5 start; Clap may slip (P4-D9) |
@@ -490,6 +602,8 @@ Each sprint ends offline-green and is committed (standing OK). Nothing is pushed
 
 ## Open decisions for Jeff
 
+**Settled:** P4-D1 = (a), done in P4-0.
+
 **Carried from S7:**
 - **D-S7-1** All Kick in BE4.50, a kit layout later. Recommendation: unchanged.
 - **D-S7-2** Keep stock's envelope row. Recommendation: unchanged.
@@ -507,7 +621,10 @@ Each sprint ends offline-green and is committed (standing OK). Nothing is pushed
 | P4-D5 | Load / Unload / Rename on drum pads | hide; disable (greyed via 0x6C, inert at the model); reroute Load to the drum page | **Disable.** Visible but inert is honest, and the model-level filter makes it inert from every view |
 | P4-D6 | Drum-engine cap | (a) no cap; (b) a fixed cap in BE4.50 (build constant) with oldest-steal over a one-block fade, retuned from device numbers; (c) (b) plus ending drum voices at about −72 dB instead of −96 dB | **(b) at 6, raise after BE4.50's DRUMS line; try (c) only if the tails audibly cut.** (a) risks the first kit dropping out in its own acceptance test. 6 ≈ 25 % at 1 CPI on top of SPACED's ~60 % (I) |
 | P4-D7 | Menu action id | reuse 0x10F4 (ex-Analog, reviewed) or the next free id after 0x10F3 | **0x10F4.** Already reviewed, nothing else uses it |
-| P4-D8 | Track identity outside the menu (header/type label, track name, "current instrument" marker) | (a) accept "One-Shot" where stock shows it, name tracks "Drums %d"; (b) hook each surface P4-0 finds to show "Drum Synth"; (c) decide after the P4-0 audit | **(c), leaning (a) plus the name.** BE4.40 needed a dedicated identity track for Analog. Only hook surfaces that show "One-Shot" prominently |
+| P4-D8 | Track identity outside the menu | (a) accept "One-Shot" everywhere, name tracks "Drums %d"; (b) hook every surface in 0.6's list; (c) hook the two high-prominence surfaces only (Bank title, step-view "No WAV" labels) and accept the rest | **(c) plus the "Drums %d" name** (P4-0 audit done, 0.6). The "No WAV" labels are not optional in practice: every drum pad would read "No WAV" on the step page, which misleads. The menu cell, page-8 title and browser filter are medium/low and cost a hook each |
+| P4-D10 | Cut on a drum pad (Cut = copy + UNLOAD; the UNLOAD hook makes it copy-only) | (a) accept copy-only for drum pads; (b) make UNLOAD on a drum pad reset it to engine Kick + defaults instead of refusing; (c) grey Cut for drum pads | **(c).** Consistent with P4-D5 (inert, greyed): a Cut that leaves the pad behind looks like a bug. (b) is more useful but invents a meaning for Unload |
+| P4-D11 | MultiSam (0x3A) on drum pads skips the binder site | (a) pin 0x3A = 0 on drum pads (builder, normalizer; D5 never shows it); (b) also hook the 0x08095900 / 0x08087D60 path | **(a).** 0x3A has no meaning for a drum pad, the page doesn't offer it, and (b) is a third M7 site for a state the UI can't reach. Revisit only if hand-edited XML matters |
+| P4-D12 | Which Kick BE4.50 ships, given docs/p4-engine-spec.md (own engines) | (a) today's DaisySP Kick unchanged, cap 6, lean engines in P4-5; (b) KF1 (bit-identical, −44 %) as interim glue; (c) pull the spec's lean Kick forward into P4-2 | **(a).** BE4.50's job is proving the track (A, B, re-strike, cap, CPI line); today's Kick is already golden-tested. (c) puts an engine still on the review's fix list (re-strike clipping) into the riskiest kit. (b) is work thrown away in P4-5 |
 | P4-D9 | Clap in BE4.60 | (a) ship all four engines; (b) Snare, HiHat, Tom first, Clap in a later kit if the window allows | **(b).** Clap is the least-sized engine (1-2 KB) and the window doesn't reliably fit all four |
 
 ---
@@ -541,3 +658,13 @@ Two verifier passes reviewed the designer's draft (same date). Every issue is li
 9. *(minor)* **A is S-likely with the traced transport; fallback off the critical path;** int value. **Applied:** 0.4 A, 3.7 renamed contingency, risk likelihood lowered, integer descriptors, int-read test and mutation.
 
 **Confirmed by verifiers** (kept as written): key absence and no P1/P3 clash; exact-key 0x1B6 test; synchronous UI_POST/0x42; kind-4 create shape; LED site only for 0x0E; CHILD_DUP callers and template references; stock 0xCF store path; PAD_OPEN branch logic; stock/BE4.41 opens and bento_* drop; X2 ignores engine 0; SAMPLER_PROCESS 0x3E layout and the 0x08091B46 behaviour; trampoline reach; root vtable and inbox; ENGINE_PROPERTY layout and flow control; PROP_PUSH without a value filter; legato early-return unreachable on One-Shot pads; binder sites and registers; 128 fixed roots; SA arithmetic; CPU arithmetic; detector location; F4 by design; P4-D1 reasoning.
+
+**P4-0 review** (independent verifier, 2026-11-16; scratch/p4-0/V). Repair, A and B hold; no NO-GO. Applied:
+1. 0.5 said six vacuous cases; it is seven (M). Fixed.
+2. Destroy.test_a_thirteenth_object... is not covered by test_drum_ui (S). 0.5 now says so.
+3. test_a_load_before_the_m7_took_the_area_is_kept is only partly covered (no X2 load before the handshake) (S). 0.5 now says so.
+4. test_inst_xml's Stock test runs on a Wavetable, not a saminst, so it is not the rollback item (S). Docstrings and 0.5 corrected; the real check is P4-1's.
+5. The README bullet ran past the line width. Rewrapped.
+6. New caveat on A: the binder site depends on MultiSam = 0 (S). 0.6, 3.4, P4-D11.
+7. A's unresolved caller 0x0813F8FA is Paste Track (0x0813F8EC, case 0x1003), not an M7 path (S). 0.6 C, 3.2.
+8. Full runner on the drums build after the rewrite (the repair report had skipped it): every suite OK (M).
