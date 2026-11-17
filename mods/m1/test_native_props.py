@@ -535,6 +535,40 @@ class Project(unittest.TestCase):
         for tok in ("bento_subfm", "bento_fm12", "bento_fmatk", "bento_fmdec"):     # (BE4.43: the envelope's too)
             self.assertNotIn(tok, again, f"{tok}: dropped on BE4.40's save")
 
+    def test_be442_opens_a_be443_project(self):
+        """BE4.43 review: the likeliest rollback now, BE4.42 (the v4.42 kit's image, BE_REF442, its manifest's symbols): its six
+        keys load with their values, FM Atk / FM Dec are skipped without a fault (no descriptor), its push sends neither, and
+        its next save drops bento_fmatk / bento_fmdec and keeps the rest. Its push also sends WT2's Sub FM (1000 here, next to
+        an Analog WT1), which BE4.43 keeps and saves but does not play: BE4.42 plays it again (release note: rolling back
+        brings back a hidden OSC2 Sub FM)."""
+        img = REF442 / "bento1.bin"
+        if not img.exists():
+            self.skipTest(f"no BE4.42 build at {REF442} (BE_REF442)")
+        self.assertIn("bento_fmatk", self.text); self.assertIn("bento_fmdec", self.text)
+        man = json.loads((REF442 / "manifest.json").read_text())
+        self.assertEqual(man["version"], "4.42")
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        old = Rig(img=img.read_bytes(), sym=sym)
+        st = old.load(self.text)
+        c = old.children(old.wt_tracks(st)[0])
+        for o, want in ((c[0], V1), (c[1], V2)):
+            self.assertEqual([k for _, k, _ in old.props_of(o)], STOCK_T6 + KEYS[:BE442_N], "BE4.42's array: no envelope key")
+            self.assertEqual(old.ours(o)[:BE442_N], want[:BE442_N])
+            self.assertIsNone(old.prop(o, FMATK)); self.assertIsNone(old.prop(o, FMDEC))
+        self.assertEqual(old.prop(c[0], 0xC9), 321)
+        old.call(S.STORE_COPY_ALL, old.live, st)
+        old.props.clear()
+        old.call(S.LOAD_PUSH_ALL, S.MODEL, count=200_000_000)
+        keys = {k for h, k, v, i in old.props}
+        self.assertNotIn(FMATK, keys); self.assertNotIn(FMDEC, keys)
+        self.assertIn((0x18B, V2[4], 1), {(k, v, i) for h, k, v, i in old.props},
+                      "BE4.42 pushes WT2's Sub FM (hidden under an Analog WT1 on BE4.43) and plays it")
+        again = old.save(st)
+        for tok in ("bento_fmatk", "bento_fmdec"):
+            self.assertNotIn(tok, again, f"{tok}: dropped on BE4.42's save")
+        self.assertIn('bento_subfm="250"', again)
+        self.assertIn('bento_subfm="1000"', again)
+
     def test_the_preset_reader_keeps_them(self):
         """P3 M7 / 6.1 (review R20), the reader half of the preset file: stock's patch import PATCH_READ (0x0813163C, after
         'Importing patch %s', S) reads <document><session><cell>..: the first cell's type picks the track (wavetable ->

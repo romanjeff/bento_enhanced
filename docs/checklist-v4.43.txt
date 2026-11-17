@@ -64,6 +64,9 @@ What to expect that is not a bug:
     BE4.42 (FM Atk 0 / FM Dec Inf everywhere). The track with OSC2 Sub FM (OSC1 Analog) has lost that Sub FM
     (expected). Its knob 6 on OSC2 reads FM 1>2.
 [ ] Turn that track's OSC1 to Wavetable: OSC2's knob 6 shows Sub FM 70 % and you hear it again. Back to Analog.
+[ ] Rollback note (no action needed): BE4.43 keeps OSC2's hidden Sub FM value and saves it. If you ever go back to
+    BE4.42, that Sub FM plays again on top of FM 1>2. To clear it first: OSC1 -> Wavetable, OSC2 Sub FM (knob 6) -> 0,
+    OSC1 -> Analog, save.
 [ ] Save FM_A42. On the computer, its project.xml: each oscillator cell has bento_fmatk="0" bento_fmdec="128" next to
     the other bento_* values. Bring this project.xml.
 
@@ -85,8 +88,9 @@ What to expect that is not a bug:
 [ ] Mixed mode: OSC1 Type -> Wavetable (no WAV), OSC2 Sub FM 70 % with FM Dec 48: OSC2 plucks with the sub as its
     modulator (Sub FM on knob 6).
 [ ] Turning the knobs while a note is held: FM Dec from Inf down to 48 during a held note: the brightness starts to
-    fall from that moment (a choice of this build); FM Atk turned during the swell: the swell's speed changes. No
-    clicks, no stuck brightness, no crash.
+    fall from that moment (a choice of this build); FM Atk turned during the swell: the swell's speed changes. FM Atk
+    turned up from 0 during a held note (FM Dec Inf): no change on that note (no dip, no swell); the next note swells.
+    No clicks, no stuck brightness, no crash.
 [ ] Save: the ANALOG line fm= above 0, fmx=0/0.
 
 5. CPU (write down the "DSP nn%" on OSC1's title, OVER or not, and after a save the ANALOG line's avg_cyc / peak_cyc /
@@ -96,7 +100,7 @@ What to expect that is not a bug:
     on both" voice, because OSC2's Sub FM no longer runs next to FM 1>2 (BE4.42 full voice at 100 %: 31.4k
     instructions a voice block; BE4.43: 28.9k).
 [ ] The same with FM Atk 20 / FM Dec 60 on both oscillators, notes re-struck: offline about the same (a decaying depth
-    is slightly cheaper to render). An FM-off saw voice with an envelope set costs about 1 % more; unset, nothing.
+    is slightly cheaper to render). An FM-off saw voice with an envelope set costs about 1 % more; unset, about 0.2 %.
 [ ] No reset, no freeze, no "!!!" in the log at any point.
 
 Bring back: BENTO_SAVES.log, BENTO_CRASHES.log if any, the two row photos (section 2), FM_A42's project.xml after the

@@ -42,7 +42,9 @@ struct AnOsc {
     unsigned short note;
     /* BE4.43 (docs/plan-p3-fm-bits.md BE4.43, p3_golden fm_env): the FM envelope's position, both oscillators: stage
      * (AN_FE_*) << 13 | blocks into it (at most 3750). AN_FE_START (0, also after reset / forget): a note started (an_note,
-     * every caller of slot 2) and the next block starts the envelope at 0 (1 for FM Atk 0) */
+     * every caller of slot 2) and the next block starts the envelope at 0 (1 for FM Atk 0); while the envelope is
+     * unset (AnProps.envf 0) an_osc keeps it at AN_FE_DEC << 13 (held at 1: DEC at j 0 reads as 1 whatever fme is;
+     * review, an envelope set mid-note) */
     unsigned short fmk;
     float glide, sub_applied, sub_written;
     /* BE4.40 mixed sync (WT1 Wavetable, WT2 Analog), in WT2's state: WT1's cycle phase as a 64-bit fraction (mphase the

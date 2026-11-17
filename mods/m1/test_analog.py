@@ -4763,7 +4763,9 @@ class FmEnv(unittest.TestCase):
     dia) is the golden's f32 line bit for bit, with retriggers (stock's voice note start, slot 2) back to back and mid-note,
     the amount's own ramp (msub / m12) under the envelope, each oscillator with its own envelope, the mixed voice; the
     envelope keeps time while the oscillator has no amount or is silent; every call stays the kernel's golden (replay);
-    each golden mutant is told apart from the M7's lines; the tables in both cores are the golden's; the cost."""
+    each golden mutant is told apart from the M7's lines; the tables in both cores are the golden's; the cost. Review
+    follow-ups: an envelope set mid-note starts from 1 (held while unset), Inf holds at its stage's start, and the one
+    two-term block (the Wavetable -> Analog switch) under OSC2's envelope."""
     voice, note = SubCopy.voice, SubCopy.note
     play = Fm12.play
     lines, replay = SubFm.lines, SubFm.replay
@@ -4914,6 +4916,70 @@ class FmEnv(unittest.TestCase):
             end = f32(I * e1[b])
             self.assertEqual(got[b], (ia, 0.0 if end == ia else f32(f32(end - ia) / DEV_FRAMES)), f"Atk turned: block {b}")
 
+    def test_an_envelope_set_mid_note_starts_from_1(self):
+        """BE4.43 review (an Atk turned up from 0 on a held note restarted the attack: FM dropped out and swelled back): while
+        the envelope is unset (Atk 0 / Dec Inf) it is held at 1 every block, so whatever is set mid-note starts from 1 at that
+        block. Sub FM 1000 on OSC1, the note at 0 and again at 14: unset 0..5; Atk 8 at 6 (no change: held at 1, the Atk is
+        the next note's); Dec 4 at 8 (a decay from 1 there, as a note at 8 with Atk 0 / Dec 4); the note at 14 attacks
+        (Atk 8 / Dec 4); unset again at 20 mid-attack (1 from there); Dec 4 at 24 (a fresh decay from 1, not resumed from the
+        stale attack state). Each stretch's lines are fm_env_lines' (the golden's) for those terms, bit for bit."""
+        n, INF = 30, G.FM_DEC_INF
+        def each(r, root, b):
+            if b == 6: r.root_prop(root, K_FMATK, 8, 0)
+            if b == 8: r.root_prop(root, K_FMDEC, 4, 0)
+            if b == 20: r.root_prop(root, K_FMATK, 0, 0); r.root_prop(root, K_FMDEC, INF, 0)
+            if b == 24: r.root_prop(root, K_FMDEC, 4, 0)
+        calls, _, _, _, (r, v, sub) = self.play(fm=(1000, 0), x12=0, blocks=n, each=each, notes=(14,),
+                                                env={0: (0, INF)})
+        self.replay("set mid-note", calls)
+        got = self.got(calls, r.osc(v, 0), r.first)
+        self.assertEqual(sorted(got), list(range(n)), "FM every block")
+        L = lambda *a: [w for _, w in sorted(self.want(*a).items())]
+        held = lambda m, first=False: L(0, INF, ([0] if first else [1000]) + [1000] * (m - 1), [1000] * m, m, (0,))
+        seg = lambda a, d, m: L(a, d, [1000] * m, [1000] * m, m, (0,))
+        want = held(8, True) + seg(0, 4, 6) + seg(8, 4, 6) + held(4) + seg(0, 4, 6)
+        for b in range(n):
+            self.assertEqual(got[b], want[b], f"block {b}")
+        I = G.an_index32(1000)
+        self.assertEqual(got[6][0], I, "Atk turned up from 0 mid-note: no restart (the line stays at I(1000))")
+        self.assertEqual(got[14][0], 0.0, "control: the next note attacks from 0")
+        self.assertEqual(got[24][0], I, "set again after unset: from 1, not the stale attack")
+
+    def test_inf_holds_at_its_stages_start(self):
+        """BE4.43 review (surviving mutant inf_keeps_counting): Atk 1 / Dec Inf (two blocks up, then held), held 10 blocks past
+        the attack, then Dec 4 at block 12: the decay starts from 1 at block 12 (Inf keeps j at 0; a counting hold would find
+        the decay over and snap to 0, and a 13-bit count would run into the stage bits on a long hold)."""
+        n, INF = 20, G.FM_DEC_INF
+        def each(r, root, b):
+            if b == 12: r.root_prop(root, K_FMDEC, 4, 0)
+        calls, _, _, _, (r, v, sub) = self.play(fm=(1000, 0), x12=0, blocks=n, each=each, env={0: (1, INF)})
+        got = self.got(calls, r.osc(v, 0), r.first)
+        L = lambda *a: [w for _, w in sorted(self.want(*a).items())]
+        want = L(1, INF, [0] + [1000] * 11, [1000] * 12, 12, (0,)) + L(0, 4, [1000] * 8, [1000] * 8, 8, (0,))
+        for b in range(n):
+            self.assertEqual(got[b], want[b], f"block {b}")
+        self.assertGreater(got[13][0], 0.0, "control: decaying, not over")
+
+    def test_the_switch_block_under_osc2s_envelope(self):
+        """BE4.43 review (surviving mutant env_not_on_j): the one block with two terms (OSC1 turned Analog at block 3: OSC2's
+        Sub FM 700 ramps out on a while its FM 1>2 500 ramps in on b, test_both_routes) with OSC2's envelope set (Atk 8 / Dec
+        4: mid-attack at 3, e 0.3 -> 0.4): both lines are the golden's under OSC2's envelope, and so is OSC2's one line in
+        every other block (Sub FM 700 in 0..2, FM 1>2 500 in 4, 5)."""
+        def each(r, root, b):
+            if b == 3:
+                r.root_prop(root, K_TYPE, 1, 0); r.root_prop(root, K_SHAPE, 48, 0); r.root_prop(root, K_SUBFM, 1000, 0)
+        calls, _, _, _, (r, v, sub) = self.play(fm=(1000, 700), x12=500, types=(0, 1), each=each, env={1: (8, 4)})
+        self.replay("switch under env", calls)
+        o2 = r.osc(v, 1)
+        got = self.got(calls, o2, r.first)
+        wa = self.want(8, 4, [0, 700, 700, 700, 500, 500], [700, 700, 700, 0, 500, 500], 6, (0,))
+        wb = self.want(8, 4, [0] * 6, [0, 0, 0, 500, 0, 0], 6, (0,))
+        self.assertEqual([got[b] for b in range(6)], [wa[b] for b in range(6)], "OSC2's a line under its envelope")
+        b3 = {(x["ib"], x["dib"]) for x in calls if x["osc"] == o2 and x["block"] == r.first + 3}
+        self.assertEqual(b3, {wb[3]}, "block 3: FM 1>2's b line under OSC2's envelope")
+        self.assertNotEqual(wb[3], self.want(0, G.FM_DEC_INF, [0] * 6, [0, 0, 0, 500, 0, 0], 6, (0,))[3],
+                            "control: the envelope changes that line")
+
     def test_each_voice_retriggers_its_own(self):
         """Per voice: two voices of one root (the envelope lives in each oscillator's state), Atk 3 / Dec 5 on OSC1 (Sub FM
         1000), voice 0's note at block 0, voice 1's at block 3 and again at 7: each voice's lines are the golden's for its own
@@ -4951,7 +5017,8 @@ class FmEnv(unittest.TestCase):
         line's two VMULs; nothing a sample): fm_env_step at most 45 instructions a call (M: 38), and the envelope on both
         oscillators adds at most 180 a voice-block to either voice (M: +149 on the FM-off voice, 1.1 % of it, about 75 an
         oscillator-block with feeds' call; on the full FM voice the decaying index saves more edge corrections than the
-        envelope costs). Unset (the defaults) it is not stepped at all (BitDepthGone, P3Identity: one byte OR)."""
+        envelope costs). Unset (the defaults) it is not stepped at all (BitDepthGone, P3Identity: one byte OR, and since the
+        review an_osc's two stores holding it at 1). The 180 is this build's own budget: 149 measured plus margin."""
         rows = {}
         step = None
         for name, fm, x12, env in (("off", (0, 0), 0, None), ("off+env", (0, 0), 0, (20, 60)),

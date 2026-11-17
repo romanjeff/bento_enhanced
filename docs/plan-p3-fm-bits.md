@@ -1899,7 +1899,8 @@ What changed (M unless marked):
   free **fmk** (u16: stage << 13 | blocks into it) at +142, and **fme** (f32, the envelope at the end of the last block) in
   the 4 bytes that were left at +176: AnOsc is 180 B, the area is full. an_prop: ours() takes both keys, clamps 0..127 /
   0..128, a fresh Analog state starts at Dec Inf. an_note (slot 2, before stock's): an Analog oscillator's fmk =
-  AN_FE_START (the retrigger; every caller of slot 2, so legato notes too: I). fm_env_step (out of line): START gives e0 0
+  AN_FE_START (the retrigger; every caller of slot 2, so legato notes most likely too: I, inferred from the code path,
+  not measured). fm_env_step (out of line): START gives e0 0
   (1 for Atk 0), ATK e = f32(k) f32(1 / n_a) with exactly 1 at n_a, DEC 1.0 then e r a block (r from a 128-word table,
   ENV_R = the golden's f32 r), END 0 from j = n_d, Inf holds 1; it returns e0 and e1 for the block and keeps e1. It runs
   in feeds() (already out of line), entered when the FM gate word or envf is non-zero, before the silent paths return, so
@@ -1909,7 +1910,17 @@ What changed (M unless marked):
 - **Knob turned mid-note (Claude's choice, not in the golden, which holds its values over a note; pinned in FmEnv):**
   Dec from Inf to a time decays from that block as a fresh decay from 1 (Inf holds at its stage's start); Atk turned
   mid-attack rescales the ramp (e = k / n_a with the new n_a, k the blocks since the note); a value turned to Inf jumps
-  to 1 at the next block (it ramps over that block's line, 2.7 ms).
+  to 1 at the next block (it ramps over that block's line, 2.7 ms). **Review follow-up:** while the envelope is unset
+  (Atk 0 / Dec Inf) an_osc holds it at 1 every block (stage DEC at j 0, which fm_env_step reads as e 1: what it leaves
+  for Atk 0 / Inf; one halfword store a block on the FM-off path), so an envelope set mid-note starts from 1 at that block whatever came before:
+  FM Atk turned up from 0 during a held note changes nothing until the next note (before, the first such turn
+  restarted the attack from 0 mid-note: FM dropped out and swelled back), and an envelope set, unset and set again
+  starts from 1, not from the stale state. A note whose values arrive before its first block (an_note's START still
+  there) attacks as usual. Pinned in FmEnv (test_an_envelope_set_mid_note_starts_from_1).
+
+The design's "~1 ms" floor became 2.7 ms: the envelope moves once a block (2N = 2.667 ms), so Dec 0 is one block and
+the shortest non-zero Atk (Atk 1) two blocks, 5.3 ms. A shorter time would need per-sample stepping (the cost this
+design avoids); the line between blocks is still a ramp, so the floor is a time, not a click.
 
 Encoding and curve choices (the golden's, restated with the road not taken): 0 = Inf is not monotone; 127 = Inf loses a
 time value; a pure exponential 2.7 ms .. 10 s collapses to 100 distinct block counts, the offset exponential keeps all
@@ -1927,7 +1938,7 @@ Sizes (M, manifests of m1-be442 and m1-be443):
 | Item | BE4.42 | BE4.43 | Limit / left |
 |---|---|---|---|
 | Image (bento1.bin) | 1,609,816 B | **1,610,800 B**, +984 | PROVEN_MAX 0x18D334: 16,132 B left |
-| DSP code (window 36,608 B) | 22,532 B | **23,788 B, +1,256** (768 of it the two tables) | P3 ceiling 24,044 B: **256 B left**; window 12,820 B free |
+| DSP code (window 36,608 B) | 22,532 B | **23,796 B, +1,264** (768 of it the two tables; e56f373 23,788, the review's hold +8) | P3 ceiling 24,044 B: **248 B left**; window 12,812 B free |
 | Synth UI (M4) | 14,830 B | 15,818 B, +988 (256 the block table) | in the image figure |
 | M4 / M7 / trampolines | 24,424 / 15,368 / 752 B | unchanged | |
 | Property template | 0x304, 2 pads | 0x304, no pad | |
@@ -1936,13 +1947,13 @@ CPU (M; instructions, the hooks only, offline, not device cycles):
 
 | Case | BE4.42 | BE4.43 | |
 |---|---|---|---|
-| FM-off voice, envelope unset (FmEnv / P3Identity: per oscillator-block) | | +5 to +9 an oscillator-block (P3Identity cases vs BE4.42: +0.10 to +0.20 %) | the gate's one byte OR; P3Identity vs BE4.40 worst 1.58 % (BE4.42 1.48 %), bound 2 % |
-| FM-off voice, envelope set on both (Atk 20 / Dec 60) | | 13,331 -> 13,480 (+149, 1.1 %) a voice-block | fm_env_step 38 instructions a call |
-| Full FM voice at 100 % (Sub FM OSC1, FM 1>2 OSC2; BE4.42 also Sub FM on OSC2) | 31,412 | **28,914** | OSC2's Sub FM term is gone; 0.93 x plan 5's gate |
-| Full FM at index 8 (every amount 630) | 30,696 | 28,593 | gate 30,954: 0.924 |
-| The same full voice with the envelope set on both (decaying) | | 28,995 -> 28,755 (-240) | a decaying index costs fewer edge corrections |
-| Sub FM voice "on both" (SubFm.test_cost; OSC2's Sub FM now plays nothing) | 27,914 | 23,290 | |
-| Full FM, triangle carriers, 100 % | 38,666 | 35,294 | still the heaviest voice |
+| FM-off voice, envelope unset (FmEnv / P3Identity: per oscillator-block) | | 13,354 a voice-block (e56f373: 13,331; the review's hold store +23) | the gate's one byte OR and the hold's halfword store; P3Identity vs BE4.40 worst **1.84 %** (e56f373 1.58 %, BE4.42 1.48 %), bound 2 %: 0.16 % left |
+| FM-off voice, envelope set on both (Atk 20 / Dec 60) | | 13,354 -> 13,499 (+145, 1.1 %) a voice-block | fm_env_step 39.5 instructions a call; FmEnv's bound 180 is this build's own budget (149 measured at e56f373 plus margin); with the envelope set the FM-off voice is about 1.84 + 1.1 = 2.9 % over BE4.40's, the device CPU line's reference |
+| Full FM voice at 100 % (Sub FM OSC1, FM 1>2 OSC2; BE4.42 also Sub FM on OSC2) | 31,412 | **28,929** (e56f373 28,914) | OSC2's Sub FM term is gone; 0.934 x plan 5's gate |
+| Full FM at index 8 (every amount 630) | 30,696 | 28,608 | gate 30,984: 0.923 |
+| The same full voice with the envelope set on both (decaying) | | 29,010 -> 28,772 (-238) | a decaying index costs fewer edge corrections |
+| Sub FM voice "on both" (SubFm.test_cost; OSC2's Sub FM now plays nothing) | 27,914 | 23,309 | |
+| Full FM, triangle carriers, 100 % | 38,666 | 35,309 | still the heaviest voice |
 
 A decayed envelope (env 0) still renders under FM: its CPU is the FM voice's whatever the depth. Skipping the FM render
 at a zero line (an_render instead) would save that cost on plucks; it is not done: an_render and an_render_fm at index 0
@@ -1973,6 +1984,11 @@ Tests (reviewed expected changes, each marked BE4.43 in its docstring; no tolera
   golden mutant differs from them; each oscillator its own envelope (OSC1 Sub FM, OSC2 FM 1>2, OSC2's Sub FM silent), the
   mixed voice free and synced; the envelope keeps time without an amount and while silent; a knob turned mid-note; each
   voice retriggers its own; the cost. test_analog 136 -> 143 tests.
+- Review follow-ups (3 more FmEnv tests, test_analog 146; test_native_props 22): an envelope set mid-note starts from 1
+  (Atk turned up from 0 on a held note, Dec turned down, set / unset / set again: golden lines per stretch); Inf holds at
+  its stage's start (Atk 1 / Inf held, then Dec turned down: kills the reviewer's surviving mutant inf_keeps_counting);
+  the Wavetable -> Analog switch block under OSC2's envelope (both terms the golden's: kills env_not_on_j); BE4.42 opens
+  a BE4.43 project (six keys, no envelope key loaded or pushed, both tokens dropped on save, OSC2's hidden Sub FM pushed).
 
 Release notes (BE4.43):
 - **One FM amount per oscillator, and its FM envelope.** OSC1: Sub FM; OSC2: FM 1>2 (Sub FM while OSC1 is Wavetable).
@@ -1981,15 +1997,20 @@ Release notes (BE4.43):
 - **Behaviour change:** OSC2's Sub FM no longer plays while OSC1 is Analog. A BE4.42 (or BE4.41) project that had it
   loses that Sub FM (its value is kept, and plays with a Wavetable OSC1). Everything else in a BE4.42 project sounds the
   same. A BE4.41 project's Bit Depth still is not read (FM Atk keeps 0).
-- Rollback: BE4.42 and BE4.40 open a BE4.43 project and drop bento_fmatk / bento_fmdec on their next save.
-- Known, open: the retrigger is hard (a new note restarts at 0 whatever the envelope was doing; legato notes too, I);
+- Rollback: BE4.42 and BE4.40 open a BE4.43 project and drop bento_fmatk / bento_fmdec on their next save
+  (test_native_props: test_be442_opens_a_be443_project, test_be440_opens_a_p3_project). **Rolling back to BE4.42 brings
+  back any OSC2 Sub FM value hidden under an Analog OSC1**: BE4.43 keeps and saves it but does not play it, and BE4.42
+  plays it on top of FM 1>2. To clear it before rolling back: turn OSC1 to Wavetable, set OSC2's Sub FM (knob 6) to 0,
+  turn OSC1 back to Analog, save.
+- Known, open: the retrigger is hard (a new note restarts at 0 whatever the envelope was doing; legato notes most likely
+  too: inferred from the code path, not measured);
   a decayed envelope still costs the FM's CPU.
 
 Open point for Jeff (new): a note that retriggers mid-envelope steps back to 0 at its first block (hard reset, the spec).
 If you would rather have the attack resume from the current level (legato-style), that is a spec change in fm_env (the
 golden) and fm_env_step, not a tolerance question. Same for whether a Glide (legato) note should retrigger at all.
 
-Kit: wsl/package_m1.sh adapted (a scratch copy with O=~/bento/out/m1-be443; the script reads only the build dir and the
+Kit: wsl/package_m1.sh adapted (a scratch copy with O=~/bento/out/m1-be443, after the review O=~/bento/out/m1-be443c; the script reads only the build dir and the
 stock images, its gen_carriers call runs only for a drums build), then docs/checklist-v4.43.txt copied in as
 DEVICE_CHECKLIST.txt and SHA256SUMS.txt regenerated and checked with `sha256sum -c`.
 

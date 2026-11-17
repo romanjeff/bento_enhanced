@@ -448,7 +448,8 @@ __attribute__((noinline)) static float sub_fill(u8 *sub, float *a, u32 n) {
  * Atk 0: a hard retrigger whatever the last block ended on), ATK (boundary k of n_a = AN_FM_ENV_BLOCKS[Atk]: e = f32(f32(k)
  * f32(1 / n_a)), exactly 1 at n_a), DEC (j blocks after it: 1.0, then f32(e r) a block, r = ENV_R[Dec] = f32(0.001^(1 / n_d)),
  * 0 from j = n_d: -60 dB at the time Dec names, then nothing, no denormals), END (0). Dec Inf holds 1 (and stays at j 0, so a
- * Dec turned down from Inf mid-note decays from there); Atk turned mid-attack rescales the ramp at the next block. Cost: a
+ * Dec turned down from Inf mid-note decays from there); Atk turned mid-attack rescales the ramp at the next block; while
+ * the envelope is unset an_osc holds it at DEC j 0, e 1 (one set mid-note starts from 1: no restart of the attack). Cost: a
  * counter, a VDIV in the attack (1 / n_a, the same value the spec's precomputed step is), one VMUL in the decay; the caller
  * two VMULs on the line's ends. Returns e0 (this block's start), *end = e1. */
 static const u16 ENV_BLOCKS[128] = AN_FM_ENV_BLOCKS;
@@ -474,7 +475,7 @@ __attribute__((noinline)) static void fm_env_step(AnOsc *g, const AnProps *p, fl
     u32 a = p->fmatk, d = p->fmdec, st = (u32)g->fmk >> 13, k = g->fmk & 0x1FFFu;
     float e;
     if (st == AN_FE_START) { st = a ? AN_FE_ATK : AN_FE_DEC; k = 0; e = a ? 0.f : 1.f; }
-    else e = g->fme;
+    else e = st == AN_FE_DEC && k == 0 ? 1.f : g->fme;     /* (DEC j 0 is 1: also an_osc's hold while unset) */
     float e0 = e;
     if (st == AN_FE_ATK) {
         u32 na = a ? ENV_BLOCKS[a] : 0u;
@@ -664,6 +665,13 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     float env[2];                                             /* (feeds writes it while envf; in memory: no float live here) */
     /* (feeding B; BE4.43: feeds also steps the FM envelope while it is set, AnProps.envf, so it keeps time without an
      * amount too; FM itself is x's alone, below) */
+    /* BE4.43 review: an envelope that is unset (Atk 0 / Dec Inf) is held at 1 in every block of the note: stage DEC at j 0,
+     * e 1, what fm_env_step itself leaves for Atk 0 / Inf. So an envelope set mid-note (an Atk turned up from 0, a Dec
+     * turned down from Inf, or one set again after being unset) starts from 1 at that block whatever came before: an Atk
+     * takes effect at the next note, a Dec decays from there. A note start (an_note: AN_FE_START) whose values arrive
+     * before the note's first block still attacks. One halfword store a block on the FM-off path (fme is not written:
+     * fm_env_step reads DEC at j 0 as e 1, which is what it always holds there). */
+    if (!pp->envf) self->fmk = (u16)(AN_FE_DEC << 13);
     float *bo = __builtin_expect((x | pp->envf) != 0, 0) ? feeds(r, v, which, a2, o2, n, self, pp, env) : 0;
     /* S6c review S3: SCRATCH_SIZE sets the size only when the buffer holds n, and never grows it, so a larger block
      * than the scratch buffer is rendered as silence rather than written past it (stock's are 2 x 128 frames) */
