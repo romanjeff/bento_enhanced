@@ -55,7 +55,7 @@
  * while the glide time and block length stay (E5).
  * Measurement: DWT cycles in both render hooks per audio block (a block = a change of stock's LOAD ring index), into the
  * stats lines the M4 prints at save time (m4_synth.c an_print). */
-#include "analog.h"
+#include "wt_reader.h"
 #include "../synth_shared.h"
 
 typedef unsigned u32;
@@ -692,10 +692,156 @@ static inline __attribute__((always_inline)) void copy5(void *to, const void *fr
                    :: "r"(to), "r"(from) : "r0", "r1", "r2", "r3", "r12", "memory");
 }
 static_assert(WT_RUN2_W == 5, "copy5: the settings run");
+/* ---- BE4.44 W2 (docs/plan-wt-fm.md 3.4): the reader, tier 3 ------------------------------------------------------------
+ * Stock's kernel state, right above the area (kernel + 0xC0 .. 0xD8, kmodel.py's St): frac f32, idx, the frame playing (-1:
+ * none yet), the mip's offset in the table (floats), D, len (2048 / D), the pending flag (the note start's: the mip ladder
+ * runs on the next block). The reader never writes off / D / len except where stock's own ladder would (the pending flag). */
+struct WtK {
+    float frac;
+    int idx, frame;
+    u32 off, D, len;
+    u8 flag;
+};
+#define WTK(osc) ((WtK *)((u8 *)(osc) + S_OSC_KERNEL + AN_AREA))
+/* D5 (Jeff, 2026-11-16: "in between, leaning bright"): the mip under FM is the finest level k at or above the note's whose
+ * peak step P (base-table samples a sample) satisfies P / 2^k < WT_MIP_THR, stock's ladder rule with its 1.25 raised: one
+ * named constant, chosen at build time (build.py BE_WT_MIP, the manifest's wt_mip), so W3/W4 can build a cleaner and a
+ * brighter alternate image. Hysteresis is derived from it: back to a finer level only below WT_MIP_THR x WT_MIP_HYST (at
+ * stock's 1.25: 1.05, plan 3.4). */
+#ifndef WT_MIP_THR
+#define WT_MIP_THR 1.75f
+#endif
+#define WT_MIP_HYST 0.84f
+/* Stock 1.6.8's mip builder (M4 0x08112544..0x081126DE: six levels, each from the one before as one stream of all 256 frames,
+ * through the 11-tap decimator 0x08113DF0 reset to 12 zeros per level 0x08113F10; docs/plan-wt-fm.md "W2: mip trace"): level
+ * k's sample i is centred on level k - 1's position 2i - 7, so on level 0's 2^k i - 7 (2^k - 1). Reading level k at the same
+ * sound as level 0 is reading it 7 (2^k - 1) / 2048 of a cycle later: WT_MIP_SKEW(k) in Q32 (2^32 / 2048 = 2^21, exact). The
+ * note's own level is stock's phase as it is; another level reads at the difference of their skews. */
+#define WT_MIP_SKEW(k) ((7u * ((1u << (k)) - 1u)) << 21)
+static inline u32 wt_mip_off(u32 k) { return 0x100000u - (0x100000u >> k); }   /* level k's first float (k = 0 .. 6) */
+
+/* One reader block, from stock's kernel state (WtK) and the block's rate and Position frame, with the FM line fi (0: none,
+ * the mip-home block); its samples to s. Plan 3.4: the pending flag's ladder (stock's, bit for bit: kmodel), the phase in
+ * (Q32 at the note's mip), the mip choice (WT_MIP_THR, hysteresis; the note's level while fi is 0), one change a block (a
+ * Position change crossfades the frame and defers a mip change; else a mip change crossfades the levels), the phase out
+ * (idx, frac at the note's len; the frame playing), mipcur (HOME once the mip-home block is back at the note's level). */
+/* the finest level k >= k0 with x < thr 2^k (6 at most) */
+__attribute__((noinline)) static u32 wt_mip_for(float x, float thr, u32 k) {
+    while (k < WT_MIPS - 1u && x >= thr * (float)(1u << k)) k++;
+    return k;
+}
+struct WtBlk { const float *tab; const FmIn *fi; float *s; float rate; u32 n, pos; };
+static_assert(sizeof(WtBlk) == 24, "the test harness writes it");
+__attribute__((noinline)) static void wt_play(void *osc, const WtBlk *bk) {
+    WtK *K = WTK(osc);
+    AnOsc *g = state(osc);
+    float rate = bk->rate;
+    if (K->flag) {                                            /* stock's ladder on this block's rate (0x080A2000) */
+        float x = rate;
+        u32 k = 0;
+        while (x >= 1.25f && k < WT_MIPS - 1u) { x *= .5f; k++; }
+        K->D = 1u << k; K->len = 2048u >> k; K->off = wt_mip_off(k);
+        K->idx = K->idx % (int)K->len; K->flag = 0;
+    }
+    u32 l = 31u - (u32)__builtin_clz(K->len | 1u), kn = 11u - l;   /* (len checked by the caller) */
+    u32 pos = bk->pos, fcur = (u32)K->frame;
+    if (fcur > 255u) fcur = pos;                              /* -1: take the frame, no crossfade */
+    const FmIn *fi = bk->fi;
+    WtRd rd;
+    rd.out = bk->s; rd.n = bk->n; rd.inc = rate * (1.f / 2048.f);
+    rd.ph = ((u32)K->idx << (32u - l)) + (u32)(K->frac * (float)(1u << (32u - l)));
+    FmIn none;                                                /* (no FM: a zero line on buffer A, finite: + 0 a adds +0) */
+    none.a = none.b = (const float *)SA(SA_FMBUF_A); none.ia = none.dia = none.ib = none.dib = 0.f;
+    rd.fi = fi ? fi : &none;
+    u32 kc = wt_mip(g), kt = kn;
+    if (kc == WT_HOME || kc < kn) kc = kn;
+    if (fi) {
+        /* the peak step: |inc| + max |I| max |A| + max |J| max |B| (the lines' two ends; the modulators every 4th frame) */
+        float nf = (float)rd.n, ma = 0.f, mb = 0.f;
+        for (u32 i = 0; i < rd.n; i += 4u) {
+            ma = __builtin_fmaxf(ma, __builtin_fabsf(fi->a[i]));
+            mb = __builtin_fmaxf(mb, __builtin_fabsf(fi->b[i]));
+        }
+        float I = __builtin_fmaxf(__builtin_fabsf(fi->ia), __builtin_fabsf(fi->ia + fi->dia * nf));
+        float J = __builtin_fmaxf(__builtin_fabsf(fi->ib), __builtin_fabsf(fi->ib + fi->dib * nf));
+        float x = (rd.inc + I * ma + J * mb) * 2048.f;
+        u32 up = wt_mip_for(x, WT_MIP_THR, kn), dn = wt_mip_for(x, WT_MIP_THR * WT_MIP_HYST, kn);
+        kt = up > kc ? up : dn < kc ? dn : kc;
+    }
+    u32 lc = 11u - kc;
+    rd.l0 = rd.l1 = lc; rd.o0 = WT_MIP_SKEW(kc) - WT_MIP_SKEW(kn); rd.d1 = 0;
+    rd.t0 = bk->tab + wt_mip_off(kc) + (fcur << lc);
+    if (pos != fcur) {                                        /* rd_qx: the frame, at the mip playing (a mip change waits) */
+        rd.t1 = bk->tab + wt_mip_off(kc) + (pos << lc);
+        wt_rdf(&rd);
+        kt = kc;
+    } else if (kt != kc) {                                    /* rd_qm: the mip, the frame fixed */
+        u32 lt = 11u - kt;
+        rd.l1 = lt; rd.d1 = WT_MIP_SKEW(kt) - WT_MIP_SKEW(kc);
+        rd.t1 = bk->tab + wt_mip_off(kt) + (fcur << lt);
+        wt_rdx(&rd);
+    } else {
+        wt_rd(&rd);
+    }
+    K->idx = (int)(rd.ph >> (32u - l));
+    K->frac = (float)(rd.ph << l) * (1.f / 4294967296.f);
+    K->frame = (int)pos;
+    g->wt.mipcur = (u8)(!fi && kt == kn ? WT_HOME : kt);
+}
+
+/* Tier 3 (plan 3.3, 3.5's body): stock's render body in stock's order, our reader for its kernel: the table (no WAV: nothing,
+ * as stock), the rate (rate_of, stock's bit for bit), the frame, Level and its smoother, the silent rule (D9 (b): a silent
+ * oscillator freezes, as stock's, unless it feeds B), then the FM line (fm_setup: Sub FM from A; OSC2's FM 1>2 as
+ * on Analog), the reader, SMOOTH_APPLY and MIX_INTO. 0: not handled (no run state, no voice, a kernel state out of range:
+ * the caller plays tier 2). */
+__attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out, const float *env) {
+    u32 which = 2;
+    u8 *v = voice_of(osc, &which);
+    u32 len = WTK(osc)->len;
+    if (!area_ok() || !v || len < 32u || len > 2048u || (len & (len - 1u))) return 0;
+    WtBlk bk;
+    void *obj = (void *)W(osc, 0x18);
+    bk.tab = 0;
+    if (!FN(W(W(obj, 0), 0x20), int (*)(void *, u32, u32, const float **))(obj, W(osc, 0x1C), 0, &bk.tab)) return 1;
+    bk.n = FN(S_BUF_FRAMES, u32 (*)(void *))(out);
+    param_fn param = FN(S_PARAM_VALUE, param_fn);
+    bk.rate = rate_of(osc, pitch_oct(osc));
+    int position = (int)(param((u8 *)osc + OSC_POSITION_PARAM) * 255.f);
+    bk.pos = (u32)(position < 0 ? 0 : position > 255 ? 255 : position);
+    float level = FN(S_LEVEL_CURVE, float (*)(float))(param((u8 *)osc + OSC_LEVEL_PARAM));
+    FN(S_SMOOTH_SET, void (*)(void *, float))((u8 *)osc + OSC_SMOOTH, level);
+    F(osc, OSC_RATE) = bk.rate;
+    W(osc, OSC_POSITION) = bk.pos;
+    AnOsc *g = state(osc);
+    int silent = level == 0.f && !W(osc, OSC_MOVING);
+    if ((silent && !(g->wt.wflags & WT_FEED_B)) || bk.n > 1024u || bk.n > W(scratch, S_BUF_CAPACITY)) {
+        g->msub = g->m12 = 0;                                 /* frozen (stock's level 0); heard again, FM ramps in from 0 */
+        return 1;
+    }
+    FmIn fi;
+    bk.fi = fm_setup(RUN, v, g, props(osc), which == 1, bk.n, &fi, env) ? &fi : 0;
+    bk.s = FN(S_SCRATCH_PTR, float *(*)(void *))(scratch);
+    FN(S_SCRATCH_SIZE, void (*)(void *, u32))(scratch, bk.n);
+    wt_play(osc, &bk);
+    if (!silent) {
+        FN(S_SMOOTH_APPLY, void (*)(void *, float *, u32, u32))((u8 *)osc + OSC_SMOOTH, bk.s, 0, bk.n);
+        FN(S_MIX_INTO, void (*)(void *, void *))(out, scratch);
+    }
+    return 1;
+}
+
 __attribute__((noinline)) static int wt_fm_osc(void *osc, void *scratch, void *out) {
     AnOsc *g = state(osc);
     u32 t = wt_tag(osc);
     if (g->magic != t || W(g, 4) != ~t) return 0;
+    AnProps *p = props(osc);
+    float env[2];                                             /* the FM envelope keeps the note's time, every block */
+    if (p->envf) fm_env_step(g, p, env);
+    else g->fmk = (u16)(AN_FE_DEC << 13);
+    /* the gate (plan 3.3): an amount, ramp memory, or a mip held (the mip-home block) */
+    u32 x;
+    __builtin_memcpy(&x, &g->msub, 4);
+    if ((x | p->subfm | p->fm12 | (wt_mip(g) != WT_HOME)) && wt_body(osc, scratch, out, env)) return 1;
     u32 *k = (u32 *)g;                                       /* (not volatile: the call takes osc, so nothing is cached across it) */
     u32 a0 = k[WT_RUN0 / 4u], a1 = k[WT_RUN0 / 4u + 1u], b0 = k[WT_RUN1 / 4u], b1 = k[WT_RUN1 / 4u + 1u], c[WT_RUN2_W];
     static_assert(WT_RUN0_W == 2 && WT_RUN1_W == 2, "two words each");
@@ -703,9 +849,6 @@ __attribute__((noinline)) static int wt_fm_osc(void *osc, void *scratch, void *o
     FN(S_WT_OSC_RENDER, void (*)(void *, void *, void *))(osc, scratch, out);
     k[WT_RUN0 / 4u] = a0; k[WT_RUN0 / 4u + 1u] = a1; k[WT_RUN1 / 4u] = b0; k[WT_RUN1 / 4u + 1u] = b1;
     copy5(k + WT_RUN2 / 4u, c);
-    AnProps *p = props(osc);
-    if (p->envf) { float env[2]; fm_env_step(g, p, env); }
-    else g->fmk = (u16)(AN_FE_DEC << 13);
     return 1;
 }
 

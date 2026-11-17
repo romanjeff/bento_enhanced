@@ -1152,6 +1152,188 @@ def fm12_bessel(y2, cc, cm, I, pc0, qm0, walk=0.0, eps_c=SINQ_ERR, eps_m=FM12_EP
     return bessel_check(y2, cc, cm, I, pc0, qm0, np.pi, eps_c, eps_m, eps32, walk)
 
 
+# ---- BE4.44 W2: the Wavetable table reader under FM (docs/plan-wt-fm.md 3.4, 7.1; D5 as decided) -------------------------
+# Written from the plan text and the W2 trace of stock's mip builder, before the M7 reader: numpy, float64 phase (a fraction of
+# a cycle), no C shared. The table (S, kmodel.py; test_analog Rig.tabled): 7 levels k = 0..6, D = 2^k, len_k = 2048 / D,
+# level k's 256 frames at float offset 0x100000 - (0x100000 >> k), frame f at + f len_k.
+# Stock's mip builder (W2 trace, S: M4 0x08112544..0x081126DE; M: its decimator emulated, bit for bit against wt_build_levels,
+# test_analog WtFmW2.test_the_mip_builder_is_stocks): level k = 1..6 is made from level k - 1 as ONE stream of all 256 frames:
+# z = 12 zeros + the level, y[m] = sum_t c_t z[2m + t] (t = 0..10, the 11 taps STOCK_FIR, accumulated in float32 in that
+# order), m = 0 .. len / 2 - 1. So y[m] is centred on z[2m + 5] = level k - 1's sample 2m - 7: level k's sample i is level
+# 0's position 2^k i - 7 (2^k - 1). The same sound on level k is 7 (2^k - 1) / 2048 of a cycle later than on level 0
+# (wt_skew): the reader reads a level other than the note's at the difference of the two skews. Each level's DC gain is
+# sum c = 0.951 (stock's levels get quieter, about 0.44 dB a level, and a frame's first samples carry the previous
+# frame's tail: stock's data, played as it is).
+# The block (3.4): stock's ladder on a pending flag; the phase in from (idx + frac) / len at the note's level; the mip
+# choice from the peak step (the rule's arithmetic is the device's, float32, wt_peak: a decision, not a sample); one change
+# a block (a frame change crossfades the frame at the mip playing and defers a mip change; else a mip change crossfades the
+# two levels); each sample read at the phase, then the phase advanced by di = inc + I_j a_j + J_j b_j, clamped to +-INC_MAX,
+# wrapped mod 1 both ways; crossfade weight (j + 1) / n; out: idx, frac at the note's len, the frame playing, mipcur (HOME
+# after a mip-home block, the line None, back at the note's level).
+WT_HOME = 0xFF
+WT_LEVELS = 7
+WT_MIP_HYST = 0.84                  # D5: hysteresis derived from the one threshold (stock's 1.25 -> 1.05, plan 3.4)
+WT_RD_MUTANTS = ("clamp_wrap", "fixed_mip", "xf_reversed", "units", "no_skew", "no_hyst", "read_late")
+
+
+def wt_level_off(k): return 0x100000 - (0x100000 >> k)
+def wt_level_len(k): return 2048 >> k
+def wt_skew(k): return 7.0 * (2 ** k - 1) / 2048.0
+
+
+def wt_build_levels(frames):
+    """Stock's table from its 256 level-0 frames (float32 (256, 2048)): levels 1..6 by stock's decimator, as above."""
+    t = np.zeros(0x100000, np.float32)
+    lev = np.asarray(frames, np.float32).reshape(-1)
+    t[:lev.size] = lev
+    c = np.asarray(STOCK_FIR, np.float32)
+    for k in range(1, WT_LEVELS):
+        z = np.concatenate([np.zeros(12, np.float32), lev])
+        m = lev.size // 2
+        s = (z[0:2 * m:2] * c[0]).astype(np.float32)
+        for j in range(1, 11):
+            s = (s + (z[j:j + 2 * m:2] * c[j]).astype(np.float32)).astype(np.float32)
+        lev = s
+        t[wt_level_off(k):wt_level_off(k) + m] = lev
+    return t
+
+
+def wt_ladder(rate):
+    """Stock's mip ladder at a note's first block (kmodel.py, kernel 0x080A2000): x = f32(rate), halved while >= 1.25."""
+    x, k = np.float32(rate), 0
+    while x >= np.float32(1.25) and k < WT_LEVELS - 1:
+        x = np.float32(x * np.float32(0.5)); k += 1
+    return k
+
+
+def wt_mip_for(x, thr, k):
+    """The finest level k' >= k with x < thr 2^k' (6 at most); x, thr float32."""
+    x, thr = np.float32(x), np.float32(thr)
+    while k < WT_LEVELS - 1 and x >= np.float32(thr * np.float32(2 ** k)): k += 1
+    return k
+
+
+def wt_peak(inc, line, n):
+    """The peak step in base-table samples a sample, float32 as the M7 forms it: (inc + I max|a| + J max|b|) 2048, I, J the
+    larger end of each index line (I_n = f32(ia + dia n)), max over every 4th sample of the block (the scan's stride)."""
+    a, ia, dia, b, ib, dib = line
+    f = np.float32
+    ma = f(np.max(np.abs(np.asarray(a, f)[0:n:4]))); mb = f(np.max(np.abs(np.asarray(b, f)[0:n:4])))
+    I = max(abs(f(ia)), abs(f(_fma32(f(ia), f(dia), f(n)))))
+    J = max(abs(f(ib)), abs(f(_fma32(f(ib), f(dib), f(n)))))
+    x = f(_fma32(f(_fma32(f(inc), I, ma)), J, mb))
+    return f(x * f(2048))
+
+
+def wt_mip_choice(x, kn, kc, thr, mutant=None):
+    """D5's rule: coarser at once to the finest level under thr; finer only to the finest level under thr x WT_MIP_HYST."""
+    up = wt_mip_for(x, thr, kn)
+    if mutant == "no_hyst": return up
+    dn = wt_mip_for(x, np.float32(np.float32(thr) * np.float32(WT_MIP_HYST)), kn)
+    return up if up > kc else dn if dn < kc else kc
+
+
+def wt_state(idx=0, frac=0.0, frame=-1, flag=1, mip=WT_HOME, k=0):
+    """Stock's kernel state (+0xC0 .. +0xD8) plus mipcur; the default is a note start's (kernel reset 0x080A1FC0)."""
+    return dict(frac=float(np.float32(frac)), idx=int(idx), frame=int(frame), off=wt_level_off(k), D=1 << k,
+                len=wt_level_len(k), flag=int(flag), mip=int(mip))
+
+
+def wt_read_block(tab, st, req, rate, n, line=None, thr=1.75, mutant=None):
+    """One reader block. tab: the table (float32, 0x100000); st: wt_state(); req: Position's frame; rate: stock's rate (f32);
+    line: None (no FM: the mip-home block) or (a, ia, dia, b, ib, dib), a / b the modulators in increment units. Returns
+    (y float64, the new state, the levels read (kc, kt)). Mutants (7.1 and the plan's 7.5): "clamp_wrap" (the phase cannot
+    go backward: a wrap by compare that fails on reverse), "fixed_mip" (the note's level always), "xf_reversed" (crossfade
+    weights reversed), "units" (the phase advanced in the note's samples, not cycles), "no_skew" (levels read unskewed),
+    "no_hyst", "read_late" (the phase advanced before the read, the reader prototype's order)."""
+    if mutant not in (None,) + WT_RD_MUTANTS: raise ValueError(f"mutant must be one of {WT_RD_MUTANTS}")
+    st = dict(st)
+    rate = float(np.float32(rate))
+    if st["flag"]:
+        k = wt_ladder(rate)
+        L = wt_level_len(k)
+        st.update(D=1 << k, len=L, off=wt_level_off(k), idx=int(math.fmod(st["idx"], L)), flag=0)
+    L = st["len"]; kn = 11 - int(round(math.log2(L)))
+    fcur = st["frame"] if 0 <= st["frame"] <= 255 else req
+    phi = ((st["idx"] + st["frac"]) / L) % 1.0
+    inc = float(np.float32(rate) * np.float32(1.0 / 2048.0))
+    kc = st["mip"] if st["mip"] < WT_LEVELS else kn
+    kc = max(kc, kn)
+    if line is None:
+        kt, a, b, ia, dia, ib, dib = kn, np.zeros(n), np.zeros(n), 0.0, 0.0, 0.0, 0.0
+    else:
+        a, ia, dia, b, ib, dib = line
+        kt = wt_mip_choice(wt_peak(inc, line, n), kn, kc, thr, mutant)
+    if mutant == "fixed_mip": kc = kt = kn
+    j = np.arange(n, dtype=np.float64)
+    di = inc + (ia + dia * j) * np.asarray(a, np.float64)[:n] + (ib + dib * j) * np.asarray(b, np.float64)[:n]
+    di = clamp_fm(di)
+    if mutant == "clamp_wrap": di = np.maximum(di, 0.0)
+    if mutant == "units": di = di * L / 2048.0
+    ph = (phi + np.concatenate([[0.0], np.cumsum(di)])) % 1.0
+    rd_ph = ph[1:] if mutant == "read_late" else ph[:-1]
+    t = np.asarray(tab, np.float32).astype(np.float64)
+    def read(k, f):
+        Lk = wt_level_len(k); base = wt_level_off(k) + f * Lk
+        sk = 0.0 if mutant == "no_skew" else wt_skew(k) - wt_skew(kn)
+        x = ((rd_ph + sk) % 1.0) * Lk
+        i = np.floor(x).astype(np.int64) % Lk; fr = x - np.floor(x)
+        s0 = t[base + i]; s1 = t[base + (i + 1) % Lk]
+        return s0 + fr * (s1 - s0)
+    w = (j + 1) / n
+    if req != fcur:
+        p, q = read(kc, fcur), read(kc, req); kt = kc
+    elif kt != kc:
+        p, q = read(kc, fcur), read(kt, fcur)
+    else:
+        p = q = read(kc, fcur)
+    y = q + w * (p - q) if mutant == "xf_reversed" else p + w * (q - p)
+    x = ph[-1] * L
+    st["idx"] = int(math.floor(x)) % L; st["frac"] = x - math.floor(x); st["frame"] = req
+    st["mip"] = WT_HOME if line is None and kt == kn else kt
+    return y, st, (kc, kt)
+
+
+def wt_fm_run(tab, rate, blocks, v, req=0, n=256, thr=1.75, inc_sub=None, wave="sine", st=None, mutant=None):
+    """Steady Sub FM for some blocks (D5's rows): the sub an octave down (inc_sub = inc / 2 unless given), A = inc_sub x the
+    sub's wave, the index I = an_index32(v) held (v0 = v1). Returns (y, st, the levels each block played)."""
+    inc = float(np.float32(rate) * np.float32(1 / 2048))
+    inc_sub = inc / 2 if inc_sub is None else inc_sub
+    st = st or wt_state()
+    q, ys, ks = 0.0, [], []
+    I = an_index32(v)
+    for _ in range(blocks):
+        m, q = sub_mod(wave, inc_sub, n, q)
+        a = (m * inc_sub).astype(np.float32).astype(np.float64)
+        y, st, k = wt_read_block(tab, st, req, rate, n, (a, I, 0.0, a, 0.0, 0.0) if v else None, thr, mutant)
+        ys.append(y); ks.append(k)
+    return np.concatenate(ys), st, ks
+
+
+def wt_saw_frames(h=None):
+    """256 equal level-0 frames of a band-limited saw (h harmonics, 1023 default: the table's own limit), float32."""
+    h = h or 1023
+    x = np.arange(2048) / 2048
+    w = sum(np.sin(2 * np.pi * k * x) / k for k in range(1, h + 1)) * (2 / np.pi) * 0.5
+    return np.tile(w.astype(np.float32), (256, 1))
+
+
+def wt_spectrum_rows(y, cycles_c, cycles_m):
+    """(centroid in carrier harmonics, alias fraction dB) of a steady FM run y whose carrier makes cycles_c and modulator
+    cycles_m whole cycles in it: every component of the band-limited FM tone lies on the modulator's grid (multiples of
+    cycles_m bins); the alias row is the energy off that grid (Hann window, the grid bins +-1 kept) over the total."""
+    N = len(y)
+    Y = np.abs(np.fft.rfft(y * np.hanning(N))) ** 2
+    k = np.arange(len(Y))
+    on = np.zeros(len(Y), bool)
+    for g in range(0, len(Y), cycles_m):
+        on[max(g - 1, 0):g + 2] = True
+    tot = float(np.sum(Y[2:])) or 1e-30
+    alias = float(np.sum(Y[~on])) / tot
+    cen = float(np.sum(k[2:] * Y[2:]) / tot) / cycles_c
+    return cen, 10 * np.log10(max(alias, 1e-30))
+
+
 # ---- self-test ----------------------------------------------------------------------------------------------------------
 def _selftest():
     import unittest
@@ -1704,8 +1886,99 @@ def _selftest():
                 self.assertGreater(spec[m], 100 * FM_ENV_TOL / 16, m)       # at I = 16, far above the f32 bound
             self.assertGreater(spec["lin_decay"], 0.2)
 
+    class WtRead(unittest.TestCase):                             # BE4.44 W2 (docs/plan-wt-fm.md 3.4, 7.1)
+        @staticmethod
+        def sine_table():
+            x = np.arange(2048) / 2048
+            return wt_build_levels(np.tile(np.sin(2 * np.pi * x).astype(np.float32), (256, 1)))
+
+        def test_the_builder_skews_each_level(self):
+            """Stock's levels (wt_build_levels): level k's fundamental lags level 0's by wt_skew(k) = 7 (2^k - 1) / 2048 of a
+            cycle, gain 0.951^k (the decimator's DC gain); frame 128 (no zero padding reaches it)."""
+            t = self.sine_table()
+            for k in range(WT_LEVELS):
+                L = wt_level_len(k)
+                c = np.fft.rfft(t[wt_level_off(k) + 128 * L:wt_level_off(k) + 129 * L].astype(np.float64))[1]
+                lag = (np.angle(c) + np.pi / 2) / (2 * np.pi)    # sin(2 pi (i / L - s)): angle -pi/2 - 2 pi s
+                self.assertAlmostEqual(-lag, wt_skew(k), delta=1e-6, msg=k)
+                self.assertAlmostEqual(abs(c) * 2 / L, float(np.sum(STOCK_FIR)) ** k, delta=5e-3, msg=k)
+
+        def test_fm0_plays_the_pitch(self):
+            """No FM at a fixed level: the phase moves n inc (stock's pitch), each sample the table at the phase before it."""
+            t = self.sine_table()
+            rate = 5.58131
+            st = wt_state(idx=17, frac=0.25, frame=9, flag=0, k=3)
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            z = np.zeros(256)
+            y, s2, ks = wt_read_block(t, st, 9, rate, 256, (z, 0.0, 0.0, z, 0.0, 0.0))
+            self.assertEqual(ks, (3, 3))
+            p0 = (17.25 / 256)
+            self.assertAlmostEqual(((s2["idx"] + s2["frac"]) / 256 - p0 - 256 * inc) % 1.0, 0.0, delta=1e-12)
+            ph = (p0 + inc * np.arange(256)) % 1
+            L, base = 256, wt_level_off(3) + 9 * 256
+            x = ph * L; i = np.floor(x).astype(int)
+            tt = t.astype(np.float64)
+            self.assertLess(float(np.max(np.abs(y - (tt[base + i] + (x - i) * (tt[base + (i + 1) % L] - tt[base + i]))))), 1e-12)
+
+        def test_other_levels_are_read_in_phase(self):
+            """A level read at its skew relative to the note's is the same wave (gain apart); unskewed it is not (no_skew)."""
+            t = self.sine_table()
+            st = wt_state(idx=40, frac=0.5, frame=3, flag=0, k=2, mip=5)
+            z = np.zeros(256)
+            for mut, lo, hi in ((None, 0.0, 2e-3), ("no_skew", 0.05, 9.0)):
+                st5 = dict(st)
+                y5, _, ks = wt_read_block(t, st5, 3, 2.79, 256, (z, 0.0, 0.0, z, 0.0, 0.0), mutant=mut)
+                self.assertEqual(ks, (5, 2), "mip 5 held, back to the note's level 2 (the peak is far below)")
+                g = float(np.sum(STOCK_FIR))
+                y2, _, _ = wt_read_block(t, dict(st, mip=WT_HOME), 3, 2.79, 256, (z, 0.0, 0.0, z, 0.0, 0.0))
+                # (the crossfade's first sample is mostly level 5: compare it to level 2 after the gains)
+                d = abs(y5[0] / g ** 5 - y2[0] / g ** 2)
+                self.assertTrue(lo <= d <= hi, (mut, d))
+
+        def test_through_zero_returns(self):
+            """A symmetric through-zero sweep (a sine modulator, whole cycles in the block, the increment well below 0 at its
+            trough) ends n inc on: the backward stretch is undone exactly. The wrap-by-compare mutant cannot go back."""
+            t = self.sine_table()
+            rate, n = 5.58131, 256
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            a = np.sin(2 * np.pi * 4 * np.arange(n) / n) * inc
+            line = (a, 6.0, 0.0, a, 0.0, 0.0)
+            self.assertLess(float(np.min(inc + 6.0 * a)), -4 * inc, "control: through zero")
+            st = wt_state(idx=100, frac=0.5, frame=0, flag=0, k=3)
+            _, s2, _ = wt_read_block(t, st, 0, rate, n, line)
+            self.assertAlmostEqual(((s2["idx"] + s2["frac"]) / 256 - 100.5 / 256 - n * inc) % 1.0, 0.0, delta=1e-9)
+            _, s3, _ = wt_read_block(t, st, 0, rate, n, line, mutant="clamp_wrap")
+            self.assertGreater(abs((s3["idx"] + s3["frac"]) - (s2["idx"] + s2["frac"])), 0.3)
+
+        def test_the_mip_rule(self):
+            """D5 against a hand table (thr 1.25, hysteresis 1.05): coarser at once, finer only below 1.05 x 2^k, never
+            finer than the note's level, 6 at most."""
+            for x, kn, kc, want in ((1.0, 0, 0, 0), (1.25, 0, 0, 1), (2.4, 0, 0, 1), (2.5, 0, 0, 2), (2.4, 0, 2, 2),
+                                    (2.2, 0, 2, 2), (2.0, 0, 2, 1), (1.0, 0, 2, 0), (1.04, 0, 1, 0), (1.06, 0, 1, 1),
+                                    (500.0, 0, 0, 6), (1.0, 3, 3, 3), (9.0, 3, 3, 3), (10.0, 3, 3, 4), (8.5, 3, 4, 4),
+                                    (8.3, 3, 4, 3)):
+                self.assertEqual(wt_mip_choice(x, kn, kc, 1.25), want, (x, kn, kc))
+            self.assertEqual(wt_mip_choice(2.0, 0, 2, 1.25, "no_hyst"), 1)
+            self.assertEqual(wt_mip_choice(1.06, 0, 1, 1.25, "no_hyst"), 0)
+
+        def test_mutants_turn_red(self):
+            """Each golden mutant changes a block it should: a mip-change block (skew, weights, fixed mip), a through-zero
+            block (wrap), any block (units, read order), a ramp parked between the two thresholds (hysteresis)."""
+            t = wt_build_levels(wt_saw_frames(200))
+            rate, n = 5.58131, 256
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            a = (np.sin(2 * np.pi * 2 * np.arange(n) / n) * inc / 2)
+            st = wt_state(idx=11, frac=0.3, frame=5, flag=0, k=3)
+            for m, line, s in (("no_skew", (a, 12.0, 0.0, a, 0.0, 0.0), st), ("xf_reversed", (a, 12.0, 0.0, a, 0.0, 0.0), st),
+                               ("fixed_mip", (a, 12.0, 0.0, a, 0.0, 0.0), st), ("clamp_wrap", (a, 12.0, 0.0, a, 0.0, 0.0), st),
+                               ("units", None, st), ("read_late", None, st),
+                               ("no_hyst", (a, 2.6, 0.0, a, 0.0, 0.0), dict(st, mip=4))):
+                y0, s0, k0 = wt_read_block(t, s, 5, rate, n, line)
+                y1, s1, k1 = wt_read_block(t, s, 5, rate, n, line, mutant=m)
+                self.assertGreater(float(np.max(np.abs(y1 - y0))) + abs(s1["idx"] - s0["idx"]) + (k1 != k0), 1e-3, m)
+
     L = unittest.defaultTestLoader
-    r = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([L.loadTestsFromTestCase(c) for c in (Shapes, FM, FM12, FmEnv)]))
+    r = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([L.loadTestsFromTestCase(c) for c in (Shapes, FM, FM12, FmEnv, WtRead)]))
     return 0 if r.wasSuccessful() else 1
 
 

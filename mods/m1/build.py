@@ -93,6 +93,23 @@ VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (di
 # Code stays in the image, unreachable. BE_ENABLE="stall,irq30" turns them back on.
 DEFAULT_OFF = {"stall", "irq30", "modtest"}   # modtest: F1 fixed routing (test builds only)
 ENABLED = {g for g in os.environ.get("BE_ENABLE", "").split(",") if g}
+# BE4.44 W2 (docs/plan-wt-fm.md D5, decided: "in between, leaning bright"): the Wavetable FM mip threshold is one constant
+# (dsp/analog.cpp WT_MIP_THR, its hysteresis derived from it). BE_WT_MIP builds another value (W3 / W4's cleaner and brighter
+# alternate device images, with a BE_TAG suffix); the manifest records it (wt_mip). Stock's own ladder is 1.25 (clean).
+WT_MIP_DEFAULT = 1.75
+def wt_mip_threshold(text=None):
+    """BE_WT_MIP as a float in [1.0, 4.0] (below 1 is brighter than the table holds; 4 skips two levels' worth)."""
+    text = os.environ.get("BE_WT_MIP", "") if text is None else text
+    if not text:
+        return WT_MIP_DEFAULT
+    try:
+        v = float(text)
+    except ValueError:
+        raise SystemExit(f"BE_WT_MIP={text!r}: not a number")
+    if not 1.0 <= v <= 4.0:
+        raise SystemExit(f"BE_WT_MIP={text!r}: outside 1.0 .. 4.0")
+    return v
+WT_MIP = wt_mip_threshold()
 DISABLED = (DEFAULT_OFF - ENABLED) | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
 # S3 split poly, cond and inta into the part S3 ports (M7 only) and the part a later sprint does, so the
 # S3 part builds on 1.6.8 alone: poly_cap (S3) + poly_at (S5: External handler h_poly and the M4 MIDI
@@ -265,6 +282,8 @@ SOURCES = [  # (source, ELF, groups that need it; () = core), in compile order
     ("m7_controls_input.s", "asm", ("hold",)), ("m4_controls.c", "m4_controls", ("hold",)),
     ("m4_step.c", "m4_step", ("step", "mx")),
     ("dsp/analog.cpp", "dsp", ("analog",)), ("dsp/analog_kernel.cpp", "dsp", ("analog",)),   # S6a: hard-float DSP ELF
+    ("dsp/wt_reader.cpp", "dsp", ("analog",)),                                           # BE4.44 W2: the WT FM reader loops
+    ("dsp/wt_mipx.cpp", "dsp", ("analog",)),                                             # BE4.44 W2: its mip-change loop (-Os)
     ("dsp/dsp_lib.cpp", "dsp", ("analog", "drums")),                                     # S6c: memset / memcpy, math
     ("dsp/drums.cpp", "dsp", ("drums",)), ("dsp/drum_kick.cpp", "dsp", ("drums",)),      # S6c: the drum synths
     ("dsp/daisysp/Source/Drums/synthbassdrum.cpp", "dsp", ("drums",)),                   # S6c: DaisySP (MIT, unmodified)
@@ -648,7 +667,7 @@ def compile_elf(srcs, cpu, ld, out, origin, limit, extra=()):
 # vtables can point at them and our soft-float m7.elf never calls a float function. -O2 for the kernel file, -Os for the
 # rest (clang ignores optimize attributes). `defines`: measurement builds only (test_analog.py's before / after runs).
 DSP_CPU = ("-target", "thumb-freestanding-eabihf", "-mcpu=cortex_m7+fp_armv8d16sp", "-mfloat-abi=hard")
-DSP_OPT = {"analog_kernel.cpp": "-O2", "drum_kick.cpp": "-O2", "synthbassdrum.cpp": "-O2", "svf.cpp": "-O2"}
+DSP_OPT = {"analog_kernel.cpp": "-O2", "wt_reader.cpp": "-O2", "drum_kick.cpp": "-O2", "synthbassdrum.cpp": "-O2", "svf.cpp": "-O2"}
 # S6c: the vendored DaisySP files (dsp/daisysp, unmodified) find their includes here; dsp/shim stands in for the C / C++ library
 # headers they name (searched before the compiler's own), so no libc / libm declaration (and no double overload) reaches them.
 DSP_INCLUDES = ("dsp/shim", "dsp/daisysp/Source", "dsp/daisysp/Source/Utility")
@@ -680,7 +699,7 @@ def compile_dsp(srcs, ld, out, origin, limit, defines=()):
               "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections",
               "-Wall", "-Werror", "-Wdouble-promotion", "-include", str(syms_h), f"-I{out.parent}",
               *[f"-I{HERE / d}" for d in DSP_INCLUDES],
-              *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *defines]
+              *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], f"-DWT_MIP_THR={WT_MIP!r}f", *defines]
     objs = []
     for src in srcs:
         o = out.parent / ("dsp_" + Path(src).stem + ".o")
@@ -1353,7 +1372,8 @@ def build(base_img, out):
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     if synth:                                    # S6a / S6c
-        man.update(dsp_symbols={k: hex(v) for k, v in sd.items()}, dsp_code_bytes=dsp_bytes, synth_code_bytes=synth_bytes_)
+        man.update(dsp_symbols={k: hex(v) for k, v in sd.items()}, dsp_code_bytes=dsp_bytes, synth_code_bytes=synth_bytes_,
+                   wt_mip=WT_MIP)
     if omitted:                                  # S2: groups left out of the image (not only unpatched)
         man["omitted"] = sorted(omitted)
         man["uses"] = {g: sorted(n for n in needs[g] if s.syms.get(n)) for g in sorted(included)}
