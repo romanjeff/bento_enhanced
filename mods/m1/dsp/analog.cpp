@@ -40,7 +40,10 @@
  *   - BE4.44 W1 (docs/plan-wt-fm.md 3.1 .. 3.3): a Wavetable oscillator keeps FM settings too (Sub FM on OSC1, FM 1>2 on OSC2,
  *     FM Atk / FM Dec), in its own area at AnOsc / AnProps's offsets behind a tag pair (wt_init, wt_prop, wt_settle), and
  *     OSC1 the feed-B bit (wt_feed); an_osc sends a tagged one to wt_fm_osc, which runs stock's render body with the saved
- *     runs put back around it (tier 2) and steps its FM envelope. No table reader yet: nothing of it is heard (W2).
+ *     runs put back around it (tier 2) and steps its FM envelope. W2: our table reader under FM (tier 3, wt_body, wt_play,
+ *     dsp/wt_reader.cpp). W3: Sub FM's A into a Wavetable OSC1 and FM 1>2's B from an Analog OSC1 into a Wavetable OSC2
+ *     (feeds), D3 (Sub FM plays as 0 while an Analog OSC2 is synced to the Wavetable OSC1), BE_WT_MIP=off (WT_MIP_OFF), the
+ *     black box's wt= (SaFmStats) and our reader blocks in SaStats.
  * Four vtable words point at build.py's trampolines (in this window, before this ELF):
  *   A1  Wavetable root slot 18 (voice render): an_enter(root, voice), then stock's render
  *   A2  Wavetable oscillator slot 0 (render): an_osc(osc, scratch, out) != 0 means handled, else stock
@@ -367,9 +370,10 @@ static float param_mod(void *param) {
     return m;
 }
 
-/* The block just finished: its figures into the stats lines (only blocks where an Analog voice ran). */
+/* The block just finished: its figures into the stats lines (only blocks where an Analog voice ran, or since BE4.44 W3 a
+ * Wavetable oscillator played our reader: r->oscs, wt_body). */
 static void finish(Run *r) {
-    if (r->voices) {
+    if (r->voices | r->oscs) {                                /* (BE4.44 W3: or a Wavetable FM render, wt_body) */
         volatile SaStats *s = STATS;
         u32 c = r->cyc;
         s->blocks++;
@@ -565,7 +569,7 @@ __attribute__((noinline)) static void fm_env_step(AnOsc *g, const AnProps *p, fl
 /* BE4.43: env[0] / env[1] the oscillator's FM envelope over this block (fm_env_step, read only while the envelope is set;
  * 1 / 1 with FM Atk 0 / Dec Inf, the defaults: then every line is BE4.42's bit for bit). Sub FM is OSC1's, and OSC2's only while OSC1 is not Analog (twelve: OSC2 has
  * FM 1>2 instead; its Sub FM value is kept but plays nothing, its msub ramps out once). */
-__attribute__((noinline)) static int fm_setup(Run *r, u8 *v, AnOsc *self, AnProps *p, int twelve, u32 n, FmIn *fi,
+__attribute__((noinline)) static int fm_setup(Run *r, u8 *v, AnOsc *self, const AnProps *p, int twelve, u32 n, FmIn *fi,
                                               const float *env) {
     u32 v1 = twelve ? 0 : p->subfm, v0 = self->msub, x1 = twelve ? p->fm12 : 0, x0 = twelve ? self->m12 : 0;
     float e0 = 1.f, e1 = 1.f;
@@ -610,7 +614,9 @@ __attribute__((noinline)) static int fm_setup(Run *r, u8 *v, AnOsc *self, AnProp
 __attribute__((noinline)) static float *feeds(Run *r, u8 *v, u32 which, int a2, void *o2, u32 n, AnOsc *self,
                                              const AnProps *p, float *env) {
     if (p->envf) fm_env_step(self, p, env);
-    return which == 0 && a2 && (props(o2)->fm12 || state(o2)->m12) && n <= AN_FM_FRAMES && r->voice == (u32)v
+    /* BE4.44 W3 (docs/plan-wt-fm.md 8 W3): also for a Wavetable OSC2 with FM 1>2 (tagged: its fm12 / m12 at AnProps / AnOsc's
+     * offsets), a carrier of B through the reader (wt_body) */
+    return which == 0 && (a2 || wt_tagged(o2)) && (props(o2)->fm12 || state(o2)->m12) && n <= AN_FM_FRAMES && r->voice == (u32)v
                ? (float *)SA(SA_FMBUF_B) : 0;
 }
 
@@ -727,17 +733,24 @@ static inline u32 wt_mip_off(u32 k) { return 0x100000u - (0x100000u >> k); }   /
  * level). One change a block (W2 review: each change waits one block at most): a Position change crossfades the frame and
  * defers a wanted mip change (WT_MIP_WAIT); the next block changes the mip and defers the frame. Without the bit a Position
  * moving every block (an LFO, the knob) held the mip off for good: no coarser level under FM, no mip home after it. */
+/* BE4.44 W3 (D5's bright alternate, Jeff 2026-11-17: "never go darker"): build.py BE_WT_MIP=off defines WT_MIP_OFF. The reader
+ * then stays at stock's level for the note under any FM (the D5 rows' "note level" column): no peak, no mip choice, so no
+ * mip-change block and no mip-home block (mipcur stays HOME: the last FM block, its line ending at index 0 at stock's own
+ * level, hands back straight to stock's render). Aliasing under heavy FM is the accepted price. */
+#ifndef WT_MIP_OFF
 /* the finest level k >= k0 with x < thr 2^k (6 at most) */
 __attribute__((noinline)) static u32 wt_mip_for(float x, float thr, u32 k) {
     while (k < WT_MIPS - 1u && x >= thr * (float)(1u << k)) k++;
     return k;
 }
+#endif
+enum { WT_RD_PLAIN = 0, WT_RD_FRAME = 1, WT_RD_MIP = 2 };     /* wt_play's block: rd_q, rd_qx, rd_qm (the black box's wt=) */
 /* pa: max |a| when it is known (buffer A: inc_sub x the sub wave's peak, wt_body), else 0: a is scanned. W2 review: a scan
  * over one block follows a slow sub's phase (at notes 24..36 its period spans blocks) and flipped the level with the sub's
  * cycle; the known peak is steady. b (B, OSC1's output, from W3) is scanned. */
 struct WtBlk { const float *tab; const FmIn *fi; float *s; float rate; u32 n, pos; float pa; };
 static_assert(sizeof(WtBlk) == 28, "the test harness writes it");
-__attribute__((noinline)) static void wt_play(void *osc, const WtBlk *bk) {
+__attribute__((noinline)) static u32 wt_play(void *osc, const WtBlk *bk) {
     WtK *K = WTK(osc);
     AnOsc *g = state(osc);
     float rate = bk->rate;
@@ -760,6 +773,7 @@ __attribute__((noinline)) static void wt_play(void *osc, const WtBlk *bk) {
     rd.fi = fi ? fi : &none;
     u32 kc = wt_mip(g), kt = kn;
     if (kc == WT_HOME || kc < kn) kc = kn;
+#ifndef WT_MIP_OFF
     if (fi) {
         /* the peak step: |inc| + max |I| max |A| + max |J| max |B| (the lines' two ends; A's known peak, else every 4th
          * frame; B every 4th frame) */
@@ -775,7 +789,8 @@ __attribute__((noinline)) static void wt_play(void *osc, const WtBlk *bk) {
         u32 up = wt_mip_for(x, WT_MIP_THR, kn), dn = wt_mip_for(x, WT_MIP_THR * WT_MIP_HYST, kn);
         kt = up > kc ? up : dn < kc ? dn : kc;
     }
-    u32 lc = 11u - kc, wf = g->wt.wflags, wait = 0;
+#endif
+    u32 lc = 11u - kc, wf = g->wt.wflags, wait = 0, what = WT_RD_PLAIN;
     rd.l0 = rd.l1 = lc; rd.o0 = WT_MIP_SKEW(kc) - WT_MIP_SKEW(kn); rd.d1 = 0;
     rd.t0 = bk->tab + wt_mip_off(kc) + (fcur << lc);
     if (pos != fcur && (kt == kc || !(wf & WT_MIP_WAIT))) {   /* rd_qx: the frame, at the mip playing (a mip change waits) */
@@ -783,12 +798,14 @@ __attribute__((noinline)) static void wt_play(void *osc, const WtBlk *bk) {
         wt_rdf(&rd);
         if (kt != kc) wait = WT_MIP_WAIT;
         kt = kc;
+        what = WT_RD_FRAME;
     } else if (kt != kc) {                                    /* rd_qm: the mip, the frame fixed (a frame change waits) */
         u32 lt = 11u - kt;
         rd.l1 = lt; rd.d1 = WT_MIP_SKEW(kt) - WT_MIP_SKEW(kc);
         rd.t1 = bk->tab + wt_mip_off(kt) + (fcur << lt);
         wt_rdx(&rd);
         pos = fcur;
+        what = WT_RD_MIP;
     } else {
         wt_rd(&rd);
     }
@@ -796,19 +813,32 @@ __attribute__((noinline)) static void wt_play(void *osc, const WtBlk *bk) {
     K->frac = (float)(rd.ph << l) * (1.f / 4294967296.f);
     K->frame = (int)pos;
     g->wt.wflags = (u8)((wf & ~WT_MIP_WAIT) | wait);
+#ifdef WT_MIP_OFF
+    g->wt.mipcur = (u8)WT_HOME;                               /* (off: only the note's level, so no mip is ever held) */
+#else
     g->wt.mipcur = (u8)(!fi && kt == kn ? WT_HOME : kt);
+#endif
+    return what;
 }
 
 /* Tier 3 (plan 3.3, 3.5's body): stock's render body in stock's order, our reader for its kernel: the table (no WAV: nothing,
  * as stock), the rate (rate_of, stock's bit for bit), the frame, Level and its smoother, the silent rule (D9 (b): a silent
- * oscillator freezes, as stock's, unless it feeds B), then the FM line (fm_setup: Sub FM from A; OSC2's FM 1>2 as
- * on Analog), the reader, SMOOTH_APPLY and MIX_INTO. 0: not handled (no run state, no voice, a kernel state out of range:
- * the caller plays tier 2). */
+ * oscillator freezes, as stock's, unless it feeds B), then the FM line (fm_setup: Sub FM from A on OSC1; OSC2's FM 1>2 from
+ * B, which an Analog OSC1 writes since W3: feeds), the reader, SMOOTH_APPLY and MIX_INTO. 0: not handled (no run state, no
+ * voice, a kernel state out of range, or nothing to play: the caller plays tier 2).
+ * BE4.44 W3: D3 (Jeff, 2026-11-17): while an Analog OSC2 is synced to this Wavetable OSC1 (mixed sync: the slave follows a
+ * copy of WT1's phase at its plain rate), OSC1's Sub FM plays as 0, its value kept: the line's target is 0 and msub is
+ * dropped at once (no ramp out: one FM block would leave WT1's phase off the copy until the next note). With no mip held
+ * the block is then stock's render (tier 2), bit for bit: mixed sync plays as BE4.43. The black box (SaFmStats wt= / wt_mip,
+ * SaStats renders and cycles): every block the reader plays is counted, as an Analog render is in an_osc (a block with no
+ * WAV or frozen at level 0 plays nothing, as stock's, and is not). */
 __attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out, const float *env) {
     u32 which = 2;
     u8 *v = voice_of(osc, &which);
     u32 len = WTK(osc)->len;
     if (!area_ok() || !v || len < 32u || len > 2048u || (len & (len - 1u))) return 0;
+    Run *r = RUN;
+    u32 c0 = CYCCNT;
     WtBlk bk;
     void *obj = (void *)W(osc, 0x18);
     bk.tab = 0;
@@ -829,15 +859,22 @@ __attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out
         return 1;
     }
     FmIn fi;
-    Run *r = RUN;
-    bk.fi = fm_setup(r, v, g, props(osc), which == 1, bk.n, &fi, env) ? &fi : 0;
-    /* W2 review: no line this block and no mip held (an amount that plays nothing yet: OSC2's FM 1>2 with no B until W3, a
-     * WT OSC2's hidden Sub FM, D2) and not feeding B: stock's render (tier 2), bit for bit, not the reader at index 0. What
-     * this body set above (Level's smoother target, rate, frame) stock's body sets again from the same inputs */
+    const AnProps *p = props(osc);
+    AnProps d3;
+    if (which == 0) {                                         /* D3: an Analog OSC2 synced to this OSC1 */
+        void *o2 = v + S_VOICE_WT2;
+        if (is_analog(o2) && props(o2)->sync == 1u) { d3 = *p; d3.subfm = 0; p = &d3; g->msub = 0; }
+    }
+    bk.fi = fm_setup(r, v, g, p, which == 1, bk.n, &fi, env) ? &fi : 0;
+    /* W2 review: no line this block and no mip held (an amount that plays nothing: OSC2's FM 1>2 with B not written this
+     * voice-block, fmx=; a WT OSC2's hidden Sub FM, D2; Sub FM under D3) and not feeding B: stock's render (tier 2), bit for
+     * bit, not the reader at index 0. What this body set above (Level's smoother target, rate, frame) stock's body sets again
+     * from the same inputs */
     if (!bk.fi && wt_mip(g) == WT_HOME && !(g->wt.wflags & WT_FEED_B)) return 0;
+    bk.pa = 0.f;
+#ifndef WT_MIP_OFF
     /* A's known peak (wt_play): inc_sub x the sub wave's (1; the Square's 1 + |1 - 2 pw|, its DC-free form, from the width
      * its core plays) */
-    bk.pa = 0.f;
     if (bk.fi && fi.a == (const float *)SA(SA_FMBUF_A)) {
         const u8 *core = v + S_VOICE_SUB + SUB_CORE;
         float pk = 1.f;
@@ -845,13 +882,19 @@ __attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out
         __builtin_memcpy(&bk.pa, &r->inc_sub, 4);
         bk.pa *= pk;
     }
+#endif
     bk.s = FN(S_SCRATCH_PTR, float *(*)(void *))(scratch);
     FN(S_SCRATCH_SIZE, void (*)(void *, u32))(scratch, bk.n);
-    wt_play(osc, &bk);
+    u32 what = wt_play(osc, &bk);
+    volatile SaFmStats *fs = FMSTATS;
+    fs->wt++;
+    if (what == WT_RD_MIP) fs->wt_mip++;
     if (!silent) {
         FN(S_SMOOTH_APPLY, void (*)(void *, float *, u32, u32))((u8 *)osc + OSC_SMOOTH, bk.s, 0, bk.n);
         FN(S_MIX_INTO, void (*)(void *, void *))(out, scratch);
     }
+    r->oscs++;                                                /* (the black box: a render of ours, its cycles) */
+    r->cyc += CYCCNT - c0;
     return 1;
 }
 
@@ -936,7 +979,9 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     u32 x;
     AnProps *pp = props(osc);
     __builtin_memcpy(&x, &self->msub, 4);
-    if (which == 0) { x |= pp->subfm; if (a2) x |= props(o2)->fm12 | slave->m12; }
+    /* (BE4.44 W3: a Wavetable OSC2 with the tag's high half may have FM 1>2 too: feeds checks the whole pair; an untagged one's
+     * bytes are stock's, so at worst a stray feeds call that finds nothing) */
+    if (which == 0) { x |= pp->subfm; if (a2 || slave->magic >> 16 == WT_TAG_HI >> 16) x |= props(o2)->fm12 | slave->m12; }
     else x |= a1 ? pp->fm12 : pp->subfm;                      /* BE4.43: OSC2's one amount (FM 1>2 next to an Analog OSC1) */
     float env[2];                                             /* (feeds writes it while envf; in memory: no float live here) */
     /* (feeding B; BE4.43: feeds also steps the FM envelope while it is set, AnProps.envf, so it keeps time without an

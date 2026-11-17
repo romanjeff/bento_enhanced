@@ -41,7 +41,7 @@ the oscillator's own FM envelope (FM Atk 0x1A4, FM Dec 0x1A0; 0x1A4 was BE4.41's
 against p3_golden.fm_env_lines bit for bit, P3Identity masks the envelope's own state bytes (ENV_BYTES), BitDepthGone is
 restated for the envelope's defaults and 0x1A4 as FM Atk.
 """
-import json, math, os, random, struct, sys, unittest
+import json, math, os, random, struct, sys, types, unittest
 from fractions import Fraction
 from pathlib import Path
 from unicorn import Uc, UcError, UC_ARCH_ARM, UC_MODE_THUMB, UC_MODE_MCLASS, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
@@ -2125,8 +2125,11 @@ class P3Identity(unittest.TestCase):
         # BE4.44 W2 (reviewed change): OSC2's FM 1>2 333 on "osc2 wavetable" opens the reader (tier 3); with no WAV in this
         # rig the body stops at the table, as stock's render does (silent either way): its own path, M 148 a call; "mixed"
         # (OSC1 feeding B, gate 0) adds the gate's loads to tier 2, M 48
-        cases = (("osc2 wavetable", lambda r: self.voice_case(r, shape=(64, 48), types=(1, 0), p3=p3), (0,), 8, 170),
-                 ("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,), 24, 55))
+        # BE4.44 W3 (reviewed change, docs/plan-wt-fm.md 8 W3): "osc2 wavetable" left this list: its Wavetable OSC2's FM 1>2 333
+        # is a carrier of B now, so the Analog OSC1 feeds it (+13 % on that case: the FM parts loop and an_feed, M), as Q6 moved
+        # the both-Analog cases; Fm12.test_the_amounts_cases_are_the_expected_change checks it (B written, nothing reads it: no
+        # WAV in that rig) and WtFmW3 the B path into a Wavetable carrier
+        cases = (("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,), 24, 55),)
         for dev in (False, True):
             for name, run, oscs, fills, wt in cases:
                 if dev and name == "glide":
@@ -4156,8 +4159,10 @@ class SubFm(unittest.TestCase):
                         self.assertTrue(all((x["ib"], x["dib"]) == (0.0, 0.0) for x in calls), "one term (BE4.43)")
                         self.assertTrue(all(x["A"] == SA + SA_FMBUF_B for x in calls if x["osc"] == o2), "OSC2: B alone")
                         self.assertGreater(check_feeds(self, name, calls, o2 - S.VOICE_WT2 + S.VOICE_WT1, o2, n=r.frames), 0)
-                    else:
+                    elif name == "mixed":
                         self.assertEqual(calls.feeds, [], f"{name}: no B")
+                    else:                                       # BE4.44 W3 (reviewed change): B for the Wavetable OSC2's FM 1>2
+                        self.assertGreater(check_feeds(self, name, calls, r.osc(r.v, 0), r.osc(r.v, 1), n=r.frames), 0)
 
     def test_cost(self):
         """5 / 6.5: hooks per voice-block (an_enter + an_osc with their stock helpers: Span; median of 6) on the device's
@@ -4667,15 +4672,21 @@ class Fm12(unittest.TestCase):
                 self.assertTrue(calls and all(x["A"] == x["B"] == SA + SA_FMBUF_A and (x["ib"], x["dib"]) == (0.0, 0.0)
                                               for x in calls), "Sub FM alone")
                 self.assertEqual((calls.feeds, stats[FM_MISSED // 4]), ([], 0))
+        # BE4.44 W3 (reviewed change, docs/plan-wt-fm.md 8 W3): a tagged Wavetable OSC2 holding FM 1>2 is a carrier of B now, so
+        # the Analog OSC1 feeds it (check_feeds); this rig's Wavetable OSC2 has no WAV, so it reads nothing (WtFmW3: one that does)
         calls, _, stats, _, (r, v, _) = self.play(types=(1, 0), fm=(0, 0))
-        self.assertEqual((list(calls), calls.feeds, stats), ([], [], (0,) * 8), "a Wavetable OSC2: OSC1 feeds nothing")
+        self.assertEqual((list(calls), stats), ([], (0,) * 8), "a Wavetable OSC2 with no WAV: no FM render, nothing counted")
+        self.assertGreater(check_feeds(self, "OSC1 -> a Wavetable OSC2", calls, r.osc(v, 0), r.osc(v, 1)), 0,
+                           "W3: OSC1 feeds a Wavetable OSC2's FM 1>2")
 
     def test_the_amounts_cases_are_the_expected_change(self):
         """P3 Q6's expected change (6.7: test_q1_plays_no_amount's FM 1>2 part, plan 7): its seven cases, Rig() and Rig(dev=True),
         with FM 1>2 333 alone: where both oscillators are Analog (free, sync, the silent sync master, glide, stock's root
         voice) OSC2 plays FM 1>2 from OSC1's B, every call the golden's and B OSC1's (check_feeds; E3 (a): the silent master
         feeds too); where it cannot (OSC2 Wavetable, OSC1 Wavetable: mixed) nothing renders under FM and nothing feeds (the
-        part test_q1_plays_no_amount keeps against BE4.40); fm= = the renders with FM, fmx= 0 / 0."""
+        part test_q1_plays_no_amount keeps against BE4.40); fm= = the renders with FM, fmx= 0 / 0. BE4.44 W3 (reviewed change):
+        an Analog OSC1 feeds a tagged Wavetable OSC2's FM 1>2 now ("osc2 wavetable": B written, check_feeds; that rig's OSC2
+        has no WAV, so nothing reads it)."""
         p3 = (0, 0, 333)
         me = P3Identity()
         cases = (("free", lambda r: me.voice_case(r, shape=(48, 88), p3=p3), True),
@@ -4692,7 +4703,9 @@ class Fm12(unittest.TestCase):
                     run(r)
                     st = struct.unpack("<8I", r.u.mem_read(SA + SA_FMSTATS, 32))
                     self.assertEqual(len(calls) > 0, plays, f"{name}: FM 1>2 plays where both are Analog")
-                    self.assertEqual(len(calls.feeds) > 0, plays)
+                    self.assertEqual(len(calls.feeds) > 0, plays or name == "osc2 wavetable", "B (W3: for a Wavetable OSC2 too)")
+                    if name == "osc2 wavetable":
+                        self.assertGreater(check_feeds(self, name, calls, r.osc(r.v, 0), r.osc(r.v, 1), n=r.frames), 0)
                     self.assertEqual(st[FM_FM // 4], self.renders(calls))
                     self.assertEqual((st[FM_SKIPPED // 4], st[FM_MISSED // 4]), (0, 0))
                     if plays:
@@ -5717,7 +5730,9 @@ WT_MIPS_N = 7               # analog.h WT_MIPS
 import wt_kmodel as KM                                     # 7.2: stock's kernel, a bit-exact model (re-checked below)
 WT_KERN = 0x080A2000          # stock 1.6.8's kernel read (S_OSC_KERNEL's note: the render's bl at 0x08081D5E)  # addr-ok: stock kernel (W2)
 WT_MIPB_RESET, WT_MIPB_RUN, WT_MIPB_TAPS = 0x08113F10, 0x08113DF0, 0x08113EF8   # addr-ok: stock M4 mip builder (W2 trace)
-WT_THR = float(MAN["wt_mip"])               # D5: this build's threshold, the manifest's only (build.py BE_WT_MIP; no copy here)
+WT_THR = MAN["wt_mip"] if MAN["wt_mip"] == "off" else float(MAN["wt_mip"])   # D5: this build's threshold, the manifest's
+                                           # only (build.py BE_WT_MIP; no copy here); W3: "off", never coarser than stock's level
+wt_rule = unittest.skipIf(WT_THR == "off", "BE_WT_MIP=off: no mip rule to test (WtFmW3.test_mip_off tests that build)")
 TOL_RD = {32: 2e-6, 256: 2e-7}   # 7.1: plain blocks, device vs golden at len 32 / 256 (prototype 1.8e-6 / 1.9e-7)
 # 7.1's named bounds, set at W2 from the measurements (M, printed by test_the_reader_is_the_golden; about 2x, never loosened)
 TOL_RD_2048, TOL_RD_TZ, TOL_RD_XM, TOL_RD_XF = 2e-7, 4e-7, 4e-7, 4e-7
@@ -5863,6 +5878,7 @@ class WtFmW2(unittest.TestCase):
             self.assertEqual(got[f], gst[f], f"{what}: {f}")
         return err, ks
 
+    @wt_rule
     def test_the_reader_is_the_golden(self):
         """7.1: plain blocks (index ramps, both routes) at len 32 / 256 / 2048 within TOL_RD / TOL_RD_2048; a through-zero
         block (TOL_RD_TZ), a mip-change block (rd_qm, TOL_RD_XM), a frame-change block (rd_qx, TOL_RD_XF); a frame change
@@ -5933,6 +5949,7 @@ class WtFmW2(unittest.TestCase):
         rate = wt_rate(60); inc = float(f32(rate) * f32(1 / 2048))
         self.check(w, G.wt_state(idx=17, frac=1.0, frame=5, flag=0, k=3), 5, rate, wt_line(inc, 256, 0.2, 0.2), TOL_RD[256], "frac 1.0")
 
+    @wt_rule
     def test_hysteresis_band(self):
         """W2 review: the band's value (WT_MIP_HYST 0.84) pinned from both sides. Held at kn + 2 with the peak at 0.90 x
         WT_THR x 2^(kn + 1) (inside the band one level down): stays (0.95 would step down); at 0.78 (below the band one
@@ -5968,6 +5985,7 @@ class WtFmW2(unittest.TestCase):
                 ch = sum(1 for p, q in zip(mips, mips[1:]) if p != q)
                 self.assertLessEqual(ch, 1, f"note {note} Sub FM {v}: {mips}")
 
+    @wt_rule
     def test_hysteresis(self):
         """Mutation 23 (D5's derived band): a peak parked between WT_THR x 0.84 and WT_THR (x 2^k) keeps the coarser level
         held, block after block; a peak moving +-1 % across the threshold changes the level at most twice in 16 blocks."""
@@ -5990,6 +6008,7 @@ class WtFmW2(unittest.TestCase):
             mips.append(got["mip"])
         self.assertLessEqual(sum(1 for p, q in zip(mips, mips[1:]) if p != q), 2, f"no toggling: {mips}")
 
+    @wt_rule
     def test_position_every_block(self):
         """W2 review (plan 7.4 "Position LFO with a decaying FM Dec"): Position one frame on every block, Sub FM attacking to
         a heavy index and then (a) cut to 0 (the ramp-out block, then the mip-home block) or (b) decaying over six blocks.
@@ -6047,6 +6066,7 @@ class WtFmW2(unittest.TestCase):
         r.block()
         return y
 
+    @wt_rule
     def test_mip_home_through_the_render(self):
         """W2 review (mutation 7 in its natural form: the mip term dropped from wt_fm_osc's gate): a Wavetable OSC1 with Sub
         FM 1000 from a sounding Sine sub goes to a coarse level, holds it through the ramp-out block (Sub FM 0), then plays
@@ -6063,6 +6083,7 @@ class WtFmW2(unittest.TestCase):
         self.assertTrue(all(m > kn and m != G.WT_HOME for m in mips[2:7]), f"coarse under FM and its ramp-out: {mips}")
         self.assertEqual(mips[7:], [G.WT_HOME] * 3, f"HOME after the mip-home block: {mips}")
 
+    @wt_rule
     def test_a_peak_known_through_the_body(self):
         """W2 review: the body hands wt_play A's known peak, inc_sub x the sub wave's (1 for the Sine; the Square's DC-free
         1 + |1 - 2 pw|, from the width its core plays): at a steady Sub FM the level is the golden's choice for that
@@ -6160,6 +6181,7 @@ class WtFmW2(unittest.TestCase):
             steps.append(max(float(e[b]), float(e[b + 1])) - ref)
         return max(steps), float(np.max(e))
 
+    @wt_rule
     def test_handback_and_continuity(self):
         """7.2 and 7.4: FM ramped in, held, ramped out, then stock (through the mip-home block when the reader holds a mip):
         every stock block after it is wt_kmodel's continuation (bit for bit); the |step| at every switch (entry, the
@@ -6219,6 +6241,7 @@ class WtFmW2(unittest.TestCase):
                 self.assertEqual(after != before, feed, "frozen unless it feeds B")
                 self.assertTrue(wt_tagged(w.area(0), 0, w.m.o1))
 
+    @wt_rule
     def test_d5_threshold(self):
         """D5: the build's threshold is the manifest's alone (W2 review: not the test-time environment, so an alternate image
         passes as built), in range, and labelled: a non-default value suffixes the version (build.wt_mip_suffix). The
@@ -6260,6 +6283,7 @@ class WtFmW2(unittest.TestCase):
         print("\n  WT FM W2 D5 rows (level, on-grid centroid in carrier harmonics, on-grid energy above harmonic 16 dB, "
               "alias dB):\n    " + "\n    ".join(lines), file=sys.stderr)
 
+    @wt_rule
     def test_sizes_and_cost(self):
         """Plan 8 W2: the reader's parts (the loops wt_rd, wt_rdf, wt_rdx; wt_play, wt_mip_for), held to their W2 size (the
         plan's 1.5 KB is missed, below); the loops' cost a sample (M at W2: rd_q 34.1, rd_qx and rd_qm printed; plan 29.1 / 39.1 for the one-route prototypes, the B
@@ -6273,7 +6297,8 @@ class WtFmW2(unittest.TestCase):
             nm, _, sz, info = struct.unpack_from("<IIIB", e, st[4] + 16 * i)
             if info & 0xF == 2:
                 sizes[e[stro + nm:e.index(bytes(1), stro + nm)].decode()] = sz
-        size = lambda part: sizes[part] if part in sizes else next(v for k, v in sizes.items() if part in k)
+        size = lambda part: sizes[part] if part in sizes else next((v for k, v in sizes.items() if part in k),
+                                                                   0 if WT_THR == "off" else None)   # (W3: off has no wt_mip_for)
         parts = {p: size(p) for p in ("wt_rd", "wt_rdf", "wt_rdx", "wt_play", "wt_mip_for")}
         total = sum(parts.values())
         # plan 8 W2's exit is 1.5 KB; M at W2 as built: 1,796 (rd_q 256, rd_qx 316, rd_qm 380, wt_play 800, wt_mip_for 44; the
@@ -6296,6 +6321,617 @@ class WtFmW2(unittest.TestCase):
         self.assertLessEqual(costs["rd_qm"][0], 64)
         print(f"\n  WT FM W2 sizes {parts} = {total} B; cost a sample / whole wt_play block: " +
               ", ".join(f"{k} {a:.1f} / {b}" for k, (a, b) in costs.items()), file=sys.stderr)
+
+
+# ---- BE4.44 W3 (docs/plan-wt-fm.md 8 W3): A and B into Wavetable carriers, the envelope, ramps, E3 / skip, D3, BE_WT_MIP=off,
+# the black box, costs, aliasing and brightness rows
+FM_SKIPPED_AT = 8           # SaFmStats.fm_skipped (byte offset)
+FM_WT_AT, FM_WT_MIP_AT = 16, 20   # SaFmStats.wt, wt_mip (W3: reader blocks, and of those the mip changes: the black box's wt=)
+STATS_BLOCKS, STATS_PEAK, STATS_RENDERS = 0, 8, 48   # SaStats.blocks, peak, renders (byte offsets)
+WT_RD_KINDS = ("rd_q", "rd_qx", "rd_qm")   # wt_play's return: the block's loop
+S3_ANALOG_FULL = 28929      # plan 6 / S3: Analog's full FM voice at BE4.43 (M), hooks per voice-block
+HEAVIEST_VOICE = 35309      # plan 6: the heaviest existing voice (the Position-every-block ceiling)
+
+
+def wt_capture(r):
+    """W3: every wt_play call (one a tier-3 block) from wt_body's one call site: at entry the oscillator (osc, as fm_capture's
+    records), the LOAD ring index (block), WtBlk's rate, n, Position's frame (pos) and A's known peak (pa), the kernel state
+    with mipcur and the wait bit (st, as p3_golden.wt_state), FmIn's line (a, ia, dia, b, ib, dib: a / b the samples read,
+    float32) or None, A / B (FmIn's buffer addresses), off 0; on its return the samples (y), the state after (st1) and the
+    block's loop (kind: rd_q, rd_qx, rd_qm)."""
+    recs = []
+    fn = dsp_sym("wt_play")
+    lo, hi = sym_range("wt_body")
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
+    rets = []
+    for i in md.disasm(bytes(r.u.mem_read(lo, hi - lo)), lo):
+        if i.mnemonic in ("bl", "blx") and i.op_str.startswith("#") and int(i.op_str.lstrip("#"), 16) == fn:
+            rets.append(i.address + i.size)
+    assert len(rets) == 1, rets
+    def kstate(uc, osc):
+        k = osc + S.OSC_KERNEL
+        s = KM.St(uc.mem_read(k + 0xC0, 25)); m, fl = uc.mem_read(k + WT_MIP_AT, 2)
+        return dict(frac=s.frac, idx=s.idx, frame=s.frame, off=s.off, D=s.D, len=s.len, flag=s.flag, mip=m,
+                    wait=int(bool(fl & WT_MIP_WAIT)))
+    def entry(uc, a, sz, _):
+        osc, bk = uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1)
+        tab, fi, s, rate, n, pos, pa = struct.unpack("<IIIfIIf", uc.mem_read(bk, 28))
+        x = dict(osc=osc, block=r.idx, tab=tab, s=s, rate=rate, n=n, pos=pos, pa=pa, off=0, st=kstate(uc, osc), line=None,
+                 A=None, B=None, ia=0.0, dia=0.0, ib=0.0, dib=0.0)
+        if fi:
+            A, ia, dia, _, B, ib, dib = struct.unpack("<IffIIff", uc.mem_read(fi, 28))
+            av = np.frombuffer(bytes(uc.mem_read(A, 4 * n)), "<f4").astype(np.float64)
+            bv = np.frombuffer(bytes(uc.mem_read(B, 4 * n)), "<f4").astype(np.float64)
+            x.update(A=A, B=B, ia=ia, dia=dia, ib=ib, dib=dib, line=(av, ia, dia, bv, ib, dib))
+        recs.append(x)
+    def back(uc, a, sz, _):
+        x = recs[-1]
+        x["y"] = np.frombuffer(bytes(uc.mem_read(x["s"], 4 * x["n"])), "<f4").astype(np.float64)
+        x["st1"] = kstate(uc, x["osc"]); x["kind"] = WT_RD_KINDS[uc.reg_read(UC_ARM_REG_R0)]
+    r.u.hook_add(UC_HOOK_CODE, entry, begin=fn, end=fn)
+    r.u.hook_add(UC_HOOK_CODE, back, begin=rets[0], end=rets[0])
+    return recs
+
+
+class WtVoice:
+    """W3: stock's root and voice on the device's path (SubCopy.voice: stock's root ctor and engine init, 2N, a sounding sub,
+    so buffer A carries it), Types through stock's root (an Analog oscillator at Shape 48, the saw), each Wavetable
+    oscillator on Rig.tabled's table (a sine in every frame and level), or on stock's builder levels from `frames` (written
+    over it); our keys through stock's root. Taps: wt (wt_capture), fm (fm_capture: Analog's an_render_fm calls and B's
+    writes). block(): one voice-block, its output bytes kept; run(blocks, each, notes): each(w, b) before block b, the note
+    again (stock's voice note start) at the blocks in notes."""
+    def __init__(self, tc, types=(0, 0), sub=0, x12=0, env=None, sync=0, note=60, frames=None, wave=4, pw=300, capture=True):
+        self.tc, self.r = tc, Rig()
+        r = self.r
+        root, v, subo, _ = SubCopy.voice(tc, r, wave, 1000, fm=(0, 0), types=types, glide=0, pw=pw, fine=0, sync=sync)
+        self.root, self.v, self.sub, self.types, self.note_n = root, v, subo, types, note
+        self.o = (v + S.VOICE_WT1, v + S.VOICE_WT2)
+        for i in (0, 1):
+            if types[i]:
+                r.root_prop(root, K_SHAPE, 48, i)
+            else:
+                r.tabled(self.o[i])
+        if frames is not None and getattr(r, "tab", None):
+            r.u.mem_write(r.tab, G.wt_build_levels(frames).tobytes())
+        self.tab = np.frombuffer(bytes(r.u.mem_read(r.tab, 4 * 0x100000)), "<f4") if getattr(r, "tab", None) else None
+        if sub:
+            r.root_prop(root, K_SUBFM, sub, 0)
+        if x12:
+            r.root_prop(root, K_FM12, x12, 1)
+        for i, (a, d) in (env or {}).items():
+            r.root_prop(root, K_FMATK, a, i); r.root_prop(root, K_FMDEC, d, i)
+        self.wt = wt_capture(r) if capture else []
+        self.fm = fm_capture(r) if capture else None
+        self.m = r.call(r.r32(r.r32(root) + 0x4C) & ~1, root)[0]
+        self.acc, self.scr, self.out = r.buf(DEV_N * self.m, 1024), r.buf(DEV_N * self.m, 1024), r.buf(DEV_N, 1024)
+        self.slot18 = r.r32(r.r32(root) + 0x48)
+        self.note(note)
+        r.first = self.first = r.idx
+        self.outs = []
+
+    def note(self, n): SubCopy.note(self.tc, self.r, self.v, self.sub, n)
+    def prop(self, key, value, i): self.r.root_prop(self.root, key, value, i)
+
+    def block(self):
+        r, (acc, ad), (scr, _), (out, od) = self.r, self.acc, self.scr, self.out
+        r.w32(acc + 4, DEV_N * self.m); r.w32(scr + 4, DEV_N * self.m); r.u.mem_write(ad, bytes(4096)); r.w32(out + 4, DEV_N)
+        _, c = r.call(self.slot18 & ~1, self.root, self.v, 0, scr, sargs=(acc, 0, out))
+        self.outs.append(bytes(r.u.mem_read(od, 4 * DEV_N)))
+        r.block()
+        return c
+
+    def run(self, blocks, each=None, notes=()):
+        for b in range(blocks):
+            if b in notes:
+                self.note(self.note_n)
+            if each:
+                each(self, b)
+            self.block()
+        return self
+
+    def fmstats(self): return struct.unpack("<8I", self.r.u.mem_read(SA + SA_FMSTATS, 32))
+    def kernel(self, i): return bytes(self.r.u.mem_read(self.o[i] + S.OSC_KERNEL + 0xC0, 25))
+    def by_block(self, i): return {x["block"] - self.first: x for x in self.wt if x["osc"] == self.o[i]}
+    def lined(self): return FmCalls(x for x in self.wt if x["line"] is not None)
+
+
+def wt_tol(x):
+    """7.1's bound for one captured block, by the shortest level it reads: len 32 (or shorter) TOL_RD[32]; longer, the named
+    crossfade / through-zero bound TOL_RD_TZ (4e-7), which also holds the plain rows (W2: plain len 256 2e-7)."""
+    ks = [11 - int(math.log2(x["st"]["len"]))] + [m for m in (x["st"]["mip"], x["st1"]["mip"]) if m < WT_MIPS_N]
+    return TOL_RD[32] if 2048 >> max(ks) <= 32 else TOL_RD_TZ
+
+
+def wt_replay(tc, name, w, recs):
+    """Every captured reader block against p3_golden.wt_read_block from its own captured state, line, frame, rate and pa
+    (7.1 at the voice: A from stock's sub, B from an Analog OSC1's render). The phase at the block's end within
+    1e-7 + 2^-23 sum |di| of a cycle (W3, M: 7.1's 1e-7 was set on W2's small synthetic lines; at the voice's index 16 the
+    f32 steps' own rounding, two roundings a step of at most 2^-24 relative, adds up to about 1.4e-7 over a block); the
+    samples within wt_tol of the band the golden spans when its start phase is moved by that block's measured phase
+    difference either way (on stock's builder saw a phase difference of 1e-7 of a cycle moves a sample at an edge by
+    several 1e-6: the band is the golden's own answer to the phase the device kept, and nothing wider); the frame,
+    mipcur, the wait bit and off / D / len / flag. Returns the worst error / its bound and the kinds of blocks seen."""
+    worst, kinds = 0.0, set()
+    for j, x in enumerate(recs):
+        want, gst, ks = G.wt_read_block(w.tab, x["st"], x["pos"], x["rate"], x["n"], x["line"], WT_THR, pa=x["pa"])
+        b = x["block"] - w.first
+        d = abs(wt_phase(x["st1"]) - wt_phase(gst)); d = min(d, 1 - d)
+        jj = np.arange(x["n"])
+        di = np.full(x["n"], float(np.float32(x["rate"]) * np.float32(1 / 2048)))
+        if x["line"] is not None:
+            di = di + (x["ia"] + x["dia"] * jj) * x["line"][0] + (x["ib"] + x["dib"] * jj) * x["line"][3]
+        dmax = 1e-7 + float(np.sum(np.minimum(np.abs(di), 0.45))) * 2.0 ** -23
+        tc.assertLess(d, dmax, f"{name}: reader block {j} (block {b}): phase")
+        band = [want]
+        for s in (-1, 1):
+            st = dict(x["st"])
+            if st["flag"]:
+                L = 2048 >> G.wt_ladder(x["rate"]); st["idx"] %= L
+            else:
+                L = st["len"]
+            p = (st["idx"] + st["frac"]) / L + s * (d + 1e-9)
+            st.update(idx=int(math.floor(p * L)) % L, frac=p * L - math.floor(p * L))
+            if st["flag"]:
+                st.update(D=1 << G.wt_ladder(x["rate"]), len=L, off=G.wt_level_off(G.wt_ladder(x["rate"])), flag=0)
+            band.append(G.wt_read_block(w.tab, st, x["pos"], x["rate"], x["n"], x["line"], WT_THR, pa=x["pa"])[0])
+        lo, hi = np.min(band, axis=0), np.max(band, axis=0)
+        err = float(np.max(np.maximum(lo - x["y"], x["y"] - hi).clip(0)))
+        tol = wt_tol(x)
+        tc.assertLessEqual(err, tol, f"{name}: reader block {j} (block {b}, {x['kind']}, levels {ks}): device outside the "
+                                     f"golden's band by {err:.2e} (plain |device - golden| {float(np.max(np.abs(x['y'] - want))):.2e})")
+        for f in ("frame", "mip", "wait", "off", "D", "len", "flag"):
+            tc.assertEqual(x["st1"][f], gst[f], f"{name}: reader block {j} (block {b}): {f}")
+        worst = max(worst, err / tol); kinds.add(x["kind"])
+    return worst, kinds
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class WtFmW3(unittest.TestCase):
+    """BE4.44 W3 (docs/plan-wt-fm.md 8 W3): the FM sources into Wavetable carriers on the device's path (stock's root, 2N, a
+    sounding sub): Sub FM's A into a Wavetable OSC1, FM 1>2's B from an Analog OSC1 into a Wavetable OSC2 (D2: OSC2's one
+    amount); every reader block the golden's (wt_replay), every index line the law's (SubFm.lines) and, under FM Atk / FM
+    Dec, FmEnv's golden lines bit for bit and the Analog carrier's own lines in the same case; the amount's ramps and the
+    handback; E3 (a silent Wavetable oscillator freezes, its envelope keeping time, FM ramping in from 0 when heard) and the
+    skip (blocks longer than the buffers: stock's render, counted); D3 (Sub FM plays as 0 while an Analog OSC2 is synced
+    to the Wavetable OSC1, value kept; mutation 17); BE_WT_MIP=off (never coarser than stock's level); the black box; the
+    cost gates re-estimated at W3's start; aliasing and brightness rows (device = golden)."""
+    voice, note = SubCopy.voice, SubCopy.note
+    lines = SubFm.lines
+    got = FmEnv.got
+    want = FmEnv.want
+
+    @staticmethod
+    def amounts(seq, key=K_SUBFM, i=0):
+        def each(w, b):
+            if b < len(seq) and (b == 0 or seq[b] != seq[b - 1]):
+                w.prop(key, seq[b], i)
+        return each
+
+    @staticmethod
+    def fm_blocks(seq):
+        """{block: (v0, v1)}: the blocks an amount sequence plays under FM (an amount, or a ramp down from one)."""
+        return {b: (seq[b - 1] if b else 0, seq[b]) for b in range(len(seq)) if seq[b] or (b and seq[b - 1])}
+
+    # ---- A and B into Wavetable carriers --------------------------------------------------------------------------------
+    def test_sub_fm_into_a_wavetable_osc1(self):
+        """A into a Wavetable OSC1 (OSC2 a plain Wavetable): Sub FM 0 -> 250 -> 1000 held -> 500 -> 0, Position moving in
+        blocks 9..11, on the sine table and on stock's builder levels of a band-limited saw; Sub FM 700 again from block 14.
+        Every reader block is the golden's (wt_replay); every FM block's line the index law's from msub to the amount
+        (SubFm.lines: 0 -> 250 starts at 0), A alone (b = a at a zero line), A's known peak inc_sub (the Sine's 1); after
+        the ramp out the reader runs at most the mip-home block, then stock's render plays (no reader call); OSC2 never
+        reads; fm= counts the FM blocks. The level leaves the note's under Sub FM 1000 (a control, unless BE_WT_MIP=off)."""
+        seq = [0, 250, 1000, 1000, 1000, 1000, 500, 500, 0, 0, 0, 0, 0, 0, 700, 700]
+        for tname, frames in (("sine", None), ("builder saw", G.wt_saw_frames(200))):
+            with self.subTest(table=tname):
+                w = WtVoice(self, frames=frames)
+                def each(w, b):
+                    self.amounts(seq)(w, b)
+                    if 9 <= b <= 11:
+                        w.r.wf(w.o[0] + OSC_POS_SRC, (40 * (b - 8)) / 255)
+                w.run(len(seq), each)
+                worst, kinds = wt_replay(self, tname, w, w.wt)
+                self.assertTrue(all(x["osc"] == w.o[0] for x in w.wt), "only OSC1 reads")
+                fmb = self.fm_blocks(seq)
+                self.lines(tname, w.lined(), w.o[0], {w.first + b: v for b, v in fmb.items()})
+                self.assertTrue(all(x["A"] == SA + SA_FMBUF_A and x["B"] == x["A"] and (x["ib"], x["dib"]) == (0.0, 0.0)
+                                    for x in w.lined()), "Sub FM: A alone (b = a at a zero line)")
+                by = w.by_block(0)
+                inc_sub = struct.unpack("<f", w.r.u.mem_read(SA + SA_RUN + RUN_INC_SUB, 4))[0]
+                self.assertEqual(f32(by[15]["pa"]), f32(inc_sub) if WT_THR != "off" else 0.0, "A's known peak: inc_sub "
+                                 "(the Sine's 1; off: no peak taken)")
+                kn = G.wt_ladder(by[2]["rate"])
+                if WT_THR != "off":
+                    self.assertGreater(max(by[b]["st1"]["mip"] for b in range(2, 6)), kn, "control: a coarser level at 1000")
+                # after the ramp out (block 8): the mip-home block, or with Position moving (blocks 9..11) a frame block
+                # first (the one-change rule: the home block waits one block), then stock's render
+                rest = sorted(b for b in by if 9 <= b < 14)
+                self.assertTrue(rest == list(range(9, 9 + len(rest))) and len(rest) <= 2 and
+                                all(by[b]["line"] is None for b in rest), f"after the ramp out ({sorted(by)})")
+                self.assertEqual(by[rest[-1]]["st1"]["mip"] if rest else G.WT_HOME, G.WT_HOME, "home, then stock's")
+                self.assertTrue(all(b not in by for b in range(12, 14)), "stock's render plays")
+                self.assertEqual(w.fmstats()[FM_FM // 4], len(fmb), "fm= counts the Wavetable FM blocks")
+                print(f"\n  WT FM W3 Sub FM into WT OSC1 ({tname}): {len(w.wt)} reader blocks {sorted(kinds)}, worst "
+                      f"{worst:.2f} of the bound", file=sys.stderr)
+
+    def test_fm12_from_an_analog_osc1_into_a_wavetable_osc2(self):
+        """B into a Wavetable OSC2 (D2: FM 1>2 is its one amount): an Analog OSC1 (saw) feeds B while the tagged Wavetable
+        OSC2 has FM 1>2 or its ramp memory (feeds: W3), with and without Sub FM of its own, and silent (E3 (a): it still
+        renders B). B is OSC1's render times its increment (check_feeds, bit for bit), OSC1's FM calls the kernel's golden
+        (SubFm.replay), OSC2's reader reads exactly that B (FmIn.a = B, one route) on the FM 1>2 line from m12 (400 -> 1000
+        held -> 0), every reader block the golden's; nothing missed (fmx= 0); after the ramp out OSC1 stops feeding."""
+        seq = [400, 1000, 1000, 1000, 0, 0, 0, 0]
+        for sub, lv in ((0, 1.0), (600, 1.0), (600, 0.0)):
+            with self.subTest(sub=sub, level=lv):
+                w = WtVoice(self, types=(1, 0), sub=sub)
+                def each(w, b):
+                    self.amounts(seq, K_FM12, 1)(w, b)
+                    w.r.level(w.v, 0, lv)
+                w.run(len(seq), each)
+                name = f"sub {sub} level {lv}"
+                if w.fm:
+                    SubFm.replay(self, name, w.fm)
+                fed = check_feeds(self, name, w.fm, w.o[0], w.o[1])
+                rd = [x for x in w.wt if x["osc"] == w.o[1]]
+                self.assertTrue(rd and len(rd) == len(w.wt), "OSC2 reads (OSC1 is Analog)")
+                fmb = self.fm_blocks(seq)
+                self.lines(name, FmCalls(x for x in rd if x["line"] is not None), w.o[1], {w.first + b: v for b, v in fmb.items()})
+                self.assertEqual(fed, len(fmb), "OSC1 fed B in every block OSC2 wanted it (the ramp out too), then stopped")
+                feeds = {}
+                for f in w.fm.feeds:
+                    feeds.setdefault(f["block"] - w.first, []).append(f["b"])
+                for x in rd:
+                    if x["line"] is not None:
+                        b = x["block"] - w.first
+                        self.assertEqual((x["A"], x["B"], x["ib"], x["dib"]), (SA + SA_FMBUF_B, SA + SA_FMBUF_B, 0.0, 0.0),
+                                         f"block {b}: FM 1>2 alone reads B")
+                        self.assertTrue(np.array_equal(x["line"][0], np.concatenate(feeds[b]).astype(np.float64)),
+                                        f"block {b}: OSC1's B")
+                worst, kinds = wt_replay(self, name, w, rd)
+                self.assertEqual(w.fmstats()[FM_MISSED // 4], 0, "fmx= missed 0")
+                print(f"\n  WT FM W3 FM 1>2 Analog -> WT OSC2 ({name}): {len(rd)} reader blocks {sorted(kinds)}, worst "
+                      f"{worst:.2f} of the bound", file=sys.stderr)
+
+    # ---- the envelope: FmEnv's lines on Wavetable carriers -------------------------------------------------------------
+    def analog_lines(self, env, amounts, notes, osc, n, x12=None, levels=None):
+        """The same case on Analog carriers (Fm12.play: both Analog; osc's lines, FmEnv.got)."""
+        calls, _, _, _, (r, v, sub) = Fm12.play(self, fm=(0, 0), x12=x12 or 0, blocks=n, notes=notes, env=env,
+                                                amounts=(lambda b: {0: amounts(b)}) if x12 is None else None,
+                                                amounts12=amounts if x12 is not None else None, levels=levels)
+        return self.got(calls, r.osc(v, osc), r.first)
+
+    def test_envelope_lines_on_wavetable_carriers(self):
+        """FM Atk / FM Dec on a Wavetable carrier (plan 8 W3's exit: FmEnv's lines bit for bit): FmEnv's OSC1 cases (5/8 with
+        two back-to-back retriggers after a full decay, 0/0 with a retrigger, 1/Inf, 3/6 under a moving amount) on a
+        Wavetable OSC1's Sub FM, and FM 1>2 under Atk 3 / Dec 4 with the note again at 9 on a Wavetable OSC2 fed by an Analog
+        OSC1. Every FM block's line (FmIn's ia, dia) is fm_env_lines' f32 line bit for bit and the Analog carrier's own line
+        in the same case; every reader block the golden's. Decayed to 0 it still reads under FM (index 0)."""
+        cases = (("5/8", 5, 8, lambda b: 1000, (19, 20), 24),
+                 ("0/0", 0, 0, lambda b: 700, (4,), 8),
+                 ("1/Inf", 1, G.FM_DEC_INF, lambda b: 1000, (5,), 8),
+                 ("3/6 moving", 3, 6, lambda b: (120, 250, 1000, 1000, 640, 640, 37, 900, 900, 900, 1000, 1000)[b], (7,), 12))
+        for name, atk, dec, a, notes, n in cases:
+            with self.subTest(case=name):
+                w = WtVoice(self, env={0: (atk, dec)})
+                w.run(n, lambda w, b: w.prop(K_SUBFM, a(b), 0), notes=notes)
+                got = self.got(w.lined(), w.o[0], w.first)
+                self.assertEqual(sorted(got), list(range(n)), f"{name}: FM every block")
+                v1 = [a(b) for b in range(n)]; v0 = [0] + v1[:-1]
+                want = self.want(atk, dec, v0, v1, n, (0,) + notes)
+                ana = self.analog_lines({0: (atk, dec)}, a, notes, 0, n)
+                for b in range(n):
+                    self.assertEqual(got[b], want[b], f"{name}: block {b}: the Wavetable carrier's line vs the golden's f32")
+                    self.assertEqual(got[b], ana[b], f"{name}: block {b}: the same as the Analog carrier's")
+                wt_replay(self, name, w, w.wt)
+                if name == "5/8":
+                    self.assertEqual(got[17], (0.0, 0.0), "control: decayed to 0 (still a reader block)")
+        n = 14
+        w = WtVoice(self, types=(1, 0), env={1: (3, 4)})
+        w.run(n, lambda w, b: w.prop(K_FM12, 1000, 1) if b == 0 else None, notes=(9,))
+        got = self.got(w.lined(), w.o[1], w.first)
+        want = self.want(3, 4, [0] + [1000] * (n - 1), [1000] * n, n, (0, 9))
+        ana = self.analog_lines({1: (3, 4)}, lambda b: 1000, (9,), 1, n, x12=1000)
+        self.assertEqual([got[b] for b in range(n)], [want[b] for b in range(n)], "WT OSC2's FM 1>2 under its envelope")
+        self.assertEqual([got[b] for b in range(n)], [ana[b] for b in range(n)], "the same as the Analog OSC2's")
+        wt_replay(self, "FM 1>2 envelope", w, w.wt)
+
+    def test_the_envelope_keeps_time_and_e3(self):
+        """E3 on a Wavetable OSC1 (FmEnv.test_the_envelope_keeps_time's case): Atk 4 / Dec 6 from the note, no amount in blocks
+        0..2 (tier 2: no reader, the envelope stepped all the same), Sub FM 1000 from block 3, Level 0 in blocks 6..8 (once the
+        smoother rests: frozen as stock's, no reader call, the kernel state unchanged, msub dropped), heard again from 9. Each
+        reader line is the golden's at the note's own time, with the amount's ramp from 0 wherever the block before played
+        none (block 3, and the first block heard after the silence); the Analog carrier's lines in the same case are the
+        same."""
+        n = 16
+        a = lambda b: 0 if b < 3 else 1000
+        lv = lambda b: (0.0 if 6 <= b <= 8 else 1.0, 1.0)
+        w = WtVoice(self, env={0: (4, 6)})
+        ks = {}
+        def each(w, b):
+            w.prop(K_SUBFM, a(b), 0)
+            w.r.level(w.v, 0, lv(b)[0])
+            ks[b] = w.kernel(0)
+        w.run(n, each)
+        ks[n] = w.kernel(0)
+        got = self.got(w.lined(), w.o[0], w.first)
+        heard = sorted(got)
+        self.assertEqual(heard[0], 3, "FM from the first block with an amount")
+        frozen = [b for b in range(6, 9) if ks[b + 1] == ks[b]]
+        self.assertTrue(frozen, f"control: a silent block froze the kernel ({heard})")
+        self.assertTrue(all(b not in got for b in frozen), "a frozen block reads nothing")
+        v1 = [a(b) for b in range(n)]; v0 = [v1[b - 1] if b and (b - 1) in got else 0 for b in range(n)]
+        want = self.want(4, 6, v0, v1, n, (0,))
+        for b in heard:
+            self.assertEqual(got[b], want[b], f"block {b}: the envelope at the note's time")
+        self.assertEqual(got[3][0], 0.0, "block 3: the amount ramps in from 0 (msub)")
+        back = min(b for b in heard if b > max(frozen))
+        self.assertEqual(got[back][0], 0.0, "heard again: from 0 (msub dropped while frozen)")
+        ana = self.analog_lines({0: (4, 6)}, a, (), 0, n, levels=lv)
+        self.assertEqual({b: got[b] for b in heard}, {b: ana.get(b) for b in heard}, "the Analog carrier's lines")
+        wt_replay(self, "keeps time", w, w.wt)
+
+    def test_ramps_and_the_handback(self):
+        """Ramps (plan 7.4: 0 -> 4 -> 0 over 3 blocks): Sub FM 400 (index 4.05) for one block between 0s, at notes 48 and 72 on
+        stock's builder saw: the reader ramps in (0 -> I) in that block, ramps out (I -> 0, ending at index 0) in the next,
+        then at most the mip-home block, then stock's render (no reader call), and FM on again later ramps in from 0. The
+        stock blocks after the handback are stock's continuation bit for bit (wt_kmodel run on from the handed-back kernel
+        state; 7.2 at the voice)."""
+        seq = [0, 0, 400, 0, 0, 0, 0, 0, 1000, 1000]
+        for note in (48, 72):
+            w = WtVoice(self, note=note, frames=G.wt_saw_frames(200))
+            sts = []
+            def each(w, b):
+                self.amounts(seq)(w, b)
+                sts.append(KM.St(w.kernel(0)))
+            w.run(len(seq), each)
+            sts.append(KM.St(w.kernel(0)))
+            by = w.by_block(0)
+            self.assertEqual((by[2]["ia"], by[3]["ia"]), (0.0, an_index(400)), f"note {note}: ramp in, ramp out")
+            self.assertEqual(f32(by[3]["ia"] + by[3]["dia"] * 256), 0.0, "the ramp out ends at index 0")
+            self.assertEqual(by[8]["ia"], 0.0, "on again: from 0")
+            self.assertTrue(all(by[b]["line"] is None for b in by if b in (4,)), "block 4: the mip-home block, if any")
+            for b in (5, 6, 7):
+                self.assertNotIn(b, by, f"note {note}: block {b} is stock's render")
+            wt_replay(self, f"ramps n{note}", w, w.wt)
+            rate = by[2]["rate"]
+            m = KM.St(sts[5].pack())
+            for b in (5, 6, 7):
+                KM.kernel(m, w.tab, 0, rate, 256)
+                self.assertEqual(m.pack(), sts[b + 1].pack(), f"note {note}: block {b}: stock's kernel from the handback")
+
+    # ---- E3 / skip --------------------------------------------------------------------------------------------------------
+    def test_a_longer_block_than_the_buffers_is_stocks_and_counted(self):
+        """The skip (fm_setup: n > AN_FM_FRAMES, the modulator buffers): a Wavetable OSC1 with Sub FM 700 at 512 frames plays
+        stock's render (tier 2), bit for bit with stock 1.6.8's on the same voice (samples), and fmx= counts each block
+        skipped; no reader call, wt= 0."""
+        def run(stock):
+            m = Mixed(stock=stock, type2=0, frames=512)
+            tap = None
+            if not stock:
+                m.r.prop(m.o1, K_SUBFM, 700, m.handle, 0)
+                tap = wt_capture(m.r)
+            m.note(60)
+            for b in range(6):
+                m.block(0.01 * b)
+            return m, tap
+        a, tap = run(False)
+        b, _ = run(True)
+        same(self, f32le(a.x1), f32le(b.x1), "OSC1: stock's render at 512 frames")
+        self.assertGreater(max(abs(x) for x in a.x1), 0.1, "control: it plays")
+        self.assertEqual(tap, [], "no reader call")
+        st = struct.unpack("<8I", a.r.u.mem_read(SA + SA_FMSTATS, 32))
+        self.assertEqual((st[FM_SKIPPED_AT // 4], st[FM_WT_AT // 4]), (6, 0), "fmx= skipped each block; wt= 0")
+
+    # ---- D3 (Jeff, 2026-11-17): Sub FM plays as 0 while an Analog OSC2 is synced to the Wavetable OSC1 ---------------------
+    def test_d3_sub_fm_mutes_while_synced(self):
+        """D3 (mutation 17): a Wavetable OSC1 with Sub FM 1000 and an Analog OSC2 synced to it (mixed sync) plays as with Sub
+        FM 0, byte for byte: the voice's output, OSC1's kernel state and the slave's copy of WT1's phase after every block, so
+        mixed sync plays as BE4.43 (no reader call). Value kept: OSC1 still holds 1000. Sync turned off at block 6: Sub FM
+        plays from there (ramping in from 0); on again at block 10: no FM line from then (at most the mip-home block). Control:
+        the same voice unsynced reads under FM from block 0."""
+        def run(sub, sync=1, toggles=False):
+            w = WtVoice(self, types=(0, 1), sub=sub, sync=sync)
+            ks = []
+            def each(w, b):
+                if toggles and b in (6, 10):
+                    w.prop(K_SYNC, 0 if b == 6 else 1, 1)
+                ks.append((w.kernel(0), bytes(w.r.u.mem_read(w.o[1] + S.OSC_KERNEL + 156, 8))))
+            w.run(14, each)
+            return w, ks
+        a, ka = run(1000)
+        b, kb = run(0)
+        self.assertEqual(a.outs, b.outs, "the voice: Sub FM plays as 0 while synced")
+        self.assertEqual(ka, kb, "OSC1's kernel and the slave's copy of its phase")
+        self.assertEqual(a.wt, [], "no reader call while synced")
+        self.assertEqual(r_settings(a.r, a.o[0])[5], 1000, "value kept")
+        c, _ = run(1000, sync=0)
+        self.assertIn(0, c.by_block(0), "control: unsynced, it reads under FM from block 0")
+        t, _ = run(1000, toggles=True)
+        by = t.by_block(0)
+        self.assertEqual(sorted(x for x in by if by[x]["line"] is not None), list(range(6, 10)), f"FM while unsynced ({sorted(by)})")
+        self.assertEqual(by[6]["ia"], 0.0, "unsynced: ramps in from 0")
+        self.assertTrue(all(x <= 10 for x in by), f"synced again: at most the mip-home block ({sorted(by)})")
+
+    # ---- BE_WT_MIP=off (Jeff, 2026-11-17: D5's bright alternate, "never go darker") ----------------------------------------
+    def test_mip_off(self):
+        """BE_WT_MIP=off: build.py's parse, suffix (-mipoff) and defines (WT_MIP_OFF); the golden's "off" plays the D5 rows'
+        note-level column (control: at Sub FM 1000 the default's level is coarser). On an off image (its manifest's wt_mip
+        is off), the reader stays at stock's level for the note under any FM at notes 36, 60 and 84 (no rd_qm block, mipcur
+        HOME and no wait bit after every block), every block the golden's ("off"), the version suffixed, and the last FM
+        block (its line ending at 0) hands back straight to stock's render, whose blocks continue bit for bit (wt_kmodel)."""
+        self.assertEqual(build.wt_mip_threshold("off"), "off")
+        self.assertEqual(build.wt_mip_suffix("off"), "-mipoff")
+        self.assertIn("-DWT_MIP_OFF=1", build.wt_mip_defines("off"))
+        self.assertNotIn("-DWT_MIP_OFF=1", build.wt_mip_defines(1.75))
+        t = G.wt_build_levels(G.wt_saw_frames())
+        rate = float(f32(12 / 4096 * 2048))
+        _, _, ko = G.wt_fm_run(t, rate, 6, 1000, "off")
+        _, _, kd = G.wt_fm_run(t, rate, 6, 1000, build.WT_MIP_DEFAULT)
+        kn = G.wt_ladder(rate)
+        self.assertTrue(all(k == (kn, kn) for k in ko), f"golden off: the note's level ({ko})")
+        self.assertGreater(kd[-1][1], kn, "control: the default goes coarser at 1000")
+        if WT_THR != "off":
+            self.assertNotIn("-mipoff", MAN["version"])
+            return
+        self.assertTrue(MAN["version"].endswith("-mipoff"), MAN["version"])
+        w = WtRd()                                            # (7.1's smooth table: its tolerances are set on it)
+        for note in (36, 60, 84):
+            rate = wt_rate(note); inc = float(f32(rate) * f32(1 / 2048)); kn = G.wt_ladder(rate)
+            pa = float(f32(inc * 0.5))
+            st = G.wt_state()
+            w.set(st)
+            plan = [(0.0, 16.0), (16.0, 16.0), (16.0, 16.0), (16.0, 0.0), None, None]
+            for b, p in enumerate(plan):
+                if p is None:
+                    m = KM.St(w.r.u.mem_read(w.k + 0xC0, 25))
+                    y, _ = w.stock(0, rate)
+                    want = KM.kernel(m, w.tab, 0, rate, 256)
+                    self.assertEqual(list(y.astype(np.float32)), [np.float32(v) for v in want], f"note {note}: stock's block {b}")
+                    continue
+                line = wt_line(inc, 256, p[0], p[1], ph=0.5 * inc * 256 * b)
+                y, got, _ = w.block(0, rate, 256, line, pa)
+                _, gst, ks = G.wt_read_block(w.tab, st, 0, rate, 256, line, "off", pa=pa)
+                self.assertEqual(ks, (kn, kn), f"note {note} block {b}: the note's level")
+                self.assertEqual((got["mip"], got["wait"]), (G.WT_HOME, 0), f"note {note} block {b}: nothing held")
+                # device = golden as wt_replay checks the voice's blocks (index 16 through zero: the phase-aware band)
+                wt_replay(self, f"off n{note} b{b}", types.SimpleNamespace(tab=w.tab, first=0),
+                          [dict(st=st, st1=got, y=y, line=line, ia=line[1], dia=line[2], ib=line[4], dib=line[5], pos=0,
+                                rate=rate, n=256, pa=pa, block=b, kind="rd_q")])
+                st = got
+
+    # ---- the black box ---------------------------------------------------------------------------------------------------
+    def test_the_black_box_counts_wavetable_fm(self):
+        """S4: a voice of two Wavetable oscillators (no Analog one: an_enter counts no voice) with Sub FM 1000 on OSC1 for 8
+        blocks, then 0: fm= counts its FM blocks, wt= every reader block (the mip-home block too), wt=.../mip the blocks that
+        changed the level (rd_qm), each as wt_capture saw them; and the stats line is flushed for these blocks (blocks=,
+        renders=: one render a block, peak_cyc=: our hooks' cycles), as for an Analog voice (before W3 an all-Wavetable voice
+        left SaStats untouched)."""
+        w = WtVoice(self)
+        def each(w, b):
+            if b in (0, 8):
+                w.prop(K_SUBFM, 1000 if b < 8 else 0, 0)
+            if b in (4, 5):
+                w.r.wf(w.o[0] + OSC_POS_SRC, 0.1 * b)            # (frame blocks too: wt_mip counts mip changes only)
+        w.run(12, each)
+        self.assertIn("rd_qx", {x["kind"] for x in w.wt}, "control: a frame block")
+        st = w.fmstats()
+        self.assertEqual(st[FM_FM // 4], len(w.lined()), "fm=")
+        self.assertEqual(st[FM_WT_AT // 4], len(w.wt), "wt=")
+        self.assertEqual(st[FM_WT_MIP_AT // 4], sum(1 for x in w.wt if x["kind"] == "rd_qm"), "wt=.../mip")
+        if WT_THR != "off":
+            self.assertGreater(st[FM_WT_MIP_AT // 4], 0, "control: the level changed")
+        w.block()                                             # (a block's stats are flushed at the next block's start)
+        self.assertEqual(stat(w.r, STATS_RENDERS // 4), len(w.wt), "renders=: the reader blocks")
+        self.assertEqual(stat(w.r, STATS_BLOCKS // 4), len({x["block"] for x in w.wt}), "blocks=: the blocks with one")
+        self.assertGreater(stat(w.r, STATS_PEAK // 4), 0, "peak_cyc= counted")
+
+    # ---- costs (plan 6 / S3, re-estimated at W3's start from W2's measured reader: plan "W3: CPU re-estimate") --------------
+    W3_GATES = {"WT1 Sub FM": 26000, "A1 -> WT2 FM 1>2": 25500, "A1 Sub FM -> WT2 FM 1>2": 32000}
+
+    def voice_cost(self, types=(0, 0), sub=0, x12=0, pos=None, env=None, sub_at=None, blocks=16):
+        """Instructions per voice-block on the device's path, note 60, a builder saw (200 harmonics), a sine sub: an_enter and
+        each oscillator's whole render (its slot 0, our trampoline: stock's render too where it plays), Span. pos(b): the
+        Position knob before block b (both oscillators); sub_at(b): Sub FM before block b. (per-block list)"""
+        w = WtVoice(self, types=types, sub=sub, x12=x12, env=env, frames=G.wt_saw_frames(200), capture=False)
+        sp = [Span(w.r, DSP["an_enter"])] + [Span(w.r, a) for a in {w.r.r32(w.r.r32(o)) & ~1 for o in w.o}]   # (one class: one slot 0)
+        per = []
+        for b in range(blocks):
+            if pos:
+                for o in w.o:
+                    w.r.wf(o + OSC_POS_SRC, pos(b))
+            if sub_at:
+                w.prop(K_SUBFM, sub_at(b), 0)
+            t0 = sum(s.total for s in sp)
+            w.block()
+            per.append(sum(s.total for s in sp) - t0)
+        return per
+
+    def test_cost(self):
+        """Plan 6 / S3 as re-estimated at W3's start (W3_GATES; the plan's "W3: CPU re-estimate", I on W2's M): per voice-block,
+        note 60, I = 16, the median of the steady blocks (4 on). Gated: a Wavetable OSC1 with Sub FM 1000 (the full Wavetable
+        FM voice buildable at W3: FM 1>2 from a Wavetable OSC1 is W4's) within its gate and S3's 28,929; FM 1>2 from an
+        Analog OSC1 into a Wavetable OSC2, alone and next to the Analog OSC1's own Sub FM (the mixed full FM voice); with
+        Position moving every block, every block within the heaviest existing voice (35,309); the two new cases: a Position
+        LFO with a decaying FM Dec at once (mip and frame both wanting to change: the one-change rule alternates), and an
+        index parked on a level threshold (+-3 a block: hysteresis, at most two level changes, the median within the Sub FM
+        gate). Printed: stock's Wavetable voice and Analog's full FM voice on this build, for reference."""
+        rows = {}
+        med = lambda per: sorted(per[4:])[len(per[4:]) // 2]
+        for name, kw in (("stock WT voice", {}), ("WT1 Sub FM", dict(sub=1000)),
+                         ("A1 -> WT2 FM 1>2", dict(types=(1, 0), x12=1000)),
+                         ("A1 Sub FM -> WT2 FM 1>2", dict(types=(1, 0), sub=1000, x12=1000)),
+                         ("Analog full FM", dict(types=(1, 1), sub=1000, x12=1000))):
+            per = self.voice_cost(**kw)
+            rows[name] = (med(per), max(per[1:]))
+        lfo = lambda b: (b * 7 % 200) / 255
+        per = self.voice_cost(sub=1000, pos=lfo)
+        rows["WT1 Sub FM, Position every block"] = (med(per), max(per[1:]))
+        per = self.voice_cost(sub=1000, pos=lfo, env={0: (0, 12)}, blocks=24)
+        rows["Position LFO + FM Dec"] = (med(per), max(per[1:]))
+        # an index on a level threshold: the Sub FM whose peak sits at the threshold one level up (A's known peak inc_sub:
+        # x = rate (1 + I / 2)), moved +-3 every block
+        thr = build.WT_MIP_DEFAULT if WT_THR == "off" else WT_THR
+        pw = WtVoice(self, sub=300, frames=G.wt_saw_frames(200)).run(2)
+        x = pw.by_block(0)[1]
+        rate, pa = x["rate"], x["pa"]; inc = float(f32(rate) * f32(1 / 2048)); kn = G.wt_ladder(rate)
+        pa = pa or float(struct.unpack("<f", pw.r.u.mem_read(SA + SA_RUN + RUN_INC_SUB, 4))[0])   # (off: no pa passed)
+        I = (thr * 2 ** kn / 2048 - inc) / pa                # x = (inc + I pa) 2048 reaches thr 2^kn: one level up
+        v = next(v for v in range(1, 1001) if G.an_index32(v) >= I)
+        wob = lambda b: v + (3 if b % 2 else -3)
+        per = self.voice_cost(sub=v, sub_at=wob, blocks=20)
+        rows["index on a threshold"] = (med(per), max(per[1:]))
+        tw = WtVoice(self, sub=v, frames=G.wt_saw_frames(200))
+        tw.run(20, lambda w, b: w.prop(K_SUBFM, wob(b), 0))
+        mips = [x["st1"]["mip"] for x in tw.wt]
+        print("\n  WT FM W3 cost (instructions per voice-block, note 60, I 16; median / max): " +
+              "; ".join(f"{k} {a} / {b}" for k, (a, b) in rows.items()) + f"; threshold case Sub FM {v}: levels {mips}",
+              file=sys.stderr)
+        for k, g in self.W3_GATES.items():
+            self.assertLessEqual(rows[k][0], g, f"{k}: the re-estimated gate")
+        self.assertLessEqual(rows["WT1 Sub FM"][0], S3_ANALOG_FULL, "S3: within Analog's full FM voice")
+        for k in ("WT1 Sub FM, Position every block", "Position LFO + FM Dec", "index on a threshold"):
+            self.assertLessEqual(rows[k][1], HEAVIEST_VOICE, f"{k}: every block within the heaviest existing voice")
+        self.assertLessEqual(sum(1 for p, q in zip(mips[1:], mips[2:]) if p != q), 2, f"no toggling on a threshold: {mips}")
+        self.assertLessEqual(rows["index on a threshold"][0], self.W3_GATES["WT1 Sub FM"], "the threshold case's median")
+
+    # ---- aliasing and brightness rows (plan 7.4; D5) ---------------------------------------------------------------------
+    def test_alias_and_brightness_rows(self):
+        """Plan 7.4's rows on the device's reader (WtRd: wt_play block by block, as wt_fm_run plays the golden): a stock-built saw
+        table, a sine sub an octave down (A's known peak), Sub FM 500 and 1000 at notes ~60, ~72, ~96 (coherent: the carrier
+        12 / 22 / 90 cycles in 4096 samples) for aliasing, Sub FM 250 and 500 at note ~60 for brightness. Each device row is
+        the golden's (samples within 1e-5 of wt_fm_run at this build's threshold); the printed table sets this build beside
+        the note level ("off") and stock's clean 1.25: the level, alias dB at 96 kHz and after stock's decimator (48 kHz, what
+        the voice puts out), and on-grid energy above harmonic 16 dB (brightness)."""
+        t = G.wt_build_levels(G.wt_saw_frames())
+        w = WtRd(G.wt_saw_frames())
+        lines = []
+        for note, c, vs in ((60, 12, (250, 500, 1000)), (72, 22, (500, 1000)), (96, 90, (500, 1000))):
+            rate = float(f32(c / 4096 * 2048)); inc = float(f32(rate) * f32(1 / 2048)); inc_sub = inc / 2
+            for v in vs:
+                w.set(G.wt_state())
+                q, ys = 0.0, []
+                pa = float(f32(inc_sub))
+                for _ in range(24):
+                    m, q = G.sub_mod("sine", inc_sub, 256, q)
+                    a = (m * inc_sub).astype(np.float32).astype(np.float64)
+                    y, _, _ = w.block(0, rate, 256, (a, G.an_index32(v), 0.0, a, 0.0, 0.0), pa)
+                    ys.append(y)
+                y = np.concatenate(ys)
+                gy, _, ks = G.wt_fm_run(t, rate, 24, v, WT_THR)
+                self.assertLessEqual(float(np.max(np.abs(y - gy))), 1e-5, f"note {note} Sub FM {v}: device = golden")
+                row = [f"n~{note} SubFM {v}:"]
+                for label, thr in (("this", WT_THR), ("note", "off"), ("1.25", 1.25)):
+                    yy, kk = (y, ks) if label == "this" else G.wt_fm_run(t, rate, 24, v, thr)[::2]
+                    _, al, hf = G.wt_spectrum_rows(yy[-4096:], c, c // 2)
+                    _, al48, _ = G.wt_spectrum_rows(G.decimate(yy[-4096:]), c, c // 2)
+                    row.append(f"{label} L{kk[-1][1]} al {al:.1f} / {al48:.1f} hf {hf:.1f}")
+                lines.append(" | ".join(row))
+        print("\n  WT FM W3 alias / brightness rows (device = golden; level, alias dB 96k / 48k, on-grid energy above "
+              "harmonic 16 dB):\n    " + "\n    ".join(lines), file=sys.stderr)
+
+
+def r_settings(r, osc):
+    """AnProps of an oscillator: (type, shape, sync, fmatk, glide, subfm, fm12, fmdec, envf)."""
+    return struct.unpack("<BBBBHHHBB", r.u.mem_read(osc + S.OSC_KERNEL + PROPS_AT, 12))
 
 
 if __name__ == "__main__":

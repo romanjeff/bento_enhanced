@@ -99,23 +99,34 @@ ENABLED = {g for g in os.environ.get("BE_ENABLE", "").split(",") if g}
 # (-mip2.0, after any BE_TAG) so an alternate image is never mistaken for the default on the device. Stock's own ladder is
 # 1.25 (clean). This is the one place the default lives: analog.cpp has no fallback (#error), the tests read the manifest.
 WT_MIP_DEFAULT = 1.75
+WT_MIP_OFF = "off"   # BE4.44 W3 (D5's bright alternate, Jeff 2026-11-17 "never go darker"): the reader stays at stock's level for the note
 def wt_mip_threshold(text=None):
-    """BE_WT_MIP as a float in [1.0, 4.0] (below 1 is brighter than the table holds; 4 skips two levels' worth)."""
+    """BE_WT_MIP as a float in [1.0, 4.0] (below 1 is brighter than the table holds; 4 skips two levels' worth), or "off"
+    (W3: never coarser than stock's level for the note under any FM, the D5 rows' "note level" column)."""
     text = os.environ.get("BE_WT_MIP", "") if text is None else text
     if not text:
         return WT_MIP_DEFAULT
+    if text.strip().lower() == WT_MIP_OFF:
+        return WT_MIP_OFF
     try:
         v = float(text)
     except ValueError:
-        raise SystemExit(f"BE_WT_MIP={text!r}: not a number")
+        raise SystemExit(f"BE_WT_MIP={text!r}: not a number (or off)")
     if not 1.0 <= v <= 4.0:
         raise SystemExit(f"BE_WT_MIP={text!r}: outside 1.0 .. 4.0")
     return v
 WT_MIP = wt_mip_threshold()
 def wt_mip_suffix(v=None):
-    """The version's suffix for a non-default threshold ('' at the default)."""
+    """The version's suffix for a non-default threshold ('' at the default; -mipoff for off)."""
     v = WT_MIP if v is None else v
+    if v == WT_MIP_OFF:
+        return "-mipoff"
     return "" if v == WT_MIP_DEFAULT else f"-mip{v:g}" if v != int(v) else f"-mip{v:.1f}"
+def wt_mip_defines(v=None):
+    """The compiler's view of it: WT_MIP_THR always (analog.cpp #errors without it); off adds WT_MIP_OFF=1 (the threshold is
+    then not read; stock's 1.25 is passed only so the one source compiles the same way)."""
+    v = WT_MIP if v is None else v
+    return ["-DWT_MIP_THR=1.25f", "-DWT_MIP_OFF=1"] if v == WT_MIP_OFF else [f"-DWT_MIP_THR={v!r}f"]
 DISABLED = (DEFAULT_OFF - ENABLED) | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
 # S3 split poly, cond and inta into the part S3 ports (M7 only) and the part a later sprint does, so the
 # S3 part builds on 1.6.8 alone: poly_cap (S3) + poly_at (S5: External handler h_poly and the M4 MIDI
@@ -424,7 +435,7 @@ def source_refs(base, src, disabled, flags=()):
         cmd = [sys.executable, "-m", "ziglang", "cc", "-target", "thumb-freestanding-eabi", f"-mcpu={cpu}", "-E", "-P",
                "-ffreestanding", "-nostdlib", "-include", str(hdr), f"-I{d}",
                *([f"-I{HERE / x}" for x in DSP_INCLUDES] if src.startswith("dsp/") else []),
-               *[f"-DBE_NO_{g.upper()}" for g in sorted(disabled)], f"-DWT_MIP_THR={WT_MIP!r}f", *flags, str(path)]
+               *[f"-DBE_NO_{g.upper()}" for g in sorted(disabled)], *wt_mip_defines(), *flags, str(path)]
         out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
     return set(re.findall(r"__S_REF_([A-Za-z0-9_]+)", out))
 
@@ -706,7 +717,7 @@ def compile_dsp(srcs, ld, out, origin, limit, defines=()):
               "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections",
               "-Wall", "-Werror", "-Wdouble-promotion", "-include", str(syms_h), f"-I{out.parent}",
               *[f"-I{HERE / d}" for d in DSP_INCLUDES],
-              *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], f"-DWT_MIP_THR={WT_MIP!r}f", *defines]
+              *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *wt_mip_defines(), *defines]
     objs = []
     for src in srcs:
         o = out.parent / ("dsp_" + Path(src).stem + ".o")

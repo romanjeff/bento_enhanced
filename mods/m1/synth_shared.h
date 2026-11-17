@@ -83,12 +83,15 @@ typedef struct {
  * through BE4.41, is unused and stays 0) */
 #define SA_FMSTATS 0x0100u
 typedef struct {
-    unsigned fm;              /* Analog renders with FM (Sub FM or FM 1>2) */
+    unsigned fm;              /* renders with FM (Sub FM or FM 1>2; BE4.44 W3: Analog or Wavetable) */
     unsigned r1;              /* BE4.42: unused (BE4.41's bits=, the renders Bit Depth crushed) */
     unsigned fm_skipped;      /* renders with FM set but n > AN_FM_FRAMES (the modulator buffers): rendered without it */
     unsigned fm_missed;       /* OSC2 renders that wanted OSC1's signal (FM 1>2) but buffer B was not valid this voice-block */
-    unsigned r4, r5, r6, r7;
-} SaFmStats;                  /* 32 bytes: fm +0, fm_skipped +8, fm_missed +12 */
+    unsigned wt;              /* BE4.44 W3: Wavetable renders through our reader (dsp/analog.cpp wt_body: tier 3, FM or a mip
+                               * held), the black box's wt= */
+    unsigned wt_mip;          /* BE4.44 W3: of those, the blocks that changed the mip level (rd_qm), wt=.../mip */
+    unsigned r6, r7;
+} SaFmStats;                  /* 32 bytes: fm +0, fm_skipped +8, fm_missed +12, wt +16, wt_mip +20 */
 /* +0x0400 M7 private: the DSP's running state (two lines) */
 #define SA_RUN 0x0400u
 /* +0x0200 (BE4.21..BE4.31: the M4's Analog track table, published; unused since BE4.40, when an oscillator's Type, Shape,

@@ -1419,6 +1419,7 @@ __attribute__((used, retain)) void an_print(char *buf, u32 *len, u32 max) {
         volatile SaFmStats *f = FMSTATS;
         field(&o, " fm=", f->fm);                                   /* (BE4.42: no bits=, Bit Depth is gone) */
         field(&o, " fmx=", f->fm_skipped); field(&o, "/", f->fm_missed);
+        field(&o, " wt=", f->wt); field(&o, "/", f->wt_mip);         /* BE4.44 W3: Wavetable reader blocks / mip changes */
     }
     field(&o, " | load_pm=", a->cpu_pm); field(&o, " over_with_analog=", a->over);
     field(&o, " | ui page_rows=", a->page_rows); field(&o, " heals=", a->heals); field(&o, " resends=", a->resends);

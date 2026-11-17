@@ -1246,7 +1246,8 @@ def wt_state(idx=0, frac=0.0, frame=-1, flag=1, mip=WT_HOME, k=0, wait=0):
 def wt_read_block(tab, st, req, rate, n, line, thr, mutant=None, pa=0.0):
     """One reader block. tab: the table (float32, 0x100000); st: wt_state(); req: Position's frame; rate: stock's rate (f32);
     line: None (no FM: the mip-home block) or (a, ia, dia, b, ib, dib), a / b the modulators in increment units; thr: the
-    build's threshold (no default: the manifest's wt_mip, or a fixture's); pa: max|a| when known (0: scanned). Returns
+    build's threshold (no default: the manifest's wt_mip, or a fixture's; W3: "off", BE_WT_MIP=off: always the note's
+    level, mipcur HOME, the D5 rows' "note level"); pa: max|a| when known (0: scanned). Returns
     (y float64, the new state, the levels read (kc, kt)). Mutants (7.1 and the plan's 7.5): "clamp_wrap" (the phase cannot
     go backward: a wrap by compare that fails on reverse), "fixed_mip" (the note's level always), "xf_reversed" (crossfade
     weights reversed), "units" (the phase advanced in the note's samples, not cycles), "no_skew" (levels read unskewed),
@@ -1269,7 +1270,7 @@ def wt_read_block(tab, st, req, rate, n, line, thr, mutant=None, pa=0.0):
         kt, a, b, ia, dia, ib, dib = kn, np.zeros(n), np.zeros(n), 0.0, 0.0, 0.0, 0.0
     else:
         a, ia, dia, b, ib, dib = line
-        kt = wt_mip_choice(wt_peak(inc, line, n, pa), kn, kc, thr, mutant)
+        kt = kn if thr == "off" else wt_mip_choice(wt_peak(inc, line, n, pa), kn, kc, thr, mutant)
     if mutant == "fixed_mip": kc = kt = kn
     j = np.arange(n, dtype=np.float64)
     di = inc + (ia + dia * j) * np.asarray(a, np.float64)[:n] + (ib + dib * j) * np.asarray(b, np.float64)[:n]
@@ -1298,7 +1299,7 @@ def wt_read_block(tab, st, req, rate, n, line, thr, mutant=None, pa=0.0):
     y = q + w * (p - q) if mutant == "xf_reversed" else p + w * (q - p)
     x = ph[-1] * L
     st["idx"] = int(math.floor(x)) % L; st["frac"] = x - math.floor(x); st["frame"] = fout
-    st["mip"] = WT_HOME if line is None and kt == kn else kt
+    st["mip"] = WT_HOME if thr == "off" or (line is None and kt == kn) else kt
     st["wait"] = wait
     return y, st, (kc, kt)
 
