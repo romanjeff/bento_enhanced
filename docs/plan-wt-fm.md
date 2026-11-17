@@ -1143,3 +1143,15 @@ bases/stock_168.py CTRL/M7 entries, main `git log 435b2f0..HEAD`, plan-p4-drums.
 **Net effect.** The verdict stays GO with the window move, but the worst-case free space after everything drops from about
 3.0 KB to about 1.6 KB (efficiency-pass row, corrected sums, and about +0.3 KB of design for HOME, state-run, init and
 rd_qm). That makes W3's measured-size gate the real decision point, and makes the 1/1b device check more important.
+
+## Decisions after W2 (Jeff, 2026-11-17)
+
+- **D3: Sub FM mutes while synced.** A Wavetable OSC1's Sub FM plays as 0 while OSC2 is synced to it; the value is kept.
+- **D5 alternates:** default 1.75; cleaner alternate 1.5; the brighter alternate is **"never go darker"** (the reader stays
+  at stock's level for the note under any FM, the "note level" column), not 2.0, which differed from 1.75 only in where
+  the first step lands. Build-selectable like the threshold (e.g. BE_WT_MIP=off), version suffixed.
+- **Budget: optimise for the synth release; the drums budget is set aside until P4 resumes.** D6's drum cap is not
+  adopted now; the synth must still fit the window with the 1 KB margin in the default build. When P4 resumes, re-measure
+  and trim (rd_qx into rd_q, R2) if drums do not fit. Risk accepted: trims may be forced later.
+- Defaults taken without asking: the reader-parts exit (1.5 KB) missed by 260 B is accepted; the continuity bound stays
+  at W2's tighter 0.01.
