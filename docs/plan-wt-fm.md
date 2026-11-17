@@ -485,7 +485,7 @@ at risk (-0 and NaN with VMAXNM).
 | **W1 storage + switch** | branch be444 off main | The tag pair; an_prop's WT branch with default-state init; the WT-state word in a saved run; mipcur bound; the feed-B bit; tier 1/2 in wt_fm_osc; an_note (START + HOME); M4 rows, texts, resend; the field audit (3.2) | 7.3 untagged and tagged-gate-0 identity, incl. the note-start and many-wraps cases. P3Identity <= 1.95 %. WtOff cost. Mutations 1, 2, 14, 15, 16, 19, 20, 21, 22 red. **No reader yet: gate != 0 plays as gate 0** |
 | **W2 reader + golden** | be444 | **First: trace stock's mip builder / measure mip alignment on factory tables.** Then p3_golden wt_read and self-tests; kmodel fixture; rd_q; ladder replication; per-block mip with hysteresis; rd_qm (prototype and count); one-change-per-block rule; handback B; rd_qx; level-0 rule | 7.1 tolerances. 7.2 handback bit-exact. 7.4 continuity rows (synthetic and factory). Mutations 3 to 8, 11 to 13, 18, 23, 24 red. Size measured: reader parts <= 1.5 KB |
 | **W3 integration** | be444 | A and B into WT carriers (Sub FM on WT OSC1 / OSC2 per D2, FM 1>2 Analog->WT); envelope lines; ramps; E3 / skip; black box and stats; costs; brightness rows | FmEnv lines on WT bit for bit. WtFm cost gates (S3), incl. the two new cases. Aliasing and brightness rows. P3Identity <= 1.95 %. **DSP size measured in the merged drums build: >= 1 KB free with the drums lane's then-current sizes, or the reserve is taken (section 5)** |
-| **W4 WT OSC1 as B + release** | be444 | 3.5 body with feed-B; D9's level-0 rule; D3 mixed-sync rule; D4 data (DC of the factory tables) and its decision; kit BE4.44 (default build); checklist-v4.44.txt; release notes | B-path identity per 7.3 and the divergence test. Mutations 9, 10, 17 red. All suites green on both builds. Sizes and CPU tables written into this plan |
+| **W4 WT OSC1 as B + release** | be444 | 3.5 body with feed-B; D9's level-0 rule; D3 mixed-sync rule; D4 data (DC of the factory tables) and its decision; **D2's last case (deferred from W1): OSC2's slot 5 = FM 1>2 on an Analog OSC2 next to a Wavetable OSC1 (want_row's Analog branch, test_the_fm_slots)**; kit BE4.44 (default build); checklist-v4.44.txt; release notes | B-path identity per 7.3 and the divergence test. Mutations 9, 10, 17 red. **test_synth_ui: slot 5 on OSC2 is FM 1>2 in all four type combinations. A BE4.43 project with a hidden FM 1>2 on an Analog OSC2 next to a Wavetable OSC1 (it now plays): a reviewed behaviour change test (test_native_props / test_analog), or migrated to 0 if Jeff says so; checklist row.** All suites green on both builds. Sizes and CPU tables written into this plan |
 | **merge back** | main | be444 -> main | Drums build: window free >= 1 KB plus whatever P4-2b/P4-5 still need (section 5 re-measured) |
 
 ## 9. Device checklist items (checklist-v4.44.txt; BE4.43's checklist first if not run)
@@ -564,6 +564,11 @@ the end (the failure this plan exists to prevent), and the merge would land on t
    - Consequence: OSC2's Sub FM is no longer reachable in any combination; its value is kept and saved. BE4.43 patches with
      WT OSC1 + Analog OSC2 Sub FM change sound (Sub FM stops, any hidden FM 1>2 value plays).
    - Alternative: keep Sub FM on OSC2 while OSC1 is WT. Drops FM 1>2 from a WT OSC1 and saves about 0.3 KB.
+   - **Decided: yes (2026-11-16). As built at W1, one case is deferred to W4 (needs your OK):** every Wavetable row follows D2,
+     but an Analog OSC2 next to a Wavetable OSC1 still shows BE4.43's Sub FM in slot 5 until W4, when a Wavetable OSC1 can
+     feed B. Switching it at W1 would replace a control that plays with one that is silent on the W1-W3 device images.
+     Side effect until W4: a BE4.43 project with a hidden FM 1>2 on that OSC2 tags OSC1 (feed-B) and pays tier 2 (+1.0 to
+     1.6 % of that oscillator's render, inside the 1.02 gate) for no sound. At W4 that hidden value plays (W4's row in 8).
 3. **D3. Mixed sync with an FM'd WT OSC1** (WT1 master, Analog OSC2 slave).
    - Recommended for BE4.44: **WT1's Sub FM plays as 0 while OSC2 is synced to it**; value kept.
    - Alternative: the reader emits wrap events for the slave: more code and per-sample work, and backward wraps under
@@ -723,6 +728,73 @@ Storage and the switch, no reader: a gate that is not 0 plays as gate 0. Build ~
    line); see above.
 9. The P3Identity set itself tags Wavetable oscillators (FM 1>2 333 on an Analog OSC2 next to a Wavetable OSC1 sets
    feed-B), a reviewed change the plan did not list.
+
+### W1 as built (after the W1 review, 2026-11-17)
+
+Two reviewers rebuilt f2effcd byte for byte, ran every suite, re-ran the plan's mutations and 8 + 18 of their own (all red),
+and probed low notes and mid-note tag/untag. The fixes are tests and this plan only: **the image is unchanged** (rebuilt
+~/bento/out/be444w1r, byte-identical to be444w1). Findings and what was done:
+
+- **Accepted, fixed: the 1.95 % stop line was not a test (medium).** P3Identity.check now also asserts every case
+  `<= P3_STOP` (1.0195), beside M1's 1.02. Mutation 16's reordering form (1.0210) is red on both. Rejected: pinning an_osc's
+  Analog FM-off path to W0's exact instruction count. Codegen noise is about +/-0.15 % (section 6), so an exact pin would
+  churn on legitimate W2-W4 changes, and the stop line is the plan's own rule.
+- **Accepted, fixed: the inlining form of mutation 16 was caught only by a symbol lookup (medium, part of the same
+  finding).** New `test_wt_fm_osc_stays_out_of_line`: wt_fm_osc calls stock's render body (control; FN's movw/movt +
+  blx), an_osc branches to wt_fm_osc and never calls stock's render body itself. Inlining costs the Analog path nothing
+  (M), so no cost test can see it. Red on m16b (the symbol is gone) and on m19 (control).
+- **Accepted, fixed: no audit of other stock writers to a tagged area (medium).** New
+  `test_only_render_and_note_start_write_a_tagged_area`. S: the kernel's read and reset on osc + 0x10C have three callers
+  in all of stock's M7 code (sweep at both alignments): the render (runs restored), the note start (tested), and the ctor.
+  M: a write hook on a tagged OSC1. Stock's slot 8 (keys 0x03, 0xC4..0xCC, six values each), the class's slots 3..15 and
+  the ctor write nothing there. The area is unchanged except for the note start's START / HOME, because slot 3 is the base
+  class's note-on and reaches slot 2. A table change writes nothing: the table is the object at osc + 0x18. So no stock
+  path leaves the tag pair over foreign settings bytes, and W2 needs no extra clearing. Device-only paths (project load
+  re-creating voices) go through the ctor or the props, both covered.
+- **Accepted, fixed: low notes and mid-note tag/untag were not in the suite (low).**
+  - `test_tagged_gate0_low_notes`: tier 2 at notes 24 and 36 for 48 blocks with Position fixed, both push sets, and note
+    24 with Position moving slowly. Same checks as tier2(); tier2() now takes notes / pos.
+  - `test_tag_and_untag_mid_note`: at notes 24 and 60, OSC1 untags at block 9, OSC2 tags at block 13 (block 7's Sub FM is a
+    D2 leave). Samples are bit-equal and the voice equals stock's outside the runs of any oscillator tagged so far. Once a
+    frame change and a wrap have passed after the untag, OSC1's whole area is stock's again.
+  - compare() takes a per-block tagged set and mask.
+  - Red on mutation 2's run-0 build (9 failures). The run-1 and run-2 builds are red on the slow-Position low-note case.
+- **Accepted, fixed: tier 2's own bound in P3Identity was loose (low/info, both reviewers).** It was 120 a call. It is now
+  per case: 80 for "osc2 wavetable" (envelope, M 69) and 45 for "mixed" (feed-B only, M 37), about the measured value
+  + 15 %.
+- **Accepted, fixed: no end-to-end check that a project's push tags a WT oscillator (info).** New
+  `test_a_projects_push_tags_its_wavetable_oscillators`: the load's push (Type first, template order) of two Wavetable
+  oscillators with FM values, over Analog oscillators and over fresh Wavetable ones. Both are tagged, the settings are
+  stored, the D2 leaves are dropped and OSC1 feeds B. Red on mutation 21 and on the reviewer's B (D2 leave). The XML and
+  stock-1.6.8 rows of 7.4 (BE4.43 / stock opening a BE4.44 project with WT FM values) stay with W3/W4, when the values
+  play: W1 changes no keys, tokens or XML code.
+- **Accepted, documented: feed-B is set by wt_feed, not by wt_init (info).** This differs from 3.2's "init writes feed-B
+  from OSC2's current FM 1>2". wt_init writes wflags = 0. wt_feed recomputes the bit on every Type and FM 1>2 message from
+  either oscillator, and tags OSC1 itself when the bit is wanted. So "OSC1 untagged implies the bit is not wanted" holds:
+  every input to it (both Types, OSC2's FM 1>2, OSC2's tag, which cannot drop while fm12 != 0) passes through wt_feed.
+  Mutations A and H (reviewer) and 14 are red.
+- **Needs Jeff: D2 on an Analog OSC2 next to a Wavetable OSC1 is deferred to W4 (medium, both reviewers).** The reason
+  stands (switching it now would make a control that plays silent on W1-W3 images). It is now recorded under D2 in
+  section 12 and in W4's row in section 8, with a W4 test row for BE4.43 projects that hold a hidden FM 1>2 there.
+- **Accepted as transitional, documented: a hidden FM 1>2 tags OSC1 (low).** A BE4.43 project with a Wavetable OSC1 and an
+  Analog OSC2 that holds a non-zero FM 1>2 (hidden by the layout until W4) tags OSC1 for feed-B and pays tier 2 (1.0-1.6 % of
+  its render, within the 1.02 gate) for no sound until W4. Gating feed-B on W4 being built was not taken: it would add a
+  build switch to undo at W4, for a cost already inside the gate.
+- **Accepted: skip counts (info).** Sprint suite lists now give skips. inst_xml (5) and handles (16) are fully skipped on
+  this build (as before W1; they are gated on HAVE/BUILT) and are not counted as coverage.
+
+**Suites (M, ~/bento/out/be444w1r, from the worktree's mods/m1).** These are the counts as run (skips in brackets):
+diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20), notemod 16,
+notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10, native_props 22, **analog 167** (162 + 5 new),
+synth_ui 64 (2), note0 32: all OK. inst_xml 5 (5) and handles 16 (16) are fully skipped, so they give no coverage. test_drums
+33 (1) and test_drum_ui 46 (1) pass on the drums trial build.
+
+**Sizes (M):** unchanged from the W1 result: DSP 24,548 B, 16,156 B free of 40,704. Image 0x189458, 16,092 B to PROVEN_MAX.
+M4 24,424 B, synth UI 15,858 B. Drums trial re-verified: the trial3 merge (f2effcd + main's committed 3597e8e, not
+committed) rebuilt with BE_ENABLE=drums gives DSP 30,612 B, **10,092 B free**, and image 0x18af20.
+**CPU (M):** unchanged. P3Identity 50 cases: worst 1.0184 (mod dev=False, 111,922 / 109,899), under the stop line that is
+now tested; total 1.0094. Tier 2's own cost is 69 a call with an envelope and 37 without. An untagged oscillator-block costs
++27 over stock; a tagged one at gate 0 costs +64..+107, worst 1.0158 x stock's render.
 
 ## Review log
 

@@ -1797,6 +1797,8 @@ def f32le(xs): return struct.pack(f"<{len(xs)}f", *xs)
 # (blocks / sum16 / peak are cycle figures; props counts our keys, three more of them on P3)
 ID_STATS = (3, 5, 6, 11, 12, 13, 14, 15)
 
+P3_STOP = 1.0195           # docs/plan-wt-fm.md 6: P3Identity's stop line (M1's own bound is 1.02)
+
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
 class P3Identity(unittest.TestCase):
@@ -1957,7 +1959,9 @@ class P3Identity(unittest.TestCase):
         helpers included) are the copy's, recorded and left out of the +2 % bound, which holds for the rest (a carve-out,
         6.7), and bounded on their own: fill_max instructions a call. env: BE4.43, an FM envelope is set (FM Atk 2 in
         AMOUNTS): feeds()'s own instructions, where it steps the envelope (fm_env_step) every oscillator-block, are its
-        stated cost (FmEnv.test_cost bounds it), recorded and left out of the +2 % bound the same way."""
+        stated cost (FmEnv.test_cost bounds it), recorded and left out of the +2 % bound the same way. wtier (BE4.44 W1): a
+        Wavetable oscillator is tagged (tier 2): wt_fm_osc's own instructions, bounded at wtier a call (measured + about
+        15 %), carved out the same way. Every case is also held to plan 6's stop line, P3_STOP (1.95 %), not only M1's 2 %."""
         ra = Rig(dev=dev)
         span = Span(ra, dsp_sym("sub_fill")) if fills is not None else None
         espan = Span(ra, dsp_sym("feeds")) if env else None
@@ -1988,11 +1992,15 @@ class P3Identity(unittest.TestCase):
             # the count, as on BE4.40) are recorded and bounded on their own (WtFmW1 holds tier 2 to 1.02 x stock's render)
             own = wspan[0].total - wspan[1].total
             self.assertEqual(len(wt), 1, f"{name}: control, one oscillator tagged")
-            self.assertLessEqual(own, wspan[0].calls * 120, f"{name}: tier 2's own {own / wspan[0].calls:.0f} a call")
+            self.assertLessEqual(own, wspan[0].calls * wtier, f"{name}: tier 2's own {own / wspan[0].calls:.0f} a call (bound {wtier})")
             copy += own
             self.copies.append((name + " (WT tier 2)", wspan[0].calls, own))
         self.costs.append((name, a[3] - copy, b[3]))
         self.assertLessEqual(a[3] - copy, b[3] * 1.02, f"{name}: instructions {a[3]} - {copy} (the copy) vs BE4.40's {b[3]} (M1: +2 %)")
+        # BE4.44 W1 review: plan 6's stop line as a test (past it the layout is reworked before anything else), so a change
+        # adding 0.1 % or more to the Analog FM-off path (worst 1.0184 at W0 and W1) turns this red, not only one past 2 %
+        self.assertLessEqual(a[3] - copy, b[3] * P3_STOP, f"{name}: instructions {a[3]} - {copy} vs BE4.40's {b[3]}: "
+                             f"{(a[3] - copy) / b[3]:.4f}, past plan 6's stop line {P3_STOP}")
 
     def test_free_running_shapes(self):
         """Cost / Voice: both oscillators Analog, Shape pairs across 45..127 (the saw plateau's new edge 45, the anchors; P3
@@ -2112,10 +2120,12 @@ class P3Identity(unittest.TestCase):
         # master, glide and stock's root voice left this list for Fm12.test_the_amounts_cases_are_the_expected_change (the
         # same cases, Rig() and Rig(dev=True)); what stays is FM 1>2 stored where it cannot play (OSC2 Wavetable: nobody to
         # modulate; OSC1 Wavetable: 4.5, the control is hidden), against BE4.40 byte for byte
-        cases = (("osc2 wavetable", lambda r: self.voice_case(r, shape=(64, 48), types=(1, 0), p3=p3), (0,), 8),
-                 ("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,), 24))
+        # the last: tier 2's own instructions a call, bounded (M at W1: 69 with OSC2's envelope (FM Atk 2), 37 for the
+        # Wavetable OSC1 tagged only to feed B; + about 15 %, W1 review; was 120 for both)
+        cases = (("osc2 wavetable", lambda r: self.voice_case(r, shape=(64, 48), types=(1, 0), p3=p3), (0,), 8, 80),
+                 ("mixed", lambda r: self.mixed_case(r, 48, p3=p3), (1,), 24, 45))
         for dev in (False, True):
-            for name, run, oscs, fills in cases:
+            for name, run, oscs, fills, wt in cases:
                 if dev and name == "glide":
                     continue                                    # Q0: the dev rig's glide is an expected change (above)
                 with self.subTest(dev=dev, case=name):
@@ -2130,7 +2140,7 @@ class P3Identity(unittest.TestCase):
                     # P3 Q5 (reviewed edit): with Sub FM 0 nothing fills A (Q4's 8 / 11 / 24 fills went with Sub FM 700),
                     # so no carve-out: the whole count is under M1's +2 %, the output and voice BE4.40's byte for byte
                     self.check(f"amounts {name} dev={dev}", stored, dev, mask=oscs, fills=fills if p3[0] else None,
-                               fill_max=FILL_MAX[(name == "root voice", dev)], env=bool(p3[1]), wtier=True)
+                               fill_max=FILL_MAX[(name == "root voice", dev)], env=bool(p3[1]), wtier=wt)
 
     def test_the_harness_goes_red(self):
         """The control (plan 6.2): the comparison fails on a one-ulp change of one output sample, and the replay itself
@@ -5256,18 +5266,23 @@ class WtFmW1(unittest.TestCase):
     PUSH_ENV = ((0, K_FMATK, 3), (0, K_FMDEC, 6), (1, K_FMDEC, 10))
     PUSH_AMT = ((0, K_SUBFM, 700), (1, K_FM12, 400), (1, K_FMATK, 2))
 
-    def compare(self, name, a, b, tagged):
+    def compare(self, name, a, b, tagged, masked=None):
         """a this build, b stock: samples, and the voice after every block with the runs of the tagged oscillators masked (on
-        both); tagged oscillators tagged after every block, the others never."""
+        both); tagged oscillators tagged after every block, the others never. W1 review: tagged may be a function of the
+        block (a tag or an untag mid-note), and masked(block) the oscillators whose runs are left out there (default:
+        the tagged ones)."""
         same(self, f32le(a.m.x1), f32le(b.m.x1), f"{name}: OSC1's samples")
         same(self, f32le(a.m.x2), f32le(b.m.x2), f"{name}: OSC2's samples")
         self.assertGreater(max(abs(x) for x in a.m.x1 + a.m.x2), 0.1, f"{name}: control, it plays")
         ks = [o - a.m.v + S.OSC_KERNEL for o in a.oscs]
+        at_blk = tagged if callable(tagged) else (lambda blk: tagged)
+        masked = masked or at_blk
         for blk, (ma, mb) in enumerate(zip(a.mems, b.mems)):
             ma, mb = bytearray(ma), bytearray(mb)
             for i, k in enumerate(ks):
-                self.assertEqual(wt_tagged(ma, k, a.oscs[i]), i in tagged, f"{name}: block {blk}: OSC{i + 1} tagged")
-                if i in tagged:
+                self.assertEqual(wt_tagged(ma, k, a.oscs[i]), i in at_blk(blk), f"{name}: block {blk}: OSC{i + 1} tagged")
+            for i, k in enumerate(ks):
+                if i in masked(blk):
                     for off, n in WT_RUNS:
                         ma[k + off:k + off + n] = mb[k + off:k + off + n] = bytes(n)
             if ma != mb:
@@ -5294,13 +5309,15 @@ class WtFmW1(unittest.TestCase):
                 self.assertGreater(min(d), 0, "control: the trampoline and an_osc's return cost something")
         print(f"\n  WT FM W1: untagged oscillator-block over stock: +{min(d)} .. +{max(d)} instructions", file=sys.stderr)
 
-    def tier2(self, name, pushes, tagged, envs, blocks=40, reset=(1, 1)):
+    def tier2(self, name, pushes, tagged, envs, blocks=40, reset=(1, 1), notes=None, pos=None):
         """Tier 2 against stock (7.3): note starts at 0 and three back to back (6, 7, 8), Position fixed to 11 then moving
         (frame crossfades rewrite k + 0x60 .. 0xBF), note 120 from 24 (many wraps: k + 0x00 .. 0x5F at each). envs: per
         oscillator (atk, dec) or None (no envelope: fmk held at DEC j 0, fme 0). The runs after every block: the tag pair,
-        the settings, msub = m12 = 0, mipcur HOME, wxf 0, fme the golden envelope's (p3_golden fm_env, f32)."""
-        notes = {0: 60, 6: 60, 7: 60, 8: 60, 24: 120}
-        kw = dict(notes=notes, pos=lambda b, i: 0.25 + 0.5 * i if b < 12 else ((b * 53 + 77 * i) % 256) / 255, reset=reset)
+        the settings, msub = m12 = 0, mipcur HOME, wxf 0, fme the golden envelope's (p3_golden fm_env, f32). notes / pos
+        (W1 review): another scenario (test_tagged_gate0_low_notes)."""
+        notes = notes or {0: 60, 6: 60, 7: 60, 8: 60, 24: 120}
+        pos = pos or (lambda b, i: 0.25 + 0.5 * i if b < 12 else ((b * 53 + 77 * i) % 256) / 255)
+        kw = dict(notes=notes, pos=pos, reset=reset)
         a = wt_play(False, blocks, pushes, **kw)
         b = wt_play(True, blocks, pushes, **kw)
         self.compare(name, a, b, tagged)
@@ -5526,6 +5543,154 @@ class WtFmW1(unittest.TestCase):
         resend()
         self.assertTrue(wt_tagged(w.area(0), 0, w.m.o1))
         self.assertEqual(settings(), (0, 0, 0, 3, 0, 600, 0, 40, 1), "Wavetable again: the FM values, nothing of Analog's")
+
+    def test_a_projects_push_tags_its_wavetable_oscillators(self):
+        """W1 review (7.4's project load, M7 side): the push after a load (P3Identity.push: Type first, then the template's
+        order, as test_native_props' test_the_push_after_a_load_reaches_the_m7 sees the M4 send it) of two Wavetable
+        oscillators with FM values, over oscillators that were Analog with other values and over fresh Wavetable ones: both
+        tagged, the settings stored (D2's leaves dropped: OSC1's FM 1>2, OSC2's Sub FM), OSC1 feeding B."""
+        for before in ("analog", "wavetable"):
+            with self.subTest(before=before):
+                w = self.fresh()
+                if before == "analog":
+                    for i in (0, 1):
+                        P3Identity.push(w.r, w.oscs[i], w.m.handle, i, (1, 70, i, 0), (900, 5, 800, 30))
+                        self.assertEqual(struct.unpack_from("<I", w.area(i), 0)[0], AN_MAGIC, "control: Analog first")
+                P3Identity.push(w.r, w.oscs[0], w.m.handle, 0, (0, 48, 0, 0), (400, 3, 250, 20))   # (Sub FM, FM Atk, FM 1>2, FM Dec)
+                P3Identity.push(w.r, w.oscs[1], w.m.handle, 1, (0, 48, 0, 0), (600, 0, 300))
+                for i, want in ((0, (0, 0, 0, 3, 0, 400, 0, 20, 1)), (1, (0, 0, 0, 0, 0, 0, 300, FM_DEC_INF, 0))):
+                    a = w.area(i)
+                    self.assertTrue(wt_tagged(a, 0, w.oscs[i]), f"OSC{i + 1} tagged")
+                    self.assertEqual(struct.unpack_from("<BBBBHHHBB", a, PROPS_AT), want, f"OSC{i + 1}'s settings")
+                self.assertEqual(w.area(0)[WT_FLAGS_AT], WT_FEED_B, "OSC1 feeds B (OSC2's FM 1>2)")
+
+    def test_tagged_gate0_low_notes(self):
+        """W1 review (3.2's "stock writes the guard before it reads it", across cycles that span many blocks): tier 2 at
+        notes 24 and 36 for 48 blocks, Position fixed (few wraps, no frame change: the runs sit over live history for many
+        blocks), and note 24 with Position moving slowly (frame changes between wraps). Same checks as tier2's."""
+        fixed = lambda b, i: 0.25 + 0.5 * i
+        for note in (24, 36):
+            for name, pushes, envs in (("envelope", self.PUSH_ENV, ((3, 6), (0, 10))), ("amounts", self.PUSH_AMT, (None, (2, FM_DEC_INF)))):
+                with self.subTest(note=note, case=name):
+                    self.tier2(f"{name} note {note}", pushes, (0, 1), envs, blocks=48, notes={0: note}, pos=fixed)
+        with self.subTest(note=24, case="Position moving slowly"):
+            self.tier2("amounts note 24 slow Position", self.PUSH_AMT, (0, 1), (None, (2, FM_DEC_INF)), blocks=48,
+                       notes={0: 24, 20: 24}, pos=lambda b, i: 0.1 + 0.01 * b + 0.3 * i)
+
+    def test_tag_and_untag_mid_note(self):
+        """W1 review: a tag (wt_init over live history, between wraps) and an untag (wt_settle, magic 0) in the middle of a
+        note, at notes 24 and 60. OSC1: an envelope set before the note and removed at block 9 (untagged from then); OSC2:
+        Sub FM 500 at block 7 is a D2 leave (no tag), FM Atk 5 at block 13 tags it. Samples stock's bit for bit throughout;
+        the voice stock's outside the runs of every oscillator tagged so far; and once a frame change and a wrap have
+        passed after OSC1's untag (Position moves at block 16), OSC1's whole area is stock's again (its leftover bytes were
+        all rewritten before stock read them)."""
+        def each(w, b):
+            if b == 7:
+                w.push(1, K_SUBFM, 500)
+            if b == 9:
+                w.push(0, K_FMATK, 0); w.push(0, K_FMDEC, FM_DEC_INF)
+            if b == 13:
+                w.push(1, K_FMATK, 5)
+        pushes = ((0, K_FMATK, 3), (0, K_FMDEC, 6))
+        tagged = lambda blk: ({0} if blk < 9 else set()) | ({1} if blk >= 13 else set())
+        masked = lambda blk: {0} | ({1} if blk >= 13 else set())
+        pos = lambda b, i: (0.3 if b < 16 else 0.8) + 0.1 * i
+        for note in (24, 60):
+            with self.subTest(note=note):
+                kw = dict(notes={0: note}, pos=pos)
+                a = wt_play(False, 40, pushes, each=each, **kw)
+                b = wt_play(True, 40, pushes, each=lambda w, b: None, **kw)
+                self.compare(f"tag/untag note {note}", a, b, tagged, masked)
+                k = a.oscs[0] - a.m.v + S.OSC_KERNEL
+                self.assertEqual(a.mems[-1][k:k + 0xC0], b.mems[-1][k:k + 0xC0], "OSC1's area: stock's again")
+
+    def test_only_render_and_note_start_write_a_tagged_area(self):
+        """W1 review (the saved-run design's premise): of stock's code, only the Wavetable oscillator's render (its runs put
+        back by wt_fm_osc) and its note start (WtFmW1's note-start blocks) write a tagged area. S: the kernel's functions on
+        osc + 0x10C (its read, the one the render calls on it, and its reset, the one the note start calls) are called
+        from three places in all of stock's M7 code: the render, the note start and the ctor (a linear sweep at both
+        halfword alignments). M, a write hook on a tagged OSC1 (runs and samples settled): stock's slot 8 (every key it
+        handles, 0x03 and 0xC4 .. 0xCC, values 0 .. 1000), the class's other slots (3 .. 15, render and note start aside;
+        slot 3, the base class's note-on, reaches the note start through slot 2) and the ctor write nothing there: the tag
+        pair and the settings stay as they were, the state but for the note start's START / HOME. A table change is no write: the
+        table is the object at osc + 0x18, read by the render."""
+        md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
+        md.skipdata = True
+        def kernel_call(fn):
+            """The bl right after fn's add.w r0, rN, #0x10c: (its address, its target)."""
+            body = list(md.disasm(STOCK_IMG[fn - BASE:fn - BASE + 0x200], fn))
+            j = next(j for j, i in enumerate(body) if i.mnemonic == "add.w" and i.op_str.endswith(", #0x10c"))
+            bl = next(i for i in body[j:] if i.mnemonic == "bl")
+            return bl.address, int(bl.op_str[1:], 16)
+        (r_at, read), (n_at, reset), (c_at, c_tgt) = (kernel_call(f) for f in (S.WT_OSC_RENDER, S.WT_NOTE_START, S.WT_OSC_CTOR))
+        self.assertEqual(c_tgt, reset, "the ctor calls the reset too")
+        self.assertNotEqual(read, reset)
+        calls = {read: set(), reset: set()}
+        for off in (0, 2):
+            for i in md.disasm(STOCK_IMG[off:S.M7_DSP - BASE], BASE + off):
+                if i.mnemonic in ("bl", "b.w", "b") and i.op_str.startswith("#") and int(i.op_str[1:], 16) in calls:
+                    calls[int(i.op_str[1:], 16)].add(i.address)
+        self.assertEqual(calls, {read: {r_at}, reset: {n_at, c_at}},
+                         "the kernel's read (the render) and reset (note start, ctor): no other caller")
+        w = WtRun(False)
+        for i, k, v in self.PUSH_AMT:
+            w.push(i, k, v)
+        w.m.note(60)
+        for _ in range(3):
+            w.m.block()
+        o = w.m.o1
+        k1 = o + S.OSC_KERNEL
+        seen = []
+        def hook(u, acc, a, size, val, _):
+            if not S.M7_DSP <= u.reg_read(UC_ARM_REG_PC) < S.M7_DSP_LIMIT:
+                seen.append((cur, a - k1))
+        w.r.u.hook_add(UC_HOOK_MEM_WRITE, hook, begin=k1, end=k1 + 0xBF)
+        before = w.area(0)
+        scratch = w.r.alloc(0x400)
+        w.r.u.mem_write(scratch, struct.pack("<I", 60) + bytes(0x3FC))
+        vt = w.r.r32(o)
+        for key in (0x03,) + tuple(range(0xC4, 0xCD)):
+            for val in (0, 1, 64, 127, 255, 1000):
+                cur = f"slot 8 key {key:#x} = {val}"
+                w.r.prop(o, key, val, w.m.handle, 0)
+        ran = 0
+        for slot in range(3, 16):
+            cur = f"slot {slot}"
+            w.r.call(w.r.r32(vt + 4 * slot) & ~1, o, scratch, scratch, sargs=(scratch, scratch, scratch))
+            ran += 1
+        cur = "ctor"
+        w.r.call(S.WT_OSC_CTOR, o)
+        self.assertEqual(seen, [], "no stock write into the tagged area")
+        # slot 3 is the base class's note-on: it reaches the note start (slot 2: an_note, then stock's), so fmk is START (0)
+        # and mipcur HOME, as at any note start; every other byte as it was
+        want = bytearray(before)
+        want[WT_MIP_AT] = WT_HOME
+        want[FMK_AT:FMK_AT + 2] = bytes(2)
+        self.assertNotEqual(bytes(want), before, "control: the note start had something to reset")
+        self.assertEqual(w.area(0), bytes(want), "the area as it was (tag pair, state, settings), but for the note start's")
+        self.assertEqual(ran, 13, "control: every slot ran")
+
+    def test_wt_fm_osc_stays_out_of_line(self):
+        """Plan 6 (mutation 16's inlining form, W1 review): all WT FM work stays in noinline wt_fm_osc; an_osc only branches
+        to it. Inlining it costs the Analog path nothing measurable (M at W1), so P3Identity's cost cannot see it; this does."""
+        md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
+        def targets(name):
+            """Direct branch targets in the function, and the addresses it builds with movw / movt (FN's calls: blx rN)."""
+            lo, hi = sym_range(name)
+            got, half = set(), {}
+            for i in md.disasm(IMG[lo - BASE:hi - BASE], lo):
+                ops = i.op_str.split(", ")
+                if i.mnemonic in ("bl", "b.w", "b") and i.op_str.startswith("#"):
+                    got.add(int(i.op_str[1:], 16))
+                elif i.mnemonic == "movw" and len(ops) == 2:
+                    half[ops[0]] = int(ops[1].lstrip("#"), 16)
+                elif i.mnemonic == "movt" and len(ops) == 2 and ops[0] in half:
+                    got.add((half.pop(ops[0]) | int(ops[1].lstrip("#"), 16) << 16) & ~1)
+            return got
+        self.assertIn(S.WT_OSC_RENDER, targets("wt_fm_osc"), "control: wt_fm_osc calls stock's render body")
+        osc = targets("an_osc")
+        self.assertIn(dsp_sym("wt_fm_osc"), osc, "an_osc branches to wt_fm_osc")
+        self.assertNotIn(S.WT_OSC_RENDER, osc, "an_osc itself never calls stock's render body (no WT FM body inside)")
 
 
 AN_FE_DEC_HOLD = 2 << 13    # AnOsc.fmk at DEC j 0: the envelope held at 1 (analog.h AN_FE_DEC << 13)
