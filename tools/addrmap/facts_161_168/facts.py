@@ -1256,6 +1256,19 @@ REVIEWED = {
                          "-15 at 0x08132890, 0x0813B3B8, 0x0813F144), whose keys there are Pre Delay 0x18C .. Reverb 0x1B6; such a message "
                          "carries a key only when that model object has it as a property, and our D6 keeps the drum keys away from the "
                          "model (test_drum_ui logs UI_POST / set_property); test_keys pins it"),
+    # P4-1 (docs/plan-p4-drums.md 3.1, P4-D2): the drum track's native keys
+    'KEY_DR_ENGINE': dict(value=0x1a8, evidence="P4-1 (docs/plan-p4-drums.md 3.1, P4-D2): empty after stock's builder, no movw / mov.w / "
+                          "cmp.w immediate in either core (test_keys, ALLOW['drums']); below claim()'s 0x1C1; neither a P1 / P3 key (type "
+                          "6) nor one of the reverb neighbours on type 0x1B (tpl.txt). Its one range test, M7 0x08059990 (0x18C..0x1B6), "
+                          "is reached only for set_property messages to the reverb object 0xFFFFFFF1 (test_keys). Stock pushes a pad's "
+                          "keys by pad handle (0x3E, PROP_PUSH; P4-0 A, M) into SAMPLER_PROCESS 0x0808F4A0, whose out-of-range case "
+                          "0x08091B46 stores key 0x1DF only (movw r2,#0x1df; cmp r3,r2; bne.w 0x0808F4E0) and ignores the rest"),
+    'KEY_DR_TRACK': dict(value=0x1a2, evidence="P4-1 (plan 3.1 / 3.2, P4-D2): empty after stock's builder, no movw / mov.w / cmp.w "
+                         "immediate in either core (test_keys); its 16-bit hits are tbh offsets and case-map-like tables, and "
+                         "LINK_VERSION's ldrh struct offset (not a key use); range test as KEY_DR_ENGINE. PROP_PUSH sends a track's own "
+                         "keys under handle 0xFFFFFFFE (SET_PROPERTY; P4-0 M) and H_INPUT posts them to the -2 mailbox (0x080599C0 -> "
+                         "0x08059A80); the one -2 consumer found, 0x080672A0, acts on keys 0x27, 0xBD and 5 only (cmp r2,#0x27 / #0xbd / "
+                         "#5 at 0x0806735E..6A; other consumers not searched exhaustively): the flag has no M7 reader, it is the M4's"),
     'INST_CTOR': dict(value=0x8155240, evidence="push.w {r4-fp,lr}; sub sp,#0x84; the base view ctor 0x08171C88, then str of the class "
                       "0x081A14EC (INST_TICK_SLOT) into [view]; three bars at +0x38 stride 0x23F8 (0x08172628), the row handles / "
                       "keys / values cleared (0x081552B8..E8); = 1.6.1 0x08153560 (matcher: same-code-moved; Playground's render "

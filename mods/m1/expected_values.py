@@ -73,7 +73,7 @@ STOCK_161 = dict(
     VOICE_DESC=None, VOICE_CURSOR=None, VOICE_RATIO=None, VOICE_PITCH_PARAM=None, VOICE_LFO1=None,   # S6c drums: 1.6.8 only
     ROOT_FINE=None, ROOT_LOOP=None, ROOT_VOICES=None, ROOT_VOICE_N=None, VOICE_SERIAL=None, VOICE_FORWARD=None, BUF_CAPACITY=None,
     INST_CELL=None, INST_FILE=None, INST_TRACK_TYPE=None, INST_KEYS=None, INST_NATIVE_KEYS=None, INST_ROW_STRIDE=None,   # S6c-2: 1.6.8 only
-    INST_TITLE=None, NODE_CHILDREN=None, NODE_CHILD_N=None, STORE_COUNT=None, KEY_DR_FIRST=None, KEY_FILENAME=None, KEY_POLY_MODE=None,
+    INST_TITLE=None, NODE_CHILDREN=None, NODE_CHILD_N=None, STORE_COUNT=None, KEY_DR_FIRST=None, KEY_DR_ENGINE=None, KEY_DR_TRACK=None, KEY_FILENAME=None, KEY_POLY_MODE=None,
     ACT_WAVETABLE=0x102A,          # menu table 0x081981F8 cell 5 {0x102A, 'Wavetable'}
     TYPE_WAVETABLE=0x12,           # Playground's analog_pane / menu checks
     ROOT_HANDLE=0x0C, VOICE_WT1=0x7A4, VOICE_WT2=0x994, VOICE_SUB=0x4C, OSC_KERNEL=0x10C,   # WT root ctor 0x0809BF20
@@ -237,6 +237,7 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     NODE_CHILDREN=0x18, NODE_CHILD_N=0x928,   # NODE_CLONE: str r0,[r1,#0x18] (r1 = node + 4 i); [r2,#0x928] the count (0x0812F376..8C)
     STORE_COUNT=0x30,             # RESOLVE_OBJECT ldr.w ip,[r0,#0x30] (0x0812E6FE)
     KEY_DR_FIRST=0x1AE,           # keyscan.py: 0x1AE..0x1B4 empty, no immediates; range 0x08059990 only for the 0xFFFFFFF1 object
+    KEY_DR_ENGINE=0x1A8, KEY_DR_TRACK=0x1A2,   # P4-1 (plan-p4-drums 3.1): registry empty, no immediates (test_keys)
     KEY_FILENAME=0x81,            # desc.py: 'Filename' type 19; movs r2,#0x81 before GET_STRING (0x081540A8)
     KEY_POLY_MODE=0x2E,           # desc.py: 'Poly Mode' type 7 (6 choices); the One-Shot Config row (rows.py)
     # BE4.40 identity (scratch wf/impl_m4: st.py disassembly; test_synth_ui runs each on stock's page):

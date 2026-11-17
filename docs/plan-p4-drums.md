@@ -188,6 +188,73 @@ Kept as is: test_handles Sites (the three sites, the bisect case) and Stock (sto
 
 **Not done in P4-0 (I):** the real menu path through MENU_HANDLER; the preset importer's old-track branch; the 0x080949E2 MultiSam split; the INST-button NAV 8 page conversion; full re-runs of A's harnesses by the reviewer (outputs and code re-checked instead).
 
+### 0.7 P4-1 as built (BE4.50 P4-1, 2026-11-16)
+
+**Built (M).**
+- **N1** (build.py): np_template takes runs `[(type, [(key, default), ..]), ..]`. Each run keeps the contiguity check, and the
+  duplicate and "already in stock's template" checks now cover every run. The drum runs come from `dr_template_runs()`, which
+  is read only in drums builds: the engine 0x1A8 and the knobs 0x1AE..0x1B4 go after the type-1 (saminst) run, and the flag 0x1A2
+  goes after the type-0x0E (One-Shot track) run. All default to 0. Drums build: 0x2FC + 7 + 9 = **0x30C entries, no 0xFF pad**.
+  Type 1 and type 0x0E gain the drum keys and type 6 keeps P3's seven; every other type is stock's (template dump, M). Default
+  build: BE4.41's 0x304 with its one pad entry. In a drums build the template, literal, cmp and REG_BUILD sites are labelled
+  "Synth:", so a bisect leaves them stock only when analog and drums are both off. The default build keeps "Analog:" byte
+  for byte. drums without analog is refused.
+- **N2** (m4_synth.c `dr_np_keys`, called second in the drums N2 wrapper after `np_keys`; the UI-tick `drum_keys` stays as the
+  fallback): nine integer descriptors (type 2), all nine or none (black box TAKEN:i: knobs 1..7, 8 the engine, 9 the flag).
+  - Tokens: bento_drum_k1..k7, bento_drum_engine and bento_drumtrack.
+  - Titles: the Kick's knob names (the registry title is global), "Engine" and "Drum Track".
+  - Ranges: knobs **0..127**, engine 0..5 (dense index, 0 none), flag 0..1.
+  - **Knob range choice:** 0..127 matches docs/p4-engine-spec.md ("Knobs (0..127, v = k/127)"), because the lean engines
+    replace the DaisySP Kick at P4-2. DK4's Kick units (KICK_LO / KICK_HI, Tune 25..180) were rejected: they would be thrown
+    away at P4-2 and would differ per engine.
+- **X1** (dr_save): on a type-1 pad whose keys are ours, X1 sets the object's native keys from DK4 with stock's setter, and stock's
+  writer writes them. Adding the attributes as well would have written each name twice, with the object's value last (M). A
+  type-2 pad keeps the attributes.
+- **Key reviews**: KEY_DR_ENGINE and KEY_DR_TRACK were added to facts_161_168 REVIEWED, expected_values.py and stock_161.py,
+  with the same notes, and stock_168.py was regenerated with gen_table.py. test_keys ALLOW['drums'] gains 0x1A8 and 0x1A2
+  (16 keys). Both new keys are in the one M7 range test, 0x08059990, which only the reverb handle -15 reaches (M/S).
+- **Tests**:
+  - test_native_props Template derives the drums count instead of hard-coding 0x30C.
+  - DrumProject: stock's writer and reader carry the pad and track keys, PROP_PUSH sends pad 0's keys to the pad handle, and
+    stock 1.6.8 and BE4.41 open the project with no drum key and drop bento_* when they save it again.
+  - **DefaultImage** (new, from the review): a build at version 4.41 on 1.6.8 with BE4.41's disabled and omitted groups must be
+    BE4.41's image byte for byte. It skips for any other build, so a version bump retires it. It passes on the default build and fails against a
+    copy of m1-be441 with one byte flipped (M).
+  - The BE4.41-opens test now **fails** if ~/bento/out/m1-be441 is missing. Before, it skipped.
+  - test_keys checks the nine descriptors. test_drum_ui checks the descriptors and the X1 round trip.
+- **Sizes**:
+
+  | Build | Image | Writes | Template | Notes |
+  |---|---|---|---|---|
+  | drums | 0x18AB70 (proven max 0x18D334) | 120 | 0x30C | DSP 29,836 B, synth UI 21,768 B |
+  | default | 0x1890D0 | | | `cmp` with m1-be441/bento1.bin: identical (M) |
+
+Suites (test_m1.sh): drums build 23 of 23 OK; default build 21 of 21 OK (test_drums and test_drum_ui not run: drums is
+omitted there, as in BE4.41). The drums image's sha256 (a8abae7d...) is the same as before the review fixes, which
+changed only tests, tables and docs.
+
+**Review (two independent verifiers, mutation runs on scratch copies): dispositions.**
+1. stock_168.py had been hand-edited (its Counts line was stale, and its notes differed from stock_161's): **applied.** The notes
+   were copied into stock_161.py and the file regenerated. Only the Counts line changed.
+2. Merge hazard with be442 (eight Analog keys): **applied** to the test, which now derives the count. At the be442 merge, a
+   drums build has 0x2FC + 8 + 9 = 0x30D entries, padded to **0x310 with three 0xFF entries**. 0.2, 3.3 N1, build.py's
+   DR_PAD_TYPE comment and test_keys' key count (8 + 9 = 17) must then be updated, and Hazard expects the pad entry again.
+3. Until P4-2, the DaisySP Kick's Tune is degraded in drums builds: **noted, internal builds only.** The page steps within
+   0..127, so Tune above 127 is out of reach and 0..24 is clamped by DK4. Files are unaffected: Tune 180 round-trips (M).
+   Neither stock's setter nor its reader clamps (a file's engine 77 is stored as 77, M), so the P4-2 trampoline must
+   bounds-check the engine and clamp the knobs. Both were added to 5 (tests and mutations).
+4. dr_save writes engine = 1 on drum pads of unflagged tracks (P4-1 / P4-2 builds): **noted.** This is acceptable under "no
+   saved dev projects" (F8). P4-3 must not be tested with projects saved by these builds (row in 6).
+5. PROP_PUSH coverage stops at pad 0 in this rig: **deferred**, as the review allows. The every-pad check belongs to P4-3's
+   builder + PROP_PUSH test, and P4-0's rig saw every pad (M).
+6. No test enforced the unchanged default image (two default-build mutants survived every suite): **applied** (DefaultImage
+   above).
+7. The BE4.41 rollback test could pass as a skip: **applied** (it fails now).
+8. Each descriptor mutant is caught only by test_keys and test_drum_ui: **no change.** DRUM_DESC in test_keys stays typed
+   independently of synth_shared.h.
+
+**Not done in P4-1 (I):** an every-pad PROP_PUSH test (P4-3); the be442 merge.
+
 ---
 
 ## 1. Requirements
@@ -464,6 +531,9 @@ If pad-handle messages don't reach the root, the M4 publishes the table itself: 
   - stores our 8 keys (engine index mapped to id);
   - passes 0x1DF and all other keys to stock, checked byte for byte against stock's 0x1DF store;
   - reads the value as an int;
+  - bounds-checks the engine index: only 1..5 map to an id, anything else means none (P4-1 review, M: neither stock's
+    setter nor its reader clamps, so a file's bento_drum_engine="77" is stored as 77);
+  - clamps the knobs to 0..127 (same reason: a file's value arrives unclamped);
   - drops (and counts) writes before area_ok.
 - Binder binds if and only if: gen current, handle == root+0x0C, engine != 0. A drum pad with MultiSam (0x3A) = 1: pinned back to 0, or the outcome documented (P4-D11).
 - Stale lines:
@@ -508,7 +578,7 @@ If pad-handle messages don't reach the root, the M4 publishes the table itself: 
 - test_synth_ui: MENU_* sites stock in default builds, patched in drums builds.
 
 **Mutations** (each must turn a test red):
-- trampoline: passes our key to stock; swallows 0x1DF; ignores area_ok; reads the value as float;
+- trampoline: passes our key to stock; swallows 0x1DF; ignores area_ok; reads the value as float; engine index not bounds-checked; knobs not clamped;
 - binder: ignores the engine; ignores the handle; ignores the boot gen;
 - re-strike: handoff at render instead of start; engine run twice per block; body reset; orphan not released; release on same-voice reuse; no crossfade; cells keyed by voice;
 - cap ignored;
@@ -531,8 +601,8 @@ Each sprint ends offline-green and is committed (standing OK). Nothing is pushed
 |---|---|---|---|
 | **P4-0 gates + repair** (done 2026-11-16, GO; 0.6) | none | fix the libm guard (P4-D1); retire the 13 stale tests; emulate A on a menu-built track (builder prototype + PROP_PUSH, no reload); measure B (0xCF with a pad handle through 0x0813D7B0; slot handle = saminst); measure PROP_PUSH zero values; trace the model cases for 0x3F/0x102D/0x103B and template 2's header actions; find the One-Shot preset importer; run undo; audit instrument-kind surfaces (P4-D8); trace hardware-pad play / step entry for PAD_HAS_FILE dependencies; record whether stock re-pushes after an M7 restart | drums build green on every suite; A and B answered M with addresses; GO confirmed or NO-GO written here |
 | **P4-1 native keys** | internal | N1 (generalised np_template, drums-only), N2 integer descriptors, key reviews, test_keys ALLOW | template and XML tests; stock 1.6.8 and BE4.41 open the project; default build unchanged |
-| **P4-2 M7** | internal | trampoline + gen/area_ok checks, root-indexed table + zero in synth_take, binder by engine, provider, D1 by provider, handoff at start, once-per-block engine, scratch buffer, crossfade, reclaim, cap constant, SA layout move; detector and `knob_entry` removed; vendor nothing new yet | test_drums including the new groups; Kick golden vs kick_ref; click test after post chain; mutations red |
-| **P4-3 track + grid + edit** | **BE4.50** | menu (with lock check), builder (recipe + PROP_PUSH), PAD_OPEN, PAD_HAS_FILE, sample-action filter, label and LED post-passes, normalizer, M7-take re-push, **D6 forwarding** + engine knob (1..5) so Jeff can edit the Kick; remove DK4, H1-H4, X1-X3, the name match, carriers | test_drum_ui green; clipboard round trips; XML round trips across firmware; every mutation red; `checklist-v4.50.txt` |
+| **P4-2 M7** | internal | trampoline + gen/area_ok checks, root-indexed table + zero in synth_take, binder by engine, provider, D1 by provider, handoff at start, once-per-block engine, scratch buffer, crossfade, reclaim, cap constant, SA layout move; detector and `knob_entry` removed; vendor nothing new yet; the lean Kick replaces the DaisySP Kick, which also ends P4-1's degraded Tune range (0.7) | test_drums including the new groups; Kick golden vs kick_ref; click test after post chain; mutations red |
+| **P4-3 track + grid + edit** | **BE4.50** | menu (with lock check), builder (recipe + PROP_PUSH), PAD_OPEN, PAD_HAS_FILE, sample-action filter, label and LED post-passes, normalizer, M7-take re-push, **D6 forwarding** + engine knob (1..5) so Jeff can edit the Kick; remove DK4, H1-H4, X1-X3, the name match, carriers. Do not test with projects saved by P4-1 / P4-2 builds (0.7: engine = 1 on unflagged tracks) | test_drum_ui green; clipboard round trips; XML round trips across firmware; every mutation red; `checklist-v4.50.txt` |
 | **P4-4 page** | BE4.51 | per-engine titles from the page, envelope defaults, Poly Mode hidden, heal on engine change, label refresh on engine change | page tests per engine (unbuilt engines show blank rows) |
 | **P4-5 engines + CPU** | BE4.60 | vendor Snare/HiHat unmodified + hashes + host refs; re-measure sizes; Snare, HiHat, Tom (Clap per P4-D9); efficiency pass as own glue; engine placement (C slice / -Os); cap retuned from BE4.50/4.51 numbers | goldens per engine; cost per engine within budget; DSP window fits with margin |
 

@@ -25,12 +25,20 @@ del sys.argv[1:3]
 # S6a (T6): the synth keys. The plan's allow-list (docs/plan-synths-168.md section 5), typed here: Analog (in this
 # image when the group is), the drums' ten (S6c) and Track FX's nineteen (later) must be clean too.
 ANALOG = "analog" not in MAN.get("omitted", []) and "analog" not in MAN.get("disabled", []) and "synth.np_keys" in MAN.get("m4_symbols", {})
+DRUMS = "drums" not in MAN.get("omitted", []) and "drums" not in MAN.get("disabled", []) and "synth.dr_np_keys" in MAN.get("m4_symbols", {})
 # (Track FX's 19 are picked and reviewed in its own sprint; 0x19A, for one, is stock's Freeze.)
 # S6c-2: the drums claim seven contiguous keys of the plan's ten (0x1AE..0x1B4, one range test in the X3 wrapper); outside
 # 0x18C..0x1B6 no clean key is left but Track FX's 0x132 / 0x18B, which the Analog FM plan takes.
 # BE4.40: Analog's four native oscillator keys (docs/plan-native-props.md 3.1): Type, Shape, Sync, Glide. P3 Q1
 # (docs/plan-p3-fm-bits.md 2.1): BE4.40's FM_NEXT joins them, in NP_KEYS' order (m4_synth.c): Sub FM, Bit Depth, FM 1>2.
-ALLOW = {"analog": (0x1C0, 0x1A7, 0x1AB, 0x1B7, 0x18B, 0x1A4, 0x132), "drums": (0x1AE, 0x1AF, 0x1B0, 0x1B1, 0x1B2, 0x1B3, 0x1B4)}
+# P4-1 (docs/plan-p4-drums.md 3.1, P4-D2): the drums' knobs become native keys on the pads, with two more keys: the pad's
+# engine index 0x1A8 and the One-Shot track's Drum Synth flag 0x1A2 (both in the same 0x18C..0x1B6 range as the knobs).
+ALLOW = {"analog": (0x1C0, 0x1A7, 0x1AB, 0x1B7, 0x18B, 0x1A4, 0x132), "drums": (0x1AE, 0x1AF, 0x1B0, 0x1B1, 0x1B2, 0x1B3, 0x1B4, 0x1A8, 0x1A2)}
+# the drum keys' descriptors (P4-1 N2): (key, type, title, choices, lo, hi, token); integers (type 2, as stock's Shift),
+# knobs 0..127 (docs/p4-engine-spec.md), the engine a dense index 0..5, the flag 0 / 1; the registry title is the Kick's
+DRUM_DESC = [(0x1AE + i, 2, t, 0, 0, 127, f"bento_drum_k{i + 1}")
+             for i, t in enumerate(("Tune", "Kick Dec", "Tone", "Accent", "Sweep", "Sweep Dec", "Dirt"))]
+DRUM_DESC += [(0x1A8, 2, "Engine", 0, 0, 5, "bento_drum_engine"), (0x1A2, 2, "Drum Track", 0, 0, 1, "bento_drumtrack")]
 
 BASE = 0x08040000
 SENT = 0x20000100            # harness return pad  # addr-ok: harness
@@ -189,11 +197,11 @@ class SynthKeys(unittest.TestCase):
     def test_the_table_names_the_allow_list(self):
         self.assertEqual((S.KEY_OSC_TYPE, S.KEY_OSC_SHAPE, S.KEY_OSC_SYNC, S.KEY_OSC_GLIDE, S.KEY_OSC_SUBFM, S.KEY_OSC_BITS,
                           S.KEY_OSC_FM12), ALLOW["analog"])
-        self.assertEqual(tuple(range(S.KEY_DR_FIRST, S.KEY_DR_FIRST + 7)), ALLOW["drums"])
+        self.assertEqual(tuple(range(S.KEY_DR_FIRST, S.KEY_DR_FIRST + 7)) + (S.KEY_DR_ENGINE, S.KEY_DR_TRACK), ALLOW["drums"])
 
     def test_every_listed_key_is_empty_and_not_claimed(self):
         keys = [k for g in ALLOW.values() for k in g]
-        self.assertEqual(len(set(keys)), 14)
+        self.assertEqual(len(set(keys)), 16)
         for k in keys:
             with self.subTest(key=hex(k)):
                 self.assertNotIn(k, self.reg, "empty after stock's builder")
@@ -234,6 +242,8 @@ class SynthKeys(unittest.TestCase):
                                          "the key's case is the default one")
         self.assertEqual(len(stores), 1, f"one native-store range covers Shape, Sync, the drum keys and Bit Depth: {[hex(a) for a in stores]}")
         self.assertEqual(sorted(k for a, k in cover(ALLOW["analog"]) if a == stores[0]), [S.KEY_OSC_BITS, S.KEY_OSC_SHAPE, S.KEY_OSC_SYNC])
+        self.assertEqual(sorted(k for a, k in cover(ALLOW["drums"]) if a == stores[0]), sorted(ALLOW["drums"]),
+                         "P4-1: the engine 0x1A8 and the flag 0x1A2 are in that one range too, with the knobs")
         self.assertEqual([k for a, k in cover((S.KEY_OSC_SUBFM, S.KEY_OSC_FM12))], [], "Sub FM and FM 1>2: no range test at all")
         self.assertTrue(all(d is None for a, _, _, d, _ in found if a in stores), "it is no table dispatch: a native store")
         self.assertGreaterEqual(len(found), 4, "control: the scan finds stock's range tests")
@@ -258,7 +268,8 @@ class SynthKeys(unittest.TestCase):
         self.assertEqual(got[S.KEY_OSC_FM12], (S.KEY_OSC_FM12, 10, "FM 1>2", 0, 0, 1000, "bento_fm12", []), "0..1000 shown as %")
         self.assertEqual(got["state"], 1, "keys ok")
         stock = registry()[2]
-        self.assertEqual({k: v for k, v in got["reg"].items() if k not in ALLOW["analog"]}, stock, "every stock entry as stock's builder left it")
+        ours = ALLOW["analog"] + (ALLOW["drums"] if DRUMS else ())   # P4-1: a drums build's wrapper adds the drum keys too
+        self.assertEqual({k: v for k, v in got["reg"].items() if k not in ours}, stock, "every stock entry as stock's builder left it")
 
     @unittest.skipUnless(ANALOG, "no analog group in this image")
     def test_one_key_taken_means_none_written(self):
@@ -273,7 +284,19 @@ class SynthKeys(unittest.TestCase):
                 self.assertEqual(got[occ][:3], (occ, 10, "Busy"), "the occupant is left alone")
                 self.assertEqual(got["state"], 0x100 | 1 << bit, f"the black box says which one (taken, bit {bit})")
 
-    def build(self, occupy=None):
+    @unittest.skipUnless(DRUMS, "no drums in this image (left out by default on 1.6.8; BE_ENABLE=drums)")
+    def test_the_registry_build_writes_the_nine_drum_descriptors(self):
+        """P4-1 N2: in a drums build the wrapper also runs dr_np_keys: the seven knobs, the engine and the flag, integers with
+        their XML tokens; every other entry (stock's, and Analog's seven) as without them."""
+        got = self.build(keys=[d[0] for d in DRUM_DESC])
+        self.assertEqual([got[d[0]] for d in DRUM_DESC], [d + ([],) for d in DRUM_DESC])
+        self.assertEqual(struct.unpack("<I", bytes(got["dk4"]))[0], 1, "DK4's keys word: ours")
+        stock = registry()[2]
+        self.assertEqual({k: v for k, v in got["reg"].items() if k not in ALLOW["analog"] + ALLOW["drums"]}, stock,
+                         "every stock entry as stock's builder left it")
+        self.assertEqual(sorted(k for k in got["reg"] if k not in stock), sorted(ALLOW["analog"] + ALLOW["drums"]))
+
+    def build(self, occupy=None, keys=ALLOW["analog"]):
         """The built image: model init's call, i.e. our N2 wrapper (or, to occupy a key first, stock's builder and then
         np_keys), and what the registry holds then."""
         wrap = int(MAN["m4_symbols"]["synth.wrap_reg_build"], 16)
@@ -286,13 +309,14 @@ class SynthKeys(unittest.TestCase):
                 u.reg_write(UC_ARM_REG_SP, STACK); u.reg_write(UC_ARM_REG_LR, SENT | 1)
                 u.emu_start(npk | 1, SENT, count=2_000_000)
             def text(a): return bytes(u.mem_read(a, 32)).split(b"\0")[0].decode() if a else ""
-            for k in ALLOW["analog"]:
+            for k in keys:
                 e = bytes(u.mem_read(r + k * 32, 32))
                 key, typ = struct.unpack_from("<HB", e)
                 title, labels, n, lo, hi, tok = struct.unpack_from("<IIIiiI", e, 4)
                 out[k] = (key, typ, text(title) if key else "", n, lo, hi, text(tok) if key else "",
                           [text(struct.unpack("<I", u.mem_read(labels + 4 * i, 4))[0]) for i in range(n)] if key and labels else [])
             out["state"] = struct.unpack("<I", u.mem_read(S.D2_SLICE + 0xE20 + 8, 4))[0]   # the synth UI state's keys word (header word 2)
+            out["dk4"] = u.mem_read(S.D2_SLICE + 0x2000 + 4 * 6, 4)                        # DK4's keys word (header word 6)
         _, _, out["reg"] = registry(IMG, after, entry=None if occupy else wrap)
         return out
 

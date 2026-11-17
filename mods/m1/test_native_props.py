@@ -15,6 +15,9 @@ and ENGINE_PROPERTY are logged and return. The same reader then runs on stock 1.
 P3 Q1 (docs/plan-p3-fm-bits.md 3.1, 3.2, 6.1): three more keys (Sub FM, Bit Depth, FM 1>2), so the template has its first
 type-0xFF pad entry, which makes type 0xFF creatable (CHILD_CREATE): Hazard pins that and shows no reader path asks for it.
 The same text is read by BE4.40 (the likeliest rollback) and through stock's preset reader (PATCH_READ).
+P4-1 (docs/plan-p4-drums.md 3.3 N1 / N2), a drums build (BE_ENABLE=drums): the template also has the drum keys on type 1 and
+0x0E (0x30C entries, no pad entry); DrumProject writes and reads a Drum Synth track's pads and flag with stock's own code, and
+stock 1.6.8 and BE4.41 (BE_REF441, default ~/bento/out/m1-be441) open it.
 Typed independently of the code under test: our keys and tokens (plan-native-props 3.1, plan-p3-fm-bits 2.1), Shape's
 default 48, stock's seven type-6 keys in order, the template count rule (cmp.w encodes every multiple of 4 from 0x300), the
 set_property message's index (WT1 0, WT2 1). Skipped on a build without the analog group (1.6.1).
@@ -35,11 +38,20 @@ IMG = (Path(sys.argv[2]) / "bento1.bin").read_bytes()
 MAN = json.loads((Path(sys.argv[2]) / "manifest.json").read_text())
 KIT422 = Path(sys.argv[3]) if len(sys.argv) > 3 else HERE.parents[2] / "flash" / "bento_enhanced-v4.22"
 REF440 = Path(os.environ.get("BE_REF", str(Path.home() / "bento" / "out" / "m1-be440")))   # BE4.40 (P3 Q1: the rollback)
+REF441 = Path(os.environ.get("BE_REF441", str(Path.home() / "bento" / "out" / "m1-be441")))   # BE4.41 (P4-1: the drums' rollback)
 del sys.argv[1:4]
 SYM = {k[6:]: int(v, 16) for k, v in MAN.get("m4_symbols", {}).items() if k.startswith("synth.")}
 BUILT = "analog" not in MAN.get("omitted", []) and "np_keys" in SYM
 DISABLED = BUILT and "analog" in MAN.get("disabled", [])
 HAVE = BUILT and not DISABLED
+# P4-1 (docs/plan-p4-drums.md 3.3 N1): a drums build (BE_ENABLE=drums) also has the drum keys in the template, after the
+# type-1 run (saminst, a One-Shot pad: the engine index and the seven knobs) and the type-0x0E run (the One-Shot track: the
+# Drum Synth flag), all 0; BE_DISABLE=drums leaves them out (the default build's template)
+DRUMS = "drums" not in MAN.get("omitted", []) and "dr_np_keys" in SYM
+DR_TPL = DRUMS and "drums" not in MAN.get("disabled", [])
+DR_PAD = [(0x1A8, "bento_drum_engine", 0)] + [(0x1AE + i, f"bento_drum_k{i + 1}", 0) for i in range(7)]
+DR_TRACK = [(0x1A2, "bento_drumtrack", 0)]
+DR_KEYS = [k for k, _, _ in DR_PAD]
 
 BASE = 0x08040000
 HEAP = 0xC4100000                  # harness heap  # addr-ok: harness
@@ -226,7 +238,7 @@ class Template(unittest.TestCase):
     def test_the_sites_point_at_our_copy(self):
         at, n = SYM["np_template"], SYM["np_template_n"]
         word = lambda a: struct.unpack_from("<I", IMG, a - BASE)[0]
-        if DISABLED:
+        if DISABLED and not DR_TPL:                  # (a drums build's template sites are both groups', "Synth:")
             for site in ("PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B", "PROP_TEMPLATE_CMP_A", "PROP_TEMPLATE_CMP_B", "PROP_TEMPLATE_LAST", "REG_BUILD_SITE"):
                 a = getattr(S, site)
                 self.assertEqual(IMG[a - BASE:a - BASE + 4], STOCK[a - BASE:a - BASE + 4], f"BE_DISABLE=analog: {site} stock")
@@ -247,10 +259,20 @@ class Template(unittest.TestCase):
         ours = [IMG[at - BASE + 8 * i:at - BASE + 8 * i + 8] for i in range(n)]
         run = [i for i, e in enumerate(st) if e[0] == 6]
         self.assertEqual([struct.unpack_from("<H", st[i], 2)[0] for i in run], STOCK_T6)
-        want = st[:run[-1] + 1] + [struct.pack("<BBHI", 6, 0, k, d) for k, _, d in OURS] + st[run[-1] + 1:]
+        want = list(st)
+        for typ, keys in ((6, [] if DISABLED and DR_TPL else OURS), (1, DR_PAD if DR_TPL else []), (S.TYPE_ONESHOT, DR_TRACK if DR_TPL else [])):
+            run = [i for i, e in enumerate(want) if e[0] == typ]
+            self.assertEqual(run, list(range(run[0], run[-1] + 1)), f"stock's type-{typ:#x} entries are one run")
+            want = want[:run[-1] + 1] + [struct.pack("<BBHI", typ, 0, k, d) for k, _, d in keys] + want[run[-1] + 1:]
         pad = [struct.pack("<BBHI", 0xFF, 0, 0, 0)] * (n - len(want))
         self.assertEqual(ours, want + pad)
-        self.assertEqual((n, len(pad)), (0x304, 1), "seven keys: 0x2FC + 7 = 0x303 -> 0x304, one pad entry (P3 Q1; BE4.40's four gave 0x300)")
+        if DR_TPL and not DISABLED:
+            # derived, not 0x30C literally (review): a merge that changes the Analog key count (be442) moves it
+            keys = 0x2FC + len(OURS) + len(DR_PAD) + len(DR_TRACK)
+            self.assertEqual((n, len(pad)), ((keys + 3) & ~3, ((keys + 3) & ~3) - keys), "P4-1, a drums build: 0x2FC + Analog's "
+                             "keys + 8 pad keys + 1 track key, padded to a multiple of 4 (BE4.50 P4-1: 0x30C, no pad entry)")
+        elif not DISABLED:
+            self.assertEqual((n, len(pad)), (0x304, 1), "seven keys: 0x2FC + 7 = 0x303 -> 0x304, one pad entry (P3 Q1; BE4.40's four gave 0x300)")
 
     @unittest.skipUnless(HAVE, "BE_DISABLE=analog: the template is stock's")
     def test_every_object_gets_stocks_keys_and_type_6_ours_too(self):
@@ -267,13 +289,13 @@ class Template(unittest.TestCase):
                 if x is None:
                     continue
                 px, py = a.props_cmp(x), b.props_cmp(y)
-                if t == 6:
-                    self.assertEqual(px[:len(py)], py)
-                    self.assertEqual([(k, v) for v, k, _ in px[len(py):]], [(k, d) for k, _, d in OURS])
-                else:
-                    self.assertEqual(px, py)
+                added = OURS if t == 6 else DR_PAD if t == 1 and DR_TPL else DR_TRACK if t == S.TYPE_ONESHOT and DR_TPL else []
+                self.assertEqual(px[:len(py)], py)
+                self.assertEqual([(k, v) for v, k, _ in px[len(py):]], [(k, d) for k, _, d in added])
         for kind in (S.TYPE_WAVETABLE, S.TYPE_ONESHOT):
-            self.assertEqual(a.props_cmp(a.create(a.live, kind)), b.props_cmp(b.create(b.live, kind)), f"track {kind:#x}")
+            px, py = a.props_cmp(a.create(a.live, kind)), b.props_cmp(b.create(b.live, kind))
+            added = DR_TRACK if kind == S.TYPE_ONESHOT and DR_TPL else []
+            self.assertEqual((px[:len(py)], [(k, v) for v, k, _ in px[len(py):]]), (py, [(k, d) for k, _, d in added]), f"track {kind:#x}")
 
     @unittest.skipUnless(HAVE, "BE_DISABLE=analog")
     def test_the_setter_cannot_add_a_key(self):
@@ -467,6 +489,111 @@ class Project(unittest.TestCase):
         self.assertEqual(r.prop(c[0], 0xC9), 321, "control: stock's own Position comes back the same way")
 
 
+# P4-1: a drum track's values (engine index, knobs 1..7) on its first two pads; the third is left at the template's zeros
+DV = [[1, 10, 11, 12, 13, 14, 15, 16], [5, 127, 0, 64, 1, 2, 3, 4], [0] * 8]
+
+
+def setup_drums(r, store=None):
+    """A One-Shot track flagged as a Drum Synth track, three (saminst, samasst) pads in stock's child order, DV's values."""
+    store = store or r.live
+    t = r.create(store, S.TYPE_ONESHOT)
+    pads = []
+    for vals in DV:
+        p = r.child(store, 1, t); assert p and r.child(store, 5, t)
+        for k, v in zip(DR_KEYS, vals):
+            if v:
+                r.set(p, k, v)
+        pads.append(p)
+    r.set(t, 0x1A2, 1)
+    return t, pads
+
+
+def drum_pads(r, store):
+    """(the store's One-Shot track, its type-1 children)"""
+    t = [o for o in r.tracks(store) if r.vtype(o) == S.TYPE_ONESHOT][0]
+    return t, [c for c in r.children(t) if r.vtype(c) == 1]
+
+
+@unittest.skipUnless(HAVE and DR_TPL, "no drums in this build's template (BE_ENABLE=drums builds them)")
+class DrumProject(unittest.TestCase):
+    """P4-1 (docs/plan-p4-drums.md 3.3 N1 / N2, 5): the drum keys are stock properties of every One-Shot pad and track, so
+    stock's writer and reader carry them with no hook of ours, and stock 1.6.8 and BE4.41 (the rollbacks) open the project."""
+    @classmethod
+    def setUpClass(cls):
+        r = cls.r = Rig()
+        cls.t, cls.pads = setup_drums(r)
+        cls.text = r.save()
+
+    def test_the_writer_writes_each_token_once_on_every_pad_and_the_track(self):
+        pads = re.findall(r'<cell type="saminst">\s*<params([^>]*)/?>', self.text)
+        self.assertEqual(len(pads), 3)
+        for i, (a, want) in enumerate(zip(pads, DV)):
+            got = re.findall(r'(\w+)="([^"]*)"', a)
+            names = [n for n, _ in got]
+            self.assertEqual([names.count(tok) for _, tok, _ in DR_PAD], [1] * 8, f"pad {i}: each name once")
+            self.assertEqual([dict(got)[tok] for _, tok, _ in DR_PAD], [str(v) for v in want], f"pad {i}")
+        for a in re.findall(r'<cell type="samasst">\s*<params([^>]*)/?>', self.text):
+            self.assertNotIn("bento_", a, "the sample asset (type 5) has none")
+        track = re.search(r'<track type="samtrack">\s*<params([^>]*)/?>', self.text).group(1)
+        self.assertEqual(re.findall(r'bento_\w+="[^"]*"', track), ['bento_drumtrack="1"'])
+        self.assertEqual(self.text.count("bento_drumtrack"), 1)
+
+    def test_the_reader_restores_them(self):
+        r = Rig()
+        t, pads = drum_pads(r, r.load(self.text))
+        self.assertEqual([[r.prop(p, k) for k in DR_KEYS] for p in pads], DV)
+        self.assertEqual(r.prop(t, 0x1A2), 1)
+
+    def test_the_push_sends_a_pads_keys_to_the_pad(self):
+        """PROP_PUSH (menu create, preset apply, Paste Track): a pad's eight keys go to its own handle through
+        ENGINE_PROPERTY (plan 0.6 A), in template order after stock's. (In this rig the push ends at the first pad's sample
+        asset, where the sample loader is stubbed; P4-0's rig saw every pad, M.)"""
+        r = Rig(); t, pads = setup_drums(r)
+        sent = []
+        r.u.hook_add(UC_HOOK_CODE, lambda uc, a, sz, _: sent.append(tuple(Rig.s32(uc.reg_read(x)) for x in (UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3))),
+                     begin=S.ENGINE_PROPERTY, end=S.ENGINE_PROPERTY)
+        r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+        r.call(S.PROP_PUSH, S.MODEL, r.handle(t), 0, count=200_000_000)
+        h = r.handle(pads[0])
+        mine = [(k, v) for hh, k, v in sent if hh == h]
+        self.assertEqual([x for x in mine if x[0] in DR_KEYS], list(zip(DR_KEYS, DV[0])))
+        i = [k for k, _ in mine].index(DR_KEYS[0])
+        self.assertEqual([k for k, _ in mine][i:i + 8], DR_KEYS, "together, in template order")
+
+    def test_stock_168_opens_it_as_a_plain_one_shot(self):
+        """F9: stock 1.6.8 (no drum keys in its template, no descriptors): the project opens, its pads and track have stock's
+        keys only, and stock's next save drops every bento_ attribute."""
+        r = Rig(img=STOCK, wrap=False)
+        st = r.load(self.text)
+        t, pads = drum_pads(r, st)
+        self.assertEqual(len(pads), 3)
+        ref = r.create(r.live, S.TYPE_ONESHOT); rp = r.child(r.live, 1, ref)
+        self.assertEqual([[k for _, k, _ in r.props_of(p)] for p in pads], [[k for _, k, _ in r.props_of(rp)]] * 3)
+        self.assertEqual([k for _, k, _ in r.props_of(t)], [k for _, k, _ in r.props_of(ref)])
+        again = r.save(st)
+        self.assertNotIn("bento_", again)
+        self.assertEqual(again.count('<cell type="saminst">'), 3)
+
+    def test_be441_opens_it_as_a_plain_one_shot(self):
+        """S4: BE4.41 (the release before P4; no drums in its image, Analog's seven keys on type 6 only): it opens the
+        project as stock does, with stock's pad keys, and its next save has no bento_ attribute (no Wavetable here)."""
+        img = REF441 / "bento1.bin"
+        # a P4 acceptance item (review): a missing reference fails rather than passing as an unnoticed skip
+        self.assertTrue(img.exists(), f"no BE4.41 build at {REF441} (BE_REF441): the BE4.41 release build is this test's reference")
+        man = json.loads((REF441 / "manifest.json").read_text())
+        self.assertEqual(man["version"], "4.41")
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        self.assertEqual(sym["np_template_n"], 0x304, "BE4.41's template: Analog's seven keys and one pad")
+        r = Rig(img=img.read_bytes(), sym=sym)
+        st = r.load(self.text)
+        t, pads = drum_pads(r, st)
+        self.assertEqual(len(pads), 3)
+        self.assertTrue(all(r.prop(p, k) is None for p in pads for k in DR_KEYS), "no drum key on BE4.41's pads")
+        self.assertIsNone(r.prop(t, 0x1A2))
+        again = r.save(st)
+        self.assertNotIn("bento_", again)
+
+
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
 class Hazard(unittest.TestCase):
     """P3 3.1 (review R13): the template's first pad entry (type 0xFF, key 0) makes type 0xFF creatable. Stock's default
@@ -478,6 +605,10 @@ class Hazard(unittest.TestCase):
             r.parent = r.create(r.live, S.TYPE_WAVETABLE)
         x, y = a.child(a.live, PAD, a.parent), b.child(b.live, PAD, b.parent)
         self.assertIsNone(y, "stock: no template entry of type 0xFF, so no object")
+        at, n = SYM["np_template"], SYM["np_template_n"]
+        if PAD not in [IMG[at - BASE + 8 * i] for i in range(n)]:
+            self.assertIsNone(x, "P4-1, a drums build: 0x30C entries, no pad entry, so type 0xFF is not creatable (as stock)")
+            return
         self.assertIsNotNone(x, "P3: the pad entry makes one (the hazard this class guards)")
         self.assertEqual([(k, v) for v, k, _ in a.props_of(x)], [(0, 0)], "one property, key 0")
 
@@ -525,6 +656,21 @@ class Hazard(unittest.TestCase):
         self.assertEqual([r.vtype(o) for o in r.objects(st)].count(PAD), 0)
         c = r.children(r.wt_tracks(st)[0])
         self.assertEqual([r.ours(c[0]), r.ours(c[1])], [V1, V2], "the real cells still load")
+
+
+class DefaultImage(unittest.TestCase):
+    """P4 (review): while P4's default build promises BE4.41's image, a build at BE4.41's version and base with BE4.41's
+    groups (disabled / omitted) is that image byte for byte; any other build (a drums build, a bisect, another base, a
+    bumped version) skips. Retires itself when the version changes on purpose."""
+    def test_a_default_build_at_4_41_is_be441s_image(self):
+        if MAN.get("version") != "4.41" or MAN.get("base_label") != "stock-1.6.8":
+            self.skipTest(f"version {MAN.get('version')} on {MAN.get('base_label')}: not BE4.41's")
+        self.assertTrue((REF441 / "bento1.bin").exists(), f"no BE4.41 build at {REF441} (BE_REF441)")
+        ref = json.loads((REF441 / "manifest.json").read_text())
+        mine = (sorted(MAN.get("disabled", [])), sorted(MAN.get("omitted", [])))
+        if mine != (sorted(ref.get("disabled", [])), sorted(ref.get("omitted", []))):
+            self.skipTest(f"groups {mine}: not BE4.41's default build")
+        self.assertTrue(IMG == (REF441 / "bento1.bin").read_bytes(), "the default build differs from BE4.41's image")
 
 
 if __name__ == "__main__":

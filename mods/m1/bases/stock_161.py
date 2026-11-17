@@ -655,6 +655,8 @@ SYMS = dict(
     CHILD_CREATE=code(None, note="(store, type, parent, &out) -> ok: a new child object (new handle) of the parent; tests", status='absent'),
     SET_STRING=code(None, note="(object, key, text): set a string property the object has; tests", status='absent'),
     KEY_DR_FIRST=key(None, note="the first of the seven drum knob keys, from the reviewed allow-list (1.6.8 only)"),
+    KEY_DR_ENGINE=key(None, note="a One-Shot pad's (type 1, saminst) drum engine index 0..5 (0 none, 1 Kick .. 5 Tom), our native key (1.6.8 only)"),
+    KEY_DR_TRACK=key(None, note="the Drum Synth flag of a One-Shot track (type 0x0E) 0 / 1, our native key (1.6.8 only)"),
     KEY_FILENAME=key(None, note="a file node's Filename (string property)"),
     KEY_POLY_MODE=key(None, note="a pad's Poly Mode"),
     # BE4.40 (native properties, 1.6.8 only, docs/plan-native-props.md): our keys in stock's own property template and

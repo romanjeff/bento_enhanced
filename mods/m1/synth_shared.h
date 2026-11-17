@@ -168,6 +168,12 @@ typedef struct {
  * (m4_synth.c synth_keys). The Kick uses all seven. */
 #define DRUM_KNOBS 8u
 #define DRUM_KEYS_N 7u
+/* P4-1 (docs/plan-p4-drums.md 3.1, N2): the native drum keys' descriptor ranges. Engine key S_KEY_DR_ENGINE (0x1A8, on every
+ * pad, type 1) holds a dense index 0 none, 1 Kick, 2 Snare, 3 HiHat, 4 Clap, 5 Tom (the M7 maps it to the ENGINE_* ids
+ * below); the seven knobs are 0..127 as the lean engines take them (docs/p4-engine-spec.md); the track flag
+ * S_KEY_DR_TRACK (0x1A2, One-Shot tracks, type 0x0E) is 0 / 1. All integer descriptors: the M7 gets the raw word. */
+#define DRUM_ENGINE_MAX 5u
+#define DRUM_KNOB_MAX 127u
 /* The Kick's knobs (S6c-2: one place for both cores; dsp/drum_kick.cpp plays them, m4_synth.c shows and stores them):
  * Tune in Hz before the pad's pitch, the rest 0..100 % of DaisySP's own 0..1 parameters. Defaults after upstream K7. */
 #define KICK_DEFAULTS {55, 65, 45, 65, 55, 25, 25, 0}

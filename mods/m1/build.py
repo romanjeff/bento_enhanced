@@ -328,6 +328,8 @@ GROUP_NAMES = {
               # S6c-2: the drum page (D5 refresh entry, D6 event slot, the page's tick slot), the pad copy (H4), and the
               # synth UI sites only the drums use since BE4.40 (X1-X3, H1-H3)
               "INST_REFRESH", "INST_EV_SLOT", "INST_EVENT", "INST_TICK_SLOT", "INST_TICK", "CHILD_DUP", "KEY_DR_FIRST",
+              # P4-1 (docs/plan-p4-drums.md 3.3 N1): the drum keys' template runs (pads, type 1; One-Shot tracks)
+              "KEY_DR_ENGINE", "KEY_DR_TRACK", "TYPE_ONESHOT",
               "INST_SAVE_SITE", "INST_LOAD", "CONTEXT_GET", "OBJ_CTOR", "OBJ_BASE_VT", "OBJ_HANDLE_CTR", "NODE_VT_DESTROY",
               "NODE_DESTROY", "NODE_VT_CLONE", "NODE_CLONE", "DSP_WINDOW_WORDS", "M7_DATA_END", "PROBE_SCRATCH", "CTRL_INPUT"),
     "note0": ("NOTE0_SEQ_ON_MAP", "NOTE0_SEQ_ON_BACK", "NOTE0_SEQ_OFF_MAP", "NOTE0_SEQ_OFF_BACK", "NOTE0_PAD_ON_MAP",
@@ -1727,23 +1729,41 @@ NP_TEMPLATE_KEYS = (("KEY_OSC_TYPE", 0), ("KEY_OSC_SHAPE", 48), ("KEY_OSC_SYNC",
                     ("KEY_OSC_SUBFM", 0), ("KEY_OSC_BITS", 0), ("KEY_OSC_FM12", 0))
 NP_OSC_TYPE = 6                       # the Wavetable oscillator objects' template type (WT1 / WT2)
 NP_PAD_TYPE = 0xFF                    # pad entries (an encodable count): no object type stock reads or makes (test_native_props)
+# P4-1 (docs/plan-p4-drums.md 3.1 / 3.3 N1), drums builds only: the engine index and the seven knobs after the type-1 run
+# (saminst: a One-Shot pad; type 2 loopinst and type 5 samasst stay stock's), all 0 (engine 0 = none: a plain sample pad;
+# the Drum Synth builder sets the Kick and its defaults, P4-3), and the Drum Synth flag after the One-Shot track's run
+# (S.TYPE_ONESHOT), 0. BE4.41's 0x2FC + 7 = 0x303 + 9 = 0x30C: a multiple of 4, so no pad entry in a drums build; the
+# default build keeps BE4.41's 0x304 with its one pad (M1).
+DR_PAD_TYPE = 1                       # saminst, the One-Shot pad object (tpl.txt, plan 0.2)
 
 
-def np_template(base_img, stock_n):
+def dr_template_runs():
+    """P4-1 N1: the drums' template runs, [(type, [(key, default), ..]), ..] for np_template (read under the drums group)."""
+    pad = [(S.KEY_DR_ENGINE, 0)] + [(S.KEY_DR_FIRST + i, 0) for i in range(DRUM_KEYS_N)]
+    return [(DR_PAD_TYPE, pad), (S.TYPE_ONESHOT, [(S.KEY_DR_TRACK, 0)])]
+
+
+def np_template(base_img, stock_n, runs=None):
     """N1: stock's template (stock_n entries at PROP_TEMPLATE) with our keys after its type-6 run, padded with type-0xFF
-    entries to the next count both bounds can encode (cmp.w: every multiple of 4 from 0x300 to 0x3FC). -> (bytes, count)"""
+    entries to the next count both bounds can encode (cmp.w: every multiple of 4 from 0x300 to 0x3FC). -> (bytes, count)
+    P4-1 (docs/plan-p4-drums.md 3.3 N1): runs = [(type, [(key, default), ..]), ..], each list after that type's run (one
+    contiguous run of stock's, none of its keys already there), in the order given; default: the analog keys on type 6."""
     t = S.PROP_TEMPLATE - BASE
     ents = [bytes(base_img[t + 8 * i:t + 8 * i + 8]) for i in range(stock_n)]
-    run = [i for i, e in enumerate(ents) if e[0] == NP_OSC_TYPE]
-    if not run or run != list(range(run[0], run[-1] + 1)):
-        raise SystemExit("N1: the template's type-6 entries are not one run")
-    keys = [getattr(S, k) for k, _ in NP_TEMPLATE_KEYS]
-    if any(struct.unpack_from("<H", e, 2)[0] in keys for e in ents):
-        raise SystemExit("N1: one of our keys is already in stock's template")
+    if runs is None:
+        runs = [(NP_OSC_TYPE, [(getattr(S, k), d) for k, d in NP_TEMPLATE_KEYS])]
     if any(e[0] == NP_PAD_TYPE for e in ents):
         raise SystemExit("N1: stock's template already uses the pad type")
-    add = [struct.pack("<BBHI", NP_OSC_TYPE, 0, k, d) for k, (_, d) in zip(keys, NP_TEMPLATE_KEYS)]
-    new = ents[:run[-1] + 1] + add + ents[run[-1] + 1:]
+    keys = [k for _, kd in runs for k, _ in kd]
+    if len(set(keys)) != len(keys) or any(struct.unpack_from("<H", e, 2)[0] in keys for e in ents):
+        raise SystemExit("N1: one of our keys is already in stock's template (or listed twice)")
+    new = list(ents)
+    for typ, kd in runs:
+        run = [i for i, e in enumerate(new) if e[0] == typ]
+        if not run or run != list(range(run[0], run[-1] + 1)):
+            raise SystemExit(f"N1: the template's type-{typ:#x} entries are not one run")
+        add = [struct.pack("<BBHI", typ, 0, k, d) for k, d in kd]
+        new = new[:run[-1] + 1] + add + new[run[-1] + 1:]
     n = (len(new) + 3) & ~3
     if not 0x300 <= n <= 0x3FC:
         raise SystemExit(f"N1: {n:#x} entries: no cmp.w encoding")
@@ -1787,7 +1807,12 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
     marker = b"BENTO_MOD:synth-ui(Analog oscillators as native properties, drum page; after bento-playground A1, K7)\0"
     end = (SYNTH_CODE + len(code) + len(marker) + 7) & ~7
     tpl_data, tpl_n, tpl_at = b"", 0, end
-    an = inc("analog")
+    an, dr = inc("analog"), inc("drums")
+    if dr and not an:
+        raise SystemExit("drums (P4-1 N1 / N2): the native drum keys use the analog group's template and registry sites")
+    # P4-1: in a drums build the template and registry sites carry both groups' keys: "Synth:" (a bisect leaves them stock
+    # only when both groups are off); the default build keeps BE4.41's "Analog:" sites byte for byte
+    np_why = "Synth:" if dr else "Analog:"
     if an:
         with S.group("analog"):
             stock_n = BASE_SETTINGS[S.module]["prop_template_n"]
@@ -1798,7 +1823,13 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
             for site in ("PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B"):
                 if S.orig(site) != struct.pack("<I", S.PROP_TEMPLATE):
                     raise SystemExit(f"N1: {site} does not hold PROP_TEMPLATE")
-            tpl_data, tpl_n = np_template(base_img, stock_n)
+            runs = None                           # the default build: the analog keys (BE4.41's template)
+            if dr:                                # a drums build: each group's keys unless a bisect turns it off
+                runs = [(NP_OSC_TYPE, [(getattr(S, k), d) for k, d in NP_TEMPLATE_KEYS])] if "analog" not in DISABLED else []
+                if "drums" not in DISABLED:
+                    with S.group("drums"):
+                        runs += dr_template_runs()
+            tpl_data, tpl_n = np_template(base_img, stock_n, runs or None)
             end = tpl_at + len(tpl_data)
     if end > SYNTH_LIMIT:
         raise SystemExit(f"synth UI block ends at {end:#x}, past the proven image size ({SYNTH_LIMIT:#x})")
@@ -1821,8 +1852,12 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
             # N2: model init's bl REG_BUILD (its only call) -> stock's builder, then np_keys (our four descriptors), r0 kept
             if S.orig("REG_BUILD_SITE") != asm(f"bl {S.REG_BUILD:#x}", S.REG_BUILD_SITE):
                 raise SystemExit("REG_BUILD_SITE: not the expected bl REG_BUILD")
-            n2 = block(f"push {{r4, lr}}; bl {S.REG_BUILD:#x}; mov r4, r0; bl {ss['np_keys']:#x}; mov r0, r4; pop {{r4, pc}}",
-                       {S.REG_BUILD, ss["np_keys"]}, "Analog registry build")
+            if dr:                                # P4-1 N2: then the drum keys' descriptors (dr_np_keys)
+                n2 = block(f"push {{r4, lr}}; bl {S.REG_BUILD:#x}; mov r4, r0; bl {ss['np_keys']:#x}; bl {ss['dr_np_keys']:#x}; "
+                           f"mov r0, r4; pop {{r4, pc}}", {S.REG_BUILD, ss["np_keys"], ss["dr_np_keys"]}, "Synth registry build")
+            else:
+                n2 = block(f"push {{r4, lr}}; bl {S.REG_BUILD:#x}; mov r4, r0; bl {ss['np_keys']:#x}; mov r0, r4; pop {{r4, pc}}",
+                           {S.REG_BUILD, ss["np_keys"]}, "Analog registry build")
             # T1 / B1' (BE4.40 identity): reached by stock's bl, so sp is still the caller's: the row's handle from its frame
             t1 = block(f"ldr.w r2, [sp, #0x32c]; b.w {ss['an_pane_title']:#x}", {ss["an_pane_title"]}, "Analog pane title")
             b1 = block(f"ldr r2, [sp, #0x20]; b.w {ss['an_browse']:#x}", {ss["an_browse"]}, "Analog double-tap 0x3F")
@@ -1861,17 +1896,18 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
     if an:
         with S.group("analog"):
             patch(tpl_at, tpl_data, b"\xff" * len(tpl_data),
-                  f"Analog (BE4.40): N1 property template ({tpl_n:#x} entries: stock's, our keys after the type-6 run)")
+                  f"Analog (BE4.40): N1 property template ({tpl_n:#x} entries: stock's, our keys after the type-6 run"
+                  + (", P4-1's drum keys after the type-1 and type-0x0E runs)" if dr else ")"))
             for site in ("PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B"):
-                patch(getattr(S, site), struct.pack("<I", tpl_at), S.orig(site), f"Analog: N1 template literal ({site})")
+                patch(getattr(S, site), struct.pack("<I", tpl_at), S.orig(site), f"{np_why} N1 template literal ({site})")
             for site, src in (("PROP_TEMPLATE_CMP_A", f"cmp.w r3, #{tpl_n:#x}"), ("PROP_TEMPLATE_CMP_B", f"cmp.w r3, #{tpl_n:#x}"),
                               ("PROP_TEMPLATE_LAST", f"movw r7, #{tpl_n - 1:#x}")):
                 c = asm(src, getattr(S, site))
                 if len(c) != 4:
                     raise SystemExit(f"N1: '{src}' is not one 4-byte instruction")
-                patch(getattr(S, site), c, S.orig(site), f"Analog: N1 template bound ({site}: {src})")
+                patch(getattr(S, site), c, S.orig(site), f"{np_why} N1 template bound ({site}: {src})")
             patch(S.REG_BUILD_SITE, asm(f"bl {n2:#x}", S.REG_BUILD_SITE), S.orig("REG_BUILD_SITE"),
-                  "Analog: N2 registry build -> stock's, then our oscillator keys' descriptors")
+                  f"{np_why} N2 registry build -> stock's, then our oscillator keys' descriptors" + (" and the drum keys'" if dr else ""))
             # A10: the synth view's tick slot (vtable word); A6 / A7: bl sites
             if S.orig("SYNTH_VIEW_TICK_SLOT") != struct.pack("<I", S.SYNTH_VIEW_TICK | 1):
                 raise SystemExit("SYNTH_VIEW_TICK_SLOT does not hold stock's SYNTH_VIEW_TICK")

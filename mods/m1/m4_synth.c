@@ -433,33 +433,63 @@ __attribute__((used, retain)) void np_keys(void) {
 }
 static int np_ok(void) { return ANALOG_ON && an4()->keys == 1u; }
 #if DRUMS_BUILT
-/* S6c-2: the drum keys, KEY_DR + i for knob i (all seven or none), type 2 (an integer in [lo, hi], as stock's Shift
- * 0x1AD), titled with the Kick's knob names; DK4's keys word says which one was taken, if any. Reviewed: empty after
- * stock's builder, no immediate in either core, and their one range test (M7 0x08059990, keys 0x18C..0x1B6) is reached
- * only for set_property messages addressed to the reverb object 0xFFFFFFF1 (test_keys); D6 (dr_page_event) keeps every
- * edit of them away from the model, so no set_property ever carries one (test_drum_ui). */
-static const char NO_TOKEN_DR[] = "";
+/* S6c-2: the drum keys, KEY_DR + i for knob i, titled with the Kick's knob names; DK4's keys word says which one was taken,
+ * if any. Reviewed: empty after stock's builder, no immediate in either core, and their one range test (M7 0x08059990,
+ * keys 0x18C..0x1B6) is reached only for set_property messages addressed to the reverb object 0xFFFFFFF1 (test_keys).
+ * P4-1 (docs/plan-p4-drums.md 3.1, N2): they are native properties now. build.py puts the engine and the seven knobs on
+ * every pad (type 1) and the flag on every One-Shot track (type 0x0E) in stock's property template (N1), and this gives
+ * all nine descriptors with their real XML tokens (bento_drum_engine, bento_drum_k1..k7, bento_drumtrack) inside stock's
+ * one registry build (dr_np_keys, after np_keys in the N2 wrapper), so a project read at boot already knows them. All nine
+ * or none (the knobs first: the black box's TAKEN:i is the knob's number as before, 8 the engine, 9 the flag). Every one
+ * is an integer (type 2, as stock's Shift 0x1AD): the M7 receives the raw word (plan 0.4 A). The registry title is
+ * global, so the knobs keep the Kick's names; the page sets per-engine titles (P4-4). Ranges: engine 0..5 (a dense index,
+ * 0 none), flag 0..1, knobs 0..127 (the lean engines' range, docs/p4-engine-spec.md). Until P4-3 DK4 stays the knobs'
+ * truth, in the DaisySP Kick's units (KICK_LO / KICK_HI: Tune 25..180 Hz): D6 keeps edits of the knob keys away from the
+ * model, X3 answers them from DK4, and X1 sets a pad's native keys from DK4 before stock's writer writes them (dr_save).
+ * (Not for a kit: stock's encoder steps within the descriptor's range, so a Tune above 127 is out of reach until P4-3, I.) */
+static const char AT_DR_ENGINE[] = "bento_drum_engine", AT_DR_TRACK[] = "bento_drumtrack";
+static const char *const AT_DR_K[DRUM_KEYS_N] = {"bento_drum_k1", "bento_drum_k2", "bento_drum_k3", "bento_drum_k4",
+                                                 "bento_drum_k5", "bento_drum_k6", "bento_drum_k7"};
+static const char T_DR_ENGINE[] = "Engine", T_DR_TRACK[] = "Drum Track";
+#define DR_KEYS_N (DRUM_KEYS_N + 2u)                       /* knobs 0..6, then the engine, then the track flag */
+static void dr_key(u32 i, u32 *key, const char **title, const char **token, u32 *hi) {
+    if (i < DRUM_KEYS_N) { *key = KEY_DR + i; *title = KICK_NAMES[i]; *token = AT_DR_K[i]; *hi = DRUM_KNOB_MAX; }
+    else if (i == DRUM_KEYS_N) { *key = S_KEY_DR_ENGINE; *title = T_DR_ENGINE; *token = AT_DR_ENGINE; *hi = DRUM_ENGINE_MAX; }
+    else { *key = S_KEY_DR_TRACK; *title = T_DR_TRACK; *token = AT_DR_TRACK; *hi = 1u; }
+}
 static int drum_keys(void) {
     volatile Dk4 *d = dk4();
     u32 r = REGISTRY;
     if (!r) return 0;
-    const DrEngine *e = &ENGINES[0];
+    u32 key, hi; const char *title, *token;
     int mine = 1;
-    for (u32 i = 0; i < DRUM_KEYS_N; i++) {
-        volatile u8 *k = (volatile u8 *)(r + (KEY_DR + i) * 32u);
-        if (H(k, 0) != KEY_DR + i || W(k, 4) != (u32)e->names[i]) mine = 0;
+    for (u32 i = 0; i < DR_KEYS_N; i++) {
+        dr_key(i, &key, &title, &token, &hi);
+        volatile u8 *k = desc_of(r, key);
+        if (H(k, 0) != key || W(k, 4) != (u32)title || W(k, 24) != (u32)token) mine = 0;
     }
     if (mine) { d->keys = 1; return 1; }
-    for (u32 i = 0; i < DRUM_KEYS_N; i++)
-        if (H((volatile u8 *)(r + (KEY_DR + i) * 32u), 0)) { d->keys = 0x100u | (i + 1u); return 0; }
-    for (u32 i = 0; i < DRUM_KEYS_N; i++) {
-        volatile u8 *k = (volatile u8 *)(r + (KEY_DR + i) * 32u);
-        for (u32 j = 0; j < 8; j++) W(k, j * 4u) = 0;
-        B(k, 2) = 2; W(k, 4) = (u32)e->names[i]; W(k, 16) = e->lo[i]; W(k, 20) = e->hi[i]; W(k, 24) = (u32)NO_TOKEN_DR;
+    for (u32 i = 0; i < DR_KEYS_N; i++) {
+        dr_key(i, &key, &title, &token, &hi);
+        if (H(desc_of(r, key), 0)) { d->keys = 0x100u | (i + 1u); return 0; }
     }
-    for (u32 i = 0; i < DRUM_KEYS_N; i++) H((volatile u8 *)(r + (KEY_DR + i) * 32u), 0) = (u16)(KEY_DR + i);
+    for (u32 i = 0; i < DR_KEYS_N; i++) {
+        dr_key(i, &key, &title, &token, &hi);
+        volatile u8 *k = desc_of(r, key);
+        for (u32 j = 0; j < 8; j++) W(k, j * 4u) = 0;
+        B(k, 2) = 2; W(k, 4) = (u32)title; W(k, 16) = 0; W(k, 20) = hi; W(k, 24) = (u32)token;
+    }
+    for (u32 i = 0; i < DR_KEYS_N; i++) {                   /* the keys last: all or none */
+        dr_key(i, &key, &title, &token, &hi);
+        H(desc_of(r, key), 0) = (u16)key;
+    }
     d->keys = 1;
     return 1;
+}
+/* N2 (P4-1): the N2 wrapper's second call in a drums build, after np_keys; the UI tick runs drum_keys again (a no-op once
+ * the keys are ours, and the late fallback if model init ran without a registry). */
+__attribute__((used, retain)) void dr_np_keys(void) {
+    if (DRUMS_ON) drum_keys();
 }
 #endif
 
@@ -1188,10 +1218,15 @@ static void attr(void *params, const char *name, u32 v) {
 /* S6c-2 (D5 / D7 / D8 XML): a pad with a knob entry gets bento_drum_engine (the engine id, 1 = Kick) and bento_drum_k1 ..
  * bento_drum_k7 (knob i + 1, in the engine's units) on its params element. Pads (children of a track node) are written
  * and read by the same writer / reader as instruments; stock ignores attributes it does not know and drops them on its
- * own save. Generic names: the knob map belongs to the engine (S6d's engines reuse them). */
-static const char AT_DR_ENGINE[] = "bento_drum_engine";
-static const char *const AT_DR_K[DRUM_KEYS_N] = {"bento_drum_k1", "bento_drum_k2", "bento_drum_k3", "bento_drum_k4",
-                                                 "bento_drum_k5", "bento_drum_k6", "bento_drum_k7"};
+ * own save. Generic names: the knob map belongs to the engine (S6d's engines reuse them). (The names: AT_DR_*, with the
+ * descriptors.)
+ * P4-1: a type-1 pad has the eight keys as native properties now (N1) and stock's writer writes them, with these names
+ * (N2), after this site (X1 runs when the params element is appended, before stock's attributes), each over any attribute
+ * of that name already there: an attribute added here would end up with the object's own value (0 on a pad DK4 alone
+ * knows; M, test_drum_ui test_a_project_has_each_name_once with the attributes added here). So for such a pad X1 sets the
+ * object's own properties from DK4 (stock's setter, which never adds a key) and stock writes them. A type-2 pad (no
+ * native drum keys) keeps the attributes of before. Until P4-3 removes DK4 (and X1) the native keys only mirror DK4 in
+ * the object being written (the save's snapshot copy, or the object a preset save hands the writer). */
 static int is_cell(void *object) { u32 t = obj_type(object); return t == DR_TYPE_CELL || t == DR_TYPE_CELL2; }
 static void dr_save(void *object, void *params) {
     u32 h = W(object, 0x10);
@@ -1199,8 +1234,13 @@ static void dr_save(void *object, void *params) {
     if (!dk_any(d) || dk_find(d, h) < 0 || !is_cell(object)) return;
     u8 v[DRUM_KNOBS];
     u32 id = dk_values(h, 0, v);
-    attr(params, AT_DR_ENGINE, id);
-    for (u32 j = 0; j < DRUM_KEYS_N; j++) attr(params, AT_DR_K[j], v[j]);
+    if (obj_type(object) == DR_TYPE_CELL && d->keys == 1u) {        /* N1's pad keys, ours (drum_keys): stock writes them */
+        FN(S_PROP_SET, void (*)(void *, u32, u32))(object, S_KEY_DR_ENGINE, id);
+        for (u32 j = 0; j < DRUM_KEYS_N; j++) FN(S_PROP_SET, void (*)(void *, u32, u32))(object, KEY_DR + j, v[j]);
+    } else {
+        attr(params, AT_DR_ENGINE, id);
+        for (u32 j = 0; j < DRUM_KEYS_N; j++) attr(params, AT_DR_K[j], v[j]);
+    }
     bump(&d->saves);
 }
 static u32 get(void *params, const char *name, u32 dflt) {

@@ -27,7 +27,7 @@ slot 13 tbb, docs/plan-synths-168.md "S6c-2").
 Each hook site is also put back to stock's bytes in the emulator: the test that covers it must then fail.
 Skipped on a build without the drums (1.6.1); a BE_DISABLE=drums bisect runs only the class that checks its sites.
 """
-import json, struct, sys, unittest
+import json, re, struct, sys, unittest
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "tools" / "display_emulator"))
@@ -61,6 +61,11 @@ NAMES = ["Tune", "Kick Dec", "Tone", "Accent", "Sweep", "Sweep Dec", "Dirt"]
 DEFAULTS = [55, 65, 45, 65, 55, 25, 25]
 LO = [25, 0, 0, 0, 0, 0, 0]
 HI = [180, 100, 100, 100, 100, 100, 100]
+# P4-1 (docs/plan-p4-drums.md 3.1, N2): the native keys' descriptors. The knobs are 0..127 (the lean engines' range,
+# docs/p4-engine-spec.md), not DK4's LO / HI above (which D6 and X2 still clamp to until P4-3); the engine 0x1A8 is an index
+# 0..5, the One-Shot track's flag 0x1A2 is 0 / 1
+KNOB_LO, KNOB_HI = 0, 127
+ENGINE_KEY, TRACK_KEY = 0x1A8, 0x1A2
 ATTRS = ["bento_drum_k%d" % (i + 1) for i in range(7)]
 POLY_MODE = 0x2E
 D0L = S.D2_SLICE + 0xFE0 if BUILT else 0
@@ -251,9 +256,43 @@ class Rig:
     def drum_attrs(self, params):
         return [self.attr(params, "bento_drum_engine")] + [self.attr(params, n) for n in ATTRS]
     def set_attr(self, params, name, value):
+        """Set an attribute (P4-1: stock's writer has written the drum names on every pad already: set that one, as an
+        edited file would have it; add it if it is not there)."""
         self.u.mem_write(STRS + 0x100, name.encode() + b"\0")
-        a = self.call(S.XML_ADD, params, STRS + 0x100); self.call(S.XML_SET_U32, a, value)
+        a = self.call(S.XML_FIND, params, STRS + 0x100) or self.call(S.XML_ADD, params, STRS + 0x100)
+        self.call(S.XML_SET_U32, a, value)
+    def prop(self, o, k):
+        """o's property k (stock's array: count +0xC, {value, key, kind} x 8 B from +8), None if o has no such key."""
+        n, a = self.r32(o + 0xC), self.r32(o + 8)
+        for i in range(n):
+            v, kk = struct.unpack("<IH", bytes(self.u.mem_read(a + 8 * i, 6)))
+            if kk == k:
+                return v
+        return None
+    def project(self, store):
+        """Stock's project writer (PROJECT_WRITE) on a store, the file write (FILE_WRITER) replaced: the text."""
+        if not hasattr(self, "texts"):
+            self.texts = []
+            def save_hook(uc, a, sz, _):
+                pr = uc.reg_read(UC_ARM_REG_R1)
+                p, n = self.r32(pr + 0xD4), self.r32(pr + 0xF0)
+                self.texts.append(bytes(uc.mem_read(p, n)).rstrip(b"\0").decode("latin1"))
+                uc.reg_write(UC_ARM_REG_R0, 1); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+            self.u.hook_add(UC_HOOK_CODE, save_hook, begin=S.FILE_WRITER, end=S.FILE_WRITER)
+            self.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+        self.texts.clear()
+        self.u.mem_write(STRS + 0x300, b"/p/project.xml\0")
+        buf = self.malloc(0x200); self.u.mem_write(buf, bytes(0x200))
+        assert self.call(S.PROJECT_WRITE, STRS + 0x300, buf, 0x200, store, count=120_000_000) and len(self.texts) == 1
+        return self.texts[0]
     def load(self, element, o): self.call(S.INST_LOAD, element, o, count=40_000_000)
+    def bare(self):
+        """An instrument element with an empty params element, as save() makes them before stock's writer fills them."""
+        self.u.mem_write(DOC, bytes(0x1000))
+        self.call(S.XML_DOC_INIT, DOC, 1, 0)
+        parent = self.call(S.XML_NEW_ELEMENT, DOC, STRS); self.call(S.XML_APPEND_CHILD, DOC, parent)
+        params = self.call(S.XML_NEW_ELEMENT, DOC, STRS + 11); self.call(S.XML_APPEND_CHILD, parent, params)
+        return parent, params
 
 
 def bw(at, to):
@@ -306,20 +345,23 @@ class Keys(unittest.TestCase):
     def test_the_seven_keys_carry_the_kicks_knobs(self):
         r = Rig()
         self.assertEqual([self.descriptor(r, k) for k in KEYS],
-                         [(k, 2, n, lo, hi) for k, n, lo, hi in zip(KEYS, NAMES, LO, HI)], "type 2 (an integer, as stock's Shift)")
+                         [(k, 2, n, KNOB_LO, KNOB_HI) for k, n in zip(KEYS, NAMES)], "type 2 (an integer, as stock's Shift)")
+        self.assertEqual([self.descriptor(r, k) for k in (ENGINE_KEY, TRACK_KEY)],
+                         [(ENGINE_KEY, 2, "Engine", 0, 5), (TRACK_KEY, 2, "Drum Track", 0, 1)], "P4-1: the engine and the flag")
         self.assertEqual(r.hdr(6), 1, "keys ok")
         self.assertEqual(self.descriptor(r, 0x1AD)[:3], (0x1AD, 2, "Shift"), "the native key below them is stock's")
 
     def test_one_key_taken_means_none_written(self):
         r = Rig()
         reg = r.r32(S.REGISTRY)
-        for k in KEYS:                                              # a fresh registry, then a stranger on the fourth key
+        for k in KEYS + [ENGINE_KEY, TRACK_KEY]:                    # a fresh registry, then a stranger on the fourth key
             r.u.mem_write(reg + 32 * k, bytes(32))
         r.u.mem_write(STRS + 0x700, b"Busy\0")
         r.u.mem_write(reg + 32 * KEYS[3], struct.pack("<HBBI", KEYS[3], 10, 0, STRS + 0x700))
         r.w32(DK4 + 4 * 6, 0)
         r.call(SYM["an_tick"])
         self.assertEqual([self.descriptor(r, k)[0] for k in KEYS], [0, 0, 0, KEYS[3], 0, 0, 0])
+        self.assertEqual([self.descriptor(r, k)[0] for k in (ENGINE_KEY, TRACK_KEY)], [0, 0], "P4-1: all nine or none")
         self.assertEqual(r.hdr(6), 0x104, "the black box says which (taken, the fourth)")
         t, p, f = r.pad()
         r.page(t, p, f)
@@ -570,16 +612,40 @@ class Xml(unittest.TestCase):
         return t, p, f
 
     def test_the_writer_writes_a_kicks_knobs(self):
+        """P4-1: X1 puts DK4's values into the pad's native keys (N1), and stock's writer writes them."""
         r = Rig()
         t, p, f = self.edited(r)
         self.assertEqual(r.drum_attrs(r.save(p)[1]), [1, 120, 10, 20, 30, 40, 50, 60])
+        self.assertEqual([r.prop(p, k) for k in [ENGINE_KEY] + KEYS], [1, 120, 10, 20, 30, 40, 50, 60], "the pad's own keys")
         self.assertEqual(r.hdr(14), 1, "saves=1")
         self.assertEqual(r.drum_attrs(r.save(t)[1]), [None] * 8, "the track itself gets none")
+        self.assertEqual(r.attr(r.save(t)[1], "bento_drumtrack"), 0, "but the flag (P4-1), 0 on a track the menu did not make")
+        self.assertEqual(r.drum_attrs(r.save(f)[1]), [None] * 8, "nor its file node (type 5)")
 
-    def test_a_pad_without_an_entry_writes_nothing(self):
+    def test_a_project_has_each_name_once(self):
+        """P4-1: stock's writer writes the native keys after X1's site, each over an attribute of that name, so X1 sets the
+        pad's keys rather than adding the names (added ones come out with the object's zeros: M, this test with the old
+        X1). Stock's project writer on the live store: each name once with DK4's values on the edited pad, stock's zeros on
+        a plain one, the flag on the track."""
+        r = Rig()
+        t, p, f = self.edited(r)
+        r.child(r.live, 1, t); r.child(r.live, 5, t)
+        text = r.project(r.live)
+        pads = re.findall(r'<cell type="saminst">\s*<params([^>]*)/?>', text)
+        self.assertEqual(len(pads), 2)
+        for a, want in zip(pads, ([1, 120, 10, 20, 30, 40, 50, 60], [0] * 8)):
+            got = re.findall(r'(\w+)="([^"]*)"', a)
+            names = [n for n, _ in got]
+            self.assertEqual([names.count(n) for n in ["bento_drum_engine"] + ATTRS], [1] * 8)
+            self.assertEqual([int(dict(got)[n]) for n in ["bento_drum_engine"] + ATTRS], want)
+        self.assertEqual(text.count("bento_drumtrack="), 1)
+
+    def test_a_pad_without_an_entry_writes_stocks_zeros(self):
+        """P4-1: the names are native keys of every pad (N1), so stock writes them with the template's 0 (engine 0: none)."""
         r = Rig()
         t, p, f = r.pad()
-        self.assertEqual(r.drum_attrs(r.save(p)[1]), [None] * 8)
+        self.assertEqual(r.drum_attrs(r.save(p)[1]), [0] * 8)
+        self.assertEqual(r.hdr(14), 0, "X1 wrote nothing")
 
     def test_a_project_round_trip_through_stocks_copies(self):
         r = Rig()
@@ -626,9 +692,11 @@ class Xml(unittest.TestCase):
         self.assertIsNone(r.knobs(r.handle(r.children(r.objects(scratch)[0])[0])))
 
     def test_the_reader_clamps_and_fills_in(self):
+        """(P4-1: this build's writer writes all eight names on every pad, so the element with missing knobs, as a
+        hand-edited file could have it, is made here: an instrument element and its empty params.)"""
         r = Rig()
         t, p, f = r.pad()
-        element, params = r.save(p)
+        element, params = r.bare()
         r.set_attr(params, "bento_drum_engine", 1)
         r.set_attr(params, ATTRS[0], 999); r.set_attr(params, ATTRS[2], 7)
         q = r.child(r.live, 1, t)
@@ -640,9 +708,10 @@ class Xml(unittest.TestCase):
         r = Rig()
         t, p, f = self.edited(r)
         q = r.pad()[1]
-        element, _ = r.save(q)                                       # a plain pad's element
+        element, _ = r.save(q)                                       # a plain pad's element (P4-1: engine 0)
         r.load(element, p)
         self.assertIsNone(r.knobs(r.handle(p)))
+        self.assertEqual([r.prop(p, k) for k in [ENGINE_KEY] + KEYS], [0] * 8, "and stock's reader stores the zeros")
 
     def test_an_engine_this_build_lacks_makes_no_entry(self):
         r = Rig()
