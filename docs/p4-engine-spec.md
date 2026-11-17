@@ -573,3 +573,21 @@ All WAVs are rendered from the M7 ELFs in Unicorn, so they are bit-exact to the 
 - Re-strike: `tom_restrike_roll.wav`, `tom_fill_3pads.wav`.
 - `tom_velocity_20_50_80_110_127.wav`. Velocity changes timbre only, not level.
 - Listen for: whether the ranges should be frozen (Tune 45..413 Hz, Sweep +2.5 octaves).
+
+### P4-5.10 Status after fix rounds 2 and 3 (2026-11-16)
+
+Prototypes: scratchpad `engines\<engine>\v3\` (Kick, Snare, HiHat, Clap); Tom stays at v1 (passed round 1).
+All engines now end in a shared soft limiter (Kick `be_softlim`, knee 0.72, 7 instructions/sample; Clap / Snare share a
+rational knee; output always < 1.0). Default settings are bit-identical with or without it (M).
+
+| Engine | Round-3 verdict | Worst instr/sample | Code | Open, carried into P4-2 integration |
+|---|---|---|---|---|
+| Kick | fix | 50.0 | 1,400 B | Accent still not monotonic with Dirt > ~30 (Dirt's saturation compresses the click; v1 too): apply Accent to the click after the drive, or accept; "bit-identical to v1" holds for the 24-bit WAVs and the first 0.3 s only |
+| Snare | **pass** | ~45 + limiter ~9 | ~1,506 B | single-hit headroom comment says 0.7, grid finds slightly more; limiter engages on extreme rolls (about -1 dB) |
+| HiHat | fix (minors) | ~41 | margin 8 B | aliasing corner (Tune 0, ratio 1/16) untested; voice end slightly above -66 dB on a wider grid; comments; 8 B code margin before glue |
+| Clap | **pass** | 27.4 (53.5 at n = 16) | 1,308 B + 72 B shared knee | velocity range ~4 dB at Accent 127, none at Accent 0 (D7, Jeff) |
+| Tom | pass (round 1) | 44.2 | 1,356 B | aliasing at ratio 8 |
+
+Decision (Claude): no further prototype rounds. The remaining items are minor and go into P4-2, where the engines enter
+the repo with the project's own tests, mutations and review. Shared limiter: one C++ helper for all engines (C99 inline
+would not keep one copy).
