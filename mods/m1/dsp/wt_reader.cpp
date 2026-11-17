@@ -103,5 +103,12 @@ extern "C" void wt_rdf(WtRd *g) {
 /* BE4.44 W4 (plan 3.5 step 5, D4): buffer B from a Wavetable OSC1, b = f32(f32(s - m) inc): its block before Level less the
  * frame's mean m (analog.cpp wt_frame_dc), times its increment (an_feed's form with the DC out). */
 extern "C" void wt_feed_b(const float *s, float *b, unsigned n, float inc, float m) {
-    for (unsigned i = 0; i < n; i++) b[i] = (s[i] - m) * inc;
+    /* eight a turn on two pointers (W4 review: the low-note Position-LFO voice sat 0.4 % over the heaviest existing voice;
+     * the index loop's overhead was 1.5 instructions a sample), then the tail; the same arithmetic, sample by sample */
+    for (const float *e = s + (n & ~7u); s < e; s += 8, b += 8) {
+        float x0 = s[0], x1 = s[1], x2 = s[2], x3 = s[3], x4 = s[4], x5 = s[5], x6 = s[6], x7 = s[7];
+        b[0] = (x0 - m) * inc; b[1] = (x1 - m) * inc; b[2] = (x2 - m) * inc; b[3] = (x3 - m) * inc;
+        b[4] = (x4 - m) * inc; b[5] = (x5 - m) * inc; b[6] = (x6 - m) * inc; b[7] = (x7 - m) * inc;
+    }
+    for (unsigned i = 0; i < (n & 7u); i++) b[i] = (s[i] - m) * inc;
 }

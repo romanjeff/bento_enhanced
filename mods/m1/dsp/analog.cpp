@@ -860,17 +860,44 @@ __attribute__((noinline)) static void wt_kern(void *osc, const WtBlk *bk) {
  * must set peak_b").
  * - DC: B is OSC1's block times its increment, so a frame whose mean is m moves OSC2's mean increment by J inc1 m, a detune
  *   at any amount (an Analog OSC1's shapes are DC-free; a table's frames need not be: a PWM frame's mean is up to 0.9, OSC2
- *   then runs backwards at FM 1>2 250). B = (s - m) inc (wt_feed_b), m the mean of the frame OSC1 plays at the level it
- *   plays (kernel + 0xC8 and its len, or the reader's mip, at the block's end): the whole frame, four running f32 sums
- *   (lanes i mod 4, then (0 + 1) + (2 + 3)), times 1 / len. OSC1's own FM still gives B a DC (OD17, accepted for Analog).
- * - Peak: max |x - m| over the frame (its max and min), rounded up to 1/4096 (a bound): steady by construction, it depends
- *   on the table, not on where in its cycle a block falls (W3: a scan of one block of B followed a slow OSC1's phase and
- *   flipped OSC2's level). A block whose frame or level changed played both, so its bound covers the old frame too
- *   (old peak + |old mean - new mean|).
+ *   then runs backwards at FM 1>2 250). B = (s - m) inc (wt_feed_b), m the mean of the frame OSC1 plays at the level k it
+ *   plays (kernel + 0xC8 and its len, or the reader's mip, at the block's end). W4 review (CPU: the whole level-0 frame was
+ *   10.3k instructions and 8 KB of table, every block of a Position LFO at a low note), at most 128 samples read, 256 at
+ *   frame 0: levels 4..6 their own frame; levels 0..3 level 4's (128 samples), its mean scaled back by stock's builder's
+ *   DC gain (G = 0.9510514 a level: x G^-(4 - k); each level is the one before through its decimator); frame 0 at levels
+ *   0..3 every st-th sample of k's own (st = 2^(3 - k): its coarser levels start with the builder's zero padding). Four
+ *   running f32 sums (lanes j mod 4 of the samples read, then (0 + 1) + (2 + 3)), times 1 / their count. Measured against
+ *   the played frame's exact mean on the synthetic families: within 1.5e-4 (band-limited saw, pulses, PWM, half-waves),
+ *   2.3e-2 on a naive (aliased) sync-saw sweep (the decimator carries a neighbour frame's tail); frame 0 within 1.4e-3
+ *   (1.4e-2 naive). OSC1's own FM still gives B a DC (OD17, accepted for Analog).
+ * - Peak: max |x - a| over the same samples (a the mean of what was read), times G^-(4 - k) and 1.125 when not k's every
+ *   sample (the samples between and the harmonics level 4 drops: a band-limited saw's played peak is 1.09 .. 1.11 x that,
+ *   a pulse's 0.98 .. 1.07; a naive sync sweep's up to 1.21), rounded up to 1/4096. Steady by construction: it depends on
+ *   the table, not on where in its cycle a block falls (W3: a scan of one block of B followed a slow OSC1's phase and
+ *   flipped OSC2's level). A bound at levels 4..6 (and 3 at frame 0); below, an estimate (-7 % .. +15 % of the played
+ *   frame's). A block whose frame or level changed played both, so its bound covers the old frame too (old peak + |old
+ *   mean - new mean|).
  * - Kept in OSC1's saved runs, taken again only when the frame or level changes: wxf the mean's float bits with their low 11
  *   cleared (2^-12 of it, toward 0) and the key (frame | level << 8) in those 11, AnProps.glide (never read on a Wavetable
  *   oscillator) the peak in 1/4096, wflags' WT_PK_OK that both are set; an_note drops WT_PK_OK (a new table is read at the
  *   next note at the latest). Returns the peak (B's bound / inc1), *mean the m to take out. */
+/* wt_frame_dc's scan: every ST-th sample of [f, e), eight a turn (e - f a multiple of 8 ST: 256 samples strided, or a
+ * level-4..6 frame of 128..32), into the four lanes s[0..3] (sample j to lane j mod 4, in order) and s[4] / hi their min /
+ * max. Inlined twice: ST = 1 (the immediate offsets: 4.4 instructions a sample, the steady case) and frame 0's stride */
+static inline __attribute__((always_inline)) void dc_scan(const float *f, const float *e, u32 ST, float *s, float &hi) {
+    float s0 = s[0], s1 = s[1], s2 = s[2], s3 = s[3], lo = s[4], h = hi;
+    for (const float *q = f; q < e; q += 8u * ST) {
+        float x0 = q[0], x1 = q[ST], x2 = q[2u * ST], x3 = q[3u * ST], x4 = q[4u * ST], x5 = q[5u * ST], x6 = q[6u * ST],
+              x7 = q[7u * ST];
+        s0 += x0; s1 += x1; s2 += x2; s3 += x3;
+        s0 += x4; s1 += x5; s2 += x6; s3 += x7;
+        lo = __builtin_fminf(lo, __builtin_fminf(__builtin_fminf(__builtin_fminf(x0, x1), __builtin_fminf(x2, x3)),
+                                                 __builtin_fminf(__builtin_fminf(x4, x5), __builtin_fminf(x6, x7))));
+        h = __builtin_fmaxf(h, __builtin_fmaxf(__builtin_fmaxf(__builtin_fmaxf(x0, x1), __builtin_fmaxf(x2, x3)),
+                                               __builtin_fmaxf(__builtin_fmaxf(x4, x5), __builtin_fmaxf(x6, x7))));
+    }
+    s[0] = s0; s[1] = s1; s[2] = s2; s[3] = s3; s[4] = lo; hi = h;
+}
 __attribute__((noinline)) static float wt_frame_dc(void *osc, const float *tab, u32 frame, u32 k, float *mean) {
     AnOsc *g = state(osc);
     AnProps *p = props(osc);
@@ -878,20 +905,25 @@ __attribute__((noinline)) static float wt_frame_dc(void *osc, const float *tab, 
     float mo, po = (float)p->glide * (1.f / 4096.f);
     __builtin_memcpy(&mo, &mb, 4);
     if (ok && (w & 0x7FFu) == key) { *mean = mo; return po; }
-    u32 len = 2048u >> k;
-    const float *f = tab + wt_mip_off(k) + (frame << (11u - k));
-    float s0 = 0.f, s1 = 0.f, s2 = 0.f, s3 = 0.f, lo = f[0], hi = f[0];
-    for (u32 i = 0; i < len; i += 4u) {
-        s0 += f[i]; s1 += f[i + 1u]; s2 += f[i + 2u]; s3 += f[i + 3u];
-        lo = __builtin_fminf(lo, __builtin_fminf(__builtin_fminf(f[i], f[i + 1u]), __builtin_fminf(f[i + 2u], f[i + 3u])));
-        hi = __builtin_fmaxf(hi, __builtin_fmaxf(__builtin_fmaxf(f[i], f[i + 1u]), __builtin_fmaxf(f[i + 2u], f[i + 3u])));
-    }
-    float m = ((s0 + s1) + (s2 + s3)) * (1.f / (float)len);
+    /* the level read (W4 review): k's own at 4..6; level 4 for a level-0..3 frame, its DC and peak scaled back by stock's
+     * builder's gain (G = 0.9510514 a level: G^-(4 - k)); frame 0 every st-th sample of k's own (its coarser levels start
+     * with the builder's zero padding) */
+    u32 c = k < 4u && frame ? 4u : k, st = k < 3u && !frame ? 1u << (3u - k) : 1u;
+    const float *f = tab + wt_mip_off(c) + (frame << (11u - c)), *e = f + (2048u >> c);
+    float sm[5] = {0.f, 0.f, 0.f, 0.f, f[0]}, hi = f[0];       /* (the four lanes, lo) */
+    if (st == 1u) dc_scan(f, e, 1u, sm, hi);
+    else dc_scan(f, e, st, sm, hi);
+    float lo = sm[4], mr = ((sm[0] + sm[1]) + (sm[2] + sm[3])) * (1.f / (float)((2048u >> c) / st));
+    float sc = k == 0u ? 1.2223172187805176f : k == 1u ? 1.1624865531921387f : k == 2u ? 1.1055845022201538f : 1.051467776298523f;
+    float m = c == k ? mr : mr * sc;
     __builtin_memcpy(&mb, &m, 4);
     mb &= ~0x7FFu;
     g->wxf = mb | key;
     __builtin_memcpy(&m, &mb, 4);
-    u32 q = (u32)(__builtin_fmaxf(hi - m, m - lo) * 4096.f) + 1u;
+    float ab = c == k ? m : mr, pd = __builtin_fmaxf(hi - ab, ab - lo);
+    if (c != k) pd *= sc;
+    if (c != k || st > 1u) pd *= 1.125f;                      /* (not k's every sample: a margin) */
+    u32 q = (u32)(pd * 4096.f) + 1u;
     if (q > 0xFFFFu) q = 0xFFFFu;
     p->glide = (u16)q;
     g->wt.wflags |= WT_PK_OK;

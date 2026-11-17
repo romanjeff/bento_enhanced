@@ -27,7 +27,8 @@ What changed since BE4.43:
   - OSC2's knob 6 is FM 1>2 whatever OSC1 is. BE4.43 showed an Analog OSC2's Sub FM there next to a Wavetable OSC1: that
     Sub FM no longer plays (value kept), and a hidden FM 1>2 value that OSC2 held now plays (expected change, D2).
   - Mixed sync (Wavetable OSC1 master, Analog OSC2 slave): OSC1's Sub FM plays as 0 while synced (value kept, D3); FM 1>2
-    keeps working, the slave following OSC1 block by block (2.7 ms).
+    keeps working and sync stays sample-accurate as on BE4.43 (OSC1 plays stock's playback while synced; a per-block
+    re-alignment to OSC1's phase is only a safety net).
   - A table frame's DC (average) is taken out of FM 1>2's modulator, so pulse / half-wave frames do not detune OSC2.
   - The hold-shortcut code moved to a new flash page (to make room for this release): they must still work (section 1).
 What to expect that is not a bug:
@@ -83,9 +84,9 @@ What to expect that is not a bug:
 [ ] Analog OSC1 (Shape 0, sine) -> Wavetable OSC2, FM 1>2 0 -> 100 %: smooth, in tune at every amount.
 [ ] Wavetable OSC1 -> Wavetable OSC2, the same: smooth, in tune.
 [ ] Wavetable OSC1 -> Analog OSC2 (Shape 0), the same: smooth, in tune.
-[ ] D4 (the DC): with OSC1 on a factory table that has pulse / PWM or other lopsided frames, sweep OSC1's Position while
-    FM 1>2 is 30 %: OSC2's pitch must not slide with the frame (the timbre changes, the pitch stays). Note any table where
-    it does.
+[ ] D4 (the DC): with OSC1 on a factory table that has pulse / PWM or other lopsided frames, OSC1's Sub FM at 0 (its own
+    FM moves OSC2's pitch too, on Analog as well), sweep OSC1's Position while FM 1>2 is 30 %: OSC2's pitch must not slide
+    with the frame (the timbre changes, the pitch stays). Do it at a low note (C1) and at C3. Note any table where it does.
 [ ] D9 (OSC1 Level 0 while it feeds): OSC1 Level up, then down to 0 and back during a held note: no click, OSC2's FM
     never stops.
 [ ] Both at once (the full Wavetable FM voice): OSC1 Sub FM 50 % + FM 1>2 60 %, both Wavetable. FM Atk / FM Dec on OSC2:
@@ -93,8 +94,9 @@ What to expect that is not a bug:
 
 6. Mixed sync (track 3: OSC1 Wavetable with a WAV, OSC2 Analog, Sync 1>2 on)
 [ ] OSC1 Sub FM 70 %: plays as 0 while synced (no FM on OSC1); Sync off: the Sub FM is heard; on again: gone.
-[ ] OSC2 FM 1>2 50 % with Sync on: sync and FM both audible. Listen for roughness, buzz or a tick at a steady rate
-    (the slave follows OSC1 once per 2.7 ms block): write down what you hear at notes 36, 60, 84.
+[ ] OSC2 FM 1>2 50 % with Sync on: sync and FM both audible. Expect no difference from BE4.43's sync (it stays
+    sample-accurate; the per-block re-seed is a safety net). Listen for roughness, buzz or a tick at a steady 2.7 ms rate
+    anyway, also right after turning Sync on mid-note: write down what you hear at notes 36, 60, 84.
 
 7. D5 by ear (the three kits; the same project on each: WTFM_A track 1, OSC1 Sub FM at 25 %, 50 %, 100 % at C3 and C5,
    one bright factory table (a saw-like one) and one dark one)
@@ -104,9 +106,16 @@ What to expect that is not a bug:
 8. CPU (write down the "DSP nn%" on OSC1's title, OVER or not; after a save the ANALOG line's avg_cyc / peak_cyc /
    voices_peak and load_pm / over_with_analog)
 [ ] 8-voice heavy FM chords: both oscillators Wavetable (factory tables), OSC1 Sub FM 100 %, OSC2 FM 1>2 100 %, a chord of
-    8 notes around C2 (low notes: the slowest case for the table's memory), held, then re-struck fast. Then the same
-    around C4. Offline the full Wavetable FM voice is 27.4k instructions a block (Analog's full FM voice 28.9k).
-[ ] The same with an LFO on Position (both oscillators): offline 34.5k a voice-block.
+    8 notes around C2, held, then re-struck fast. Then the same around C4. Offline the full Wavetable FM voice is 27.4k
+    instructions a block (Analog's full FM voice 28.9k). (Full depth is the cheaper case for the table: the reader drops
+    to coarse levels. The next row is the worst one.)
+[ ] THE WORST CASE: an 8-voice chord around C0 / C1 (notes 24..36), both Wavetable, OSC1 Sub FM about 10 %, OSC2 FM 1>2
+    about 30 %, an LFO on Position on both oscillators (fast enough to move every block), held, then re-struck. Light FM
+    keeps OSC1 on its fine low-note levels, so every block reads a new frame there. Offline 34.8k a voice-block steady
+    (within the heaviest existing voice, 35.3k), and one block per note up to 39.4k where OSC2 settles its level.
+[ ] The same chord with Sub FM 30 % + FM 1>2 30 % and the Position LFO, and again with a short FM Dec pluck (FM Dec 20 on
+    both, re-struck fast): offline 34.8k steady, 39.4k heaviest.
+[ ] The full-depth chord with an LFO on Position (both oscillators): offline 34.5k a voice-block.
 [ ] The same with FM Atk 20 on both oscillators, notes re-struck: the heaviest blocks offline (43.9k, a few per note,
     where the rising depth changes the table level).
 [ ] Compare with the v4.43 checklist's Analog full-FM chord (same 8 notes): better, worse, or the same. No reset, no
