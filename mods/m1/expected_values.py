@@ -64,7 +64,7 @@ STOCK_161 = dict(
     MODEL_HEADER_ON=0x14C,         # HEADER_GEN 0x08134808 ldrb.w r6,[r0,#0x14c]; beq.w out
     # S6a (Analog; the group is 1.6.8 only): Playground's 1.6.1 values, checked in this image (rc20/s6a)
     KEY_OSC_TYPE=None, KEY_OSC_SHAPE=None, KEY_OSC_SYNC=None, KEY_OSC_GLIDE=None,   # BE4.40 native keys: 1.6.8 only
-    KEY_OSC_SUBFM=None, KEY_OSC_BITS=None, KEY_OSC_FM12=None,                       # P3 (FM, Bit Depth): 1.6.8 only
+    KEY_OSC_SUBFM=None, KEY_OSC_FM12=None, KEY_OSC_FMATK=None, KEY_OSC_FMDEC=None,  # P3, BE4.43 FM env: 1.6.8 only
     SYNTH_VIEW_KEYS=None, SYNTH_VIEW_HANDLES=None,
     KEY_WT_OSC_RESET=None, VIEW_WT_PANE=None, WT_PANE_STRIDE=None, WT_PANE_HINT=None, WT_PANE_FLAGS=None,   # BE4.40
     WT_PANE_REDRAW=None, VIEW_PANE_TITLE=None, PANE_TITLE_STRIDE=None, WIDGET_PARENT=None, WIDGET_HIDDEN=None,   # identity:
@@ -204,7 +204,8 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     UI_CODE_RELEASE=0xb0,         # 0xB0 -> 0x08141042 (BUTTON_EVENT 0x74) (hold)
     # S6a (rc20/s6a): the allow-list keys (regdump.py: empty after stock's builder), the menu, the type, the M7 layout
     KEY_OSC_TYPE=0x1C0, KEY_OSC_SHAPE=0x1A7, KEY_OSC_SYNC=0x1AB, KEY_OSC_GLIDE=0x1B7,   # BE4.40: registry empty, test_keys
-    KEY_OSC_SUBFM=0x18B, KEY_OSC_BITS=0x1A4, KEY_OSC_FM12=0x132,   # P3 Q1: registry empty, no immediates (test_keys, FM_NEXT since BE4.40)
+    KEY_OSC_SUBFM=0x18B, KEY_OSC_FM12=0x132,   # P3 Q1: registry empty, no immediates (test_keys, FM_NEXT since BE4.40)
+    KEY_OSC_FMATK=0x1A4, KEY_OSC_FMDEC=0x1A0,   # BE4.43 FM Atk (BE4.41's Bit Depth key), FM Dec (Track FX's clean 0x1A0): test_keys
     SYNTH_VIEW_KEYS=0x11CAC,       # page builder: add.w r0,r5,#0x11c00; adds r0,#0xac; bl memcpy (0x08161440..46)
     SYNTH_VIEW_HANDLES=0x243C,     # binder: addw r3,sb,#0x90f; add.w r3,r7,r3,lsl #2 (= view + 0x243C + 4 row) (0x08160A8E)
     # S6c drums (rc25/s6c re/d1_168.txt, the one-shot render entry 0x08092320 and its callers, read by hand):

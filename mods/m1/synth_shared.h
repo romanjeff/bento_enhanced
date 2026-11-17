@@ -96,6 +96,23 @@ typedef struct {
 #define AN_GLIDE_MAX 1000u                                  /* Glide 0..1000 = 0..2 s, stock's encoder units */
 #define AN_FM_MAX 1000u                                     /* P3: Sub FM, FM 1>2 0..1000 (0..100.0 % of the knob; the FM
                                                                sprint plays index 16 (v / 1000)^1.5, BE4.42; BE4.41 8 (v / 1000)^2) */
+/* BE4.43 (docs/plan-p3-fm-bits.md BE4.43; p3_golden.py fm_env, the spec): the FM envelope per oscillator, env x the FM
+ * amount's index at block rate (2N = 256 frames at 96 kHz = 2.667 ms). FM Atk 0..127 (0 instant), FM Dec 0..128 (128 = Inf,
+ * the top of the knob next to the longest decay: hold 1 = BE4.42's static depth, the default). A value's time in blocks is
+ * AN_FM_ENV_BLOCKS (p3_golden.FM_ENV_BLOCKS, the contract: n(x) = 1 + round((e^(L x) - 1) / L), 1 .. 3750 blocks = 2.7 ms
+ * .. 10.0 s, 128 distinct). Attack linear in index 0 -> 1 over n blocks; decay exponential to -60 dB at n blocks, then 0.
+ * Both cores read it (the M7's envelope, the M4's value texts) */
+#define AN_FM_ATK_MAX 127u
+#define AN_FM_DEC_INF 128u
+#define AN_FM_ENV_BLOCKS { \
+    1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 15, 16, 18, 20, 21, \
+    23, 25, 27, 29, 31, 34, 36, 38, 41, 44, 46, 49, 52, 55, 58, 62, \
+    65, 69, 72, 76, 80, 85, 89, 94, 98, 103, 108, 114, 119, 125, 131, 137, \
+    144, 151, 158, 165, 172, 180, 189, 197, 206, 215, 225, 235, 245, 256, 267, 279, \
+    291, 304, 317, 331, 345, 360, 376, 392, 408, 426, 444, 463, 482, 502, 524, 546, \
+    569, 592, 617, 643, 670, 698, 727, 757, 788, 821, 855, 890, 927, 965, 1005, 1046, \
+    1089, 1134, 1180, 1229, 1279, 1331, 1386, 1442, 1501, 1563, 1626, 1693, 1762, 1833, 1908, 1986, \
+    2066, 2150, 2238, 2329, 2423, 2521, 2624, 2730, 2841, 2956, 3075, 3200, 3329, 3464, 3604, 3750 }
 #define AN_SHAPE_MAX 127u                                   /* Shape 0..127: sine > triangle > saw > square > pulse (P3 Q3,
                                                                docs/plan-p3-fm-bits.md 4.6; BE4.40: saw > square > pulse) */
 #define AN_SHAPE_SINE 0u                                    /* P3 Q3 (OD6), one-sided plateaus: 0..2 plays the sine, */

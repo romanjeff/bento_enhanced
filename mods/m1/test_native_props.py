@@ -19,6 +19,11 @@ The same text is read by BE4.40 (the likeliest rollback) and through stock's pre
 BE4.42 (docs/plan-p3-fm-bits.md, BE4.42): Bit Depth (0x1A4, bento_bits) is gone: six keys, two pad entries (the count stays
 0x304). A project BE4.41 saved with Bit Depth set (written by the BE4.41 build itself, BE_REF441) opens here with its other
 values, the bits value is not read, never reaches the M7, and the next save drops it.
+BE4.43 (docs/plan-p3-fm-bits.md, BE4.43): the FM envelope's two keys, FM Atk 0x1A4 (bento_fmatk, default 0) and FM Dec 0x1A0
+(bento_fmdec, default 128 = Inf): eight keys, 0x2FC + 8 = 0x304, so no pad entry any more (Hazard: type 0xFF is not creatable
+again, as on stock). A BE4.41 project's bento_bits still is not read (0x1A4's token is bento_fmatk: FM Atk keeps its default);
+a project BE4.42 saved (BE_REF442, default ~/bento/out/m1-be442, the v4.42 kit's image) opens with Atk 0 / Dec Inf, the
+values that play BE4.42's static depth.
 Typed independently of the code under test: our keys and tokens (plan-native-props 3.1, plan-p3-fm-bits 2.1), Shape's
 default 48, stock's seven type-6 keys in order, the template count rule (cmp.w encodes every multiple of 4 from 0x300), the
 set_property message's index (WT1 0, WT2 1). Skipped on a build without the analog group (1.6.1).
@@ -40,6 +45,7 @@ MAN = json.loads((Path(sys.argv[2]) / "manifest.json").read_text())
 KIT422 = Path(sys.argv[3]) if len(sys.argv) > 3 else HERE.parents[2] / "flash" / "bento_enhanced-v4.22"
 REF440 = Path(os.environ.get("BE_REF", str(Path.home() / "bento" / "out" / "m1-be440")))   # BE4.40 (P3 Q1: the rollback)
 REF441 = Path(os.environ.get("BE_REF441", str(Path.home() / "bento" / "out" / "m1-be441")))   # BE4.41 (BE4.42: Bit Depth's files)
+REF442 = Path(os.environ.get("BE_REF442", str(Path.home() / "bento" / "out" / "m1-be442")))   # BE4.42 (BE4.43: no envelope)
 del sys.argv[1:4]
 SYM = {k[6:]: int(v, 16) for k, v in MAN.get("m4_symbols", {}).items() if k.startswith("synth.")}
 BUILT = "analog" not in MAN.get("omitted", []) and "np_keys" in SYM
@@ -54,9 +60,12 @@ STUB = 0x083F0000                  # our DOC_READ replacement (feeds the parser;
 EV = 0xC0F01000                    # an event record  # addr-ok: harness
 # our keys, tokens and defaults (docs/plan-native-props.md 3.1; Shape's default 48 = saw, NP6), in template order; P3 Q1
 # (docs/plan-p3-fm-bits.md 2.1): Sub FM, FM 1>2 after Glide, both 0 (BE4.42: BE4.41's Bit Depth, between them, is gone)
+# BE4.43: FM Atk (0x1A4, default 0: instant) and FM Dec (0x1A0, default 128: Inf) after FM 1>2
 OURS = [(0x1C0, "bento_osc_type", 0), (0x1A7, "bento_shape", 48), (0x1AB, "bento_sync", 0), (0x1B7, "bento_glide", 0),
-        (0x18B, "bento_subfm", 0), (0x132, "bento_fm12", 0)]
-BITS = 0x1A4                       # BE4.41's Bit Depth key (bento_bits): BE4.42 has no such key
+        (0x18B, "bento_subfm", 0), (0x132, "bento_fm12", 0), (0x1A4, "bento_fmatk", 0), (0x1A0, "bento_fmdec", 128)]
+BITS = 0x1A4                       # BE4.41's Bit Depth key (bento_bits): BE4.42 had no such key; BE4.43's FM Atk (bento_fmatk)
+FMATK, FMDEC = 0x1A4, 0x1A0
+BE442_N = 6                        # BE4.42's keys: the first six
 KEYS = [k for k, _, _ in OURS]
 BE440_N = 4                        # BE4.40's keys: the first four
 PAD = 0xFF                         # the template's pad type (build.py NP_PAD_TYPE)
@@ -211,13 +220,13 @@ def cells(text):
 
 
 # setup_wt's values of our keys (Type, Shape, Sync, Glide, Sub FM, FM 1>2), each different from its default
-V1 = [1, 127, 0, 77, 250, 0]
-V2 = [1, 5, 1, 0, 1000, 640]
+V1 = [1, 127, 0, 77, 250, 0, 20, 40]     # BE4.43: FM Atk 20, FM Dec 40
+V2 = [1, 5, 1, 0, 1000, 640, 127, 0]    # BE4.43: FM Atk 127, FM Dec 0
 
 
 def setup_wt(r):
-    """A Wavetable track, WT1 Analog (Shape 127, Glide 77, Sub FM 250), WT2 Analog (Shape 5, Sync on, Sub FM 1000, FM 1>2
-    640), WT1's Position 321."""
+    """A Wavetable track, WT1 Analog (Shape 127, Glide 77, Sub FM 250, FM Atk 20, FM Dec 40), WT2 Analog (Shape 5, Sync on,
+    Sub FM 1000, FM 1>2 640, FM Atk 127, FM Dec 0), WT1's Position 321."""
     t, w1, w2 = r.wavetable()
     for o, vals in ((w1, V1), (w2, V2)):
         for k, v in zip(KEYS, vals):
@@ -256,8 +265,8 @@ class Template(unittest.TestCase):
         want = st[:run[-1] + 1] + [struct.pack("<BBHI", 6, 0, k, d) for k, _, d in OURS] + st[run[-1] + 1:]
         pad = [struct.pack("<BBHI", 0xFF, 0, 0, 0)] * (n - len(want))
         self.assertEqual(ours, want + pad)
-        self.assertEqual((n, len(pad)), (0x304, 2), "six keys: 0x2FC + 6 = 0x302 -> 0x304, two pad entries (BE4.42; BE4.41's "
-                         "seven gave one pad, BE4.40's four 0x300)")
+        self.assertEqual((n, len(pad)), (0x304, 0), "eight keys: 0x2FC + 8 = 0x304, no pad entry (BE4.43; BE4.42's six "
+                         "had two pads, BE4.41's seven one, BE4.40's four 0x300)")
 
     @unittest.skipUnless(HAVE, "BE_DISABLE=analog: the template is stock's")
     def test_every_object_gets_stocks_keys_and_type_6_ours_too(self):
@@ -388,16 +397,21 @@ class Project(unittest.TestCase):
         bad = self.text.replace('bento_osc_type="1" bento_shape="127"', 'bento_osc_type="-7" bento_shape="1000"', 1)
         bad = bad.replace('bento_subfm="250"', 'bento_subfm="5000"', 1)
         bad = bad.replace('bento_subfm="1000" bento_fm12="640"', 'bento_subfm="-3" bento_fm12="99999"', 1)
-        self.assertEqual(bad.count("99999") + bad.count('bento_subfm="5000"'), 2, "both cells edited")
+        bad = bad.replace('bento_fmatk="20" bento_fmdec="40"', 'bento_fmatk="500" bento_fmdec="-9"', 1)      # BE4.43
+        bad = bad.replace('bento_fmatk="127" bento_fmdec="0"', 'bento_fmatk="-1" bento_fmdec="129"', 1)
+        self.assertEqual(bad.count("99999") + bad.count('bento_subfm="5000"') + bad.count('bento_fmatk="500"') + bad.count('bento_fmdec="129"'), 4,
+                         "both cells edited")
         r = Rig(); c = r.children(r.wt_tracks(r.load(bad))[0])
-        self.assertEqual(r.ours(c[0]), [-7, 1000, 0, 77, 5000, 0])
-        self.assertEqual(r.ours(c[1]), [1, 5, 1, 0, -3, 99999])
+        self.assertEqual(r.ours(c[0]), [-7, 1000, 0, 77, 5000, 0, 500, -9])
+        self.assertEqual(r.ours(c[1]), [1, 5, 1, 0, -3, 99999, -1, 129])
 
     def test_a_be441_project_with_bit_depth_opens(self):
         """BE4.42 (Bit Depth removed): a project BE4.41 saved with Bit Depth set (8 bits on WT1, 4 on WT2: the BE4.41 build
         itself writes it, its own template and descriptors) opens here with every other value of ours and stock's, Bit
         Depth's bento_bits is not read (no descriptor, no token: the oscillators have no 0x1A4 property), the push after the
-        load sends no 0x1A4 to the M7 (whose an_prop would not take it anyway: test_analog), and the next save drops it."""
+        load sends no 0x1A4 to the M7 (whose an_prop would not take it anyway: test_analog), and the next save drops it.
+        BE4.43 (expected change): 0x1A4 is FM Atk's (token bento_fmatk), so the oscillators have a 0x1A4 property, at FM Atk's
+        default 0 whatever bento_bits said, and the push sends that 0 (FM Dec its 128): the envelope plays 1, BE4.42's sound."""
         img = REF441 / "bento1.bin"
         if not img.exists():
             self.skipTest(f"no BE4.41 build at {REF441} (BE_REF441)")
@@ -408,7 +422,7 @@ class Project(unittest.TestCase):
         old = Rig(img=img.read_bytes(), sym=sym)
         t, w1, w2 = old.wavetable()
         for o, vals, bits in ((w1, V1, 2), (w2, V2, 3)):
-            for k, v in zip(KEYS, vals):
+            for k, v in zip(KEYS[:BE442_N], vals):                # (BE4.41's own keys but Bit Depth: BE4.42's six)
                 old.set(o, k, v)
             old.set(o, BITS, bits)
             self.assertEqual(old.prop(o, BITS), bits, "control: BE4.41 stores Bit Depth")
@@ -418,19 +432,52 @@ class Project(unittest.TestCase):
         r = Rig()
         st = r.load(text)
         c = r.children(r.wt_tracks(st)[0])
-        self.assertEqual([r.ours(c[0]), r.ours(c[1])], [V1, V2], "every other value of ours")
-        self.assertEqual([r.prop(o, BITS) for o in c[:2]], [None, None], "no 0x1A4 property: bento_bits is not read")
+        self.assertEqual([r.ours(o)[:BE442_N] for o in c[:2]], [V1[:BE442_N], V2[:BE442_N]], "every other value of ours")
+        self.assertEqual([r.ours(o)[BE442_N:] for o in c[:2]], [[0, 128]] * 2,
+                         "BE4.43: bento_bits is not read: FM Atk (0x1A4) keeps its default 0, FM Dec 128")
         self.assertEqual([k for _, k, _ in r.props_of(c[0])], STOCK_T6 + KEYS)
         self.assertEqual(r.prop(c[0], 0xC9), 321)
         r.call(S.STORE_COPY_ALL, r.live, st)
         r.props.clear()
         r.call(S.LOAD_PUSH_ALL, S.MODEL, count=200_000_000)
         self.assertGreater(len([1 for h, k, v, i in r.props if k in KEYS]), 0, "control: the push sends our keys")
-        self.assertEqual([p for p in r.props if p[1] == BITS], [], "no 0x1A4 reaches the M7")
+        self.assertEqual({p[2] for p in r.props if p[1] == BITS}, {0}, "BE4.43: 0x1A4 reaches the M7 only as FM Atk's 0")
         again = r.save(st)
         self.assertNotIn("bento_bits", again, "dropped on BE4.42's save")
         self.assertIn('bento_subfm="1000"', again)
         self.assertIn('bento_fm12="640"', again)
+
+    def test_a_be442_project_opens_with_the_envelope_at_its_defaults(self):
+        """BE4.43: a project BE4.42 saved (the v4.42 kit's image, BE_REF442: its six keys, no envelope) opens here with its six
+        values, FM Atk 0 and FM Dec 128 on both oscillators (the template's defaults: env 1, so it sounds as on BE4.42; the
+        expected change is only OSC2's Sub FM next to an Analog OSC1, test_analog), the push sends them, the next save writes
+        bento_fmatk="0" bento_fmdec="128"."""
+        img = REF442 / "bento1.bin"
+        if not img.exists():
+            self.skipTest(f"no BE4.42 build at {REF442} (BE_REF442)")
+        man = json.loads((REF442 / "manifest.json").read_text())
+        self.assertEqual(man["version"], "4.42")
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        old = Rig(img=img.read_bytes(), sym=sym)
+        t, w1, w2 = old.wavetable()
+        for o, vals in ((w1, V1), (w2, V2)):
+            for k, v in zip(KEYS[:BE442_N], vals):
+                old.set(o, k, v)
+            self.assertIsNone(old.prop(o, FMDEC), "control: BE4.42 has no FM Dec")
+        old.set(w1, 0xC9, 321)
+        text = old.save()
+        self.assertNotIn("bento_fmatk", text, "control: BE4.42 writes no envelope")
+        r = Rig()
+        st = r.load(text)
+        c = r.children(r.wt_tracks(st)[0])
+        self.assertEqual([r.ours(o) for o in c[:2]], [V1[:BE442_N] + [0, 128], V2[:BE442_N] + [0, 128]])
+        r.call(S.STORE_COPY_ALL, r.live, st)
+        r.props.clear()
+        r.call(S.LOAD_PUSH_ALL, S.MODEL, count=200_000_000)
+        self.assertEqual([(k, v) for h, k, v, i in r.props if i == 0 and k in (FMATK, FMDEC)], [(FMATK, 0), (FMDEC, 128)],
+                         "the push: WT1's envelope at its defaults")
+        again = r.save(st)
+        self.assertEqual(again.count('bento_fmatk="0" bento_fmdec="128"'), 2, "saved with both oscillators' defaults")
 
     def test_stock_168_opens_it_as_a_plain_wavetable(self):
         """Stock 1.6.8 (no keys of ours in its template, no descriptors): the project opens, its oscillators have stock's
@@ -485,7 +532,7 @@ class Project(unittest.TestCase):
         self.assertEqual(r.prop(c[0], 0xC9), 321)
         again = r.save(st)
         self.assertIn('bento_shape="127"', again)
-        for tok in ("bento_subfm", "bento_fm12"):
+        for tok in ("bento_subfm", "bento_fm12", "bento_fmatk", "bento_fmdec"):     # (BE4.43: the envelope's too)
             self.assertNotIn(tok, again, f"{tok}: dropped on BE4.40's save")
 
     def test_the_preset_reader_keeps_them(self):
@@ -514,18 +561,18 @@ class Project(unittest.TestCase):
 
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
 class Hazard(unittest.TestCase):
-    """P3 3.1 (review R13): the template's pad entries (type 0xFF, key 0; BE4.42: two) make type 0xFF creatable. Stock's default
+    """P3 3.1 (review R13): the template's pad entries (type 0xFF, key 0; BE4.42: two) made type 0xFF creatable. Stock's default
     lookup matches on (type, key) (0x0812EA0C..42, S), so the pad is reachable only through an object of type 0xFF: the tests
-    pin the hazard and show that no reader path asks for that type."""
-    def test_child_create_of_the_pad_type_fails_on_stock_and_succeeds_on_p3(self):
+    pin it and show that no reader path asks for that type. BE4.43: eight keys fill the count (0x304) and the pads are gone,
+    so type 0xFF is not creatable, as on stock (the hazard is closed; the reader checks stay for a later pad)."""
+    def test_child_create_of_the_pad_type_fails_on_stock_and_on_be443(self):
         a, b = Rig(), Rig(img=STOCK, wrap=False)
         for r in (a, b):
             r.parent = r.create(r.live, S.TYPE_WAVETABLE)
         x, y = a.child(a.live, PAD, a.parent), b.child(b.live, PAD, b.parent)
         self.assertIsNone(y, "stock: no template entry of type 0xFF, so no object")
-        self.assertIsNotNone(x, "P3: the pad entry makes one (the hazard this class guards)")
-        self.assertEqual([(k, v) for v, k, _ in a.props_of(x)], [(0, 0)] * 2, "one property, key 0, per pad entry (BE4.42: "
-                         "two; BE4.41: one)")
+        self.assertIsNone(x, "BE4.43: no pad entry, so no object (BE4.41 / BE4.42: one made, the hazard this class guarded)")
+        self.assertEqual(SYM["np_template_n"], 0x304)
 
     def test_no_type_name_the_reader_accepts_is_the_pad_type(self):
         """The reader turns every <track type> / <cell type> into a type through CELL_TYPE_OF (its five callers, S): a 48-entry

@@ -699,7 +699,8 @@ SYMS = dict(
     KEY_OSC_SYNC=key(None, note="Analog OSC2 hard Sync, our native key (1.6.8 only)"),
     KEY_OSC_GLIDE=key(None, note="Analog Glide 0..1000, our native key (1.6.8 only)"),
     KEY_OSC_SUBFM=key(None, note="Analog Sub FM 0..1000 (P3), our native key (1.6.8 only)"),
-    KEY_OSC_BITS=key(None, note="Analog Bit Depth Full / 12 / 8 / 4 (P3), our native key (1.6.8 only)"),
+    KEY_OSC_FMATK=key(None, note="Analog FM Atk 0..127 (BE4.43; BE4.41's Bit Depth key), our native key (1.6.8 only)"),
+    KEY_OSC_FMDEC=key(None, note="Analog FM Dec 0..128, 128 = Inf (BE4.43), our native key (1.6.8 only)"),
     KEY_OSC_FM12=key(None, note="Analog FM 1>2 0..1000 (P3, OSC2's), our native key (1.6.8 only)"),
     # BE4.40 identity (docs/plan-be440-sync-identity.md track I, 1.6.8 only): the Wavetable page's oscillator panes, their
     # titles and the stock strings renamed OSC1 / OSC2. Absent here (the analog group is not built on 1.6.1).

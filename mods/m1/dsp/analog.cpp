@@ -33,6 +33,10 @@
  *     into buffer B (SA_FMBUF_B) while an Analog OSC2 has FM 1>2 (a silent OSC1 renders for it); OSC2
  *     adds it to its increment as a second term (I12 ramped from m12), counted as fm=, or fmx= missed where B was not
  *     written this voice-block.
+ *   - BE4.43 (docs/plan-p3-fm-bits.md BE4.43, Jeff's design 2026-11-16): one FM amount per oscillator, OSC1's Sub FM and
+ *     OSC2's FM 1>2 while OSC1 is Analog (else OSC2's Sub FM: OSC2's Sub FM no longer plays next to an Analog OSC1), times
+ *     the oscillator's own FM envelope (FM Atk / FM Dec, fm_env_step: p3_golden fm_env's float32 law, at block rate on the
+ *     index lines' two ends), retriggered at every note start (an_note, slot 2: per voice, legato included).
  * Four vtable words point at build.py's trampolines (in this window, before this ELF):
  *   A1  Wavetable root slot 18 (voice render): an_enter(root, voice), then stock's render
  *   A2  Wavetable oscillator slot 0 (render): an_osc(osc, scratch, out) != 0 means handled, else stock
@@ -163,9 +167,9 @@ static int is_analog(void *osc) { return state(osc)->magic == AN_MAGIC && props(
 static void reset(AnOsc *g) {
     g->magic = AN_MAGIC; g->phase = 0.f; g->delayed = 0.f;
     for (u32 i = 0; i < AN_EVENTS; i++) g->events[i] = (u8)AN_NO_EVENT;
-    g->note = NO_NOTE; g->glide = 0.f; g->sub_applied = 0.f; g->sub_written = 0.f;
+    g->note = (u16)AN_NO_NOTE; g->fmk = AN_FE_START; g->glide = 0.f; g->sub_applied = 0.f; g->sub_written = 0.f;
     g->mphase = g->mphase_lo = 0; g->mrestart = g->mlive = 0; g->mshape = (u16)AN_NO_SHAPE; g->msnap = 0;
-    g->msub = g->m12 = 0;
+    g->msub = g->m12 = 0; g->fme = 0.f;
 }
 /* the whole kernel area to zero: stock's render then starts from a zero history (review note N1) */
 static void forget(void *osc) {
@@ -203,12 +207,15 @@ static void sub_follow(AnOsc *g, u8 *v, float want) {
  * are kept only while the oscillator is Analog (the area is stock's history otherwise), clamped to their ranges.
  * P3 OD4: the list plays what stock's widget shows for a value it has no label for (a hand-edited file): Sync any value but
  * 0 is On (M: test_synth_ui); the type-10 amounts clamp to 0..1000 while the widget shows the raw value (as Glide).
- * BE4.42: Bit Depth (0x1A4) is no longer ours: stock's slot 8 gets it and does nothing. Runs in the M7's synth message
- * loop, between renders. */
+ * BE4.42: Bit Depth (0x1A4) is no longer ours. BE4.43: FM Atk (0x1A4 again, a new token) and FM Dec (0x1A0), the
+ * oscillator's FM envelope, clamped to 0..127 / 0..128 (128 = Inf); a fresh Analog oscillator starts at Atk 0 / Dec Inf
+ * (the template's defaults: env 1, BE4.42's sound) until the push brings its own. Runs in the M7's synth message loop,
+ * between renders. */
 static int ours(u32 key) {
     return key == S_KEY_OSC_TYPE || key == S_KEY_OSC_SHAPE || key == S_KEY_OSC_SYNC || key == S_KEY_OSC_GLIDE ||
-           key == S_KEY_OSC_SUBFM || key == S_KEY_OSC_FM12;
+           key == S_KEY_OSC_SUBFM || key == S_KEY_OSC_FM12 || key == S_KEY_OSC_FMATK || key == S_KEY_OSC_FMDEC;
 }
+static inline int env_set(u32 a, u32 d) { return (a | (d ^ AN_FM_DEC_INF)) != 0; }   /* BE4.43: AnProps.envf */
 static u16 amount(int v) { return (u16)(v < 0 ? 0 : v > (int)AN_FM_MAX ? AN_FM_MAX : (u32)v); }
 /* P3 Q5 (FD3), BE4.42 (deeper, Jeff's device feedback "more moderate than expected"): an FM amount 0..1000 (the knob's
  * travel) to its index, I = 16 (v / 1000)^1.5 (BE4.41: 8 (v / 1000)^2; 50 % now 5.66, was 2), in float32 as
@@ -227,7 +234,7 @@ extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
         if (v == 1) {
             if (!is_analog(osc)) {
                 forget(osc); reset(g);
-                p->type = 1; p->shape = (u8)AN_SHAPE_DEFAULT;
+                p->type = 1; p->shape = (u8)AN_SHAPE_DEFAULT; p->fmdec = (u8)AN_FM_DEC_INF;
             }
         } else if (g->magic == AN_MAGIC) {
             u32 which = 2;
@@ -240,7 +247,12 @@ extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
         else if (key == S_KEY_OSC_SYNC) p->sync = v != 0 ? 1u : 0u;
         else if (key == S_KEY_OSC_GLIDE) p->glide = (u16)(v < 0 ? 0 : v > (int)AN_GLIDE_MAX ? AN_GLIDE_MAX : (u32)v);
         else if (key == S_KEY_OSC_SUBFM) p->subfm = amount(v);
-        else p->fm12 = amount(v);                             /* (S_KEY_OSC_FM12) */
+        else if (key == S_KEY_OSC_FM12) p->fm12 = amount(v);
+        else {
+            if (key == S_KEY_OSC_FMATK) p->fmatk = (u8)(v < 0 ? 0 : v > (int)AN_FM_ATK_MAX ? AN_FM_ATK_MAX : (u32)v);
+            else p->fmdec = (u8)(v < 0 ? 0 : v > (int)AN_FM_DEC_INF ? AN_FM_DEC_INF : (u32)v);   /* (S_KEY_OSC_FMDEC) */
+            p->envf = (u8)env_set(p->fmatk, p->fmdec);
+        }
     }
     if (area_ok()) STATS->props++;
     return 1;
@@ -347,10 +359,10 @@ extern "C" __attribute__((used)) void an_enter(void *root, void *voice) {
         AnOsc *g = state(o1);
         u32 glide = props(o1)->glide;
         u32 note = W(o1, OSC_NOTE);
-        if (note != g->note) {                                /* a new note: slide from the track's last one */
+        if ((u16)note != g->note) {                           /* a new note: slide from the track's last one (BE4.43: 16 bits) */
             u32 last = e->last_note != NO_NOTE ? e->last_note : note;
             g->glide = glide ? (float)((int)last - (int)note) * (1.f / 12.f) : 0.f;
-            g->note = note; e->last_note = note;
+            g->note = (u16)note; e->last_note = note;
         }
         if (!glide || !(g->glide == g->glide)) g->glide = 0.f;
         sub_follow(g, v, g->glide);
@@ -429,8 +441,62 @@ __attribute__((noinline)) static float sub_fill(u8 *sub, float *a, u32 n) {
  * voice-block (fmtag B); wanted in a block the buffers hold but B not written (a render with no an_enter of its voice, or
  * an OSC1 that skipped) it plays without, counted (fmx= missed); m12 is msub's twin. Both routes: a = A on Sub FM's line,
  * b = B on FM 1>2's (4.3's order); one route: a its buffer, b = a at a zero line. */
-__attribute__((noinline)) static int fm_setup(Run *r, u8 *v, AnOsc *self, AnProps *p, int twelve, u32 n, FmIn *fi) {
-    u32 v1 = p->subfm, v0 = self->msub, x1 = twelve ? p->fm12 : 0, x0 = twelve ? self->m12 : 0;
+/* BE4.43 (docs/plan-p3-fm-bits.md BE4.43): the FM envelope, one oscillator, one block (p3_golden fm_env, law "f32": the spec,
+ * written before this code). env multiplies the index lines' two ends (fm_setup): from I(v0) e0 at frame 0 to I(v1) e1 at
+ * frame 2N, so the envelope is stepped one block ahead and consecutive blocks of a note join into one ramp; nothing per
+ * sample. Stages by a block counter (AnOsc.fmk), never by a float compare: AN_FE_START (a note started: e0 = 0, or 1 for
+ * Atk 0: a hard retrigger whatever the last block ended on), ATK (boundary k of n_a = AN_FM_ENV_BLOCKS[Atk]: e = f32(f32(k)
+ * f32(1 / n_a)), exactly 1 at n_a), DEC (j blocks after it: 1.0, then f32(e r) a block, r = ENV_R[Dec] = f32(0.001^(1 / n_d)),
+ * 0 from j = n_d: -60 dB at the time Dec names, then nothing, no denormals), END (0). Dec Inf holds 1 (and stays at j 0, so a
+ * Dec turned down from Inf mid-note decays from there); Atk turned mid-attack rescales the ramp at the next block. Cost: a
+ * counter, a VDIV in the attack (1 / n_a, the same value the spec's precomputed step is), one VMUL in the decay; the caller
+ * two VMULs on the line's ends. Returns e0 (this block's start), *end = e1. */
+static const u16 ENV_BLOCKS[128] = AN_FM_ENV_BLOCKS;
+static const u32 ENV_R[128] = {   /* f32(0.001^(1 / AN_FM_ENV_BLOCKS[d])), as words (test_analog FmEnv: = p3_golden's) */
+    0x3A83126Fu, 0x3D0186E2u, 0x3DCCCCCDu, 0x3E361887u, 0x3E809BCCu, 0x3EBEDA51u, 0x3ED7E89Bu, 0x3EEDA63Cu,
+    0x3F004DCEu, 0x3F0FF59Au, 0x3F167A2Bu, 0x3F21866Cu, 0x3F263DE0u, 0x3F2E6928u, 0x3F353BEFu, 0x3F383D52u,
+    0x3F3D95E5u, 0x3F423224u, 0x3F463625u, 0x3F49BD67u, 0x3F4CDD33u, 0x3F50EE8Eu, 0x3F534DB0u, 0x3F5572C0u,
+    0x3F584E6Cu, 0x3F5ACE32u, 0x3F5C4DD9u, 0x3F5E56C3u, 0x3F602794u, 0x3F61C8E2u, 0x3F634199u, 0x3F650259u,
+    0x3F663098u, 0x3F679CC3u, 0x3F68949Cu, 0x3F69C205u, 0x3F6AD298u, 0x3F6C04B5u, 0x3F6CE1CCu, 0x3F6DDCACu,
+    0x3F6E9398u, 0x3F6F64EFu, 0x3F702383u, 0x3F70F2CFu, 0x3F71900Du, 0x3F723C99u, 0x3F72D9C2u, 0x3F73697Fu,
+    0x3F74026Bu, 0x3F748D7Cu, 0x3F750C80u, 0x3F7580F6u, 0x3F75EC23u, 0x3F765C9Cu, 0x3F76CFF8u, 0x3F772DD2u,
+    0x3F778ED5u, 0x3F77E7DBu, 0x3F78428Bu, 0x3F7895A0u, 0x3F78E206u, 0x3F792F43u, 0x3F797637u, 0x3F79BD51u,
+    0x3F79FEA0u, 0x3F7A3FA0u, 0x3F7A7B5Au, 0x3F7AB67Bu, 0x3F7AECDBu, 0x3F7B2278u, 0x3F7B56FCu, 0x3F7B8741u,
+    0x3F7BB3C4u, 0x3F7BE1E1u, 0x3F7C0C48u, 0x3F7C357Du, 0x3F7C5B79u, 0x3F7C805Fu, 0x3F7CA5BAu, 0x3F7CC817u,
+    0x3F7CE931u, 0x3F7D07BDu, 0x3F7D265Fu, 0x3F7D43B7u, 0x3F7D5FCAu, 0x3F7D7A9Fu, 0x3F7D943Eu, 0x3F7DACB1u,
+    0x3F7DC403u, 0x3F7DDAE8u, 0x3F7DF0A7u, 0x3F7E054Fu, 0x3F7E1975u, 0x3F7E2C8Du, 0x3F7E3F17u, 0x3F7E50A1u,
+    0x3F7E619Bu, 0x3F7E7200u, 0x3F7E8179u, 0x3F7E90AEu, 0x3F7E9F00u, 0x3F7EACC2u, 0x3F7EBA2Fu, 0x3F7EC6CFu,
+    0x3F7ED317u, 0x3F7EDF00u, 0x3F7EEA2Cu, 0x3F7EF525u, 0x3F7EFF93u, 0x3F7F097Du, 0x3F7F1329u, 0x3F7F1C72u,
+    0x3F7F253Eu, 0x3F7F2DC7u, 0x3F7F3608u, 0x3F7F3DE9u, 0x3F7F456Eu, 0x3F7F4CACu, 0x3F7F53B4u, 0x3F7F5A62u,
+    0x3F7F60D9u, 0x3F7F6708u, 0x3F7F6CF2u, 0x3F7F72AFu, 0x3F7F7827u, 0x3F7F7D71u, 0x3F7F8282u, 0x3F7F8764u,
+};
+__attribute__((noinline)) static void fm_env_step(AnOsc *g, const AnProps *p, float *env) {
+    u32 a = p->fmatk, d = p->fmdec, st = (u32)g->fmk >> 13, k = g->fmk & 0x1FFFu;
+    float e;
+    if (st == AN_FE_START) { st = a ? AN_FE_ATK : AN_FE_DEC; k = 0; e = a ? 0.f : 1.f; }
+    else e = g->fme;
+    float e0 = e;
+    if (st == AN_FE_ATK) {
+        u32 na = a ? ENV_BLOCKS[a] : 0u;
+        if (++k >= na) { st = AN_FE_DEC; k = 0; e = 1.f; }
+        else e = (float)k * (1.f / (float)na);
+    } else if (d >= AN_FM_DEC_INF) { st = AN_FE_DEC; k = 0; e = 1.f; }
+    else if (st == AN_FE_DEC) {
+        if (++k >= ENV_BLOCKS[d]) { st = AN_FE_END; k = 0; e = 0.f; }
+        else { float rr; __builtin_memcpy(&rr, &ENV_R[d], 4); e = e * rr; }
+    } else e = 0.f;
+    g->fmk = (u16)(st << 13 | k); g->fme = e;
+    env[0] = e0; env[1] = e;
+}
+
+/* BE4.43: env[0] / env[1] the oscillator's FM envelope over this block (fm_env_step, read only while the envelope is set;
+ * 1 / 1 with FM Atk 0 / Dec Inf, the defaults: then every line is BE4.42's bit for bit). Sub FM is OSC1's, and OSC2's only while OSC1 is not Analog (twelve: OSC2 has
+ * FM 1>2 instead; its Sub FM value is kept but plays nothing, its msub ramps out once). */
+__attribute__((noinline)) static int fm_setup(Run *r, u8 *v, AnOsc *self, AnProps *p, int twelve, u32 n, FmIn *fi,
+                                              const float *env) {
+    u32 v1 = twelve ? 0 : p->subfm, v0 = self->msub, x1 = twelve ? p->fm12 : 0, x0 = twelve ? self->m12 : 0;
+    float e0 = 1.f, e1 = 1.f;
+    if (p->envf) { e0 = env[0]; e1 = env[1]; }
     int mine = r->voice == (u32)v, fs = 0, fb = 0;
     if (!(v1 | v0 | x1 | x0)) ;                               /* (OSC1 feeding B only: no FM of its own) */
     else if (n > AN_FM_FRAMES) FMSTATS->fm_skipped++;
@@ -452,11 +518,11 @@ __attribute__((noinline)) static int fm_setup(Run *r, u8 *v, AnOsc *self, AnProp
     self->m12 = fb ? (u16)x1 : 0;
     if (!fs && !fb) return 0;
     const float *ba = (const float *)SA(SA_FMBUF_A), *bb = (const float *)SA(SA_FMBUF_B);
-    float i0 = an_index(fs ? v0 : x0), i1 = an_index(fs ? v1 : x1);
+    float i0 = an_index(fs ? v0 : x0) * e0, i1 = an_index(fs ? v1 : x1) * e1;
     fi->a = fs ? ba : bb; fi->ia = i0; fi->dia = i1 != i0 ? (i1 - i0) / (float)n : 0.f; fi->off = 0;
     fi->b = fi->a; fi->ib = fi->dib = 0.f;
     if (fs && fb) {
-        float j0 = an_index(x0), j1 = an_index(x1);
+        float j0 = an_index(x0) * e0, j1 = an_index(x1) * e1;
         fi->b = bb; fi->ib = j0; fi->dib = j1 != j0 ? (j1 - j0) / (float)n : 0.f;
     }
     FMSTATS->fm++;                                            /* the black box's fm= (renders with FM) */
@@ -464,9 +530,15 @@ __attribute__((noinline)) static int fm_setup(Run *r, u8 *v, AnOsc *self, AnProp
 }
 
 /* P3 Q6 (plan 4.1): OSC1 feeds buffer B while an Analog OSC2 has FM 1>2, or its ramp down still to run (m12), for the voice
- * an_enter named, in a block the buffer holds (out of line: an_osc calls it only behind its FM gate). */
-__attribute__((noinline)) static int feeds(Run *r, u8 *v, u32 which, int a2, void *o2, u32 n) {
-    return which == 0 && a2 && (props(o2)->fm12 || state(o2)->m12) && n <= AN_FM_FRAMES && r->voice == (u32)v;
+ * an_enter named, in a block the buffer holds (out of line: an_osc calls it only behind its FM gate). BE4.43: and, first,
+ * the oscillator's FM envelope steps (fm_env_step) while it is set (AnProps.envf, in the gate word: so it keeps time every
+ * block of the note, heard or not, with or without an amount, before the silent paths return; at the defaults the FM-off
+ * path pays one byte OR). Returns B to feed, or 0. */
+__attribute__((noinline)) static float *feeds(Run *r, u8 *v, u32 which, int a2, void *o2, u32 n, AnOsc *self,
+                                             const AnProps *p, float *env) {
+    if (p->envf) fm_env_step(self, p, env);
+    return which == 0 && a2 && (props(o2)->fm12 || state(o2)->m12) && n <= AN_FM_FRAMES && r->voice == (u32)v
+               ? (float *)SA(SA_FMBUF_B) : 0;
 }
 
 /* S1, slot 2: the oscillator's note start (osc, ?, &note), before stock's. WT1 Wavetable starting a note with WTOscReset on
@@ -475,6 +547,7 @@ __attribute__((noinline)) static int feeds(Run *r, u8 *v, u32 which, int a2, voi
  * copy is seeded from stock's phase at the next block. The same call as stock's reset, so every caller of slot 2 (stock's
  * voice note start 0x0807C7F8, a retrigger, a legato note) is covered (I). Plan fix 2: nothing unless WT2's Sync is on. */
 extern "C" __attribute__((used)) void an_note(void *osc) {
+    if (is_analog(osc)) { state(osc)->fmk = AN_FE_START; return; }   /* BE4.43: the FM envelope retriggers, per voice */
     u32 which = 2;
     u8 *v = voice_of(osc, &which);
     if (!v || which != 0 || is_analog(osc)) return;
@@ -580,15 +653,18 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     int role = master ? AN_MASTER : which == 1 && (sync || msync) ? AN_SLAVE : AN_FREE;
     /* P3 (plan 4.8): the FM gate, one word: this oscillator's Sub FM, its ramp memory (msub, m12: one load; OSC1's m12 is
      * 0) and its FM 1>2 (OSC2's, from an Analog OSC1); OSC1 also OSC2's FM 1>2 and its ramp (it feeds B). All 0 (FM off):
-     * today's path, and msub / m12 are 0 already. P3 Q6 (4.1): OSC1 feeds buffer B while an Analog OSC2 has FM 1>2, or its
+     * today's path, and msub / m12 are 0 already. BE4.43: OSC2's amount is FM 1>2 next to an Analog OSC1, else Sub FM. P3 Q6 (4.1): OSC1 feeds buffer B while an Analog OSC2 has FM 1>2, or its
      * ramp down still to run, for the voice an_enter named, in a block the buffer holds; so (E3 (a), 4.4) a silent OSC1
      * renders then too, unheard. */
     u32 x;
+    AnProps *pp = props(osc);
     __builtin_memcpy(&x, &self->msub, 4);
-    x |= props(osc)->subfm;
-    if (which == 0) { if (a2) x |= props(o2)->fm12 | slave->m12; }
-    else if (a1) x |= props(osc)->fm12;
-    float *bo = __builtin_expect(x != 0, 0) && feeds(r, v, which, a2, o2, n) ? (float *)SA(SA_FMBUF_B) : 0;   /* (feeding B) */
+    if (which == 0) { x |= pp->subfm; if (a2) x |= props(o2)->fm12 | slave->m12; }
+    else x |= a1 ? pp->fm12 : pp->subfm;                      /* BE4.43: OSC2's one amount (FM 1>2 next to an Analog OSC1) */
+    float env[2];                                             /* (feeds writes it while envf; in memory: no float live here) */
+    /* (feeding B; BE4.43: feeds also steps the FM envelope while it is set, AnProps.envf, so it keeps time without an
+     * amount too; FM itself is x's alone, below) */
+    float *bo = __builtin_expect((x | pp->envf) != 0, 0) ? feeds(r, v, which, a2, o2, n, self, pp, env) : 0;
     /* S6c review S3: SCRATCH_SIZE sets the size only when the buffer holds n, and never grows it, so a larger block
      * than the scratch buffer is rendered as silence rather than written past it (stock's are 2 x 128 frames) */
     if ((silent && !master && !bo) || n > 1024u || n > W(scratch, S_BUF_CAPACITY)) {
@@ -602,7 +678,7 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     if (role != AN_FREE) STATS->synced++;                     /* the black box's synced= (B1: sync in chunks, below) */
     /* P3 Q4 / Q5 / Q6 (plan 4.1 .. 4.5, 4.8): an FM amount, or a ramp down still to run: fm_setup (out of line) */
     FmIn fi;
-    int fm = __builtin_expect(x != 0, 0) ? fm_setup(r, v, self, props(osc), which == 1 && a1, n, &fi) : 0;
+    int fm = __builtin_expect(x != 0, 0) ? fm_setup(r, v, self, pp, which == 1 && a1, n, &fi, env) : 0;
 #if AN_E3
     if (silent && !bo) {                                      /* a silent master: only the wraps for WT2 (feeding B: E3 (a)) */
         self->mshape = (u16)AN_NO_SHAPE;

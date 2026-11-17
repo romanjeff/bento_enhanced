@@ -1,0 +1,105 @@
+bento_enhanced v4.43: one FM amount per oscillator, FM envelope (stock 1.6.8) - delta checklist on top of v4.42
+==============================================================================================================
+
+Kit: flash\bento_enhanced-v4.43   boot label BE4.43
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.43.txt)
+
+Plan: docs\plan-p3-fm-bits.md, section "BE4.43". Everything below was measured in the emulator only. This is a delta on
+BE4.42: only what changed is listed. docs\checklist-v4.42.txt still applies except its section 2 (the rows changed again,
+below) and the "Sub FM on OSC2" parts of its sections 4 and 6 (see "What changed").
+
+What changed since BE4.42 (your design, 2026-11-16):
+  - One FM amount per oscillator, then its FM envelope. The Analog rows (knobs 1..8):
+        OSC1:  Level, Pitch, Shape, Type, Glide,    Sub FM, FM Atk, FM Dec
+        OSC2:  Level, Pitch, Shape, Type, Sync 1>2, FM 1>2, FM Atk, FM Dec
+    When OSC1 is NOT Analog (Wavetable), OSC2's knob 6 shows Sub FM instead of FM 1>2 (so OSC2 always has an FM
+    source; Claude's default, told to you). Each oscillator keeps its own FM Atk / FM Dec.
+  - OSC2's Sub FM no longer plays while OSC1 is Analog (its stored value is kept, and plays again if OSC1 goes back
+    to Wavetable). A BE4.42 project with Sub FM set on OSC2 next to an Analog OSC1 therefore sounds different: that
+    Sub FM is gone (expected change).
+  - The FM envelope: the amount's depth x env. env rises 0 -> 1 over FM Atk (straight in depth, an even swell), then
+    falls exponentially over FM Dec (the time Dec names is the time to -60 dB, then it is 0). FM Dec at its top is
+    "Inf": hold 1 = BE4.42's static depth. FM Atk 0 = instant. Both default to 0 / Inf, so BE4.42 projects sound as
+    before (but for the OSC2 Sub FM case above). The envelope restarts at every note start, per voice.
+  - Times on the knob (one detent = one value, 128 values on Atk, 129 on Dec):
+        value   0       1       20     32      48      64      80      96      112     127
+        time    0 ms*   5.3 ms  83 ms  173 ms  384 ms  776 ms  1.52 s  2.90 s  5.51 s  10.0 s
+        (* FM Atk 0 is instant; FM Dec 0 is the shortest fall, one block = 2.7 ms; FM Dec above 127 is Inf)
+    The curve is exponential at the top (about 4 % a step) and one block (2.7 ms) a step at the bottom.
+What to expect that is not a bug:
+  - The envelope moves once per audio block (2.7 ms) and the depth ramps smoothly between blocks, so there is no
+    zipper, but nothing is faster than 2.7 ms. FM Dec 0 gives a 2.7 ms "tick" of brightness.
+  - A retrigger restarts the envelope at 0 (or at 1 with FM Atk 0) whatever it was doing: on a fast repeated note with
+    a long attack each note starts dull again (a hard retrigger, as designed). Legato notes (Glide) most likely
+    retrigger too (they go through the same note start; not measured on the device).
+  - A note whose envelope has decayed to 0 still costs the FM's CPU (the FM runs at depth 0).
+
+0. Gate
+[ ] Back up the SD card (folder copy), as before.
+[ ] ON THE COMPUTER: copy a BE4.42 project to a NEW folder FM_A42 (FM_B from the v4.42 checklist is fine). If none of
+    its tracks has OSC2 Sub FM set while OSC1 is Analog: before flashing, on BE4.42, set that on one track of the copy
+    (OSC1 Analog, OSC2 Analog, OSC2 Sub FM 70 %, OSC2 FM 1>2 0) and save it. Keep the original untouched.
+
+1. Boot and black box
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.43.
+[ ] Make a new empty project ENV_A, save. BENTO_SAVES.log: "firmware BE4.43"; the ANALOG line has keys=ok (no "TAKEN").
+    If keys= is not "ok": stop and bring the log.
+
+2. The rows (ENV_A, track 1 = a new Wavetable track)
+[ ] OSC1 Type -> Analog. OSC1's row: Level, Pitch, Shape, Type, Glide, Sub FM, FM Atk, FM Dec. FM Atk reads "0 ms",
+    FM Dec reads "Inf". Photo.
+[ ] OSC2 Type -> Analog. OSC2's row: Level, Pitch, Shape, Type, Sync 1>2, FM 1>2, FM Atk, FM Dec. Photo.
+[ ] Turn FM Atk up one detent at a time from 0: 5.3 ms, 8.0 ms, 11 ms, ...; FM Dec down one detent from Inf: 10.0 s,
+    9.61 s, 9.24 s, ... Spot-check the table above (20 = 83 ms, 64 = 776 ms, 80 = 1.52 s). The values stop at 10.0 s
+    (Atk) and Inf (Dec), and at 0 ms / 2.7 ms at the bottom.
+[ ] OSC1 Type -> Wavetable: OSC2's knob 6 turns into "Sub FM" (its own value, 0 % on a new track), knobs 7 / 8 stay
+    FM Atk / FM Dec. OSC1 back to Analog: knob 6 is "FM 1>2" again with its value. No crash, no stale label.
+
+3. Old projects (FM_A42)
+[ ] Load FM_A42: no crash, every track there. Tracks without OSC2 Sub FM next to an Analog OSC1 sound exactly as on
+    BE4.42 (FM Atk 0 / FM Dec Inf everywhere). The track with OSC2 Sub FM (OSC1 Analog) has lost that Sub FM
+    (expected). Its knob 6 on OSC2 reads FM 1>2.
+[ ] Turn that track's OSC1 to Wavetable: OSC2's knob 6 shows Sub FM 70 % and you hear it again. Back to Analog.
+[ ] Save FM_A42. On the computer, its project.xml: each oscillator cell has bento_fmatk="0" bento_fmdec="128" next to
+    the other bento_* values. Bring this project.xml.
+
+4. The envelope by ear (ENV_A, track 2; OSC2 the carrier, OSC1 the modulator, as in the v4.42 checklist section 4)
+    Setup: OSC1 Analog Shape 0 (sine), Level 0. OSC2 Analog Shape 0 (sine), Level up, same Pitch. OSC2 FM 1>2 60 %.
+[ ] Inf = static: OSC2 FM Atk 0, FM Dec Inf: the same steady FM tone as BE4.42 at 60 %.
+[ ] Brass swell: OSC2 Shape 48 (saw carrier), FM 1>2 50 %, FM Atk 48 (384 ms), FM Dec Inf. Each note starts dull and
+    brightens over about 0.4 s, then holds. Try FM Atk 64 (0.8 s) and 32 (0.17 s): the swell time follows the knob.
+[ ] Bell / pluck: carrier sine, FM 1>2 80 %, OSC2 Pitch +19 st (or OSC1 Pitch -12 st), FM Atk 0, FM Dec 64 (0.78 s):
+    a bright, clangy attack that decays to a near-sine. FM Dec 20 (83 ms): a short pluck. FM Dec 96 (2.9 s): a long
+    bell. The decay sounds smooth (exponential), with no step at its end.
+[ ] Both together: FM Atk 20 (83 ms) and FM Dec 48 (0.38 s): a quick swell, then the fall.
+[ ] Retrigger per note: with the pluck (FM Dec 20), play the same note fast and repeatedly: every note gets its own
+    bright attack. Play a chord, then add a note while the others have decayed: only the new note is bright. With the
+    swell (FM Atk 48): repeated fast notes each start dull again (the hard retrigger).
+[ ] Glide (legato): OSC1 Glide 30 % with the pluck: do glided notes get a new attack? Write down what you hear.
+[ ] OSC1's own envelope: OSC1 Sub FM 60 % (sub row: Sine, an octave below), OSC1 FM Dec 32 (0.17 s), OSC1 Level up,
+    OSC2 Level 0: OSC1 plucks on its own. OSC2's envelope settings do not affect it.
+[ ] Mixed mode: OSC1 Type -> Wavetable (no WAV), OSC2 Sub FM 70 % with FM Dec 48: OSC2 plucks with the sub as its
+    modulator (Sub FM on knob 6).
+[ ] Turning the knobs while a note is held: FM Dec from Inf down to 48 during a held note: the brightness starts to
+    fall from that moment (a choice of this build); FM Atk turned during the swell: the swell's speed changes. No
+    clicks, no stuck brightness, no crash.
+[ ] Save: the ANALOG line fm= above 0, fmx=0/0.
+
+5. CPU (write down the "DSP nn%" on OSC1's title, OVER or not, and after a save the ANALOG line's avg_cyc / peak_cyc /
+   voices_peak and load_pm / over_with_analog)
+[ ] The v4.42 checklist's full-FM setup (OSC1 Sub FM 100 %, OSC2 FM 1>2 100 %, saws, sine sub, 8-note chord around C3)
+    with both envelopes at their defaults: compare with your BE4.42 figure. Offline it is cheaper than BE4.42's "Sub FM
+    on both" voice, because OSC2's Sub FM no longer runs next to FM 1>2 (BE4.42 full voice at 100 %: 31.4k
+    instructions a voice block; BE4.43: 28.9k).
+[ ] The same with FM Atk 20 / FM Dec 60 on both oscillators, notes re-struck: offline about the same (a decaying depth
+    is slightly cheaper to render). An FM-off saw voice with an envelope set costs about 1 % more; unset, nothing.
+[ ] No reset, no freeze, no "!!!" in the log at any point.
+
+Bring back: BENTO_SAVES.log, BENTO_CRASHES.log if any, the two row photos (section 2), FM_A42's project.xml after the
+BE4.43 save (section 3), your notes on the swell / bell / pluck / retrigger / glide behaviour (section 4: are the time
+ranges right, is the attack shape right, is the hard retrigger what you want or should a new note resume from the
+current level), section 5's figures.

@@ -9,12 +9,15 @@
  * oscillator's <cell> params), loads, clones, copies, reads (CONTEXT_GET), edits (0xCF -> 0xD0) and forwards them to the
  * M7 with the oscillator's index (set_property), where dsp/analog.cpp stores them per oscillator (N3). P3 Q1
  * (docs/plan-p3-fm-bits.md 2, 3): more the same way, Sub FM and FM 1>2 (bento_subfm, bento_fm12), in the Analog rows'
- * slots 5 and 7 (BE4.42: Bit Depth, 0x1A4 / bento_bits in slot 6, is gone; slot 6 stays empty). Nothing here holds
+ * slots 5 and 7 (BE4.42: Bit Depth, 0x1A4 / bento_bits in slot 6, is gone; slot 6 stays empty). BE4.43
+ * (docs/plan-p3-fm-bits.md BE4.43, Jeff's design): one FM amount per oscillator in slot 5 (OSC1 Sub FM; OSC2 FM 1>2 while
+ * OSC1 is Analog, else Sub FM) and its FM envelope, FM Atk (0x1A4, bento_fmatk) and FM Dec (0x1A0, bento_fmdec), in slots 6
+ * and 7, shown as the times the M7 plays (fm_time_text). Nothing here holds
  * Analog state: the BE4.22..BE4.31 table (AN4), its handle hooks (H1-H3), the XML hooks (X1, X2), the value hook (X3), the
  * menu entry (A3-A5) and the edit hook (A9) are gone for Analog. Stock never range-checks a value (a file is read raw), so
  * every reader here clamps, and Type is Analog only when it is exactly 1.
  * Sites (1.6.8; build.py writes them):
- *   N2     model init's bl REG_BUILD -> a wrapper: stock's builder, then np_keys (all six descriptors, or none)
+ *   N2     model init's bl REG_BUILD -> a wrapper: stock's builder, then np_keys (all eight descriptors, or none)
  *   A6     the Wavetable page's key copy (bl memcpy) -> an_page_keys: Type in each oscillator row's free 4th slot, and the
  *          Analog layout (Shape instead of Position, Glide / Sync) for an oscillator that is Analog
  *   A7     the four pane hint texts (bl SLOT_TITLE, PANE_TEXT_1/3/5/6) -> an_pane_text: an Analog pane's hint is empty (the
@@ -387,18 +390,24 @@ static void publish(volatile An4 *a) {
  * 10: "0.0%".."100.0%"; P3 OD4: a file value past 1000 shows as it is while the M7 clamps, as Glide). */
 static const char T_TYPE[] = "Type", T_SHAPE[] = "Shape", T_SYNC[] = "Sync 1>2", T_GLIDE[] = "Glide";   /* J5: Sync 1>2 */
 static const char T_SUBFM[] = "Sub FM", T_FM12[] = "FM 1>2";                                         /* P3 2.1 */
+static const char T_FMATK[] = "FM Atk", T_FMDEC[] = "FM Dec";                                         /* BE4.43 */
 static const char K_TYPE[] = "bento_osc_type", K_SHAPE[] = "bento_shape", K_SYNC[] = "bento_sync", K_GLIDE[] = "bento_glide";
 static const char K_SUBFM[] = "bento_subfm", K_FM12[] = "bento_fm12";
+static const char K_FMATK[] = "bento_fmatk", K_FMDEC[] = "bento_fmdec";
 static const char *const TYPE_LABELS[2] = {"Wavetable", "Analog"};
 static const char *const SYNC_LABELS[2] = {"Off", "On"};
 typedef struct { u16 key; u8 type; const char *title; const char *const *labels; u32 n; u32 lo, hi; const char *token; } Desc;
-static const Desc NP_KEYS[6] = {
+/* BE4.43: FM Atk 0..127 and FM Dec 0..128 (128 = Inf) are integers as Shape (type 2, one value a detent); value_text shows
+ * them as times (fm_time_text) */
+static const Desc NP_KEYS[8] = {
     {S_KEY_OSC_TYPE, 7, T_TYPE, TYPE_LABELS, 2, 0, 0, K_TYPE},
     {S_KEY_OSC_SHAPE, 2, T_SHAPE, 0, 0, 0, AN_SHAPE_MAX, K_SHAPE},
     {S_KEY_OSC_SYNC, 7, T_SYNC, SYNC_LABELS, 2, 0, 0, K_SYNC},
     {S_KEY_OSC_GLIDE, 10, T_GLIDE, 0, 0, 0, AN_GLIDE_MAX, K_GLIDE},
     {S_KEY_OSC_SUBFM, 10, T_SUBFM, 0, 0, 0, AN_FM_MAX, K_SUBFM},
     {S_KEY_OSC_FM12, 10, T_FM12, 0, 0, 0, AN_FM_MAX, K_FM12},
+    {S_KEY_OSC_FMATK, 2, T_FMATK, 0, 0, 0, AN_FM_ATK_MAX, K_FMATK},
+    {S_KEY_OSC_FMDEC, 2, T_FMDEC, 0, 0, 0, AN_FM_DEC_INF, K_FMDEC},
 };
 #define NP_N (sizeof(NP_KEYS) / sizeof(NP_KEYS[0]))
 static volatile u8 *desc_of(u32 r, u32 key) { return (volatile u8 *)(r + key * 32u); }
@@ -515,8 +524,10 @@ static void want_row(const u16 *stock, u32 row, int me, int osc1, u16 *k) {
     if (!me) return;
     if (k[2]) k[2] = (u16)S_KEY_OSC_SHAPE;
     if (!k[4]) k[4] = row == 0u ? (u16)S_KEY_OSC_GLIDE : (u16)S_KEY_OSC_SYNC;   /* BE4.40 J1: OSC2's Sync whatever OSC1's Type */
-    if (!k[5]) k[5] = (u16)S_KEY_OSC_SUBFM;
-    if (!k[7] && row == 1u && osc1) k[7] = (u16)S_KEY_OSC_FM12;                 /* P3 OD3: only while OSC1 is Analog */
+    /* BE4.43: one FM amount per oscillator, then its envelope: OSC2's is FM 1>2 while OSC1 is Analog (OD3), else Sub FM */
+    if (!k[5]) k[5] = row == 1u && osc1 ? (u16)S_KEY_OSC_FM12 : (u16)S_KEY_OSC_SUBFM;
+    if (!k[6]) k[6] = (u16)S_KEY_OSC_FMATK;
+    if (!k[7]) k[7] = (u16)S_KEY_OSC_FMDEC;
 }
 /* H1 (BE4.40 identity): row 2 ("Osc + Config") is stock's, without WTOscReset while both oscillators are Analog (it acts
  * on stock's wavetable playback only, dsp/analog.cpp has no reset); the slot is left empty, as stock leaves its free ones. */
@@ -844,12 +855,34 @@ static void shape_text(u32 s, char *t) {
     else { puts_(&o, "Pulse "); dec(&o, (100u * NARROW - 84u * (s - AN_SHAPE_SQUARE) + NARROW) / (2u * NARROW)); puts_(&o, "%"); }
     t[len] = 0;
 }
+/* BE4.43: FM Atk / FM Dec as the time the M7 plays (dsp/analog.cpp fm_env_step, p3_golden fm_env_time): the value clamped as
+ * the M7 clamps it (a file is read raw), then "0 ms" (Atk 0: instant), "Inf" (Dec 128: hold), else its AN_FM_ENV_BLOCKS
+ * blocks of 128 / 48 ms, rounded: "2.7 ms" below 10 ms, "83 ms" below 1 s, "1.52 s", "10.0 s". */
+static const u16 FM_BLOCKS[128] = AN_FM_ENV_BLOCKS;
+static void fm_time_text(u32 key, u32 raw, char *t) {
+    u32 len = 0;
+    Out o = {t, &len, 15u};
+    int s = (int)raw, top = key == S_KEY_OSC_FMATK ? (int)AN_FM_ATK_MAX : (int)AN_FM_DEC_INF;
+    u32 v = (u32)(s < 0 ? 0 : s > top ? top : s);
+    if (key == S_KEY_OSC_FMDEC && v == AN_FM_DEC_INF) puts_(&o, "Inf");
+    else if (key == S_KEY_OSC_FMATK && v == 0u) puts_(&o, "0 ms");
+    else {
+        u32 n16 = 16u * FM_BLOCKS[v];                         /* 2 x 8 n: round(8 n / 3 x 10^k) = (2 x 8 n x 10^k + 3) / 6 */
+        u32 tenths = (10u * n16 + 3u) / 6u, ms = (n16 + 3u) / 6u, cs = (n16 + 30u) / 60u;
+        if (tenths < 100u) { dec(&o, tenths / 10u); puts_(&o, "."); dec(&o, tenths % 10u); puts_(&o, " ms"); }
+        else if (ms < 1000u) { dec(&o, ms); puts_(&o, " ms"); }
+        else if (cs < 1000u) { dec(&o, cs / 100u); puts_(&o, cs % 100u < 10u ? ".0" : "."); dec(&o, cs % 100u); puts_(&o, " s"); }
+        else { u32 ds = (n16 + 300u) / 600u; dec(&o, ds / 10u); puts_(&o, "."); dec(&o, ds % 10u); puts_(&o, " s"); }
+    }
+    t[len] = 0;
+}
 /* The text slot widget wd (key, object h) shows instead of stock's, 0 for stock's: an out-of-range Type (Y1), an Analog
- * oscillator's Shape (V1). */
+ * oscillator's Shape (V1), BE4.43: FM Atk / FM Dec as times. */
 static const char *value_text(u8 *wd, u32 h, char *t) {
     u32 key = H(wd, S_SLOT_KEY), v = 0;
     if (key == S_KEY_OSC_TYPE && prop(h, key, &v) && v > 1u) return TYPE_LABELS[0];
     if (key == S_KEY_OSC_SHAPE && analog_osc(h)) { shape_text(shape_of(h), t); return t; }
+    if ((key == S_KEY_OSC_FMATK || key == S_KEY_OSC_FMDEC) && prop(h, key, &v)) { fm_time_text(key, v, t); return t; }
     return 0;
 }
 /* Y1, the encoder: stock's two-label widget keeps an out-of-range Type at its last entry (step position SLOT_STEP: index
@@ -867,7 +900,7 @@ static void type_entry(u8 *wd) {
     W(wd, S_SLOT_CUR) = 0;
 }
 static void value_texts(void *view) {
-    for (u32 i = 2; i < 4u; i++) {
+    for (u32 i = 2; i < 8u; i += i == 3u ? 3u : 1u) {        /* slots 2, 3 (Shape, Type), BE4.43: 6, 7 (FM Atk / Dec) */
         u8 *wd = (u8 *)view + S_SYNTH_SLOT0 + S_SYNTH_SLOT_STRIDE * i;
         char t[16];
         const char *s = value_text(wd, W(wd, S_SLOT_HANDLE), t);
@@ -918,7 +951,8 @@ __attribute__((used, retain)) void an_value_text(void *label, const char *text) 
  * push (project load, preset, menu create, paste) sends Type first and then the rest (the template's order); an edit of Type
  * alone does not, so the tick sends them: SET_PROPERTY(engine, track, key, value, index) as stock's own edit does
  * (MODEL_CHILD_EDIT 0x08132C5C). P3 2.4: six keys; FM 1>2 goes for OSC1 too (the M7 keeps WT1's copy and never reads it).
- * SET_PROPERTY's ring blocks while it is full and drops nothing (S, plan 2.4): six posts, only on a Type flip. */
+ * BE4.43: seven, FM Atk and FM Dec too. SET_PROPERTY's ring blocks while it is full and drops nothing (S, plan 2.4): seven
+ * posts, only on a Type flip. */
 static u32 child_index(void *track, u32 h, u32 *index) {
     u32 n = W(track, S_NODE_CHILD_N), k = 0;
     for (u32 c = 0; c < n && c < 0x244u; c++) {
@@ -933,8 +967,9 @@ static void resend(u32 h) {
     u32 th = track_handle(sel_track()), index = 0;
     void *t = resolve(th);
     if (!t || !child_index(t, h, &index) || index > 1u) return;
-    static const u16 KEYS[5] = {S_KEY_OSC_SHAPE, S_KEY_OSC_SYNC, S_KEY_OSC_GLIDE, S_KEY_OSC_SUBFM, S_KEY_OSC_FM12};
-    for (u32 i = 0; i < 5u; i++) {
+    static const u16 KEYS[7] = {S_KEY_OSC_SHAPE, S_KEY_OSC_SYNC, S_KEY_OSC_GLIDE, S_KEY_OSC_SUBFM, S_KEY_OSC_FM12,
+                                S_KEY_OSC_FMATK, S_KEY_OSC_FMDEC};   /* BE4.43: and the FM envelope */
+    for (u32 i = 0; i < 7u; i++) {
         u32 v = 0;
         if (!prop(h, KEYS[i], &v)) continue;
         FN(S_SET_PROPERTY, void (*)(u32, u32, u32, u32, u32, u32, u32))(*(volatile u32 *)S_ENGINE_PTR, th, KEYS[i], v, index, 0, 0);

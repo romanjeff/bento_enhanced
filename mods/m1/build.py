@@ -73,7 +73,7 @@ GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_en
 BASE_SETTINGS = {
     "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0", "drums"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.42", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.43", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
                               "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx", "drums"), omit_off=("drums",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
@@ -313,6 +313,7 @@ GROUP_NAMES = {
                "PROP_TEMPLATE_LAST", "REG_BUILD_SITE", "REG_BUILD", "WT_OSC_PROP_SLOT", "WT_OSC_PROPERTY",
                "KEY_OSC_TYPE", "KEY_OSC_SHAPE", "KEY_OSC_SYNC", "KEY_OSC_GLIDE",
                "KEY_OSC_SUBFM", "KEY_OSC_FM12",   # P3 Q1 (docs/plan-p3-fm-bits.md 2.1): Sub FM, FM 1>2 (BE4.42: Bit Depth gone)
+               "KEY_OSC_FMATK", "KEY_OSC_FMDEC",  # BE4.43 (docs/plan-p3-fm-bits.md BE4.43): the FM envelope, per oscillator
                # BE4.40 mixed sync (docs/plan-be440-sync-identity.md Track S): S1 the oscillator's slot 2 (note start)
                "WT_OSC_NOTE_SLOT", "WT_NOTE_START",
                # BE4.40 identity (docs/plan-be440-sync-identity.md track I): T0 the strings and their one literal each, T1 the
@@ -1723,9 +1724,11 @@ def m7_dsp(base_img, patch, sources, out, inc):
 # others only once the oscillator is Analog), with their defaults (Shape 48 = saw, NP6). P3 Q1 (docs/plan-p3-fm-bits.md
 # 3.1): Sub FM 0x18B and FM 1>2 0x132 after Glide, both 0 (no FM). BE4.41 had Bit Depth 0x1A4 between them (0x2FC + 7 =
 # 0x303, one pad); BE4.42 removed it: 0x2FC + 6 = 0x302, padded to 0x304 with two type-0xFF entries (the same count, so the
-# patched immediates are BE4.41's; test_native_props: no reader path makes a type-0xFF object).
+# patched immediates are BE4.41's; test_native_props: no reader path makes a type-0xFF object). BE4.43 (plan BE4.43): FM Atk
+# 0x1A4 (0: instant) and FM Dec 0x1A0 (128: Inf) after FM 1>2, so a new oscillator and a BE4.42 project (no such attribute:
+# the default) play env 1, BE4.42's sound: 0x2FC + 8 = 0x304, the same count, and no pad entry any more.
 NP_TEMPLATE_KEYS = (("KEY_OSC_TYPE", 0), ("KEY_OSC_SHAPE", 48), ("KEY_OSC_SYNC", 0), ("KEY_OSC_GLIDE", 0),
-                    ("KEY_OSC_SUBFM", 0), ("KEY_OSC_FM12", 0))
+                    ("KEY_OSC_SUBFM", 0), ("KEY_OSC_FM12", 0), ("KEY_OSC_FMATK", 0), ("KEY_OSC_FMDEC", 128))
 NP_OSC_TYPE = 6                       # the Wavetable oscillator objects' template type (WT1 / WT2)
 NP_PAD_TYPE = 0xFF                    # pad entries (an encodable count): no object type stock reads or makes (test_native_props)
 

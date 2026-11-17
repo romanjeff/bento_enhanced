@@ -49,14 +49,16 @@ STRS = 0xC0F00000                  # harness out cells, events, buffers  # addr-
 EV = STRS + 0x1000
 TYPE, SHAPE, SYNC, GLIDE = 0x1C0, 0x1A7, 0x1AB, 0x1B7        # our keys (plan 3.1)
 SUBFM, FM12 = 0x18B, 0x132                                  # P3 Q1 (docs/plan-p3-fm-bits.md 2.1): Sub FM, FM 1>2
-BITS = 0x1A4                                                 # BE4.41's Bit Depth: BE4.42 has no such key (slot 6 empty)
+BITS = 0x1A4                                                 # BE4.41's Bit Depth: BE4.42 had no such key (slot 6 empty)
+FMATK, FMDEC = 0x1A4, 0x1A0                                  # BE4.43 (plan BE4.43): the FM envelope (0x1A4 Bit Depth's once)
 LEVEL, PITCH, POSITION = 0xC4, 0x03, 0xC9                    # stock's oscillator row (plan 3.4)
 WT_ROW = [LEVEL, PITCH, POSITION, TYPE, 0, 0, 0, 0]           # a Wavetable oscillator: stock's row, Type in the free 4th slot
 # P3 2.2: an Analog row's slot 5 Sub FM; OSC2's slot 7 FM 1>2 only while OSC1 is Analog (OD3: hidden). BE4.42: slot 6
-# (BE4.41's Bit Depth) is empty, so FM 1>2 stays on its encoder
-AN_ROW1 = [LEVEL, PITCH, SHAPE, TYPE, GLIDE, SUBFM, 0, 0]     # OSC1 Analog: Shape for Position, Glide
-AN_ROW2 = [LEVEL, PITCH, SHAPE, TYPE, SYNC, SUBFM, 0, FM12]   # OSC2 Analog, OSC1 Analog: Sync 1>2, FM 1>2
-AN_ROW2_WT = [LEVEL, PITCH, SHAPE, TYPE, SYNC, SUBFM, 0, 0]   # OSC2 Analog, OSC1 Wavetable: Sync 1>2 still (BE4.40 J1)
+# (BE4.41's Bit Depth) is empty, so FM 1>2 stays on its encoder. BE4.43 (Jeff's design 2026-11-16): one FM amount per
+# oscillator in slot 5 (OSC1 Sub FM; OSC2 FM 1>2 while OSC1 is Analog, else Sub FM) and its envelope, FM Atk / FM Dec in 6 / 7
+AN_ROW1 = [LEVEL, PITCH, SHAPE, TYPE, GLIDE, SUBFM, FMATK, FMDEC]   # OSC1 Analog: Shape for Position, Glide
+AN_ROW2 = [LEVEL, PITCH, SHAPE, TYPE, SYNC, FM12, FMATK, FMDEC]     # OSC2 Analog, OSC1 Analog: Sync 1>2, FM 1>2
+AN_ROW2_WT = [LEVEL, PITCH, SHAPE, TYPE, SYNC, SUBFM, FMATK, FMDEC] # OSC2 Analog, OSC1 Wavetable: Sync 1>2 (J1), Sub FM
 WT_CHILDREN = bytes.fromhex("0606080a0a09090b0b0c0d")           # a Wavetable track's children (stock's list)
 # stock 1.6.8's synth page, measured here on stock's code (rc33 implA p0/t5.py, probe2.py and this suite's runs):
 SLOT0, SLOT_STRIDE = 0x70, 0x468   # the row's 8 encoder widgets: view + SLOT0 + SLOT_STRIDE * slot
@@ -382,13 +384,14 @@ class Rows(unittest.TestCase):
 
     def test_the_titles_stock_draws_for_them(self):
         r = Rig(types=(1, 1)); r.tick()
-        self.assertEqual([r.wtitle(i) for i in range(8)], ["Level", "Pitch", "Shape", "Type", "Glide", "Sub FM", "", ""])
-        self.assertEqual([r.wvalue(i) for i in (2, 3, 4, 5)], ["Saw", "Analog", "0.0%", "0.0%"],
-                         "Shape 48 (V1: the saw), Glide 0; P3: Sub FM 0 (the template's defaults); BE4.42: no Bit Depth")
+        self.assertEqual([r.wtitle(i) for i in range(8)], ["Level", "Pitch", "Shape", "Type", "Glide", "Sub FM", "FM Atk",
+                                                           "FM Dec"])
+        self.assertEqual([r.wvalue(i) for i in (2, 3, 4, 5, 6, 7)], ["Saw", "Analog", "0.0%", "0.0%", "0 ms", "Inf"],
+                         "Shape 48 (V1: the saw), Glide 0; P3: Sub FM 0 (the template's defaults); BE4.43: Atk 0, Dec Inf")
         r.show_row(1)
-        self.assertEqual([r.wtitle(i) for i in range(8)], ["Level", "Pitch", "Shape", "Type", "Sync 1>2", "Sub FM", "",
-                                                           "FM 1>2"], "J5; P3 2.2; BE4.42: slot 6 empty")
-        self.assertEqual([r.wvalue(i) for i in (4, 5, 7)], ["Off", "0.0%", "0.0%"])
+        self.assertEqual([r.wtitle(i) for i in range(8)], ["Level", "Pitch", "Shape", "Type", "Sync 1>2", "FM 1>2", "FM Atk",
+                                                           "FM Dec"], "J5; BE4.43: one amount (FM 1>2), its envelope")
+        self.assertEqual([r.wvalue(i) for i in (4, 5, 6, 7)], ["Off", "0.0%", "0 ms", "Inf"])
         r = Rig(); r.tick()
         self.assertEqual((r.wtitle(3), r.wvalue(3), r.wtitle(4)), ("Type", "Wavetable", ""))
 
@@ -412,33 +415,34 @@ class Rows(unittest.TestCase):
                 self.assertEqual(r.wtitle(4), "Sync 1>2")
 
     def test_the_fm_slots(self):
-        """P3 2.2: Sub FM in slot 5 of either Analog row, bound to that oscillator (BE4.42: slot 6, BE4.41's Bit Depth, stays
-        empty on every row); FM 1>2 in OSC2's slot 7
-        only while OSC1 is Analog (OD3), never on OSC1's row, none of them on a Wavetable row. A Type flip of OSC1 shows and
-        hides it within one tick (fix_rows), and the shown row is rebound."""
+        """BE4.43 (Jeff's design; P3 2.2 / OD3 before it): one FM amount per Analog oscillator in slot 5, bound to it: OSC1's
+        Sub FM; OSC2's FM 1>2 while OSC1 is Analog, else (mixed: OSC1 Wavetable, whose signal the M7 cannot read) its Sub FM,
+        so OSC2 always has an FM source; then the oscillator's own FM Atk / FM Dec in slots 6 / 7 (no Bit Depth); none of
+        them on a Wavetable row. A Type flip of OSC1 swaps OSC2's slot 5 within one tick (fix_rows), the shown row rebound."""
         for types in ((0, 0), (1, 0), (0, 1), (1, 1)):
             with self.subTest(types=types):
                 r = Rig(types=types); r.tick()
                 for row in (0, 1):
                     k = r.rows()[row]
                     an = types[row] == 1
-                    self.assertEqual(k[5:7], [SUBFM, 0] if an else [0, 0], f"row {row}")
-                    self.assertNotIn(BITS, k, f"row {row}: no Bit Depth (BE4.42)")
-                    self.assertEqual(k[7], FM12 if row == 1 and types == (1, 1) else 0, f"row {row} slot 7")
+                    amount = FM12 if row == 1 and types[0] == 1 else SUBFM
+                    self.assertEqual(k[5:8], [amount, FMATK, FMDEC] if an else [0, 0, 0], f"row {row}")
+                    self.assertEqual(k.count(SUBFM) + k.count(FM12), 1 if an else 0, f"row {row}: one amount")
                     if an:
                         r.show_row(row)
-                        self.assertEqual(r.widgets()[5:7], [(SUBFM, (r.h1, r.h2)[row]), (0, 0)])
+                        h = (r.h1, r.h2)[row]
+                        self.assertEqual(r.widgets()[5:8], [(amount, h), (FMATK, h), (FMDEC, h)])
         r = Rig(types=(0, 1)); r.tick(); r.show_row(1)
-        self.assertEqual(r.widgets()[7], (0, 0), "OSC1 Wavetable: slot 7 empty")
+        self.assertEqual((r.widgets()[5], r.wtitle(5)), ((SUBFM, r.h2), "Sub FM"), "OSC1 Wavetable: OSC2 shows its Sub FM")
         r.shows.clear(); r.edit(r.h1, TYPE, 1); r.tick()
         self.assertEqual(r.rows()[1], AN_ROW2, "OSC1 -> Analog: FM 1>2 within one tick")
-        self.assertEqual((r.widgets()[7], r.wtitle(7)), ((FM12, r.h2), "FM 1>2"), "rebound on the shown row")
+        self.assertEqual((r.widgets()[5], r.wtitle(5)), ((FM12, r.h2), "FM 1>2"), "rebound on the shown row")
         r.edit(r.h1, TYPE, 0); r.tick()
-        self.assertEqual(r.rows()[1], AN_ROW2_WT, "OSC1 -> Wavetable: hidden again within one tick")
-        self.assertEqual(r.widgets()[7], (0, 0))
+        self.assertEqual(r.rows()[1], AN_ROW2_WT, "OSC1 -> Wavetable: Sub FM again within one tick")
+        self.assertEqual((r.widgets()[5], r.wtitle(5)), ((SUBFM, r.h2), "Sub FM"))
 
     def test_a_taken_fm_key_leaves_the_page_stock(self):
-        """P3 OD2 (one group, six since BE4.42): Sub FM's key taken by the registry (bit 4) means none of ours is written, the black box
+        """P3 OD2 (one group, eight since BE4.43): Sub FM's key taken by the registry (bit 4) means none of ours is written, the black box
         says keys=TAKEN:272 (0x110), and the page is stock's whatever the Types say (np_ok)."""
         r = Rig(types=(1, 1), occupy=SUBFM); r.tick(); r.tick()
         self.assertIn(" keys=TAKEN:272 ", r.black_box())
@@ -446,12 +450,17 @@ class Rows(unittest.TestCase):
         self.assertEqual(r.wtitle(2), "Position")
 
     def test_the_fm_slots_edit_their_keys(self):
-        """A turn of slots 5 and 7 is stock's 0xCF -> 0xD0 for the oscillator and our key, in the descriptor's range: the
-        type-10 amounts 0..1000. BE4.42: slot 6 (BE4.41's Bit Depth) is empty, a turn of it edits nothing."""
-        r = Rig(types=(1, 1)); r.tick(); r.show_row(1)
-        self.assertEqual(r.turn(5, 0x3200 * 1000), [(r.h2, SUBFM, 1000)], "Sub FM stops at 1000")
-        self.assertEqual(r.turn(7, 0x3200 * 1000), [(r.h2, FM12, 1000)], "FM 1>2 stops at 1000")
-        self.assertEqual(r.turn(6, 12800 * 10), [], "slot 6: no key, no edit (BE4.42)")
+        """A turn of slots 5..7 is stock's 0xCF -> 0xD0 for the oscillator and our key, in the descriptor's range: the
+        type-10 amounts 0..1000; BE4.43: FM Atk 0..127 and FM Dec 0..128 one value a detent (type 2, as Shape)."""
+        r = Rig(types=(1, 1)); r.tick()
+        self.assertEqual(r.turn(5, 0x3200 * 1000), [(r.h1, SUBFM, 1000)], "OSC1's Sub FM stops at 1000")
+        r.show_row(1)
+        self.assertEqual(r.turn(5, 0x3200 * 1000), [(r.h2, FM12, 1000)], "OSC2's FM 1>2 stops at 1000")
+        self.assertEqual(r.turn(6, 0x3200), [(r.h2, FMATK, 1)], "FM Atk 0 -> 1")
+        self.assertEqual(r.turn(6, 0x3200 * 1000), [(r.h2, FMATK, 127)], "FM Atk stops at 127")
+        self.assertEqual(r.turn(7, -0x3200), [(r.h2, FMDEC, 127)], "FM Dec Inf (128) -> 127")
+        self.assertEqual(r.turn(7, 0x3200 * 1000), [(r.h2, FMDEC, 128)], "FM Dec stops at 128 (Inf)")
+        self.assertEqual(r.turn(7, -0x3200 * 1000), [(r.h2, FMDEC, 0)], "and at 0")
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
@@ -506,21 +515,24 @@ class Heal(unittest.TestCase):
     def test_an_oscillator_that_turns_analog_gets_its_settings_again(self):
         """The M7 keeps Shape / Sync / Glide (P3: Sub FM, FM 1>2) only while the oscillator is Analog; an edit of Type
         alone does not send them, so the tick does: SET_PROPERTY(track, key, value, index) as stock's own edit does, once,
-        the five keys (P3 2.4: without the FM keys a Type flip on the page would lose the FM values; BE4.42: Bit Depth gone)."""
+        the five keys (P3 2.4: without the FM keys a Type flip on the page would lose the FM values; BE4.42: Bit Depth gone);
+        BE4.43: seven, the FM envelope too."""
         r = Rig(); r.tick()
         r.set(r.w2, SHAPE, 100); r.set(r.w2, SYNC, 1); r.set(r.w2, SUBFM, 700); r.set(r.w2, FM12, 333)
+        r.set(r.w2, FMATK, 20); r.set(r.w2, FMDEC, 40)
         r.edit(r.h2, TYPE, 1)
         self.assertEqual([(k, v, i) for _, k, v, i in r.props], [(TYPE, 1, 1)], "stock's edit: Type alone")
         r.props.clear(); r.tick()
         th = r.r32(r.track + 0x10)
         self.assertEqual(r.props, [(th, SHAPE, 100, 1), (th, SYNC, 1, 1), (th, GLIDE, 0, 1), (th, SUBFM, 700, 1),
-                                   (th, FM12, 333, 1)])
+                                   (th, FM12, 333, 1), (th, FMATK, 20, 1), (th, FMDEC, 40, 1)])
         r.props.clear(); r.tick(); r.tick()
         self.assertEqual(r.props, [], "once")
         self.assertIn(" resends=1", r.black_box())
         r.set(r.w1, SUBFM, 5); r.edit(r.h1, TYPE, 1); r.props.clear(); r.tick()
         self.assertEqual([(k, v, i) for _, k, v, i in r.props], [(SHAPE, 48, 0), (SYNC, 0, 0), (GLIDE, 0, 0), (SUBFM, 5, 0),
-                                                                 (FM12, 0, 0)], "OSC1: the same five (FM 1>2 harmless)")
+                                                                 (FM12, 0, 0), (FMATK, 0, 0), (FMDEC, 128, 0)],
+                         "OSC1: the same seven (FM 1>2 harmless; BE4.43: the envelope at the template's defaults)")
         r = Rig(types=(1, 1)); r.props.clear(); r.tick(); r.tick()
         self.assertEqual(r.props, [], "an oscillator Analog before the page saw it: stock's push sent everything")
 
@@ -562,7 +574,8 @@ class Defensive(unittest.TestCase):
     def test_the_fm_values_the_widgets_show(self):
         """P3 OD4, pinned: what stock's widgets show for our new keys, in range and for a hand-edited file's out-of-range
         values (stock stores those raw: test_native_props). Type 10 (Sub FM, FM 1>2) shows the stored value / 10 as a
-        percentage, past 100 % too (accepted, as Glide: the M7 clamps at 1000). BE4.42: no Bit Depth widget."""
+        percentage, past 100 % too (accepted, as Glide: the M7 clamps at 1000). BE4.42: no Bit Depth widget. BE4.43: OSC2's
+        one amount, FM 1>2, in slot 5 (OSC1 Analog)."""
         cases = ((0, "0.0%"), (500, "50.0%"), (1000, "100.0%"), (1, "0.1%"), (5000, "500.0%"), (-3, "-0.3%"))
         for amt, want_amt in cases:
             with self.subTest(amount=amt):
@@ -573,7 +586,31 @@ class Defensive(unittest.TestCase):
                 r.tick(); r.tick()
                 self.assertEqual(r.wvalue(5), want_amt, "OSC1")
                 r.show_row(1)
-                self.assertEqual((r.wvalue(5), r.wvalue(7)), (want_amt, want_amt), "OSC2")
+                self.assertEqual((r.wtitle(5), r.wvalue(5)), ("FM 1>2", want_amt), "OSC2")
+
+    def test_the_fm_envelope_shows_its_times(self):
+        """BE4.43: FM Atk / FM Dec read the time the M7 plays (fm_time_text, p3_golden fm_env_time: n(x) blocks of 128 / 48
+        ms, typed here from the golden's table), on both rows, through stock's bind and the tick: Atk 0 "0 ms" (instant),
+        Dec 128 "Inf"; the spec's sample points (1 = 5.3 ms, 20 = 83 ms, 48 = 384 ms, 80 = 1.52 s, 112 = 5.51 s, 127 =
+        10.0 s); Dec 0 one block, "2.7 ms"; a hand-edited file's out-of-range values read as the M7 clamps them (Atk past 127
+        as 127, Dec past 128 as Inf, negatives as 0)."""
+        cases = ((0, "0 ms", "2.7 ms"), (1, "5.3 ms", "5.3 ms"), (3, "11 ms", "11 ms"), (20, "83 ms", "83 ms"),
+                 (48, "384 ms", "384 ms"), (80, "1.52 s", "1.52 s"), (112, "5.51 s", "5.51 s"), (127, "10.0 s", "10.0 s"),
+                 (128, "10.0 s", "Inf"), (500, "10.0 s", "Inf"), (-4, "0 ms", "2.7 ms"))
+        for v, atk, dec in cases:
+            with self.subTest(value=v):
+                r = Rig(types=(1, 1), page=False)
+                for o in (r.w1, r.w2):
+                    r.set(o, FMATK, v); r.set(o, FMDEC, v)
+                r.view = r.malloc(0x13000); r.call(S.SYNTH_VIEW_CTOR, r.view); r.notify(0xA8)
+                r.tick(); r.tick()
+                self.assertEqual((r.wvalue(6), r.wvalue(7)), (atk, dec), "OSC1")
+                r.show_row(1)
+                self.assertEqual((r.wvalue(6), r.wvalue(7)), (atk, dec), "OSC2")
+        r = Rig(types=(1, 1)); r.tick(); r.show_row(1)
+        [(h, k, v)] = r.turn(7, -0x3200 * 3)
+        r.edit(h, k, v); r.tick()
+        self.assertEqual((v, r.wvalue(7)), (125, "9.24 s"), "a turn: Inf -> 125 = 3464 blocks")
 
     def test_the_type_widget_with_a_bad_value(self):
         """Y1: a Type stock's list widget cannot name (it shows 'Analog' for 7 and -1, measured on stock's widget) reads

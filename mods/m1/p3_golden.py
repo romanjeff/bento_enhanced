@@ -178,6 +178,25 @@ Found in Q6 (for the plan; M unless marked):
   instructions a sample, B no longer bit for bit OSC1's s); or B from OSC1 before its own Sub FM
   (not available: one render). The 6.3 drift check is therefore stated for a free OSC1; with OSC1's own FM the golden
   predicts the drift exactly (I12 sum(B)) and a test should compare against it, not against 0.
+
+BE4.43 FM envelope (Jeff's design 2026-11-16, docs/plan-p3-fm-bits.md BE4.43), written from the design text before any M7
+envelope code, so this is the spec the M7 follows: fm_env_blocks / fm_env_consts / fm_env / fm_env_lines below.
+- Per oscillator: FM Atk a 0..127, FM Dec d 0..128 (FM_DEC_INF = 128, shown Inf: the top of the knob is the longest decay,
+  one byte, and the stored default 128 is distinct from every time). Effective index = the amount's index x env, env at
+  block rate (T_BLOCK = 128 frames at 48 kHz = 2N = 256 at 96 kHz, 2.667 ms), linear between block boundaries.
+- Time curve (I): n(x) = 1 + round((e^(L x) - 1) / L) blocks, L = 0.0393823365313980 (e^(127 L) - 1 = 3749 L): 1 block
+  (2.7 ms) at 0, 10.0 s (3750) at 127, slope 1 block a step at 0 so all 128 values are distinct block counts (a pure
+  exponential 2.7 ms .. 10 s collapses to 100 distinct counts at block rate), about 4 % a step at the top. 20 = 83 ms,
+  32 = 173 ms, 48 = 384 ms, 64 = 776 ms, 80 = 1.52 s, 96 = 2.90 s, 112 = 5.51 s. Atk 0 is instant (not n(0)).
+- Shape (I): attack linear in index, 0 -> 1 over n_a blocks (e_k = k / n_a): the index is already the brightness control
+  (sidebands about I + 1), so linear in I is an even swell and lands exactly on 1 by a counter; decay exponential,
+  e = 0.001^(j / n_d) (-60 dB at n_d blocks: the time a Dec value names), then 0 (at most 0.016 index at 100 %, no
+  denormals). Inf holds 1. A note start resets the envelope (hard retrigger, per voice): e0 = 0 (1 for Atk 0).
+- Stated float32 arithmetic (law f32): step = f32(1 / n_a), r = f32(0.001^(1 / n_d)); attack f32(f32(k) step), 1.0 at
+  k = n_a; decay 1.0 then f32(e r) a block; every stage change by a block counter, never a float compare. Lines:
+  ia = f32(I(v0) e0), end = f32(I(v1) e1), dia = f32(f32(end - ia) / N), index_line's rule, so Atk 0 / Dec Inf is
+  index_line bit for bit. M: |f32 - f64| env 4.0e-6 at Dec 127 (FM_ENV_TOL 4e-5 the stated bound).
+- Cost: per oscillator-block a counter, one VMUL for the envelope, two VMULs on the line's ends; nothing a sample.
 """
 import math, sys
 import numpy as np
@@ -848,6 +867,158 @@ def line_values(line, off, n):
     return _fma32(np.full(n, float(np.float32(ia))), np.full(n, float(np.float32(dia))), j)
 
 
+# ---- BE4.43 FM envelope (Jeff's design 2026-11-16; docs/plan-p3-fm-bits.md, BE4.43): the spec the M7 follows -------------
+# Written from the design text only, before any M7 envelope code exists. Per oscillator: FM Atk a (0..127), FM Dec d (0..127,
+# FM_DEC_INF = 128 shown "Inf"). The effective index = the amount's index (Sub FM / FM 1>2, FD3) x env. All block rate.
+T_BLOCK = 128 / 48000.0             # one voice block: 128 frames at 48 kHz = 2N = 256 frames at 96 kHz, 2.667 ms
+FM_ENV_N = 256                      # the index line's length in the 96 kHz domain (index_line's N)
+FM_DEC_INF = 128                    # FM Dec's top value: hold 1 (BE4.42's static depth)
+FM_ENV_FLOOR = 1e-3                 # the decay's end level, -60 dB: the time a Dec value names is the time to reach it
+FM_ENV_MAX_BLOCKS = 3750            # 10.0 s / T_BLOCK, exactly
+FM_ENV_MUTANTS = ("lin_decay", "exp_attack", "no_floor", "env_end_late", "no_retrig")
+
+
+def _fm_env_L():
+    """L solving e^(127 L) - 1 = (FM_ENV_MAX_BLOCKS - 1) L (bisection, float64): the curve's slope is 1 block a step at 0."""
+    lo, hi = 1e-3, 1.0
+    for _ in range(200):
+        m = (lo + hi) / 2
+        if math.expm1(127 * m) - (FM_ENV_MAX_BLOCKS - 1) * m > 0: hi = m
+        else: lo = m
+    return lo
+
+
+FM_ENV_L = _fm_env_L()              # 0.0393823365..., e^L = 1.04017 a step at the top
+FM_ENV_BLOCKS = tuple(1 + int(round(math.expm1(FM_ENV_L * x) / FM_ENV_L)) for x in range(128))
+
+
+def fm_env_blocks(x):
+    """The time curve, in whole blocks (the spec; the M7 holds this 128-entry table, or computes it with the same rounding):
+    n(x) = 1 + round((e^(L x) - 1) / L), x = 0..127, L = FM_ENV_L. An offset exponential: n(0) = 1 block (2.67 ms), slope
+    1 block a step at 0 (so every value is a distinct block count: 128 distinct times, 1 .. 3750 blocks), n(127) = 3750 =
+    10.0 s, about 4 % a step at the top. Atk 0 is instant (not n(0)); Dec 128 is Inf (no n)."""
+    x = int(x)
+    if not 0 <= x <= 127: raise ValueError("x must be 0..127")
+    return FM_ENV_BLOCKS[x]
+
+
+def fm_env_time(x, stage):
+    """Seconds a value names: stage "atk": 0 -> 0 (instant), else n(x) T_BLOCK (0 -> 1 linear); "dec": 128 -> inf, else
+    n(x) T_BLOCK (1 -> FM_ENV_FLOOR, then 0). For the labels (ms below 1 s, s above: the UI's choice)."""
+    if stage not in ("atk", "dec"): raise ValueError("stage must be atk or dec")
+    x = int(x)
+    if stage == "atk" and x == 0: return 0.0
+    if stage == "dec" and x == FM_DEC_INF: return math.inf
+    return fm_env_blocks(x) * T_BLOCK
+
+
+def _f32s(v): return float(np.float32(v))
+
+
+def fm_env_consts(atk, dec):
+    """The per-oscillator constants the M7 derives when FM Atk / FM Dec change (stated float32 arithmetic):
+    (n_a, step, n_d, r). n_a: attack blocks (0 for Atk 0); step = f32(1 / n_a) (0 for Atk 0); n_d: decay blocks (None for
+    Inf); r = f32(FM_ENV_FLOOR ^ (1 / n_d)) the per-block decay factor (1 for Inf; Dec 0: n_d 1, r 0.001)."""
+    a, d = int(atk), int(dec)
+    if not 0 <= a <= 127: raise ValueError("atk must be 0..127")
+    if not 0 <= d <= FM_DEC_INF: raise ValueError("dec must be 0..128")
+    n_a = 0 if a == 0 else fm_env_blocks(a)
+    n_d = None if d == FM_DEC_INF else fm_env_blocks(d)
+    return n_a, (0.0 if n_a == 0 else _f32s(1.0 / n_a)), n_d, (1.0 if n_d is None else _f32s(FM_ENV_FLOOR ** (1.0 / n_d)))
+
+
+def _env_seq(atk, dec, count, law="f64", mutant=None):
+    """env at the boundaries k = 0 .. count of one note (the spec, fm_env_at's rules), sequentially: the f32 decay is a
+    recurrence, so this is the M7's own order of operations."""
+    n_a, step, n_d, r = fm_env_consts(atk, dec)
+    out = []; e = np.float32(1.0)
+    for k in range(count + 1):
+        if k < n_a:
+            if mutant == "exp_attack": v = 1.0 - FM_ENV_FLOOR ** (k / n_a)
+            else: v = _f32s(np.float32(k) * np.float32(step)) if law == "f32" else k / n_a
+        else:
+            j = k - n_a
+            if n_d is None: v = 1.0
+            elif j >= n_d and mutant != "no_floor": v = 0.0
+            elif mutant == "lin_decay": v = 1.0 - j / n_d
+            elif law == "f32":
+                if j > 0: e = np.float32(e * np.float32(r))
+                v = float(e)
+            else: v = FM_ENV_FLOOR ** (j / n_d)
+        out.append(v)
+    return out
+
+
+def fm_env_at(atk, dec, k, law="f64", mutant=None):
+    """env at block boundary k >= 0 after a note start (k = 0: the note's first block's start). The continuous spec, at
+    boundaries: attack (Atk > 0) e_k = k / n_a for k <= n_a (linear 0 -> 1; e_{n_a} = 1 exactly); Atk 0: e_0 = 1 (instant,
+    n_a = 0). Then decay from k_a = n_a: Inf holds 1; else e_{k_a + j} = FM_ENV_FLOOR^(j / n_d) for j < n_d (exponential,
+    -60 dB at n_d blocks), and 0 from j = n_d on (the end: inaudible, at most 0.016 index at 100 %, and no denormals).
+    law "f32": the stated arithmetic the M7 follows (a block counter decides every stage change, so no float compare and
+    no accumulated attack): attack e = f32(f32(k) step), e_{n_a} = 1.0 exactly; decay e_{k_a} = 1.0,
+    e_{k_a + j} = f32(e_{k_a + j - 1} r) (one VMUL a block), 0 at j = n_d.
+    Mutants (tests must turn red on them): "lin_decay" (1 - j / n_d), "exp_attack" (1 - FLOOR^(k / n_a)), "no_floor" (the
+    decay never snaps to 0); fm_env adds "env_end_late" and "no_retrig"."""
+    if int(k) < 0: raise ValueError("k must be >= 0")
+    return _env_seq(atk, dec, int(k), law, mutant)[int(k)]
+
+
+def fm_env(atk, dec, nblocks, notes=(0,), law="f64", mutant=None):
+    """(e0, e1): env at the start and the end of each of nblocks voice blocks of one oscillator through notes (the blocks
+    where a note starts on this voice, ascending, the first 0). A note start resets the envelope (retrigger per voice, hard:
+    e0 of that block is e(0), 0, or 1 for Atk 0, whatever the last block ended on). Within a note, block b at boundary
+    k = b - start: e0 = e_k, e1 = e_{k+1} (the M7 steps the envelope one block ahead: the line's end needs e_{k+1}).
+    Mutants: fm_env_at's, "env_end_late" (e1 = e_k: the envelope lags a block, a staircase), "no_retrig" (only the
+    first note starts it)."""
+    notes = sorted(set(int(b) for b in notes))
+    if not notes or notes[0] != 0: raise ValueError("notes must start at block 0")
+    if mutant == "no_retrig": notes = [0]
+    e0 = np.zeros(nblocks); e1 = np.zeros(nblocks)
+    for i, s in enumerate(notes):
+        end = min(notes[i + 1] if i + 1 < len(notes) else nblocks, nblocks)
+        if s >= end: continue
+        seq = _env_seq(atk, dec, end - s, law, mutant)
+        e0[s:end] = seq[:end - s]
+        e1[s:end] = seq[:end - s] if mutant == "env_end_late" else seq[1:end - s + 1]
+    return e0, e1
+
+
+def fm_env_lines(atk, dec, v0, v1, nblocks, notes=(0,), N=FM_ENV_N, law="f64", mutant=None):
+    """The per-block index lines of one oscillator's FM (its own amount: OSC1 Sub FM; OSC2 FM 1>2, or Sub FM when OSC1 is not
+    Analog) under its envelope. v0 / v1: the amount's per-block endpoints as today (last block's msub / m12 -> this block's;
+    scalars: held), arrays of nblocks. Block b's line runs from I(v0_b) e0_b at frame 0 to I(v1_b) e1_b at frame N (the next
+    block's first; index_line's end convention), linear between: so a held amount and a held envelope continue one ramp,
+    and the envelope costs nothing per sample (the line's two endpoints are two VMULs a block).
+    law "f64": a list of (start, end) float64 (fm_index; I_j = start + (end - start) j / N, index_ramp's form);
+    law "f32": a list of (ia, dia) index lines in the kernel's stated arithmetic for line_values: ia = f32(I0 e0),
+    end = f32(I1 e1), dia = f32(f32(end - ia) / N), 0 when equal (index_line's rule; I = an_index32, e the f32 envelope).
+    Atk 0 / Dec Inf: e = 1, so the lines are index_line's bit for bit (BE4.42 projects sound unchanged)."""
+    v0 = np.broadcast_to(np.asarray(v0, dtype=np.float64), (nblocks,))
+    v1 = np.broadcast_to(np.asarray(v1, dtype=np.float64), (nblocks,))
+    e0, e1 = fm_env(atk, dec, nblocks, notes, law, mutant)
+    out = []
+    for b in range(nblocks):
+        if law == "f32":
+            ia = _f32s(np.float32(an_index32(v0[b])) * np.float32(e0[b]))
+            end = _f32s(np.float32(an_index32(v1[b])) * np.float32(e1[b]))
+            out.append((ia, 0.0 if end == ia else _f32s(_f32s(end - ia) / N)))
+        else:
+            out.append((fm_index(v0[b]) * e0[b], fm_index(v1[b]) * e1[b]))
+    return out
+
+
+def fm_env_samples(lines, N=FM_ENV_N, law="f64"):
+    """The per-sample index of consecutive blocks' lines (N frames each, 96 kHz domain): index_ramp's form for "f64",
+    line_values for "f32" lines."""
+    if law == "f32": return np.concatenate([line_values(l, 0, N) for l in lines])
+    j = np.arange(N, dtype=np.float64) / N
+    return np.concatenate([s + (e - s) * j for s, e in lines])
+
+
+FM_ENV_TOL = 4e-5   # |f32 env - f64 env| bound: the decay's f32 recurrence, j (rounding of r + one VMUL) <= j 1.2e-7 r^j,
+                    # max near j = n_d / ln 1000 (about 2.0e-5 at n_d = 3750); the attack's one rounding 6e-8. Times I <= 16.
+
+
 class Voice12(tuple):
     """fm12_voice's result: (y1, B, di1, r1, di2, y2, r2). y1 OSC1's render (pre-Level), B buffer B, di1 / di2 the
     increments each oscillator rendered with, r1 / r2 their FmRender (end state, master bytes, edges), y2 OSC2's render.
@@ -1435,8 +1606,106 @@ def _selftest():
                     self.assertGreater(alias_case(*case, fs=96000, n48=8192, taps=(0, 1)), a48)
             with self.assertRaises(ValueError): alias_case("sub", 298, 149, 4.0, 0.0, wave="square")
 
+    class FmEnv(unittest.TestCase):                              # BE4.43 (Jeff's design 2026-11-16): the FM envelope
+        def test_the_time_curve(self):
+            n = FM_ENV_BLOCKS
+            self.assertEqual(len(n), 128); self.assertEqual((n[0], n[1], n[127]), (1, 2, FM_ENV_MAX_BLOCKS))
+            self.assertTrue(all(b > a for a, b in zip(n, n[1:])))                   # 128 distinct times, monotone
+            self.assertAlmostEqual(n[127] * T_BLOCK, 10.0, delta=1e-12)            # 3750 blocks = 10.0 s
+            self.assertAlmostEqual(math.exp(FM_ENV_L), 1.04017, delta=1e-5)
+            # the table is the contract: no entry is within 1e-6 of a rounding tie, so any careful generator agrees
+            frac = [math.expm1(FM_ENV_L * x) / FM_ENV_L % 1.0 for x in range(1, 127)]
+            self.assertGreater(min(abs(f - 0.5) for f in frac), 1e-6)
+            self.assertEqual((fm_env_time(0, "atk"), fm_env_time(FM_DEC_INF, "dec")), (0.0, math.inf))
+            self.assertAlmostEqual(fm_env_time(0, "dec"), T_BLOCK, delta=1e-15)
+            with self.assertRaises(ValueError): fm_env_blocks(128)
+            with self.assertRaises(ValueError): fm_env_consts(128, 0)
+            with self.assertRaises(ValueError): fm_env_consts(0, 129)
+
+        def test_defaults_are_bit_for_bit_be442(self):                             # Atk 0, Dec Inf: e = 1 everywhere
+            for v0, v1 in ((0, 0), (250, 250), (157, 1000), (1000, 3), (499, 500)):
+                L32 = fm_env_lines(0, FM_DEC_INF, v0, v1, 40, notes=(0, 7, 31), law="f32")
+                self.assertTrue(all(l == index_line(v0, v1) for l in L32), (v0, v1))
+                L64 = fm_env_lines(0, FM_DEC_INF, v0, v1, 40, notes=(0, 7, 31))
+                self.assertTrue(all(l == (fm_index(v0), fm_index(v1)) for l in L64))
+
+        def test_attack_by_hand(self):
+            a = 20; na = fm_env_blocks(a); self.assertEqual(na, 31)               # 31 blocks = 82.7 ms
+            e0, e1 = fm_env(a, FM_DEC_INF, 40)
+            self.assertTrue(np.array_equal(e0[:na + 1], np.arange(na + 1) / na))  # linear 0 -> 1, exactly 1 at n_a
+            self.assertTrue(np.all(e0[na:] == 1.0) and np.all(e1[na - 1:] == 1.0))
+            self.assertTrue(np.array_equal(e1[:-1], e0[1:]))                     # one ramp across block boundaries
+            f0, _ = fm_env(1, FM_DEC_INF, 4); self.assertEqual(list(f0), [0.0, 0.5, 1.0, 1.0])  # Atk 1: 2 blocks
+            g0, g1 = fm_env(0, FM_DEC_INF, 3); self.assertEqual((g0[0], g1[0]), (1.0, 1.0))    # Atk 0: instant
+
+        def test_decay_by_hand(self):
+            for d in (0, 1, 40, 90, 127):
+                nd = fm_env_blocks(d); e0, e1 = fm_env(0, d, nd + 3)
+                j = np.arange(nd)
+                self.assertTrue(np.allclose(e0[:nd], FM_ENV_FLOOR ** (j / nd), rtol=1e-12, atol=0), d)
+                self.assertTrue(np.all(e0[nd:] == 0.0) and e1[nd - 1] == 0.0, d)  # -60 dB at n_d blocks, then 0
+                self.assertGreater(e0[nd - 1], FM_ENV_FLOOR)
+                self.assertAlmostEqual(nd * T_BLOCK, fm_env_time(d, "dec"), delta=1e-15)
+            e0, e1 = fm_env(0, 0, 3); self.assertEqual((list(e0), list(e1)), ([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]))
+            a, d = 10, 30; na, nd = fm_env_blocks(a), fm_env_blocks(d)            # attack then decay from k_a = n_a
+            e0, _ = fm_env(a, d, na + nd + 2)
+            self.assertEqual(e0[na], 1.0); self.assertAlmostEqual(e0[na + 1], FM_ENV_FLOOR ** (1 / nd), delta=1e-15)
+            self.assertEqual(e0[na + nd], 0.0)
+
+        def test_retrigger_per_note(self):
+            a, d = 20, 40; e0, e1 = fm_env(a, d, 120, notes=(0, 50, 51, 90))
+            r0, r1 = fm_env(a, d, 50)
+            for s, end in ((0, 50), (51, 90)):
+                self.assertTrue(np.array_equal(e0[s:end], r0[:end - s]) and np.array_equal(e1[s:end], r1[:end - s]))
+            self.assertEqual((e0[50], e1[50], e0[90]), (0.0, r1[0], 0.0))         # hard reset, from whatever it was
+            self.assertGreater(e1[89], 0.1)                                     # so a step at the note's boundary
+            i0, _ = fm_env(0, 40, 60, notes=(0, 30)); self.assertEqual(i0[30], 1.0)   # Atk 0: back to 1
+
+        def test_lines_and_samples(self):
+            a, d = 12, 60; nb = 80
+            L = fm_env_lines(a, d, 600, 600, nb, notes=(0, 40))
+            y = fm_env_samples(L); I = fm_index(600)
+            self.assertEqual(y.size, nb * FM_ENV_N)
+            e0, e1 = fm_env(a, d, nb, notes=(0, 40))
+            self.assertTrue(np.allclose([s for s, _ in L], I * e0, rtol=0, atol=1e-15))
+            j = np.arange(FM_ENV_N) / FM_ENV_N                                  # within a note: continuous
+            b = 20; self.assertAlmostEqual(y[(b + 1) * FM_ENV_N], L[b][1], delta=1e-15)
+            self.assertTrue(np.allclose(y[b * FM_ENV_N:(b + 1) * FM_ENV_N], L[b][0] + (L[b][1] - L[b][0]) * j, atol=1e-15))
+            self.assertEqual(y[40 * FM_ENV_N], 0.0)                              # the retrigger: back to 0
+            # an amount that moves (msub v0 -> v1) and the envelope: endpoints multiply, the line stays one VFMA
+            v0 = np.linspace(0, 1000, nb); v1 = np.r_[v0[1:], 1000]
+            M = fm_env_lines(a, d, v0, v1, nb)
+            ee0, ee1 = fm_env(a, d, nb)
+            self.assertTrue(all(abs(m[0] - fm_index(p) * q) < 1e-15 and abs(m[1] - fm_index(r) * s) < 1e-15
+                                for m, p, q, r, s in zip(M, v0, ee0, v1, ee1)))
+            self.assertTrue(all(M[b][1] == M[b + 1][0] for b in range(nb - 1)))
+
+        def test_f32_stated_arithmetic_within_tolerance(self):
+            worst = 0.0
+            for a, d in ((0, 127), (127, 127), (1, 0), (64, 64), (90, 100), (5, FM_DEC_INF)):
+                n = (fm_env_blocks(a) if a else 0) + (fm_env_blocks(d) if d != FM_DEC_INF else 10) + 3
+                e64, _ = fm_env(a, d, n); e32, _ = fm_env(a, d, n, law="f32")
+                worst = max(worst, float(np.max(np.abs(e64 - e32))))
+                self.assertTrue(np.all(e32[e64 == 0] == 0) and np.all(e32[e64 == 1] == 1), (a, d))  # counters decide
+                L32 = fm_env_lines(a, d, 1000, 1000, n, law="f32")
+                L64 = fm_env_lines(a, d, 1000, 1000, n)
+                y32 = fm_env_samples(L32, law="f32"); y64 = fm_env_samples(L64)
+                self.assertLess(float(np.max(np.abs(y32 - y64))), 16 * FM_ENV_TOL + 2e-5, (a, d))
+            self.assertLess(worst, FM_ENV_TOL)                                    # M: 4.0e-6 at Dec 127 (bound 2.4e-5)
+
+        def test_mutants_turn_red(self):
+            spec = {m: None for m in FM_ENV_MUTANTS}
+            for m in FM_ENV_MUTANTS:
+                a, d, notes = (20, 40, (0, 60)) if m == "no_retrig" else (20, 40, (0,))
+                n = 200 if m == "no_floor" else 120
+                r = fm_env(a, d, n, notes)
+                x = fm_env(a, d, n, notes, mutant=m)
+                spec[m] = max(float(np.max(np.abs(r[0] - x[0]))), float(np.max(np.abs(r[1] - x[1]))))
+                self.assertGreater(spec[m], 100 * FM_ENV_TOL / 16, m)       # at I = 16, far above the f32 bound
+            self.assertGreater(spec["lin_decay"], 0.2)
+
     L = unittest.defaultTestLoader
-    r = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([L.loadTestsFromTestCase(c) for c in (Shapes, FM, FM12)]))
+    r = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([L.loadTestsFromTestCase(c) for c in (Shapes, FM, FM12, FmEnv)]))
     return 0 if r.wasSuccessful() else 1
 
 
