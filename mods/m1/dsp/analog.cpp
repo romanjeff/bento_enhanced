@@ -705,11 +705,11 @@ struct WtK {
 #define WTK(osc) ((WtK *)((u8 *)(osc) + S_OSC_KERNEL + AN_AREA))
 /* D5 (Jeff, 2026-11-16: "in between, leaning bright"): the mip under FM is the finest level k at or above the note's whose
  * peak step P (base-table samples a sample) satisfies P / 2^k < WT_MIP_THR, stock's ladder rule with its 1.25 raised: one
- * named constant, chosen at build time (build.py BE_WT_MIP, the manifest's wt_mip), so W3/W4 can build a cleaner and a
- * brighter alternate image. Hysteresis is derived from it: back to a finer level only below WT_MIP_THR x WT_MIP_HYST (at
- * stock's 1.25: 1.05, plan 3.4). */
+ * named constant, set at build time only (build.py BE_WT_MIP, default WT_MIP_DEFAULT; the manifest's wt_mip; a version
+ * suffix -mipX when not the default), so W3/W4 can build a cleaner and a brighter alternate image. Hysteresis is derived
+ * from it: back to a finer level only below WT_MIP_THR x WT_MIP_HYST (at stock's 1.25: 1.05, plan 3.4). */
 #ifndef WT_MIP_THR
-#define WT_MIP_THR 1.75f
+#error "WT_MIP_THR comes from build.py (BE_WT_MIP, default WT_MIP_DEFAULT)"
 #endif
 #define WT_MIP_HYST 0.84f
 /* Stock 1.6.8's mip builder (M4 0x08112544..0x081126DE: six levels, each from the one before as one stream of all 256 frames,
@@ -722,16 +722,21 @@ static inline u32 wt_mip_off(u32 k) { return 0x100000u - (0x100000u >> k); }   /
 
 /* One reader block, from stock's kernel state (WtK) and the block's rate and Position frame, with the FM line fi (0: none,
  * the mip-home block); its samples to s. Plan 3.4: the pending flag's ladder (stock's, bit for bit: kmodel), the phase in
- * (Q32 at the note's mip), the mip choice (WT_MIP_THR, hysteresis; the note's level while fi is 0), one change a block (a
- * Position change crossfades the frame and defers a mip change; else a mip change crossfades the levels), the phase out
- * (idx, frac at the note's len; the frame playing), mipcur (HOME once the mip-home block is back at the note's level). */
+ * (Q32 at the note's mip), the mip choice (WT_MIP_THR, hysteresis; the note's level while fi is 0), one change a block, the
+ * phase out (idx, frac at the note's len; the frame playing), mipcur (HOME once the mip-home block is back at the note's
+ * level). One change a block (W2 review: each change waits one block at most): a Position change crossfades the frame and
+ * defers a wanted mip change (WT_MIP_WAIT); the next block changes the mip and defers the frame. Without the bit a Position
+ * moving every block (an LFO, the knob) held the mip off for good: no coarser level under FM, no mip home after it. */
 /* the finest level k >= k0 with x < thr 2^k (6 at most) */
 __attribute__((noinline)) static u32 wt_mip_for(float x, float thr, u32 k) {
     while (k < WT_MIPS - 1u && x >= thr * (float)(1u << k)) k++;
     return k;
 }
-struct WtBlk { const float *tab; const FmIn *fi; float *s; float rate; u32 n, pos; };
-static_assert(sizeof(WtBlk) == 24, "the test harness writes it");
+/* pa: max |a| when it is known (buffer A: inc_sub x the sub wave's peak, wt_body), else 0: a is scanned. W2 review: a scan
+ * over one block follows a slow sub's phase (at notes 24..36 its period spans blocks) and flipped the level with the sub's
+ * cycle; the known peak is steady. b (B, OSC1's output, from W3) is scanned. */
+struct WtBlk { const float *tab; const FmIn *fi; float *s; float rate; u32 n, pos; float pa; };
+static_assert(sizeof(WtBlk) == 28, "the test harness writes it");
 __attribute__((noinline)) static void wt_play(void *osc, const WtBlk *bk) {
     WtK *K = WTK(osc);
     AnOsc *g = state(osc);
@@ -756,36 +761,41 @@ __attribute__((noinline)) static void wt_play(void *osc, const WtBlk *bk) {
     u32 kc = wt_mip(g), kt = kn;
     if (kc == WT_HOME || kc < kn) kc = kn;
     if (fi) {
-        /* the peak step: |inc| + max |I| max |A| + max |J| max |B| (the lines' two ends; the modulators every 4th frame) */
+        /* the peak step: |inc| + max |I| max |A| + max |J| max |B| (the lines' two ends; A's known peak, else every 4th
+         * frame; B every 4th frame) */
         float nf = (float)rd.n, ma = 0.f, mb = 0.f;
         for (u32 i = 0; i < rd.n; i += 4u) {
             ma = __builtin_fmaxf(ma, __builtin_fabsf(fi->a[i]));
             mb = __builtin_fmaxf(mb, __builtin_fabsf(fi->b[i]));
         }
+        if (bk->pa != 0.f) ma = bk->pa;
         float I = __builtin_fmaxf(__builtin_fabsf(fi->ia), __builtin_fabsf(fi->ia + fi->dia * nf));
         float J = __builtin_fmaxf(__builtin_fabsf(fi->ib), __builtin_fabsf(fi->ib + fi->dib * nf));
         float x = (rd.inc + I * ma + J * mb) * 2048.f;
         u32 up = wt_mip_for(x, WT_MIP_THR, kn), dn = wt_mip_for(x, WT_MIP_THR * WT_MIP_HYST, kn);
         kt = up > kc ? up : dn < kc ? dn : kc;
     }
-    u32 lc = 11u - kc;
+    u32 lc = 11u - kc, wf = g->wt.wflags, wait = 0;
     rd.l0 = rd.l1 = lc; rd.o0 = WT_MIP_SKEW(kc) - WT_MIP_SKEW(kn); rd.d1 = 0;
     rd.t0 = bk->tab + wt_mip_off(kc) + (fcur << lc);
-    if (pos != fcur) {                                        /* rd_qx: the frame, at the mip playing (a mip change waits) */
+    if (pos != fcur && (kt == kc || !(wf & WT_MIP_WAIT))) {   /* rd_qx: the frame, at the mip playing (a mip change waits) */
         rd.t1 = bk->tab + wt_mip_off(kc) + (pos << lc);
         wt_rdf(&rd);
+        if (kt != kc) wait = WT_MIP_WAIT;
         kt = kc;
-    } else if (kt != kc) {                                    /* rd_qm: the mip, the frame fixed */
+    } else if (kt != kc) {                                    /* rd_qm: the mip, the frame fixed (a frame change waits) */
         u32 lt = 11u - kt;
         rd.l1 = lt; rd.d1 = WT_MIP_SKEW(kt) - WT_MIP_SKEW(kc);
         rd.t1 = bk->tab + wt_mip_off(kt) + (fcur << lt);
         wt_rdx(&rd);
+        pos = fcur;
     } else {
         wt_rd(&rd);
     }
     K->idx = (int)(rd.ph >> (32u - l));
     K->frac = (float)(rd.ph << l) * (1.f / 4294967296.f);
     K->frame = (int)pos;
+    g->wt.wflags = (u8)((wf & ~WT_MIP_WAIT) | wait);
     g->wt.mipcur = (u8)(!fi && kt == kn ? WT_HOME : kt);
 }
 
@@ -819,7 +829,22 @@ __attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out
         return 1;
     }
     FmIn fi;
-    bk.fi = fm_setup(RUN, v, g, props(osc), which == 1, bk.n, &fi, env) ? &fi : 0;
+    Run *r = RUN;
+    bk.fi = fm_setup(r, v, g, props(osc), which == 1, bk.n, &fi, env) ? &fi : 0;
+    /* W2 review: no line this block and no mip held (an amount that plays nothing yet: OSC2's FM 1>2 with no B until W3, a
+     * WT OSC2's hidden Sub FM, D2) and not feeding B: stock's render (tier 2), bit for bit, not the reader at index 0. What
+     * this body set above (Level's smoother target, rate, frame) stock's body sets again from the same inputs */
+    if (!bk.fi && wt_mip(g) == WT_HOME && !(g->wt.wflags & WT_FEED_B)) return 0;
+    /* A's known peak (wt_play): inc_sub x the sub wave's (1; the Square's 1 + |1 - 2 pw|, its DC-free form, from the width
+     * its core plays) */
+    bk.pa = 0.f;
+    if (bk.fi && fi.a == (const float *)SA(SA_FMBUF_A)) {
+        const u8 *core = v + S_VOICE_SUB + SUB_CORE;
+        float pk = 1.f;
+        if (core[0] == 3u) pk += __builtin_fabsf(1.f - (float)W(core, 0x18) * 4.6566128730773926e-10f);
+        __builtin_memcpy(&bk.pa, &r->inc_sub, 4);
+        bk.pa *= pk;
+    }
     bk.s = FN(S_SCRATCH_PTR, float *(*)(void *))(scratch);
     FN(S_SCRATCH_SIZE, void (*)(void *, u32))(scratch, bk.n);
     wt_play(osc, &bk);

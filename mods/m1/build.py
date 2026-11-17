@@ -95,7 +95,9 @@ DEFAULT_OFF = {"stall", "irq30", "modtest"}   # modtest: F1 fixed routing (test 
 ENABLED = {g for g in os.environ.get("BE_ENABLE", "").split(",") if g}
 # BE4.44 W2 (docs/plan-wt-fm.md D5, decided: "in between, leaning bright"): the Wavetable FM mip threshold is one constant
 # (dsp/analog.cpp WT_MIP_THR, its hysteresis derived from it). BE_WT_MIP builds another value (W3 / W4's cleaner and brighter
-# alternate device images, with a BE_TAG suffix); the manifest records it (wt_mip). Stock's own ladder is 1.25 (clean).
+# alternate device images); the manifest records it (wt_mip), and a value other than the default suffixes the version
+# (-mip2.0, after any BE_TAG) so an alternate image is never mistaken for the default on the device. Stock's own ladder is
+# 1.25 (clean). This is the one place the default lives: analog.cpp has no fallback (#error), the tests read the manifest.
 WT_MIP_DEFAULT = 1.75
 def wt_mip_threshold(text=None):
     """BE_WT_MIP as a float in [1.0, 4.0] (below 1 is brighter than the table holds; 4 skips two levels' worth)."""
@@ -110,6 +112,10 @@ def wt_mip_threshold(text=None):
         raise SystemExit(f"BE_WT_MIP={text!r}: outside 1.0 .. 4.0")
     return v
 WT_MIP = wt_mip_threshold()
+def wt_mip_suffix(v=None):
+    """The version's suffix for a non-default threshold ('' at the default)."""
+    v = WT_MIP if v is None else v
+    return "" if v == WT_MIP_DEFAULT else f"-mip{v:g}" if v != int(v) else f"-mip{v:.1f}"
 DISABLED = (DEFAULT_OFF - ENABLED) | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
 # S3 split poly, cond and inta into the part S3 ports (M7 only) and the part a later sprint does, so the
 # S3 part builds on 1.6.8 alone: poly_cap (S3) + poly_at (S5: External handler h_poly and the M4 MIDI
@@ -418,7 +424,7 @@ def source_refs(base, src, disabled, flags=()):
         cmd = [sys.executable, "-m", "ziglang", "cc", "-target", "thumb-freestanding-eabi", f"-mcpu={cpu}", "-E", "-P",
                "-ffreestanding", "-nostdlib", "-include", str(hdr), f"-I{d}",
                *([f"-I{HERE / x}" for x in DSP_INCLUDES] if src.startswith("dsp/") else []),
-               *[f"-DBE_NO_{g.upper()}" for g in sorted(disabled)], *flags, str(path)]
+               *[f"-DBE_NO_{g.upper()}" for g in sorted(disabled)], f"-DWT_MIP_THR={WT_MIP!r}f", *flags, str(path)]
         out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
     return set(re.findall(r"__S_REF_([A-Za-z0-9_]+)", out))
 
@@ -523,6 +529,7 @@ def use_base(s):
         raise SystemExit(f"build.py has no BASE_SETTINGS for {S.module} (version line, M4 flags)")
     SETTINGS = BASE_SETTINGS[S.module]
     VERSION = SETTINGS["version"] + (f"-{os.environ['BE_TAG']}" if os.environ.get("BE_TAG") else "")
+    VERSION += wt_mip_suffix()
     DISPLAY = os.environ.get("BE_LABEL", f"BE{SETTINGS['version']}")
     globals().update(layout(s))
     MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:{S.label}".encode() + bytes(1)

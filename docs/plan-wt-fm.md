@@ -207,10 +207,18 @@ with two verifier passes applied (Review log at the end).
   - Road not taken: threshold 1.5 (brighter, more mip changes); an rms-based bound (brighter, but aliasing at peaks).
     Chosen in D5.
 - max|A| = inc_sub (known). max|B| needs a scan of about +2 a sample, fused where B is written.
+  *As built (W2 review):* max|A| = inc_sub x the sub wave's peak (1; the Square's 1 + |1 - 2 pw|), passed to the reader
+  (WtBlk.pa); a scan of A over one block followed a slow sub's phase at low notes and flipped the level with it. max|B|
+  is a scan of every 4th sample in wt_play (not fused).
 - **One change per block.** A block changes either the mip or the frame, not both. If Position changed, the frame
   crossfade (rd_qx) runs and a pending mip change is deferred one block (2.7 ms). Otherwise a mip change runs **rd_qm**
   (two mips, one frame, crossfade). This removes the two-mip x two-frame case (eight loads, two L values) from the design.
   The deferred block can alias slightly for 2.7 ms when the step grows (I); the aliasing rows include that case.
+  *As built (W2 review):* "deferred one block" needs a memory. Without one, a Position that changes every block (an
+  LFO, the knob) let the frame win every block and held the mip off for good, both ways (no coarser level under FM, no
+  mip home after it). Rule: a frame change defers a wanted mip change and sets WT_MIP_WAIT (wflags bit 1); the next
+  block changes the mip and defers the frame (the frame playing stays one block behind Position). So each change waits
+  one block at most, alternating. The bit is set only while the reader holds a mip, so tier 2 never sees it set.
 - At full index above about note 60, D' is pinned at 64 and aliases, as stock does above about 4.5 kHz (I). Documented.
 - One block touches at most 384 contiguous samples per mip read, about 49 cache lines, against stock's 41 (I). An rd_qm
   block touches two mips (up to about 2x); hysteresis keeps those blocks rare. Device item 9 covers it.
@@ -484,8 +492,8 @@ at risk (-0 and NaN with VMAXNM).
 | **W0 window** | main | Buy-back 1: decode 0x0808586C's uses; move the CTRL stubs to 0x080DF000/0x080DF800; M7_DSP_LIMIT; the new S6a guard and CTRL assertions (section 5); DefaultImage's reviewed change; the budget restatement checks | Window 40,704 B. check_dsp_assumptions green, with its two new mutations red. test_controls hold shortcuts green. Drums build free = previous + 4,096 (M). Device item D-W0 queued |
 | **W1 storage + switch** | branch be444 off main | The tag pair; an_prop's WT branch with default-state init; the WT-state word in a saved run; mipcur bound; the feed-B bit; tier 1/2 in wt_fm_osc; an_note (START + HOME); M4 rows, texts, resend; the field audit (3.2) | 7.3 untagged and tagged-gate-0 identity, incl. the note-start and many-wraps cases. P3Identity <= 1.95 %. WtOff cost. Mutations 1, 2, 14, 15, 16, 19, 20, 21, 22 red. **No reader yet: gate != 0 plays as gate 0** |
 | **W2 reader + golden** | be444 | **First: trace stock's mip builder / measure mip alignment on factory tables.** Then p3_golden wt_read and self-tests; kmodel fixture; rd_q; ladder replication; per-block mip with hysteresis; rd_qm (prototype and count); one-change-per-block rule; handback B; rd_qx; level-0 rule | 7.1 tolerances. 7.2 handback bit-exact. 7.4 continuity rows (synthetic and factory). Mutations 3 to 8, 11 to 13, 18, 23, 24 red. Size measured: reader parts <= 1.5 KB |
-| **W3 integration** | be444 | A and B into WT carriers (Sub FM on WT OSC1 / OSC2 per D2, FM 1>2 Analog->WT); envelope lines; ramps; E3 / skip; black box and stats; costs; brightness rows | FmEnv lines on WT bit for bit. WtFm cost gates (S3), incl. the two new cases. Aliasing and brightness rows. P3Identity <= 1.95 %. **DSP size measured in the merged drums build: >= 1 KB free with the drums lane's then-current sizes, or the reserve is taken (section 5)** |
-| **W4 WT OSC1 as B + release** | be444 | 3.5 body with feed-B; D9's level-0 rule; D3 mixed-sync rule; D4 data (DC of the factory tables) and its decision; **D2's last case (deferred from W1): OSC2's slot 5 = FM 1>2 on an Analog OSC2 next to a Wavetable OSC1 (want_row's Analog branch, test_the_fm_slots)**; kit BE4.44 (default build); checklist-v4.44.txt; release notes | B-path identity per 7.3 and the divergence test. Mutations 9, 10, 17 red. **test_synth_ui: slot 5 on OSC2 is FM 1>2 in all four type combinations. A BE4.43 project with a hidden FM 1>2 on an Analog OSC2 next to a Wavetable OSC1 (it now plays): a reviewed behaviour change test (test_native_props / test_analog), or migrated to 0 if Jeff says so; checklist row.** All suites green on both builds. Sizes and CPU tables written into this plan |
+| **W3 integration** | be444 | A and B into WT carriers (Sub FM on WT OSC1 / OSC2 per D2, FM 1>2 Analog->WT); envelope lines; ramps; E3 / skip; black box and stats; costs; brightness rows. **Moved from W4 (W2 review): D3's mixed-sync rule and mutation 17, before any W3 device image (W2's body already plays Sub FM on a WT OSC1). First: re-estimate section 6's WT rows and the S3 voice gate from W2's measured reader ("W2 as built")** | FmEnv lines on WT bit for bit. WtFm cost gates (S3), incl. the two new cases. Aliasing and brightness rows. P3Identity <= 1.95 %. **DSP size measured in the merged drums build: >= 1 KB free with the drums lane's then-current sizes, or the reserve is taken (section 5)** |
+| **W4 WT OSC1 as B + release** | be444 | 3.5 body with feed-B; D9's level-0 rule; (D3's rule: moved to W3); D4 data (DC of the factory tables) and its decision; **D2's last case (deferred from W1): OSC2's slot 5 = FM 1>2 on an Analog OSC2 next to a Wavetable OSC1 (want_row's Analog branch, test_the_fm_slots)**; kit BE4.44 (default build); checklist-v4.44.txt; release notes | B-path identity per 7.3 and the divergence test. Mutations 9, 10, 17 red. **test_synth_ui: slot 5 on OSC2 is FM 1>2 in all four type combinations. A BE4.43 project with a hidden FM 1>2 on an Analog OSC2 next to a Wavetable OSC1 (it now plays): a reviewed behaviour change test (test_native_props / test_analog), or migrated to 0 if Jeff says so; checklist row.** All suites green on both builds. Sizes and CPU tables written into this plan |
 | **merge back** | main | be444 -> main | Drums build: window free >= 1 KB plus whatever P4-2b/P4-5 still need (section 5 re-measured) |
 
 ## 9. Device checklist items (checklist-v4.44.txt; BE4.43's checklist first if not run)
@@ -583,8 +591,8 @@ the end (the failure this plan exists to prevent), and the merge would land on t
      audible brightness step. Alternatives: threshold 1.5 (brighter, a little aliasing at peaks, more mip changes), or an
      rms-based bound (brighter still, more aliasing at peaks). Brightness rows at 250/500 will show the size of the step.
    - Not recommended now: a per-sample mip crossfade (about 2x reads and cache footprint).
-   - **Decided (Jeff, 2026-11-16): in between, leaning bright.** (W2: built as WT_MIP_THR; default 1.75 proposed from the rows in
-     "W2 result"; BE_WT_MIP builds another.) Some aliasing under heavy FM is accepted as character
+   - **Decided (Jeff, 2026-11-16): in between, leaning bright.** (W2: built as WT_MIP_THR; default 1.75 from the rows in "W2 as built";
+     BE_WT_MIP builds another, its version suffixed -mipX.) Some aliasing under heavy FM is accepted as character
      ("we want this engine to make crazy and interesting sounds"). The coarser-mip threshold is **one named constant**
      (hysteresis band derived from it), with the default set well above stock's clean 1.25, toward the bright end. W2
      measures brightness and alias rows at a few candidate values (about 1.5 / 1.75 / 2.0, plus 1.25 as the clean
@@ -902,6 +910,190 @@ rd_qm 55.2; a whole wt_play block (256, note 60): 9,626 / 12,453 / 15,066. The p
    at index 0 until W3 feeds B to a Wavetable carrier (fmx= missed): a transitional cost, inaudible (in the steady blocks
    measured, the reader at index 0 matched stock's samples bit for bit).
 10. D5's thresholds act in whole levels; the "1.05" hysteresis is WT_MIP_HYST = 0.84 x the threshold.
+
+### W2 as built (after the W2 review, 2026-11-17)
+
+Two reviewers rebuilt b290cb6 / 16f273a byte for byte, ran every suite, re-ran the plan's mutations plus about 20 of their
+own, and probed the reader on the device harness. They found two real defects (a starved mip, a blind continuity test)
+and several untested paths. Fixes are in the reader, the body, the golden, the tests, build.py and this plan. Build
+~/bento/out/be444w2f (default, 1.6.8, wt_mip 1.75). Findings and what was done:
+
+1. **Accepted, fixed: the mip starved while Position moved every block (high, both reviewers; reproduced).** The
+   one-change rule let a frame change win every block and reset the wanted mip, so with a Position LFO or a turning knob
+   (1) heavy FM never left the note's level (it aliased at the "note level" row: -23 dB at note 60, full Sub FM), and
+   (2) after FM ended on a coarse level, the mip-home block never ran: the oscillator stayed duller and quieter, never
+   handed back, and paid the reader's cost until Position stopped. The golden had the same rule, so no device-vs-golden
+   test could see it.
+   - Rule (3.4, as built): a frame change defers a wanted mip change and sets **WT_MIP_WAIT** (wflags bit 1); the next
+     block changes the mip and defers the frame. Each change waits one block at most, alternating, and the frame playing
+     stays at most one block behind Position. The bit is set only while the reader holds a mip, so tier 2 never sees it.
+   - Road not taken: "a mip change always wins". It needs no state, but it starves the frame during an FM attack whose
+     wanted level climbs every block. The plan promised a one-block deferral, so the alternating rule keeps that promise.
+   - Golden: wt_read_block mirrors it (st["wait"]), with a golden mutant "no_wait" (the first W2 rule).
+   - Tests: `test_position_every_block` (device = golden every block, Position +1 every block, Sub FM attack then cut and
+     attack then a six-block decay: the mip leaves the note's level under FM, is HOME within two blocks of the line's
+     end, is never HOME while on another level, and the frame is never more than a block behind; the golden's no_wait
+     fails the same assertions, as a control). Golden self-test `test_one_change_waits_one_block`.
+2. **Accepted, fixed: the 7.4 continuity metric could not see a step (high, both reviewers; reproduced).** It
+   subtracted the neighbouring second differences, and a jump of s is in the neighbour too, so it cancelled itself.
+   - New metric (`WtFmW2.step_at_switches`): the line through b - 2, b - 1 predicts sample b; the step is the larger
+     prediction error at b and b + 1 less the signal's own largest one over b - 8 .. b - 1 and b + 3 .. b + 9, samples the
+     jump does not reach. Bound **WT_STEP_MAX = 0.01**, tightened from the plan's 0.02: measured worst 0.0040, and a
+     skipped mip-home block steps 0.0159 / 0.0028 / 0.0422 / 0.0172 (saw n48 / n72, smooth n48 / n72), so 0.01 turns
+     three of the four red where 0.02 caught one.
+   - Re-measured rows (replace "W2 result"'s 7.4 numbers): synthetic aligned sine <= 0.0040 (note 72 mip excursion),
+     builder saw <= 0.0000, builder 8-harmonic set <= 0.0001. Negative means the switch's error is below the signal's own
+     curvature nearby. The builder saw at note 72 has stock's own largest second difference 0.44 (its edge), so on a saw a
+     switch that lands near an edge is masked; the smooth tables carry the sensitivity.
+   - Mutants that only this test can see, because check() and 7.2 follow the C and the golden alike: the handback phase
+     moved by 1e-3 and by 1e-2 of a cycle in both the C and the golden. Both are red, on test_handback_and_continuity
+     alone (1e-3: a step of 0.085 on the builder saw at note 48).
+3. **Accepted, fixed: the B route (J b) and its peak were untested (medium).** wt_line gave b = a. Now b is its own sine
+   (another ratio, phase and peak) whenever J != 0. New 7.1 rows: "B alone (mip change)" (I 0: the level moves on J max|B|
+   alone; a control shows B's peak taken from A picks another level) and "two routes, B's term the larger" (a control
+   shows B read from A is another block). Mutations "B term read from A", "B's peak scanned from A" and "J dropped from
+   the peak" are red.
+4. **Accepted, fixed: a scan of A follows a slow sub (medium; reproduced in the golden).** At notes 24..36 the sub's
+   period spans blocks, so the block's max |A| moved with the sub's phase and the level flipped on about a third of the
+   blocks (rd_qm blocks, and a 16-33 Hz timbre flutter). Now the body passes A's known peak (WtBlk.pa = inc_sub x the
+   sub wave's peak: 1 for Rev Saw, Triangle, Sine, Noise; the Square's DC-free 1 + |1 - 2 pw| from the width its core
+   plays), and wt_play uses it instead of the scan. B is still scanned (W3: its own low-note toggling, if any, is measured
+   there with FM 1>2 into a WT carrier). Golden wt_peak takes pa. Tests: `test_low_notes_hold_their_level` (notes 24 / 36,
+   Sub FM 400 / 800, 64 blocks: at most one level change), `test_a_peak_known_through_the_body` (through stock's root with
+   a sounding Sine and Square sub: the level is the golden's for the known peak; a control shows the Square's factor
+   moves a level).
+   - Known limit: during a PW change the Square's factor uses the width its core latched (one wrap late), not the new
+     one. Small and brief.
+5. **Accepted, fixed: W2 behaviours that survived every test (medium).**
+   - (a) Mutation 7 in its natural form (mipcur dropped from wt_fm_osc's gate): new `test_mip_home_through_the_render`
+     (stock's root, a sounding sub, Sub FM 1000 then 0: coarse through the ramp-out block, HOME only after the mip-home
+     block). Red.
+   - (b) HOME set in a home block that changed the frame: red on test_position_every_block.
+   - (c) The band's value: `test_hysteresis_band` holds kn + 2 with the peak at 0.90 x thr x 2^(kn + 1) and steps to
+     kn + 1 at 0.78. 0.95 and 0.70 are both red.
+   - (d) J dropped from the peak: red (item 3).
+   - (e) The clamp: a 7.1 row "the clamp" (note 115, I 16 at the carrier's rate: steps to 0.6 a sample, both signs).
+     Named bound TOL_RD_CLAMP 6e-6 (M 2.7e-6, len 32), phase within 5e-7 of a cycle (M 2.2e-7: f32 steps near 0.45 over
+     256 samples). Clamp removed: red.
+   - (f) Mutation 12 in a reassociated, unfused form: **still green, recorded, not pinned at W2.** 7.1's float64
+     tolerances cannot pin the line's last bits; the implementer's drifting-accumulator form is red. Pinning the bit law
+     needs an f32 model of an_render_fm's line; W3 reuses that law for WT carriers and can add it there if wanted.
+6. **Partly accepted (medium): Sub FM on a WT OSC1 sounds at W2 without D3's mixed-sync rule.**
+   - Recorded, not fixed here: W2 images play Sub FM on a Wavetable OSC1 while an Analog OSC2 is synced to it, and the
+     slave follows a phase WT1 no longer has. D3 is still Jeff's open decision. Its rule (recommended: Sub FM plays as 0
+     while synced) moves from W4 to **W3**, with mutation 17, before any W3 device image (section 8). **No W2 image goes
+     to the device.**
+   - Fixed: OSC2's transitional cases. A WT OSC2's amount is FM 1>2 per D2 (`twelve = which == 1` is right for a
+     Wavetable OSC2 next to either OSC1 type), but until W3 / W4 there is no B for it, and a hidden Sub FM (kept from an
+     Analog OSC2) opened the gate too. Both opened the reader at index 0 every block. Now wt_body hands a block with no
+     line, no mip held and no feed-B to stock's render (tier 2): bit for bit stock's, at about +460 a voice-block over
+     an untagged voice instead of +4,900 (M, stock's root, FM 1>2 400 on a WT OSC2). `test_no_line_plays_stocks_render`
+     (notes 24 and 60: voice output and OSC2's kernel state the same bytes as with no amount). Note 24 is needed: at
+     notes 47 / 60 the index-0 reader happens to equal stock's on every block, so a note-60-only form of the test stayed
+     green on the fallback's removal (caught in this round's mutation run, then fixed). W4 must keep feed-B's index-0
+     blocks on the reader (the condition already excludes feed-B).
+7. **Accepted, figures here; the decisions are Jeff's (medium): budget and CPU against the plan.**
+   - WT FM DSP so far: 24,548 - 23,796 = 752 (W1) + 2,560 (W2 as built) = **3,312 B**, against section 4/5's 2.4-3.8 KB
+     for all of WT FM, with W3 (A / B into carriers) and W4 (B from a WT OSC1: about 0.25-0.35 KB) still to come. Part
+     of W4 (wt_body) is already in.
+   - Default DSP 27,108 B: **492 B under the D6 line "analog + FM <= 27,600 B"** (D6 is not decided; build.py does not
+     enforce it).
+   - Drums trial 7,532 B free against about 6-7.6 KB of pending drum demand plus the 1 KB margin.
+   - Reader parts 1,796 B against the 1.5 KB exit (missed by 260 B of 1,536; the review's fixes added 72). Measured lever:
+     wt_play and wt_body at minsize save only 64 B of DSP (M, scratch), not worth their control-rate cost.
+   - CPU: a reader block is 9,636 at note 60 (section 6 planned 7,451, +29 %): the loops are 34.1 a sample, not 29, and
+     wt_play adds about 900 a block of its own. A mip-change block is 15,077 (planned "+2.5 to 3k" over a plain block;
+     it is +5.4k). Section 6's FM'd WT rows and the S3 voice gate (28,929) are re-estimated at W3's start from these
+     figures, before W3's cost gates are written (section 8 W3 row).
+8. **Accepted, fixed: D5's constant had stale copies and the test read the environment (low, both reviewers).**
+   - analog.cpp has no fallback: `#error` unless build.py passes WT_MIP_THR (build.py also passes it to its
+     preprocess-only source scan). The tests read the manifest only (`MAN["wt_mip"]`, no default); p3_golden's
+     wt_read_block / wt_fm_run take thr with no default (its self-tests pass a fixture 1.75).
+   - test_d5_threshold checks the manifest's value is in range and labelled, not equal to the test-time BE_WT_MIP, so an
+     alternate image passes as built.
+   - build.py: a non-default threshold suffixes the version (`-mip2.0`, `-mip1.5`, after any BE_TAG). The boot label
+     (6 characters) is unchanged unless BE_LABEL is set; the kit name and marker carry the suffix.
+9. **Accepted, corrected (low): "the reader at index 0 matched stock's bit for bit" ("W2 result" item 9) was wrong.**
+   The Q32 step truncates toward zero at 2^-(21 + k) of a sample, so the reader runs a hair flat at low levels: within
+   2.2e-5 and drifting about 6e-4 samples per 20 blocks at level 0, bit-equal only at some rates (notes 61..110: 17-19 of
+   20 blocks). The transitional cases no longer use it (item 6). Rounding to nearest: rejected for now. VCVT's
+   fixed-point form only truncates, so rounding costs an instruction a sample, and the error is far below audibility.
+10. **Accepted, fixed (low, both reviewers): D5's brightness and alias rows.** wt_spectrum_rows now uses a rectangular
+    window on exact bins (the run is periodic), an on-grid centroid (alias no longer counts as brightness), and a new
+    brightness row: on-grid energy above harmonic 16 (level 6's table limit, so it measures what a coarser level
+    removes). Window after the last level change (24 blocks, the last 16, levels asserted steady). The ranking and the
+    default are unchanged.
+
+**D5 (decided: one constant, leaning bright). Default: 1.75** (cleaner alternate 1.5, brighter 2.0; build with
+BE_WT_MIP, version suffixed). Golden rows, stock-built saw table, sine sub an octave down, A's known peak; each cell is
+level / on-grid centroid (carrier harmonics) / on-grid energy above harmonic 16 (dB) / alias (dB); "note level" = the reader
+pinned at stock's level:
+
+| note ~, Sub FM | note level | 1.25 | 1.5 | 1.75 | 2.0 |
+|---|---|---|---|---|---|
+| 60, 250 | L3 2.42 -19.3 -38.2 | L4 2.01 -19.0 -44.4 | L4 2.01 -19.0 -44.4 | **L3 2.42 -19.3 -38.2** | L3 2.42 -19.3 -38.2 |
+| 60, 500 | L3 3.81 -15.9 -32.6 | L5 2.72 -17.7 -44.9 | L4 3.33 -17.2 -35.8 | **L4 3.33 -17.2 -35.8** | L4 3.33 -17.2 -35.8 |
+| 60, 1000 | L3 9.11 -9.3 -23.0 | L6 7.44 -11.8 -37.5 | L6 7.44 -11.8 -37.5 | **L5 8.09 -10.8 -29.8** | L5 8.09 -10.8 -29.8 |
+| 72, 250 | L4 2.08 -18.6 -34.8 | L5 1.69 -20.1 -44.0 | L4 2.08 -18.6 -34.8 | **L4 2.08 -18.6 -34.8** | L4 2.08 -18.6 -34.8 |
+| 72, 500 | L4 3.32 -16.2 -29.2 | L6 3.05 -18.3 -42.1 | L5 2.89 -17.1 -33.4 | **L5 2.89 -17.1 -33.4** | L5 2.89 -17.1 -33.4 |
+| 72, 1000 | L4 7.75 -10.2 -20.1 | L6 7.47 -11.5 -28.1 | L6 7.47 -11.5 -28.1 | **L6 7.47 -11.5 -28.1** | L6 7.47 -11.5 -28.1 |
+| 96, any | L6 (pinned) | same | same | same | same |
+
+- With A's known peak, the first step no longer depends on the note: Sub FM 215 (1.25), 275 (1.5), **330 (1.75)**, 380
+  (2.0) at notes 48, 60, 72 and 84. The note-48 figures in "W2 result" came from the scan.
+- Read brightness from the HF row, not the centroid. At note 72 / Sub FM 500 the centroid ranks L6 above L5 (3.05 vs
+  2.89), but L5 keeps more energy above harmonic 16 (-17.1 vs -18.3 dB). At note 60 / Sub FM 250, 1.25's L4 shows -19.0
+  against L3's -19.3: a normalisation effect of the FM spread, within 0.3 dB, not a brighter level.
+- Why 1.75:
+  - Light FM up to about a third of the knob keeps the note's level, so the "light FM halves the harmonics" step at
+    about 210 is gone.
+  - Full Sub FM at note 60 plays one level brighter than stock's rule (-10.8 vs -11.8 dB above harmonic 16) and aliases
+    at -29.8 dB against -37.5 (about 8 dB more: the "character" D5 accepts).
+  - Thresholds act in whole levels, so 1.5, 1.75 and 2.0 differ only in where the steps land. The alternates a step
+    either side are 1.5 and 2.0.
+- An alternate image builds with `BE_WT_MIP=2.0` (or 1.5). M: the 2.0 image is labelled v4.44-mip2.0, its manifest says
+  wt_mip 2.0, its DSP is the same 27,108 B, and WtFmW2 passes on it with no BE_WT_MIP set at test time.
+
+**Sizes (M).** Default: DSP **27,108 B**, 13,596 B free of 40,704 (W2 result 26,932: +176; wt_play 800 (+72), wt_body
+708 (+104)). Reader parts 1,796 B (rd_q 256, rd_qx 316, rd_qm 380, wt_play 800, wt_mip_for 44); test bound 1,830.
+wt_fm_osc 178. Image 0x189458, unchanged (16,092 B to PROVEN_MAX). M4 24,424 B, synth UI 15,858 B (no M4 change).
+Drums trial (trialW2: the W2 trial clone with this fix's mods/m1 diff applied, the merge of main's committed 3597e8e still
+uncommitted, BE_ENABLE=drums): DSP **33,172 B, 7,532 B free**, image 0x18af20 (9,236 B to PROVEN_MAX); test_drums 33 (1)
+and test_drum_ui 46 (1) OK.
+
+**CPU (M).** P3Identity 50 cases: worst 1.0184 (mod dev=False, 111,922 / 109,899), total 1.0092: unchanged, under the
+1.95 % stop line. Untagged WT oscillator-block +27 over stock; tier 2 +75..+118, worst 1.0174 x stock's render
+(unchanged). Reader: rd_q 34.1, rd_qx 45.2, rd_qm 55.2 a sample (unchanged); whole wt_play block at note 60: 9,636 /
+12,468 / 15,077 (+10 to 15: the wait bit and pa). Transitional amount (FM 1>2 on a WT OSC2 with no B): +463 a voice-block
+over an untagged voice (was +4,900).
+
+**Suites (M, ~/bento/out/be444w2f, from the worktree's mods/m1; skips in brackets):** diag 92 (6), polyat 51 (2),
+conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20), notemod 16, notemod_route 8, notemod_real
+14, slice 20, s3_m7 25, step_xml 11, keys 10, native_props 22, **analog 182** (176 + 6 new), synth_ui 64 (2), note0 32,
+p3_golden self-test 51 (+1): all OK (test_analog re-run after the last test edits on a fresh build, be444w2r,
+byte-identical to be444w2f). inst_xml 5 (5) and handles 16 (16) are fully skipped (no coverage).
+
+**Mutations (M, private copies of this tree, each built, WtFmW2 run; scratch W2fix/mut3.py, mut3.log).** Baseline
+green.
+- The plan's mutations, red: 3, 4, 5, 6, 7 (both forms: the gate's mip term dropped, and HOME straight from the last FM
+  block), 8, 11, 12 (the drifting-accumulator form), 13, 18, 23, 24.
+- The review's mutations, red: the first W2 rule (frame always wins); the wait bit never set; HOME in a home block that
+  changed the frame; band 0.70 and 0.95; J dropped from the peak; B's peak scanned from A; B's term read from A; the
+  clamp removed; A's known peak ignored (scanned); the Square's factor dropped; the tier-2 fallback removed (red once
+  the test ran note 24, item 6); the handback phase moved by 1e-3 and 1e-2 of a cycle in the C and the golden.
+- Green, recorded: mutation 12 in a reassociated, unfused form (item 5 (f)).
+
+**Needs Jeff.**
+- **D5's default: 1.75**, from the rows above (cleaner 1.5 / brighter 2.0 as alternate W3 / W4 images).
+- **D3** (open): its rule moves into W3 (before any device image), so the choice is needed before W3's device image.
+- **Budget:** WT FM is at 3,312 B with W3 and W4 to come, against the plan's 2.4-3.8 KB; the default DSP is 492 B under
+  D6's 27,600 B line (D6 itself undecided); the drums trial has 7,532 B free against 6-7.6 KB pending plus the 1 KB
+  margin. Before W3: whether to plan a reserve item now (R2's analog minsize -596 B; merging rd_qx into rd_q about -0.2
+  KB at a per-sample cost), or wait for W3's measurement as section 5 says.
+- **Reader-parts exit (1.5 KB) missed by 260 B:** accept as measured (the B route in all three loops, two loops kept
+  apart because the shared one spills), or ask for the merge above.
+- **Continuity bound:** 7.4's 0.02 is tightened to 0.01 in the test (measured 0.0040). Say if you would rather keep the
+  plan's number.
 
 ## Review log
 

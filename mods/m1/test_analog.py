@@ -5708,6 +5708,8 @@ class WtFmW1(unittest.TestCase):
 
 
 AN_FE_DEC_HOLD = 2 << 13    # AnOsc.fmk at DEC j 0: the envelope held at 1 (analog.h AN_FE_DEC << 13)
+WT_MIP_WAIT = 2             # analog.h: wflags, a mip change deferred for a frame change (W2 review)
+WT_OSC_RATE = 0x1E8          # analog.cpp OSC_RATE: the oscillator's playback rate, as stock writes it
 WT_MIPS_N = 7               # analog.h WT_MIPS
 
 
@@ -5715,10 +5717,13 @@ WT_MIPS_N = 7               # analog.h WT_MIPS
 import wt_kmodel as KM                                     # 7.2: stock's kernel, a bit-exact model (re-checked below)
 WT_KERN = 0x080A2000          # stock 1.6.8's kernel read (S_OSC_KERNEL's note: the render's bl at 0x08081D5E)  # addr-ok: stock kernel (W2)
 WT_MIPB_RESET, WT_MIPB_RUN, WT_MIPB_TAPS = 0x08113F10, 0x08113DF0, 0x08113EF8   # addr-ok: stock M4 mip builder (W2 trace)
-WT_THR = float(MAN.get("wt_mip", 1.75))                     # D5: this build's threshold (build.py BE_WT_MIP)
+WT_THR = float(MAN["wt_mip"])               # D5: this build's threshold, the manifest's only (build.py BE_WT_MIP; no copy here)
 TOL_RD = {32: 2e-6, 256: 2e-7}   # 7.1: plain blocks, device vs golden at len 32 / 256 (prototype 1.8e-6 / 1.9e-7)
 # 7.1's named bounds, set at W2 from the measurements (M, printed by test_the_reader_is_the_golden; about 2x, never loosened)
 TOL_RD_2048, TOL_RD_TZ, TOL_RD_XM, TOL_RD_XF = 2e-7, 4e-7, 4e-7, 4e-7
+TOL_RD_CLAMP = 6e-6              # W2 review: the clamp row, len 32 through zero at 0.45 a sample both ways (M 2.7e-6)
+WT_STEP_MAX = 0.01               # 7.4: the step at a switch (WtFmW2.step_at_switches); the plan's 0.02 tightened at the W2 review
+                                 # (M worst 0.0040; a skipped mip-home block steps 0.016 .. 0.042: red on all but one table)
 
 
 def wt_smooth_frames():
@@ -5747,22 +5752,24 @@ class WtRd:
     def set(self, st):
         self.r.u.mem_write(self.k + 0xC0, KM.St(struct.pack(KM.St.FMT, st["frac"], st["idx"], st["frame"], st["off"], st["D"],
                                                           st["len"], st["flag"])).pack())
-        self.r.u.mem_write(self.k + WT_MIP_AT, bytes([st["mip"]]))
+        fl = self.r.u.mem_read(self.k + WT_FLAGS_AT, 1)[0] & ~WT_MIP_WAIT
+        self.r.u.mem_write(self.k + WT_MIP_AT, bytes([st["mip"], fl | (WT_MIP_WAIT if st.get("wait") else 0)]))
 
     def get(self):
         s = KM.St(self.r.u.mem_read(self.k + 0xC0, 25))
-        return dict(frac=s.frac, idx=s.idx, frame=s.frame, off=s.off, D=s.D, len=s.len, flag=s.flag,
-                    mip=self.r.u.mem_read(self.k + WT_MIP_AT, 1)[0])
+        m, fl = self.r.u.mem_read(self.k + WT_MIP_AT, 2)
+        return dict(frac=s.frac, idx=s.idx, frame=s.frame, off=s.off, D=s.D, len=s.len, flag=s.flag, mip=m,
+                    wait=int(bool(fl & WT_MIP_WAIT)))
 
-    def block(self, req, rate, n=256, line=None):
-        """(samples, state after, instructions) of one wt_play call."""
+    def block(self, req, rate, n=256, line=None, pa=0.0):
+        """(samples, state after, instructions) of one wt_play call; pa: A's known peak (WtBlk.pa; 0: scanned)."""
         fi = 0
         if line is not None:
             a, ia, dia, b, ib, dib = line
             self.r.u.mem_write(self.a, np.asarray(a, "<f4").tobytes()); self.r.u.mem_write(self.b, np.asarray(b, "<f4").tobytes())
             self.r.u.mem_write(self.fi, struct.pack("<IffIIff", self.a, ia, dia, 0, self.b, ib, dib))
             fi = self.fi
-        self.r.u.mem_write(self.blk, struct.pack("<IIIfII", self.r.tab, fi, self.out, rate, n, req))
+        self.r.u.mem_write(self.blk, struct.pack("<IIIfIIf", self.r.tab, fi, self.out, rate, n, req, pa))
         _, c = self.r.call(dsp_sym("wt_play"), self.osc, self.blk)
         return np.frombuffer(bytes(self.r.u.mem_read(self.out, 4 * n)), "<f4").astype(np.float64), self.get(), c
 
@@ -5773,14 +5780,22 @@ class WtRd:
         return np.frombuffer(bytes(self.r.u.mem_read(self.out, 4 * n)), "<f4").astype(np.float64), self.get()
 
 
-def wt_line(inc, n, I0, I1, ratio=0.5, ph=0.0, J=0.0):
+def wt_line(inc, n, I0, I1, ratio=0.5, ph=0.0, J=0.0, bratio=1.5, J1=None):
     """A modulator (a sine at ratio x the carrier, in increment units: inc_m sin) and its index line I0 -> I1 over the block
-    (fm_setup's form: dia = f32(f32(I1 - I0) / n)); J: a second route on the same buffer (b = a) at index J."""
+    (fm_setup's form: dia = f32(f32(I1 - I0) / n)); J: a second route (FM 1>2's B) at index J (-> J1), on its own buffer
+    (W2 review: a sine at bratio x the carrier, another phase and peak, so a b read from a, or B's peak taken from A, shows);
+    J 0: one route, b = a at a zero line (fm_setup's form)."""
     inc_m = inc * ratio
     a = (np.sin(2 * np.pi * (ph + inc_m * np.arange(n))) * inc_m).astype(np.float32)
     f = np.float32
     dia = 0.0 if I1 == I0 else float(f(f(f(I1) - f(I0)) / f(n)))
-    return (a, float(f(I0)), dia, a, float(f(J)), 0.0)
+    if not J and not J1:
+        return (a, float(f(I0)), dia, a, 0.0, 0.0)
+    J1 = J if J1 is None else J1
+    inc_b = inc * bratio
+    b = (np.sin(2 * np.pi * (ph * 3 + 0.3 + inc_b * np.arange(n))) * inc_b).astype(np.float32)
+    dib = 0.0 if J1 == J else float(f(f(f(J1) - f(J)) / f(n)))
+    return (a, float(f(I0)), dia, b, float(f(J)), dib)
 
 
 def wt_phase(st): return ((st["idx"] + st["frac"]) / st["len"]) % 1.0
@@ -5833,17 +5848,18 @@ class WtFmW2(unittest.TestCase):
                 self.assertEqual(list(y.astype(np.float32)), [np.float32(v) for v in want], f"rate {rate} block {b}")
                 self.assertEqual(m.pack(), KM.St(w.r.u.mem_read(w.k + 0xC0, 25)).pack(), f"rate {rate} block {b}: state")
 
-    def check(self, w, st, req, rate, line, tol, what, n=256):
-        """One wt_play block against the golden: samples within tol, the phase within 1e-7 of a cycle, frame, mipcur, and
-        off / D / len / the flag as the golden leaves them (mutation 3: the reader never writes the levels it reads)."""
+    def check(self, w, st, req, rate, line, tol, what, n=256, pa=0.0, ph_tol=1e-7):
+        """One wt_play block against the golden: samples within tol, the phase within 1e-7 of a cycle, frame, mipcur, the
+        mip-wait bit, and off / D / len / the flag as the golden leaves them (mutation 3: the reader never writes the levels
+        it reads)."""
         w.set(st)
-        y, got, _ = w.block(req, rate, n, line)
-        want, gst, ks = G.wt_read_block(w.tab, st, req, rate, n, line, WT_THR)
+        y, got, _ = w.block(req, rate, n, line, pa)
+        want, gst, ks = G.wt_read_block(w.tab, st, req, rate, n, line, WT_THR, pa=pa)
         err = float(np.max(np.abs(y - want)))
         self.assertLessEqual(err, tol, f"{what}: max |device - golden| {err:.2e} (levels {ks})")
         d = abs(wt_phase(got) - wt_phase(gst)); d = min(d, 1 - d)
-        self.assertLess(d, 1e-7, f"{what}: phase")
-        for f in ("frame", "mip", "off", "D", "len", "flag"):
+        self.assertLess(d, ph_tol, f"{what}: phase")
+        for f in ("frame", "mip", "wait", "off", "D", "len", "flag"):
             self.assertEqual(got[f], gst[f], f"{what}: {f}")
         return err, ks
 
@@ -5876,8 +5892,33 @@ class WtFmW2(unittest.TestCase):
         err, ks = self.check(w, st, 200, rate, wt_line(inc, 256, 0.0, 6.0), TOL_RD_XF, "frame and mip wanted (one change)")
         self.assertEqual(ks, (3, 3), "the frame changes, the mip waits (mutation 24)")
         self.assertEqual(w.get()["mip"], 3)
-        err, ks = self.check(w, dict(st, frame=200, mip=3), 200, rate, wt_line(inc, 256, 6.0, 6.0), TOL_RD_XM, "the next block")
+        err, ks = self.check(w, dict(st, frame=200, mip=3, wait=1), 200, rate, wt_line(inc, 256, 6.0, 6.0), TOL_RD_XM,
+                             "the next block")
         self.assertGreater(ks[1], 3, "the deferred mip change comes next block")
+        # W2 review: B on its own buffer (wt_line's b: another ratio, phase and peak). FM 1>2 alone moves the level (I 0, the
+        # J term only: mutation "J dropped from the peak"; "B's peak read from A": b's peak is 3x a's), and a two-route
+        # block whose B term carries the motion (mutation "B read from A")
+        line = wt_line(inc, 256, 0.0, 0.0, J=6.0)
+        self.assertGreater(float(np.max(np.abs(line[3]))), 2.5 * float(np.max(np.abs(line[0]))), "control: B's peak is not A's")
+        err, ks = self.check(w, st, 3, rate, line, TOL_RD_XM, "FM 1>2 alone moves the level")
+        self.assertGreater(ks[1], ks[0], "control: B alone changed the level")
+        _, _, ka = G.wt_read_block(w.tab, st, 3, rate, 256, line[:3] + (line[0],) + line[4:], WT_THR)
+        self.assertNotEqual(ka, ks, "control: B's peak taken from A picks another level")
+        rows.append(("B alone (mip change)", err))
+        line = wt_line(inc, 256, 0.3, 0.3, J=1.2)
+        err, ks = self.check(w, st, 3, rate, line, TOL_RD[256], "two routes, B's term the larger")
+        ya, _, _ = G.wt_read_block(w.tab, st, 3, rate, 256, line[:3] + (line[0],) + line[4:], WT_THR)
+        yb, _, _ = G.wt_read_block(w.tab, st, 3, rate, 256, line, WT_THR)
+        self.assertGreater(float(np.max(np.abs(ya - yb))), 100 * TOL_RD[256], "control: B read from A is another block")
+        rows.append(("two routes, B", err))
+        # the clamp at 0.45 (plan 7.4): a step beyond it in both directions (note 115, a modulator at the carrier)
+        rate = wt_rate(115); inc = float(f32(rate) * f32(1 / 2048))
+        line = wt_line(inc, 256, 16.0, 16.0, 1.0)
+        dmax = float(np.max(np.abs(inc + 16.0 * line[0].astype(np.float64))))
+        self.assertGreater(dmax, 0.6, "control: the step goes past the clamp")
+        err, ks = self.check(w, G.wt_state(idx=3, frac=0.5, frame=9, flag=0, k=6), 9, rate, line, TOL_RD_CLAMP, "the clamp",
+                             ph_tol=5e-7)         # (f32 steps near 0.45 a sample: M 2.2e-7 of a cycle in 256)
+        rows.append(("clamp", err))
         print("\n  WT FM W2 reader vs golden: " + ", ".join(f"{n} {e:.1e}" for n, e in rows), file=sys.stderr)
 
     def test_pending_flag_and_frac_one(self):
@@ -5891,6 +5932,41 @@ class WtFmW2(unittest.TestCase):
             self.assertEqual(w.get()["len"], 2048 >> G.wt_ladder(rate))
         rate = wt_rate(60); inc = float(f32(rate) * f32(1 / 2048))
         self.check(w, G.wt_state(idx=17, frac=1.0, frame=5, flag=0, k=3), 5, rate, wt_line(inc, 256, 0.2, 0.2), TOL_RD[256], "frac 1.0")
+
+    def test_hysteresis_band(self):
+        """W2 review: the band's value (WT_MIP_HYST 0.84) pinned from both sides. Held at kn + 2 with the peak at 0.90 x
+        WT_THR x 2^(kn + 1) (inside the band one level down): stays (0.95 would step down); at 0.78 (below the band one
+        level down, above it two down): steps to kn + 1 (0.70 would stay). A's peak known (pa), so the peak is exact."""
+        w = WtRd()
+        rate = wt_rate(60); inc = float(f32(rate) * f32(1 / 2048)); kn = G.wt_ladder(rate)
+        line = wt_line(inc, 256, 1.0, 1.0)
+        pa = float(f32(inc * 0.5))
+        for frac, want in ((0.90, kn + 2), (0.78, kn + 1)):
+            x = frac * WT_THR * 2 ** (kn + 1)                       # the peak, in base-table samples a sample
+            I = (x / 2048 - inc) / pa
+            ln = (line[0], I, 0.0, line[0], 0.0, 0.0)
+            px = float(G.wt_peak(inc, ln, 256, pa)) / (WT_THR * 2 ** (kn + 1))
+            self.assertAlmostEqual(px, frac, delta=1e-4, msg="control: the peak where it is meant to be")
+            _, ks = self.check(w, G.wt_state(idx=9, frac=0.1, frame=0, flag=0, k=kn, mip=kn + 2), 0, rate, ln,
+                               TOL_RD[32], f"band at {frac}", pa=pa)          # (levels 4..5: len 128 / 64)
+            self.assertEqual(ks[1], want, f"peak {frac} x thr x 2^(kn + 1) from kn + 2")
+
+    def test_low_notes_hold_their_level(self):
+        """W2 review: at notes 24 and 36 the sub's period spans blocks; with A's known peak (pa) a steady Sub FM keeps one
+        level (the scan of A followed the sub's phase: a third of the blocks were mip changes, M). 64 blocks, the sub's
+        phase running on: at most one level change (the first block's)."""
+        w = WtRd(G.wt_saw_frames(200))
+        for note in (24, 36):
+            rate = wt_rate(note); inc = float(f32(rate) * f32(1 / 2048)); kn = G.wt_ladder(rate)
+            for v in (400, 800):
+                I = G.an_index32(v); pa = float(f32(inc * 0.5))
+                w.set(G.wt_state(idx=9, frac=0.1, frame=0, flag=0, k=kn))
+                mips = []
+                for b in range(64):
+                    _, got, _ = w.block(0, rate, 256, wt_line(inc, 256, I, I, ph=0.5 * inc * 256 * b), pa)
+                    mips.append(got["mip"])
+                ch = sum(1 for p, q in zip(mips, mips[1:]) if p != q)
+                self.assertLessEqual(ch, 1, f"note {note} Sub FM {v}: {mips}")
 
     def test_hysteresis(self):
         """Mutation 23 (D5's derived band): a peak parked between WT_THR x 0.84 and WT_THR (x 2^k) keeps the coarser level
@@ -5913,6 +5989,131 @@ class WtFmW2(unittest.TestCase):
             _, got, _ = w.block(0, rate, 256, wt_line(inc, 256, j, j))
             mips.append(got["mip"])
         self.assertLessEqual(sum(1 for p, q in zip(mips, mips[1:]) if p != q), 2, f"no toggling: {mips}")
+
+    def test_position_every_block(self):
+        """W2 review (plan 7.4 "Position LFO with a decaying FM Dec"): Position one frame on every block, Sub FM attacking to
+        a heavy index and then (a) cut to 0 (the ramp-out block, then the mip-home block) or (b) decaying over six blocks.
+        Every block is the golden's (samples, phase, frame, mipcur, the wait bit); the frame playing is never more than one
+        block behind Position; under the heavy index the mip leaves the note's level; after the line ends mipcur is HOME
+        within two blocks, and never HOME while the reader is still on another level. The first W2 rule (a frame change
+        always wins; the golden's "no_wait") keeps the mip at the note's level throughout, so the control below must fail
+        on it."""
+        w = WtRd(G.wt_saw_frames(200))
+        rate = wt_rate(60); inc = float(f32(rate) * f32(1 / 2048)); kn = G.wt_ladder(rate)
+        cut = [(0.0, 12.0), (12.0, 12.0), (12.0, 12.0), (12.0, 12.0), (12.0, 0.0)] + [None] * 4
+        dec = [(0.0, 12.0)] + [(12.0 - 2 * b, 10.0 - 2 * b) for b in range(6)] + [None] * 4
+        for name, plan in (("cut", cut), ("decay", dec)):
+            for mut in (None, "no_wait"):
+                st = G.wt_state(idx=11, frac=0.3, frame=5, flag=0, k=kn)
+                mips, frames = [], []
+                for b, p in enumerate(plan):
+                    line = None if p is None else wt_line(inc, 256, p[0], p[1], ph=0.5 * inc * 256 * b)
+                    if mut is None:
+                        self.check(w, st, 6 + b, rate, line, max(TOL_RD_XM, TOL_RD_XF), f"{name} block {b}")
+                        st = w.get()
+                    else:
+                        _, st, _ = G.wt_read_block(w.tab, st, 6 + b, rate, 256, line, WT_THR, mutant=mut)
+                    mips.append(st["mip"]); frames.append(st["frame"])
+                end = plan.index(None)
+                ok = max(m for m in mips[:end] if m != G.WT_HOME) > kn and mips[end + 1] == G.WT_HOME
+                if mut:
+                    self.assertFalse(ok, f"control: {mut} starves the mip ({name}: {mips})")
+                    continue
+                self.assertTrue(ok, f"{name}: the mip left the note's level under FM and came home in 2 blocks: {mips}")
+                self.assertTrue(all(6 + b - f <= 1 for b, f in enumerate(frames)), f"{name}: frames {frames}")
+                self.assertNotIn(G.WT_HOME, mips[:end], name)
+
+    # ---- W2 review: through the render, on stock's root with a sounding sub (SubCopy's voice, both oscillators Wavetable) --
+    def root_voice(self, wave=4, note=60, pw=300):
+        """Stock's root and voice (SubCopy.voice: the sub sounds, so buffer A carries it), both oscillators Wavetable with
+        Rig.tabled's table; render(c) one block through the root's voice render (slot 0x48), returning the block's bytes."""
+        r = Rig()
+        root, v, sub, _ = SubCopy.voice(self, r, wave, 1000, fm=(0, 0), types=(0, 0), glide=0, pw=pw, fine=0)
+        o1, o2 = v + S.VOICE_WT1, v + S.VOICE_WT2
+        r.tabled(o1); r.tabled(o2)
+        r.v = v
+        m = r.call(r.r32(r.r32(root) + 0x4C) & ~1, root)[0]
+        c = dict(r=r, root=root, v=v, sub=sub, o=(o1, o2), m=m, acc=r.buf(DEV_N * m, 1024), scr=r.buf(DEV_N * m, 1024),
+                 out=r.buf(DEV_N, 1024), slot18=r.r32(r.r32(root) + 0x48))
+        SubCopy.note(self, r, v, sub, note)
+        return c
+
+    @staticmethod
+    def root_block(c):
+        r, (acc, ad), (scr, _), (out, od) = c["r"], c["acc"], c["scr"], c["out"]
+        r.w32(acc + 4, DEV_N * c["m"]); r.w32(scr + 4, DEV_N * c["m"]); r.u.mem_write(ad, bytes(4096)); r.w32(out + 4, DEV_N)
+        r.call(c["slot18"] & ~1, c["root"], c["v"], 0, scr, sargs=(acc, 0, out))
+        y = bytes(r.u.mem_read(od, 4 * DEV_N))
+        r.block()
+        return y
+
+    def test_mip_home_through_the_render(self):
+        """W2 review (mutation 7 in its natural form: the mip term dropped from wt_fm_osc's gate): a Wavetable OSC1 with Sub
+        FM 1000 from a sounding Sine sub goes to a coarse level, holds it through the ramp-out block (Sub FM 0), then plays
+        the mip-home block through the reader (the gate held open by mipcur alone) and is HOME after it, and only then."""
+        c = self.root_voice()
+        r, o1 = c["r"], c["o"][0]
+        kn = G.wt_ladder(struct.unpack("<f", r.u.mem_read(o1 + WT_OSC_RATE, 4))[0])
+        mips = []
+        for b in range(10):
+            if b in (2, 6):
+                r.root_prop(c["root"], K_SUBFM, 1000 if b == 2 else 0, 0)
+            self.root_block(c)
+            mips.append(r.u.mem_read(o1 + S.OSC_KERNEL + WT_MIP_AT, 1)[0])
+        self.assertTrue(all(m > kn and m != G.WT_HOME for m in mips[2:7]), f"coarse under FM and its ramp-out: {mips}")
+        self.assertEqual(mips[7:], [G.WT_HOME] * 3, f"HOME after the mip-home block: {mips}")
+
+    def test_a_peak_known_through_the_body(self):
+        """W2 review: the body hands wt_play A's known peak, inc_sub x the sub wave's (1 for the Sine; the Square's DC-free
+        1 + |1 - 2 pw|, from the width its core plays): at a steady Sub FM the level is the golden's choice for that
+        peak (exact: no scan). The Square's factor moves the level at some amount (control)."""
+        moved = False
+        for wave, pw in ((4, 300), (3, 100)):
+            for v in (250, 400, 600):
+                c = self.root_voice(wave, pw=pw)
+                r, o1 = c["r"], c["o"][0]
+                r.root_prop(c["root"], K_SUBFM, v, 0)
+                for b in range(4):
+                    self.root_block(c)
+                rate = struct.unpack("<f", r.u.mem_read(o1 + WT_OSC_RATE, 4))[0]
+                inc = float(f32(rate) * f32(1 / 2048)); kn = G.wt_ladder(rate)
+                inc_sub = struct.unpack("<f", r.u.mem_read(SA + SA_RUN + RUN_INC_SUB, 4))[0]
+                pk = 1.0
+                if wave == 3:
+                    w = r.r32(c["sub"] + 0x20 + 0x18)
+                    pk = float(f32(1) + abs(f32(1) - f32(w) * f32(4.6566128730773926e-10)))
+                pa = float(f32(f32(inc_sub) * f32(pk)))
+                z = np.zeros(256)
+                x = G.wt_peak(inc, (z, G.an_index32(v), 0.0, z, 0.0, 0.0), 256, pa)
+                want = G.wt_mip_for(x, WT_THR, kn)
+                got = r.u.mem_read(o1 + S.OSC_KERNEL + WT_MIP_AT, 1)[0]
+                self.assertEqual(got if got != G.WT_HOME else kn, want, f"wave {wave} Sub FM {v}: peak {x}")
+                if wave == 3 and G.wt_mip_for(G.wt_peak(inc, (z, G.an_index32(v), 0.0, z, 0.0, 0.0), 256, inc_sub),
+                                              WT_THR, kn) != want:
+                    moved = True
+        self.assertTrue(moved, "control: the Square's factor changes a level")
+
+    def test_no_line_plays_stocks_render(self):
+        """W2 review: an amount that plays nothing yet (OSC2's FM 1>2: no B from a Wavetable OSC1 until W4) opens the gate,
+        but with no line and no mip held the body hands the block to stock's render (tier 2), not to the reader at index 0
+        (which is close to stock's but not bit for bit: at notes 24 / 36 no block of it is, M; at 47 / 60 every one is): the
+        voice's output and OSC2's kernel state are the same bytes as with no amount at all, block after block."""
+        for note in (24, 60):
+            runs = []
+            for amt in (0, 400):
+                c = self.root_voice(note=note)
+                r, o2 = c["r"], c["o"][1]
+                if amt:
+                    r.root_prop(c["root"], K_FM12, amt, 1)
+                outs, ks = [], []
+                for b in range(8):
+                    outs.append(self.root_block(c))
+                    ks.append(bytes(r.u.mem_read(o2 + S.OSC_KERNEL + 0xC0, 25)))
+                if amt:
+                    self.assertTrue(wt_tagged(bytes(r.u.mem_read(o2 + S.OSC_KERNEL, 0xC0)), 0, o2), "control: OSC2 tagged")
+                runs.append((outs, ks))
+            self.assertEqual(runs[0][0], runs[1][0], f"note {note}: the voice's output")
+            self.assertEqual(runs[0][1], runs[1][1], f"note {note}: OSC2's kernel state")
 
     def run_seq(self, w, rate, plan, req=40, n=256, ratio=0.5, check=True):
         """A note on the kernel level, block by block: plan a list of None (stock's kernel; while the reader still holds a
@@ -5943,20 +6144,26 @@ class WtFmW2(unittest.TestCase):
     def continuity(self, w, rate, plan, n=256):
         y, who, mips = self.run_seq(w, rate, plan, n=n)
         ref, _, _ = self.run_seq(w, rate, [None] * len(plan), n=n, check=False)
-        # the step at a switch: sample b against the line through b - 2, b - 1 (the signal's own slope taken out: a plain
-        # |y[b] - y[b - 1]| is the slope itself on a sine at note 72, 0.034), less the larger of its two neighbours' (the
-        # table's own curvature there); stock's own largest second difference for scale. Frame 40: a builder-made level's
-        # frame 0 starts with the decimator's zero padding (stock's data: a small glitch at each of its cycles there)
-        d = np.abs(np.diff(y, 2))
-        d = np.r_[0.0, d[1:-1] - np.maximum(d[:-2], d[2:]), 0.0]
-        own = float(np.max(np.abs(np.diff(ref, 2))))
-        bounds = [b * n for b in range(1, len(plan)) if who[b] != who[b - 1]]
-        return max(float(d[b - 2]) for b in bounds), own, who, mips
+        return self.step_at_switches(y, who, n) + (who, mips), ref
+
+    @staticmethod
+    def step_at_switches(y, who, n):
+        """(the largest step at a switch, stock's own largest second difference in y). W2 review: the step at a switch at
+        sample b is the prediction error of the line through b - 2, b - 1, e(i) = |y[i] - 2 y[i - 1] + y[i - 2]|, at b and
+        b + 1 (a jump of s puts s into both; a kink into e(b + 1)), less the signal's own: the largest e over b - 8 .. b - 1
+        and b + 3 .. b + 9, samples the jump does not reach. (W2 as first built took e less its two neighbours', and a jump
+        is in the neighbour too: blind to steps.) A plain |y[b] - y[b - 1]| would be the slope itself (note 72: 0.034)."""
+        e = np.r_[0.0, 0.0, np.abs(np.diff(y, 2))]                 # e[i] ends at sample i
+        steps = []
+        for b in [b * n for b in range(1, len(who)) if who[b] != who[b - 1]]:
+            ref = max(float(np.max(e[b - 8:b])), float(np.max(e[b + 3:b + 10])))
+            steps.append(max(float(e[b]), float(e[b + 1])) - ref)
+        return max(steps), float(np.max(e))
 
     def test_handback_and_continuity(self):
         """7.2 and 7.4: FM ramped in, held, ramped out, then stock (through the mip-home block when the reader holds a mip):
         every stock block after it is wt_kmodel's continuation (bit for bit); the |step| at every switch (entry, the
-        mip-home block, handback) at most 0.02, against stock's own largest step on the table. On a synthetic table (one
+        mip-home block, handback) at most WT_STEP_MAX (0.01), against stock's own largest step on the table. On a synthetic table (one
         sine in every level, aligned: Rig.tabled's) and on builder-made ones (a band-limited saw and the smooth 8-harmonic
         set, through stock's decimator: the skewed levels a factory WAV gets), at a small index (same mip) and a large one
         (a mip excursion of two or more levels: mutation 7 removes the mip-home block)."""
@@ -5975,12 +6182,13 @@ class WtFmW2(unittest.TestCase):
                 rate = wt_rate(note)
                 for I, name in ((0.5, "same mip"), (12.0, "mip excursion")):
                     plan = [None, None, (0.0, I), (I, I), (I, 0.0), None, None, None, None]
-                    step, own, who, mips = self.continuity(w, rate, plan)
+                    (step, _, who, mips), ref = self.continuity(w, rate, plan)
+                    own = float(np.max(np.abs(np.diff(ref, 2))))
                     if name == "mip excursion":
                         self.assertGreaterEqual(max(mips[2:5]), G.wt_ladder(rate) + 2, f"control: excursion {mips}")
                         self.assertIn("H", who, "the mip-home block ran")
                     rows.append((tname, note, name, step, own))
-                    self.assertLessEqual(step, 0.02, f"{tname} note {note} {name}: |step| at a switch {step:.4f} "
+                    self.assertLessEqual(step, WT_STEP_MAX, f"{tname} note {note} {name}: |step| at a switch {step:.4f} "
                                                       f"(stock's own largest {own:.3f}; {who} {mips})")
         print("\n  WT FM W2 continuity (|step| at the switches, stock's own largest): " +
               "; ".join(f"{t} n{nt} {nm} {s:.4f} ({o:.3f})" for t, nt, nm, s, o in rows), file=sys.stderr)
@@ -6012,10 +6220,19 @@ class WtFmW2(unittest.TestCase):
                 self.assertTrue(wt_tagged(w.area(0), 0, w.m.o1))
 
     def test_d5_threshold(self):
-        """D5: the build's threshold is the manifest's (build.py's default unless BE_WT_MIP), the device picks the golden's
-        level for it over Sub FM 0..1000 at notes 48 / 60 / 72; and the rows Jeff's decision asked for, from the golden at
-        1.25 (clean), 1.5, 1.75, 2.0: the level each amount plays and the brightness / alias rows (printed)."""
-        self.assertEqual(WT_THR, build.wt_mip_threshold(), "the manifest's threshold (build.py's default unless BE_WT_MIP)")
+        """D5: the build's threshold is the manifest's alone (W2 review: not the test-time environment, so an alternate image
+        passes as built), in range, and labelled: a non-default value suffixes the version (build.wt_mip_suffix). The
+        device picks the golden's level for it over Sub FM 0..1000 at notes 48 / 60 / 72, A scanned and A's peak known. And
+        the rows Jeff's decision asked for, from the golden at 1.25 (clean), 1.5, 1.75, 2.0 (A's peak known, the device's
+        Sub FM path): the level each amount plays, the on-grid centroid, the on-grid energy above harmonic 16 (the brightness
+        row) and the energy off the FM grid (alias), over a window after the last level change (printed)."""
+        self.assertTrue(1.0 <= WT_THR <= 4.0, WT_THR)
+        suf = build.wt_mip_suffix(WT_THR)
+        self.assertEqual(suf == "", WT_THR == build.WT_MIP_DEFAULT)
+        if suf:
+            self.assertTrue(MAN["version"].endswith(suf), (MAN["version"], suf))
+        else:
+            self.assertNotIn("-mip", MAN["version"])
         w = WtRd(G.wt_saw_frames(200))
         for note in (48, 60, 72):
             rate = wt_rate(note); inc = float(f32(rate) * f32(1 / 2048)); kn = G.wt_ladder(rate)
@@ -6023,24 +6240,25 @@ class WtFmW2(unittest.TestCase):
                 I = G.an_index32(v)
                 st = G.wt_state(idx=3, frac=0.2, frame=0, flag=0, k=kn)
                 line = wt_line(inc, 256, I, I)
-                _, gst, ks = G.wt_read_block(w.tab, st, 0, rate, 256, line, WT_THR)
-                w.set(st)
-                _, got, _ = w.block(0, rate, 256, line)
-                self.assertEqual(got["mip"], gst["mip"], f"note {note} Sub FM {v}")
+                for pa in (0.0, float(f32(inc * 0.5))):
+                    _, gst, ks = G.wt_read_block(w.tab, st, 0, rate, 256, line, WT_THR, pa=pa)
+                    w.set(st)
+                    _, got, _ = w.block(0, rate, 256, line, pa)
+                    self.assertEqual(got["mip"], gst["mip"], f"note {note} Sub FM {v} pa {pa}")
         t = G.wt_build_levels(G.wt_saw_frames())
         lines = []
         for note, c in ((60, 12), (72, 22)):
             rate = float(f32(c / 4096 * 2048))
             for v in (250, 500, 1000):
-                y, _, ks = G.wt_fm_run(t, rate, 18, v, mutant="fixed_mip")
-                r0 = G.wt_spectrum_rows(y[-4096:], c, c // 2)
-                row = [f"note~{note} SubFM {v}: note level {r0[0]:.2f}h {r0[1]:.1f}dB"]
-                for thr in (1.25, 1.5, 1.75, 2.0):
-                    y, _, ks = G.wt_fm_run(t, rate, 18, v, thr=thr)
-                    r = G.wt_spectrum_rows(y[-4096:], c, c // 2)
-                    row.append(f"{thr}: L{ks[-1][1]} {r[0]:.2f}h {r[1]:.1f}dB")
+                row = [f"note~{note} SubFM {v}:"]
+                for thr in (None, 1.25, 1.5, 1.75, 2.0):
+                    y, _, ks = G.wt_fm_run(t, rate, 24, v, thr or 1.25, mutant="fixed_mip" if thr is None else None)
+                    self.assertEqual(len({k for k in ks[8:]}), 1, f"steady over the window: {ks}")
+                    cen, al, hf = G.wt_spectrum_rows(y[-4096:], c, c // 2)
+                    row.append(f"{thr or 'note level'}: L{ks[-1][1]} {cen:.2f}h hf {hf:.1f} al {al:.1f}")
                 lines.append(" | ".join(row))
-        print("\n  WT FM W2 D5 rows (level, centroid in carrier harmonics, alias dB):\n    " + "\n    ".join(lines), file=sys.stderr)
+        print("\n  WT FM W2 D5 rows (level, on-grid centroid in carrier harmonics, on-grid energy above harmonic 16 dB, "
+              "alias dB):\n    " + "\n    ".join(lines), file=sys.stderr)
 
     def test_sizes_and_cost(self):
         """Plan 8 W2: the reader's parts (the loops wt_rd, wt_rdf, wt_rdx; wt_play, wt_mip_for), held to their W2 size (the
@@ -6058,10 +6276,10 @@ class WtFmW2(unittest.TestCase):
         size = lambda part: sizes[part] if part in sizes else next(v for k, v in sizes.items() if part in k)
         parts = {p: size(p) for p in ("wt_rd", "wt_rdf", "wt_rdx", "wt_play", "wt_mip_for")}
         total = sum(parts.values())
-        # plan 8 W2's exit is 1.5 KB; M at W2: 1,724 (rd_q 256, rd_qx 316, rd_qm 380, wt_play 728, wt_mip_for 44): missed by
-        # 188 B (the B route in all three loops, rd_qx kept apart from rd_qm because the shared loop spills to 60 a sample,
+        # plan 8 W2's exit is 1.5 KB; M at W2 as built: 1,796 (rd_q 256, rd_qx 316, rd_qm 380, wt_play 800, wt_mip_for 44; the
+        # review's wait bit and A's known peak +72): missed by 260 B (the B route in all three loops, rd_qx kept apart from rd_qm because the shared loop spills to 60 a sample,
         # wt_play's mip choice and handoff larger than the plan's 250-400). Bound: the measured size, not the target
-        self.assertLessEqual(total, 1760, f"the reader's parts {parts}")
+        self.assertLessEqual(total, 1830, f"the reader's parts {parts}")
         w = WtRd()
         rate = wt_rate(60); inc = float(f32(rate) * f32(1 / 2048))
         st = G.wt_state(idx=9, frac=0.1, frame=0, flag=0, k=3)

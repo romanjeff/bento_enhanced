@@ -1166,14 +1166,15 @@ def fm12_bessel(y2, cc, cm, I, pc0, qm0, walk=0.0, eps_c=SINQ_ERR, eps_m=FM12_EP
 # frame's tail: stock's data, played as it is).
 # The block (3.4): stock's ladder on a pending flag; the phase in from (idx + frac) / len at the note's level; the mip
 # choice from the peak step (the rule's arithmetic is the device's, float32, wt_peak: a decision, not a sample); one change
-# a block (a frame change crossfades the frame at the mip playing and defers a mip change; else a mip change crossfades the
-# two levels); each sample read at the phase, then the phase advanced by di = inc + I_j a_j + J_j b_j, clamped to +-INC_MAX,
-# wrapped mod 1 both ways; crossfade weight (j + 1) / n; out: idx, frac at the note's len, the frame playing, mipcur (HOME
-# after a mip-home block, the line None, back at the note's level).
+# a block (W2 review: a frame change crossfades the frame at the mip playing and defers a wanted mip change, marking it
+# (st["wait"]); the next block changes the mip and defers the frame; else a mip change crossfades the two levels); each
+# sample read at the phase, then the phase advanced by di = inc + I_j a_j + J_j b_j, clamped to +-INC_MAX, wrapped mod 1
+# both ways; crossfade weight (j + 1) / n; out: idx, frac at the note's len, the frame playing, mipcur (HOME after a
+# mip-home block, the line None, back at the note's level).
 WT_HOME = 0xFF
 WT_LEVELS = 7
 WT_MIP_HYST = 0.84                  # D5: hysteresis derived from the one threshold (stock's 1.25 -> 1.05, plan 3.4)
-WT_RD_MUTANTS = ("clamp_wrap", "fixed_mip", "xf_reversed", "units", "no_skew", "no_hyst", "read_late")
+WT_RD_MUTANTS = ("clamp_wrap", "fixed_mip", "xf_reversed", "units", "no_skew", "no_hyst", "read_late", "no_wait")
 
 
 def wt_level_off(k): return 0x100000 - (0x100000 >> k)
@@ -1213,12 +1214,14 @@ def wt_mip_for(x, thr, k):
     return k
 
 
-def wt_peak(inc, line, n):
+def wt_peak(inc, line, n, pa=0.0):
     """The peak step in base-table samples a sample, float32 as the M7 forms it: (inc + I max|a| + J max|b|) 2048, I, J the
-    larger end of each index line (I_n = f32(ia + dia n)), max over every 4th sample of the block (the scan's stride)."""
+    larger end of each index line (I_n = f32(ia + dia n)); max|a| = pa when it is known (Sub FM's A: inc_sub x the sub
+    wave's peak, W2 review), else, and max|b| always, the max over every 4th sample of the block (the scan's stride)."""
     a, ia, dia, b, ib, dib = line
     f = np.float32
-    ma = f(np.max(np.abs(np.asarray(a, f)[0:n:4]))); mb = f(np.max(np.abs(np.asarray(b, f)[0:n:4])))
+    ma = f(pa) if pa else f(np.max(np.abs(np.asarray(a, f)[0:n:4])))
+    mb = f(np.max(np.abs(np.asarray(b, f)[0:n:4])))
     I = max(abs(f(ia)), abs(f(_fma32(f(ia), f(dia), f(n)))))
     J = max(abs(f(ib)), abs(f(_fma32(f(ib), f(dib), f(n)))))
     x = f(_fma32(f(_fma32(f(inc), I, ma)), J, mb))
@@ -1233,19 +1236,22 @@ def wt_mip_choice(x, kn, kc, thr, mutant=None):
     return up if up > kc else dn if dn < kc else kc
 
 
-def wt_state(idx=0, frac=0.0, frame=-1, flag=1, mip=WT_HOME, k=0):
-    """Stock's kernel state (+0xC0 .. +0xD8) plus mipcur; the default is a note start's (kernel reset 0x080A1FC0)."""
+def wt_state(idx=0, frac=0.0, frame=-1, flag=1, mip=WT_HOME, k=0, wait=0):
+    """Stock's kernel state (+0xC0 .. +0xD8) plus mipcur and the mip-wait bit; the default is a note start's (kernel reset
+    0x080A1FC0)."""
     return dict(frac=float(np.float32(frac)), idx=int(idx), frame=int(frame), off=wt_level_off(k), D=1 << k,
-                len=wt_level_len(k), flag=int(flag), mip=int(mip))
+                len=wt_level_len(k), flag=int(flag), mip=int(mip), wait=int(wait))
 
 
-def wt_read_block(tab, st, req, rate, n, line=None, thr=1.75, mutant=None):
+def wt_read_block(tab, st, req, rate, n, line, thr, mutant=None, pa=0.0):
     """One reader block. tab: the table (float32, 0x100000); st: wt_state(); req: Position's frame; rate: stock's rate (f32);
-    line: None (no FM: the mip-home block) or (a, ia, dia, b, ib, dib), a / b the modulators in increment units. Returns
+    line: None (no FM: the mip-home block) or (a, ia, dia, b, ib, dib), a / b the modulators in increment units; thr: the
+    build's threshold (no default: the manifest's wt_mip, or a fixture's); pa: max|a| when known (0: scanned). Returns
     (y float64, the new state, the levels read (kc, kt)). Mutants (7.1 and the plan's 7.5): "clamp_wrap" (the phase cannot
     go backward: a wrap by compare that fails on reverse), "fixed_mip" (the note's level always), "xf_reversed" (crossfade
     weights reversed), "units" (the phase advanced in the note's samples, not cycles), "no_skew" (levels read unskewed),
-    "no_hyst", "read_late" (the phase advanced before the read, the reader prototype's order)."""
+    "no_hyst", "read_late" (the phase advanced before the read, the reader prototype's order), "no_wait" (W2 as first
+    built: a frame change always wins, so a Position moving every block holds the mip off)."""
     if mutant not in (None,) + WT_RD_MUTANTS: raise ValueError(f"mutant must be one of {WT_RD_MUTANTS}")
     st = dict(st)
     rate = float(np.float32(rate))
@@ -1263,7 +1269,7 @@ def wt_read_block(tab, st, req, rate, n, line=None, thr=1.75, mutant=None):
         kt, a, b, ia, dia, ib, dib = kn, np.zeros(n), np.zeros(n), 0.0, 0.0, 0.0, 0.0
     else:
         a, ia, dia, b, ib, dib = line
-        kt = wt_mip_choice(wt_peak(inc, line, n), kn, kc, thr, mutant)
+        kt = wt_mip_choice(wt_peak(inc, line, n, pa), kn, kc, thr, mutant)
     if mutant == "fixed_mip": kc = kt = kn
     j = np.arange(n, dtype=np.float64)
     di = inc + (ia + dia * j) * np.asarray(a, np.float64)[:n] + (ib + dib * j) * np.asarray(b, np.float64)[:n]
@@ -1281,31 +1287,36 @@ def wt_read_block(tab, st, req, rate, n, line=None, thr=1.75, mutant=None):
         s0 = t[base + i]; s1 = t[base + (i + 1) % Lk]
         return s0 + fr * (s1 - s0)
     w = (j + 1) / n
-    if req != fcur:
-        p, q = read(kc, fcur), read(kc, req); kt = kc
+    wait, fout = 0, req
+    if req != fcur and (kt == kc or not st.get("wait", 0) or mutant == "no_wait"):
+        p, q = read(kc, fcur), read(kc, req)
+        wait = int(kt != kc and mutant != "no_wait"); kt = kc
     elif kt != kc:
-        p, q = read(kc, fcur), read(kt, fcur)
+        p, q = read(kc, fcur), read(kt, fcur); fout = fcur
     else:
         p = q = read(kc, fcur)
     y = q + w * (p - q) if mutant == "xf_reversed" else p + w * (q - p)
     x = ph[-1] * L
-    st["idx"] = int(math.floor(x)) % L; st["frac"] = x - math.floor(x); st["frame"] = req
+    st["idx"] = int(math.floor(x)) % L; st["frac"] = x - math.floor(x); st["frame"] = fout
     st["mip"] = WT_HOME if line is None and kt == kn else kt
+    st["wait"] = wait
     return y, st, (kc, kt)
 
 
-def wt_fm_run(tab, rate, blocks, v, req=0, n=256, thr=1.75, inc_sub=None, wave="sine", st=None, mutant=None):
+def wt_fm_run(tab, rate, blocks, v, thr, req=0, n=256, inc_sub=None, wave="sine", st=None, mutant=None):
     """Steady Sub FM for some blocks (D5's rows): the sub an octave down (inc_sub = inc / 2 unless given), A = inc_sub x the
-    sub's wave, the index I = an_index32(v) held (v0 = v1). Returns (y, st, the levels each block played)."""
+    sub's wave (its known peak pa = inc_sub: the device's for the Sine), the index I = an_index32(v) held (v0 = v1).
+    Returns (y, st, the levels each block played)."""
     inc = float(np.float32(rate) * np.float32(1 / 2048))
     inc_sub = inc / 2 if inc_sub is None else inc_sub
     st = st or wt_state()
     q, ys, ks = 0.0, [], []
     I = an_index32(v)
+    pa = float(np.float32(inc_sub))
     for _ in range(blocks):
         m, q = sub_mod(wave, inc_sub, n, q)
         a = (m * inc_sub).astype(np.float32).astype(np.float64)
-        y, st, k = wt_read_block(tab, st, req, rate, n, (a, I, 0.0, a, 0.0, 0.0) if v else None, thr, mutant)
+        y, st, k = wt_read_block(tab, st, req, rate, n, (a, I, 0.0, a, 0.0, 0.0) if v else None, thr, mutant, pa)
         ys.append(y); ks.append(k)
     return np.concatenate(ys), st, ks
 
@@ -1318,20 +1329,24 @@ def wt_saw_frames(h=None):
     return np.tile(w.astype(np.float32), (256, 1))
 
 
-def wt_spectrum_rows(y, cycles_c, cycles_m):
-    """(centroid in carrier harmonics, alias fraction dB) of a steady FM run y whose carrier makes cycles_c and modulator
-    cycles_m whole cycles in it: every component of the band-limited FM tone lies on the modulator's grid (multiples of
-    cycles_m bins); the alias row is the energy off that grid (Hann window, the grid bins +-1 kept) over the total."""
+def wt_spectrum_rows(y, cycles_c, cycles_m, hf=16):
+    """(on-grid centroid in carrier harmonics, alias dB, HF dB) of a steady FM run y that is periodic over its length (the
+    carrier cycles_c and the modulator cycles_m whole cycles in it; W2 review: a rectangular window on exact bins, so the
+    grid is exact): every component of the band-limited FM tone lies on the modulator's grid (multiples of cycles_m bins).
+    alias: the energy off the grid over the total; centroid: of the on-grid energy (alias not counted as brightness); HF:
+    the on-grid energy above carrier harmonic hf (16: level 6's table limit, so what a coarser level removes) over all
+    on-grid energy (DC out), the brightness row D5 is read from."""
     N = len(y)
-    Y = np.abs(np.fft.rfft(y * np.hanning(N))) ** 2
+    Y = np.abs(np.fft.rfft(y)) ** 2
     k = np.arange(len(Y))
-    on = np.zeros(len(Y), bool)
-    for g in range(0, len(Y), cycles_m):
-        on[max(g - 1, 0):g + 2] = True
-    tot = float(np.sum(Y[2:])) or 1e-30
-    alias = float(np.sum(Y[~on])) / tot
-    cen = float(np.sum(k[2:] * Y[2:]) / tot) / cycles_c
-    return cen, 10 * np.log10(max(alias, 1e-30))
+    on = (k % cycles_m) == 0
+    on[0] = False
+    tot = float(np.sum(Y[1:])) or 1e-30
+    alias = float(np.sum(Y[1:][~on[1:]])) / tot
+    E = float(np.sum(Y[on])) or 1e-30
+    cen = float(np.sum(k[on] * Y[on]) / E) / cycles_c
+    hfe = float(np.sum(Y[on & (k > hf * cycles_c)])) / E
+    return cen, 10 * np.log10(max(alias, 1e-30)), 10 * np.log10(max(hfe, 1e-30))
 
 
 # ---- self-test ----------------------------------------------------------------------------------------------------------
@@ -1886,6 +1901,7 @@ def _selftest():
                 self.assertGreater(spec[m], 100 * FM_ENV_TOL / 16, m)       # at I = 16, far above the f32 bound
             self.assertGreater(spec["lin_decay"], 0.2)
 
+    THR = 1.75                                                   # WtRead: a fixture threshold (not the build's: test_analog reads the manifest)
     class WtRead(unittest.TestCase):                             # BE4.44 W2 (docs/plan-wt-fm.md 3.4, 7.1)
         @staticmethod
         def sine_table():
@@ -1910,7 +1926,7 @@ def _selftest():
             st = wt_state(idx=17, frac=0.25, frame=9, flag=0, k=3)
             inc = float(np.float32(rate) * np.float32(1 / 2048))
             z = np.zeros(256)
-            y, s2, ks = wt_read_block(t, st, 9, rate, 256, (z, 0.0, 0.0, z, 0.0, 0.0))
+            y, s2, ks = wt_read_block(t, st, 9, rate, 256, (z, 0.0, 0.0, z, 0.0, 0.0), THR)
             self.assertEqual(ks, (3, 3))
             p0 = (17.25 / 256)
             self.assertAlmostEqual(((s2["idx"] + s2["frac"]) / 256 - p0 - 256 * inc) % 1.0, 0.0, delta=1e-12)
@@ -1927,10 +1943,10 @@ def _selftest():
             z = np.zeros(256)
             for mut, lo, hi in ((None, 0.0, 2e-3), ("no_skew", 0.05, 9.0)):
                 st5 = dict(st)
-                y5, _, ks = wt_read_block(t, st5, 3, 2.79, 256, (z, 0.0, 0.0, z, 0.0, 0.0), mutant=mut)
+                y5, _, ks = wt_read_block(t, st5, 3, 2.79, 256, (z, 0.0, 0.0, z, 0.0, 0.0), THR, mutant=mut)
                 self.assertEqual(ks, (5, 2), "mip 5 held, back to the note's level 2 (the peak is far below)")
                 g = float(np.sum(STOCK_FIR))
-                y2, _, _ = wt_read_block(t, dict(st, mip=WT_HOME), 3, 2.79, 256, (z, 0.0, 0.0, z, 0.0, 0.0))
+                y2, _, _ = wt_read_block(t, dict(st, mip=WT_HOME), 3, 2.79, 256, (z, 0.0, 0.0, z, 0.0, 0.0), THR)
                 # (the crossfade's first sample is mostly level 5: compare it to level 2 after the gains)
                 d = abs(y5[0] / g ** 5 - y2[0] / g ** 2)
                 self.assertTrue(lo <= d <= hi, (mut, d))
@@ -1945,10 +1961,33 @@ def _selftest():
             line = (a, 6.0, 0.0, a, 0.0, 0.0)
             self.assertLess(float(np.min(inc + 6.0 * a)), -4 * inc, "control: through zero")
             st = wt_state(idx=100, frac=0.5, frame=0, flag=0, k=3)
-            _, s2, _ = wt_read_block(t, st, 0, rate, n, line)
+            _, s2, _ = wt_read_block(t, st, 0, rate, n, line, THR)
             self.assertAlmostEqual(((s2["idx"] + s2["frac"]) / 256 - 100.5 / 256 - n * inc) % 1.0, 0.0, delta=1e-9)
-            _, s3, _ = wt_read_block(t, st, 0, rate, n, line, mutant="clamp_wrap")
+            _, s3, _ = wt_read_block(t, st, 0, rate, n, line, THR, mutant="clamp_wrap")
             self.assertGreater(abs((s3["idx"] + s3["frac"]) - (s2["idx"] + s2["frac"])), 0.3)
+
+        def test_one_change_waits_one_block(self):
+            """W2 review: Position moving every block with a heavy index (the mip wants to go coarser) and then with the line
+            gone (the mip-home block): each change waits one block at most, alternating (frame, mip, frame, ...); the frame
+            playing is never more than one block behind. "no_wait" (W2 as first built) starves the mip both ways."""
+            t = wt_build_levels(wt_saw_frames(200))
+            rate, n = 5.58131, 256
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            a = np.sin(2 * np.pi * 2 * np.arange(n) / n) * inc / 2
+            for mut in (None, "no_wait"):
+                st = wt_state(idx=11, frac=0.3, frame=5, flag=0, k=3)
+                mips, frames = [], []
+                for blk in range(12):
+                    line = (a, 12.0, 0.0, a, 0.0, 0.0) if blk < 6 else None
+                    _, st, _ = wt_read_block(t, st, 6 + blk, rate, n, line, THR, mutant=mut)
+                    mips.append(st["mip"]); frames.append(st["frame"])
+                if mut is None:
+                    self.assertEqual(mips[0], 3, "the frame first")
+                    self.assertGreater(mips[1], 3, "the mip change the block after the frame's")
+                    self.assertEqual(mips[6:8], [mips[5], WT_HOME], "mip home the block after the frame's")
+                    self.assertTrue(all(6 + b - f <= 1 for b, f in enumerate(frames)), frames)
+                else:
+                    self.assertLessEqual(set(mips), {3, WT_HOME}, "starved: the mip never leaves the note's level")
 
         def test_the_mip_rule(self):
             """D5 against a hand table (thr 1.25, hysteresis 1.05): coarser at once, finer only below 1.05 x 2^k, never
@@ -1973,8 +2012,8 @@ def _selftest():
                                ("fixed_mip", (a, 12.0, 0.0, a, 0.0, 0.0), st), ("clamp_wrap", (a, 12.0, 0.0, a, 0.0, 0.0), st),
                                ("units", None, st), ("read_late", None, st),
                                ("no_hyst", (a, 2.6, 0.0, a, 0.0, 0.0), dict(st, mip=4))):
-                y0, s0, k0 = wt_read_block(t, s, 5, rate, n, line)
-                y1, s1, k1 = wt_read_block(t, s, 5, rate, n, line, mutant=m)
+                y0, s0, k0 = wt_read_block(t, s, 5, rate, n, line, THR)
+                y1, s1, k1 = wt_read_block(t, s, 5, rate, n, line, THR, mutant=m)
                 self.assertGreater(float(np.max(np.abs(y1 - y0))) + abs(s1["idx"] - s0["idx"]) + (k1 != k0), 1e-3, m)
 
     L = unittest.defaultTestLoader

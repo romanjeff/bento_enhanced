@@ -82,6 +82,9 @@ static_assert(sizeof(AnOsc) <= AN_PROPS_OFF, "Analog state must stay below the o
 #define WT_MIPS 7u                    /* stock's mip levels D = 1 .. 64 */
 #define WT_HOME 0xFFu                 /* mipcur: the reader holds no private mip (any value >= WT_MIPS reads as HOME) */
 #define WT_FEED_B 1u                  /* wflags: this OSC1 feeds buffer B (OSC2 has FM 1>2), set by an_prop */
+#define WT_MIP_WAIT 2u                /* wflags (W2 review): the last reader block deferred a mip change for a frame change, so
+                                       * this one changes the mip and defers the frame (each waits one block at most). Set only
+                                       * while the reader holds a mip (mipcur != HOME), so tier 2 never sees it set */
 /* the saved runs, as (offset, words) in the area: the tag pair; the WT state (mipcur, wflags), fmk and wxf; msub, m12, fme
  * and AnProps (one run: they are contiguous) */
 #define WT_RUN0 0u
