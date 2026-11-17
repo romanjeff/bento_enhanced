@@ -1155,3 +1155,131 @@ rd_qm). That makes W3's measured-size gate the real decision point, and makes th
   and trim (rd_qx into rd_q, R2) if drums do not fit. Risk accepted: trims may be forced later.
 - Defaults taken without asking: the reader-parts exit (1.5 KB) missed by 260 B is accepted; the continuity bound stays
   at W2's tighter 0.01.
+
+## W3 result (2026-11-17, branch be444)
+
+A and B into Wavetable carriers, the envelope on them, ramps, E3 / skip, D3, BE_WT_MIP=off, the black box, costs, aliasing and
+brightness rows. Commit 5c81a90; builds ~/bento/out/be444w3b (default, 1.6.8, wt_mip 1.75) and ~/bento/out/be444w3b-off
+(BE_WT_MIP=off, v4.44-mipoff). D3's rule is in, so a W3 image may go to the device (none built for it yet).
+
+**CPU re-estimate at W3's start (before any W3 code; M on the W2 image be444w2r, scratch W3/cost0.py).** Per voice-block,
+note 60, stock's builder saw (200 harmonics), a sine sub, I = 16; an_enter plus both oscillators' whole renders (stock's
+render included where it plays): stock Wavetable voice 14,119; WT1 Sub FM 1000 25,181 (its entry block 30,944: the rd_qm
+crossfade); the same with Position moving every block 28,245; Analog full FM voice 29,104 on this rig (BE4.43's 28,929 on
+FmEnv's). From these (I on M):
+- An FM'd Wavetable oscillator costs about +11.1k over stock's render including the sub copy (about 4.4k, once a
+  voice-block), so about +6.7k for the reader and body alone: **about +95 % of stock's render, not section 6's +50 %** (the
+  loops are 34.1 a sample, not 29, and wt_play adds about 0.9k a block).
+- Position moving: +3.1k a voice-block (section 6: +2.6k).
+- Voices: WT1 Sub FM about 25.2k (section 6: about 22k); FM 1>2 from an Analog OSC1 into a WT OSC2 (W3's new path) about
+  24.2k; the same with the Analog OSC1's own Sub FM (the mixed full FM voice) about 31.2k; W4's full Wavetable voice (WT1
+  Sub FM + WT1 -> WT2 FM 1>2) about 25.2 + 6.7 + 0.8 (B) = **32.7k, about 13 % over S3's 28,929**.
+- Gates set from this (WtFmW3.W3_GATES): WT1 Sub FM <= 26,000 (and <= S3), A1 -> WT2 FM 1>2 <= 25,500, A1 Sub FM -> WT2
+  FM 1>2 <= 32,000; Position every block and the two new cases: every block <= 35,309 (the heaviest existing voice).
+
+**Built (S).**
+- feeds / an_osc: an Analog OSC1 feeds B to a tagged Wavetable OSC2 with FM 1>2 or its ramp memory (an_osc's OSC1 gate reads
+  OSC2's fm12 / m12 when its magic has the tag's high half; feeds checks the pair). The Wavetable OSC2 plays B through
+  wt_body's fm_setup line; W2's transitional fallback is taken only when B is missing (fmx=).
+- wt_body: D3 (below); each reader block counted: SaStats renders and cycles (finish() also flushes on r->oscs, so an
+  all-Wavetable voice reaches the stats line), SaFmStats.wt (+16) and wt_mip (+20, rd_qm blocks: wt_play returns its loop).
+  M4 an_print: ` wt=<reader blocks>/<mip changes>` after fmx=. fm= already counted Wavetable FM (fm_setup).
+- D3 (Jeff, 2026-11-17): while an Analog OSC2 is synced to the Wavetable OSC1, OSC1's Sub FM plays as 0 (a local AnProps copy
+  with subfm 0) and msub is dropped at once. Road not taken: ramping out over one block, which would leave WT1's phase off
+  the slave's constant-rate copy until the next note. Value kept. With no mip held the block is stock's render (tier 2),
+  so mixed sync plays as BE4.43.
+- BE_WT_MIP=off: build.py passes WT_MIP_OFF (and stock's 1.25 for the unused threshold), version -mipoff, manifest wt_mip
+  "off". wt_play skips the peak and the choice: the note's level, mipcur always HOME, so the ramp-out block (its line
+  ending at index 0) hands back straight to stock's render; no rd_qm and no mip-home block. p3_golden.wt_read_block takes
+  thr "off".
+- The envelope, ramps, E3 and the skip needed no new code: wt_fm_osc steps fm_env_step (W1) and wt_body calls fm_setup (W2),
+  the code Analog runs. W3 tests them on Wavetable carriers.
+
+**Tests (M), test_analog WtFmW3 (11).**
+- `wt_capture` taps every wt_play call (state, WtBlk, FmIn, samples, loop kind); `wt_replay` checks each against
+  p3_golden.wt_read_block from its captured state. At the voice the phase bound is 1e-7 + 2^-23 sum |di| (M: 1.4e-7 at index
+  16; 7.1's 1e-7 was set on W2's small synthetic lines), and the samples are checked against the band the golden spans when
+  its start phase moves by the measured phase difference (a 1e-7-cycle difference moves a builder-saw sample at an edge by
+  several 1e-6). Worst: 0.07 to 0.12 of the bound.
+- A into a WT OSC1 (sine and builder saw, Position moving, Sub FM 0 -> 250 -> 1000 -> 500 -> 0 and on again): every block
+  the golden's, every line the index law's (SubFm.lines), pa = inc_sub, then the mip-home block (a frame block first when
+  Position moves), then stock's render; fm= counted.
+- B from an Analog OSC1 into a WT OSC2 (Sub FM 0 / 600, and OSC1 silent: E3 (a)): B is check_feeds' golden, OSC2 reads
+  exactly that B on FM 1>2's line, every block the golden's, fmx= 0, feeding stops after the ramp out.
+- Envelope (the exit): FmEnv's four OSC1 cases on a WT OSC1, and FM 1>2 Atk 3 / Dec 4 on a WT OSC2: every line is
+  fm_env_lines' f32 line **bit for bit and equal to the Analog carrier's line** in the same case. It keeps time through no
+  amount and through Level 0 (frozen as stock's, msub dropped, from 0 when heard): the Analog lines again.
+- Ramps 0 -> 4 -> 0 over 3 blocks at notes 48 / 72: ramp in, ramp out ending at 0, the mip-home block, then stock's kernel
+  continues bit for bit from the handed-back state (wt_kmodel).
+- Skip: 512-frame blocks with Sub FM 700 play stock 1.6.8's render bit for bit; fmx= counts each; no reader.
+- D3: Sub FM 1000 vs 0 under mixed sync: the voice's output, OSC1's kernel and the slave's phase copy byte for byte, no reader
+  call, value kept; sync off at block 6 plays FM (from 0), on again at block 10 stops it (at most the home block).
+- BE_WT_MIP=off: build.py's parse, suffix and defines, and the golden, on every build; on the off image the note's level at
+  notes 36 / 60 / 84 under index 16, nothing held, every block the golden's, stock's continuation after the handback.
+- Black box: fm=, wt= and wt=.../mip equal what the tap saw; blocks=, renders= and peak_cyc= move for an all-Wavetable voice.
+- Costs (below), and the alias / brightness rows (device = golden within 1e-5).
+- Reviewed changes: Fm12.test_mixed_voices and both "amounts" tests ("osc2 wavetable": OSC1 now feeds the WT OSC2's FM 1>2;
+  that rig has no WAV, so nothing reads it). P3Identity.test_q1_plays_no_amount drops "osc2 wavetable" (+13 % there: the FM
+  parts loop and an_feed; it plays now), as Q6 moved the both-Analog cases out. test_synth_ui's black-box line (wt=). On an
+  off image the W2 mip-rule tests skip (`wt_rule`).
+
+**Mutations (M, private copies, scratch W3/mut.sh and mut2.sh; each built and its test run): all red.** 17 (D3 removed); D3
+ramping out instead of dropping msub; feeds for an Analog OSC2 only; the OSC1 gate for an Analog OSC2 only; finish() on
+voices only; wt= not counted; wt_mip also counting frame blocks (it survived the first form of the test, which had no frame
+block; the test now moves Position under FM); the fm_env_step call dropped; msub kept while frozen; the skip played by the
+reader; on an off build, the mip rule put back, and mipcur held under FM.
+
+**Sizes (M).** Default: DSP 27,556 B, **13,148 B free** of 40,704 (W2 27,108: +448). BE_WT_MIP=off: DSP 27,108 B. Synth UI
+15,886 B (+28, the wt= field), M4 code 24,424 B, M7 C slice 15,368 B. Image 0x189478, **16,060 B to PROVEN_MAX**. WT FM DSP so
+far 3,760 B (W1 752 + W2 2,560 + W3 448) against section 4's planned 2.4-3.8 KB, with W4 to come. Drums trial, for
+information only (an LF clone of 5c81a90 with main's committed 3597e8e merged, not committed, test_keys / test_native_props
+from be444, BE_ENABLE=drums; scratch trialW3): DSP 33,612 B, **7,092 B free**, image 0x18af48 (9,196 B to PROVEN_MAX);
+test_drums 33 (1 skipped) and test_drum_ui 46 (1 skipped) OK. No reserve taken (Jeff: the drums budget is set aside).
+
+**CPU (M).** P3Identity, 48 cases: worst **1.0180** (mod dev=False, 111,873 / 109,899), total 1.0089, under the 1.95 % stop
+line. Tier 2 +75..+118, worst 1.0174 x stock's render; untagged +27 (unchanged). Voices (median / max a voice-block, note 60,
+I 16): stock WT 14,155; **WT1 Sub FM 25,283** (gate 26,000; S3 28,929); A1 -> WT2 FM 1>2 20,887 (gate 25,500); A1 Sub FM ->
+WT2 FM 1>2 30,763 / 30,844 (gate 32,000; 6 % over S3); Analog full FM 28,936; WT1 Sub FM with Position every block 28,347 /
+28,414; new case 1, Position LFO + FM Dec 12: 28,379 / 30,996; new case 2, an index parked on the 1.75 threshold (Sub FM
+208, +-3 a block): 25,237 / 30,720 (the entry block), levels [3, 4, 4, ...]: one change, no toggling.
+
+**Aliasing and brightness rows (M, device = golden).** Each cell: level, alias dB at 96 kHz / after stock's decimator, on-grid
+energy above harmonic 16 dB.
+
+| note ~, Sub FM | this build (1.75) | note level (off) | 1.25 |
+|---|---|---|---|
+| 60, 250 | L3 -38.2 / -42.3, -19.3 | L3 -38.2 / -42.3, -19.3 | L4 -44.4 / -49.5, -19.0 |
+| 60, 500 | L4 -35.8 / -42.3, -17.2 | L3 -32.6 / -35.7, -15.9 | L5 -44.9 / -45.7, -17.7 |
+| 60, 1000 | L5 -29.8 / -35.0, -10.8 | L3 -23.0 / -26.4, -9.3 | L6 -37.5 / -40.5, -11.8 |
+| 72, 500 | L5 -33.4 / -40.0, -17.1 | L4 -29.2 / -34.6, -16.2 | L6 -42.1 / -43.5, -18.3 |
+| 72, 1000 | L6 -28.1 / -33.2, -11.5 | L4 -20.1 / -25.2, -10.2 | L6 -28.1 / -33.2, -11.5 |
+| 96, 500 | L6 -21.1 / -25.9, -20.3 | same | same |
+| 96, 1000 | L6 -11.7 / -16.6, -15.2 | same | same |
+
+The off image ("never go darker") keeps about 1.3 to 1.5 dB more energy above harmonic 16 at full Sub FM and aliases about 7
+to 8 dB more than the default. At note 96 all three play level 6 (pinned).
+
+**Suites (M, ~/bento/out/be444w3b, from the worktree's mods/m1; skips in brackets):** diag 92 (6), polyat 51 (2), conditions
+18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20), notemod 16, notemod_route 8, notemod_real 14, slice 20,
+s3_m7 25, step_xml 11, keys 10, native_props 22, **analog 193** (182 + 11), synth_ui 64 (2), note0 32, p3_golden self-test 51:
+all OK. inst_xml 5 (5) and handles 16 (16) are fully skipped. On be444w3b-off: analog 193 with 8 skipped (the W2 mip-rule
+tests); its two first-run failures (test_mip_off's plain bound at index 16, WtFmW2.test_sizes_and_cost with no rd_qm) were
+fixed in the tests and re-run on it: OK.
+
+**Plan items found wrong or changed in W3.**
+1. Section 6's FM'd WT oscillator at "+50 % of stock's render" is about +95 % (reader and body +6.7k on a 7.1k render); the
+   WT voice rows are higher (WT1 Sub FM 25.2k, not 22k).
+2. **S3 will be missed at W4:** the full Wavetable FM voice is re-estimated at about 32.7k against 28,929 (I, +13 %), and the
+   mixed full FM voice built at W3 measures 30,763 (+6 %). Levers if wanted: the unrolled reader (section 6: about 24-25 a
+   sample, about -2.4k a reader block, +150-300 B), then rd_qx merged into rd_q. **Needs Jeff:** accept the re-estimated
+   gates, or take the unroll in W4.
+3. 7.1's phase bound (1e-7 of a cycle) and plain sample bounds hold for W2's synthetic lines on smooth tables only. At the
+   voice (index 16, a builder saw) the f32 step rounding and the table's edges need a bound scaled by sum |di| and a
+   phase-aware sample check (wt_replay). The kernel-level W2 bounds are unchanged.
+4. "Sub FM on WT OSC1 / OSC2 per D2": nothing to build for OSC2 (D2 leaves its Sub FM unplayed since W1).
+5. The black box's "gate words" (S4) were read as the stats fields; no per-oscillator gate dump was added (the black box has
+   no per-voice lines). wt= counts reader blocks only, not tier-2, no-WAV or frozen blocks.
+6. An Analog OSC1 now feeds B to a Wavetable OSC2 that has FM 1>2 even when that OSC2 has no WAV (silent): the cost of B for
+   nothing, as for a silent Analog OSC2. Not gated on the WAV (it would need the table check in OSC1's path).
+7. Section 8's W3 gate "DSP size measured in the merged drums build" is information only now (Jeff: the drums budget is set
+   aside): 7,092 B free there, 13,148 B in the default build (>= 1 KB).
