@@ -583,6 +583,13 @@ the end (the failure this plan exists to prevent), and the merge would land on t
      audible brightness step. Alternatives: threshold 1.5 (brighter, a little aliasing at peaks, more mip changes), or an
      rms-based bound (brighter still, more aliasing at peaks). Brightness rows at 250/500 will show the size of the step.
    - Not recommended now: a per-sample mip crossfade (about 2x reads and cache footprint).
+   - **Decided (Jeff, 2026-11-16): in between, leaning bright.** Some aliasing under heavy FM is accepted as character
+     ("we want this engine to make crazy and interesting sounds"). The coarser-mip threshold is **one named constant**
+     (hysteresis band derived from it), with the default set well above stock's clean 1.25, toward the bright end. W2
+     measures brightness and alias rows at a few candidate values (about 1.5 / 1.75 / 2.0, plus 1.25 as the clean
+     reference) and picks the default; W3/W4 also produce alternate device images, one a step cleaner and one a step
+     brighter (BE_TAG suffixes), so Jeff chooses the final default by ear. The rms-based bound and the per-sample
+     crossfade stay out of BE4.44.
 6. **D6. Budget restatement.** Replace the P3 ceiling (24,044 B) with analog+FM <= 27,600 B, drums (incl. efficiency pass)
    <= 11,500 B, unallocated margin >= 1 KB never spent without your word, and WT FM <= 0.5 KB of M4. Recommended: **yes**,
    with the efficiency-pass range (300-1,000 B) confirmed against the P4 plan.

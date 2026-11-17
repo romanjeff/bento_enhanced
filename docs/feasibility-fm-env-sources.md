@@ -98,3 +98,11 @@ Do sources first: they are cheaper and higher value, and they build the M4 page 
 4. **e0 or e1.** Publish e0 (matches the FM index ramp start; recommended) or e1 (one block more current)?
 5. **Budgets.** Approve raising the DSP and CPU ceilings if S1's measurements exceed the headroom.
 6. **Wavetable oscillators.** Envelope now, or later as "Mod Env" alongside WT FM (recommended: later).
+
+**Decided (Jeff, 2026-11-16): every recommendation accepted.**
+1. Reuse ids 3 and 6 (Env 3 / LFO 3 slots).
+2. Listed right after Env 2.
+3. An unset envelope publishes 1 (consistent with FM depth).
+4. Publish e0.
+5. Raise the DSP and CPU ceilings only by what S1 measures, reported before it is spent.
+6. Envelopes on Wavetable oscillators come with WT FM (BE4.44), not separately.
