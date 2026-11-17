@@ -303,8 +303,9 @@ Tool gotchas it guards against:
 
 | Block | Range | Size | Use |
 |---|---|---|---|
-| M7 DSP window | `0x080D0000..0x080D9000` | 36 KB | trampolines (first 0x100 B: Analog's two, the drums' D1), then the hard-float DSP ELF (Analog + Kick, 12.9 KB in BE4.30) |
-| M7 code | `0x080DA000..` | | trampolines, then `m7.elf` (soft float) |
+| M7 DSP window | `0x080D0000..0x080DA000` | 40 KB (36 KB before BE4.44) | trampolines (first 0x100 B: Analog's two, the drums' D1), then the hard-float DSP ELF (Analog + Kick, 12.9 KB in BE4.30) |
+| M7 code | `0x080DA000..0x080DF000` | | trampolines, then `m7.elf` (soft float) |
+| CTRL (hold shortcuts, M7) | `0x080DF000`, `0x080DF800` | 296 B, 88 B | the pad input hook and the startup stub; at `0x080D9000` / `0x080D9800` before BE4.44 (W0, docs/plan-wt-fm.md 5: moved one page past the M7 slice so the DSP window grows by 4 KB; `build.py check_ctrl_placement`) |
 | COND_UI | `0x081B7000..0x081B7200` | 512 B | probability clamp helpers (84 B used). 4 KB before BE4.30 |
 | M4_CODE | `0x081B7200..0x081BE000` | 28,160 B | the black box (`m4_diag.c`, 24,424 B in BE4.30); 24 KB before BE4.30, when it had 152 B left |
 | HOLD, CTRL, STEP, M4_POLY | `0x081BE000..0x081C5500` | | unchanged by BE4.30 (M4_LIMIT and every block after it keep their address) |
@@ -583,7 +584,7 @@ While a hold button is down, pads don't play notes. PROJ is not a modifier: PROJ
 plays as on stock.
 
 - M7: `m7_controls_input.s` at `0x080D9000` (pad receiver `0x0808D1FE`), startup at
-  `0x080D9800` (`0x080404B6`) initialises only its own state line `0x24048CA0`. Lab's
+  `0x080D9800` (`0x080404B6`; on 1.6.8 since BE4.44: `0x080DF000` / `0x080DF800`) initialises only its own state line `0x24048CA0`. Lab's
   startup also zeroed lock RAM that is heap in our layout, and its UI startup zeroed
   `0x24048000–0x24048800` (our black-box slice): both dropped.
 - M4: `m4_controls.c` (consumer `0x0813F98C`, INST selection observer `0x0813BD10`,

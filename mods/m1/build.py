@@ -37,8 +37,9 @@ FORBIDDEN_FROM = 0x081E0000
 # large projects (Jeff: SPACED). Since v3.16 the heap is stock and the slice
 # lives in unlinked D2 SRAM2 (S.D2_SLICE; both cores' MPUs map it).
 
-# Our M7 code sits in stock's zero gap after the M7 image's data: S.CTRL_INPUT, S.CTRL_STARTUP,
-# then S.M7_TRAMP (trampolines, 1 KB since v3.59), S.M7_CODE .. S.M7_LIMIT (19 KB since v3.59).
+# Our M7 code sits in stock's zero gap after the M7 image's data: S.M7_TRAMP (trampolines, 1 KB since v3.59),
+# S.M7_CODE .. S.M7_LIMIT (19 KB since v3.59) and the hold shortcuts' S.CTRL_INPUT, S.CTRL_STARTUP (1.6.1: below
+# M7_TRAMP; 1.6.8 since BE4.44 W0: the page above M7_LIMIT, so the DSP window reaches M7_TRAMP; check_ctrl_placement).
 # M4 code is appended after stock's image end, from S.APPEND_FROM (see layout() for the blocks).
 # Per-base settings (S2): each stock firmware has its own version line, so a build's version
 # comes from its base, never from an edit before the build. Bump the base's "version" for every
@@ -305,7 +306,7 @@ GROUP_NAMES = {
     "mx": ("EXT_BUILD", "EXT_EVENT", "EV_ENCODER", "MX_BUILD", "MX_ROUTE", "MX_EDIT", "MX_BAR", "MX_EVENT"),
     "analog": ("M7_DSP", "M7_DSP_LIMIT", "DSP_WINDOW_WORDS", "WT_VOICE_VT_SLOT", "WT_VOICE_RENDER", "WT_OSC_VT_SLOT", "WT_OSC_RENDER",
                "PAGE_KEYS_COPY", "M4_MEMCPY", "PANE_TEXT_1", "PANE_TEXT_3", "PANE_TEXT_5",   # A7: the hints (T2: 2 / 4 stock)
-               "PANE_TEXT_6", "SLOT_TITLE", "CTRL_INPUT", "EXT_POOL_END", "PROBE_SCRATCH",
+               "PANE_TEXT_6", "SLOT_TITLE", "M7_TRAMP", "EXT_POOL_END", "PROBE_SCRATCH",   # M7_TRAMP: S6a's guard (BE4.44 W0)
                "SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "M7_DATA_END",   # S6a review
                # BE4.40 native properties (docs/plan-native-props.md): N1 the template copy (2 literal words, 3 immediates),
                # N2 the registry build's bl, N3 the oscillator's slot 8 (BE4.22's handle sites and the menu are gone)
@@ -330,7 +331,7 @@ GROUP_NAMES = {
               # synth UI sites only the drums use since BE4.40 (X1-X3, H1-H3)
               "INST_REFRESH", "INST_EV_SLOT", "INST_EVENT", "INST_TICK_SLOT", "INST_TICK", "CHILD_DUP", "KEY_DR_FIRST",
               "INST_SAVE_SITE", "INST_LOAD", "CONTEXT_GET", "OBJ_CTOR", "OBJ_BASE_VT", "OBJ_HANDLE_CTR", "NODE_VT_DESTROY",
-              "NODE_DESTROY", "NODE_VT_CLONE", "NODE_CLONE", "DSP_WINDOW_WORDS", "M7_DATA_END", "PROBE_SCRATCH", "CTRL_INPUT"),
+              "NODE_DESTROY", "NODE_VT_CLONE", "NODE_CLONE", "DSP_WINDOW_WORDS", "M7_DATA_END", "PROBE_SCRATCH", "M7_TRAMP"),
     "note0": ("NOTE0_SEQ_ON_MAP", "NOTE0_SEQ_ON_BACK", "NOTE0_SEQ_OFF_MAP", "NOTE0_SEQ_OFF_BACK", "NOTE0_PAD_ON_MAP",
               "NOTE0_PAD_ON_BACK", "NOTE0_PAD_OFF_MAP", "NOTE0_PAD_OFF_BACK", "NOTE0_ALL_OFF_MAP", "NOTE0_ALL_OFF_BACK"),
 }
@@ -733,13 +734,18 @@ def check_dsp_elf(e, origin, limit):
         raise SystemExit(f"DSP ELF: .text at {text and hex(text[1])} + {text and text[2]} is not at its origin {origin:#x} inside {limit:#x}")
 
 
+M7_IMAGE_END = 0x080E0000      # the M7 image's flash ends here; the disk-mode image starts (docs/architecture.md)
+
+
 def check_dsp_assumptions(img, S):
     """S6a: the DSP window (M7_DSP .. M7_DSP_LIMIT) is in stock's zero gap after the M7 image's data, below our M7 slice,
-    and nothing in the image points into it (a literal, or a movt of its upper half)."""
+    and nothing in the image points into it (a literal, or a movt of its upper half). BE4.44 W0: the bound is our M7 slice's
+    start, M7_TRAMP (it was CTRL_INPUT, which then sat right below M7_TRAMP; above M7_LIMIT that bound would let the window
+    run over the trampolines and the C slice)."""
     def fail(what): raise SystemExit(f"DSP window ({S.label}, S6a): {what}; re-verify M7_DSP for this firmware")
     lo, hi = S.M7_DSP, S.M7_DSP_LIMIT
-    if lo & 0xFFF or hi & 0xFFF or not lo < hi <= S.CTRL_INPUT:
-        fail(f"{lo:#x}..{hi:#x} is not a 4 KB aligned window below our M7 slice ({S.CTRL_INPUT:#x})")
+    if lo & 0xFFF or hi & 0xFFF or not lo < hi <= S.M7_TRAMP:
+        fail(f"{lo:#x}..{hi:#x} is not a 4 KB aligned window below our M7 slice (M7_TRAMP {S.M7_TRAMP:#x})")
     if any(img[lo - 0x300 - BASE:hi - BASE]):
         fail("the window (and the 0x300 B guard below it) is not all zero in the base image")
     data_end = struct.unpack_from("<I", img, S.M7_DATA_END - BASE)[0]     # review N3: zeros alone can be a .data tail
@@ -767,6 +773,25 @@ def check_dsp_assumptions(img, S):
             v = (h1 & 15) << 12 | (h1 >> 10 & 1) << 11 | (h2 >> 12 & 7) << 8 | h2 & 255
             if v == lo >> 16:
                 fail(f"movt #{v:#x} at {BASE + k:#x} may build an address in the window")
+
+def check_ctrl_placement(S, window):
+    """BE4.44 W0: the hold shortcuts' M7 stubs, [CTRL_INPUT, CTRL_STARTUP + 0x100) (the input hook below CTRL_STARTUP, the
+    startup stub's 0x100 B slot: hold_shortcuts' own bounds), lie clear of our M7 slice [M7_TRAMP, M7_LIMIT) and of the DSP
+    window (window: (M7_DSP, M7_DSP_LIMIT) when the build has one, else None), and end at or below the M7 image's end.
+    (Zero in the base image: patch() checks the bytes it replaces.)"""
+    def fail(what): raise SystemExit(f"hold-shortcut stubs ({S.label}, BE4.44 W0): {what}")
+    lo, mid, hi = S.CTRL_INPUT, S.CTRL_STARTUP, S.CTRL_STARTUP + 0x100
+    if lo & 3 or mid & 3 or not lo < mid:
+        fail(f"CTRL_INPUT {lo:#x} / CTRL_STARTUP {mid:#x}: not word aligned, in order")
+    spans = [("our M7 slice (M7_TRAMP .. M7_LIMIT)", S.M7_TRAMP, S.M7_LIMIT)]
+    if window:
+        spans.append(("the DSP window (M7_DSP .. M7_DSP_LIMIT)", *window))
+    for what, a, b in spans:
+        if lo < b and a < hi:
+            fail(f"{lo:#x}..{hi:#x} overlaps {what} {a:#x}..{b:#x}")
+    if hi > M7_IMAGE_END:
+        fail(f"{lo:#x}..{hi:#x} runs past the M7 image's end {M7_IMAGE_END:#x} (the disk-mode image)")
+
 
 def elf_load(e, lo, hi):
     """Return (load address, bytes) of the single loadable segment inside [lo, hi), plus symbols.
@@ -956,6 +981,8 @@ def build(base_img, out):
     if synth:
         with S.group(synth_g):
             check_dsp_assumptions(base_img, S)
+            window = (S.M7_DSP, S.M7_DSP_LIMIT)
+    check_ctrl_placement(S, window if synth else None)    # core entries (+ the window read above under its group)
     check_slice_assumptions(base_img, S)
     check_sites(base_img, S)
     out.mkdir(parents=True, exist_ok=False)

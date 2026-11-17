@@ -597,7 +597,32 @@ the end (the failure this plan exists to prevent), and the merge would land on t
     Choose then, from W3's measured sizes, among: slip B-from-WT-OSC1, merge rd_qx into rd_q, or slip an engine (P4-D9).
     No action now.
 
-## Review log
+## W0 result (2026-11-16, branch be444)
+
+Jeff's change to section 8: synth release first, drums paused. M0 is skipped (no merge into main now); W0 and W1 run on
+be444, branched from be442 c071ad4. D1 yes, D2 yes, D8 accept, D9 (b); D5 open (the mip threshold stays one constant).
+
+- **0x0808586C decoded (S/M).** It is an instruction, `mov.w r8, #0xd` (bytes 4f f0 0d 08), mid-function near
+  0x08085800, the same decode from both halfword alignments. No PC-relative load reaches it (ldr T1/T2, ldrd, vldr, adr,
+  every halfword decoded), no image word equals it, and no movw #0xF04F / movt #0x080D exists in the image. So its value
+  0x080DF04F is not a pointer, and buy-back 1 (the 0x080DF000 page) stands; 1b is not needed offline.
+- **Done.** CTRL_INPUT 0x080DF000, CTRL_STARTUP 0x080DF800, M7_DSP_LIMIT 0x080DA000 (stock_168.py and facts.py, notes
+  re-reviewed). S6a's bound is now M7_TRAMP. New `check_ctrl_placement`: the stubs stay clear of the slice and the window,
+  and below 0x080E0000 (literal_check: 0x080E0000 is a GENUINE constant, the sector-7 boundary). test_analog WindowGuards:
+  windows to M7_TRAMP + 0x1000 and to CTRL_INPUT are refused by the bound; stubs in the C slice, in the window, or past
+  0x080E0000 are refused; 1b's layout is accepted. Mutations: the guard reverted to `hi <= S.CTRL_INPUT` (mutation 25),
+  the overlap test removed, and the end test removed each turn WindowGuards red (M).
+- **Default image (M):** same length (0x189430). The only changes are the two site branches (one byte each:
+  0x080404B6 `b.w 0x080D9800` -> `b.w 0x080DF800`, 0x0808DCDE `b.w 0x080D9000` -> `b.w 0x080DF000`), and the two stubs
+  (296 B and 88 B) moved verbatim from 0x080D9000 / 0x080D9800 to 0x080DF000 / 0x080DF800. There is no DefaultImage test in
+  the suites to update (section 5 assumed one).
+- **Window (M):** default build 23,796 B used, 16,908 B free of 40,704. Trial merge of main's committed HEAD 3597e8e
+  (throwaway, scratch) with BE_ENABLE=drums: 29,860 B used, **10,844 B free**.
+- **Correction to section 5 (M).** Main's committed HEAD carries 6,064 B of drum code in the DSP window (main alone: 29,836
+  drums vs 23,772 default), not 4,308 B. So the starting point is 1,756 B worse than the 28,104 B in section 5. That
+  figure was probably measured on main's working tree with P4-2's uncommitted step (I; main's working tree was not read
+  for W0). If the committed figure holds, the worst case after buy-backs 1-3 is about -120 B (1,636 - 1,756), below the
+  1 KB margin, and the best case about 2.75 KB. Re-measure when P4-2's step commits, and before W3's gate.
 
 Two verifier passes; each finding was checked, and the checks that could be cheaply re-run were (be442 build.py:741 guard,
 bases/stock_168.py CTRL/M7 entries, main `git log 435b2f0..HEAD`, plan-p4-drums.md efficiency-pass lines).

@@ -471,6 +471,57 @@ class Hooks(unittest.TestCase):
         self.assertEqual((m.r.u.mem_read(m.o2 + S.OSC_KERNEL + 164, 2)[0], m.mphase()), (1, 0), "mrestart, phase 0")
 
 
+class _Moved:
+    """The base table with some entries replaced (a candidate layout for build.py's checks to refuse)."""
+    def __init__(self, base, **kw):
+        self._b, self._kw = base, kw
+    def __getattr__(self, name):
+        return self._kw[name] if name in self._kw else getattr(self._b, name)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class WindowGuards(unittest.TestCase):
+    """BE4.44 W0 (docs/plan-wt-fm.md 5, buy-back 1): the hold-shortcut stubs moved to the page above our M7 slice, so the
+    DSP window ends at M7_TRAMP (40 KB). check_dsp_assumptions bounds the window by M7_TRAMP (S6a's old bound, CTRL_INPUT,
+    now sits above the slice and would let a window run over the trampolines and the C slice: plan mutation 25), and
+    check_ctrl_placement keeps the stubs clear of the slice, of the window and of the disk-mode image."""
+    def refused(self, check, want):
+        with self.assertRaises(SystemExit) as cm:
+            check()
+        self.assertIn(want, str(cm.exception))
+
+    def test_this_layout_passes(self):
+        self.assertEqual((S.M7_DSP_LIMIT, S.CTRL_INPUT, S.CTRL_STARTUP),
+                         (S.M7_TRAMP, S.M7_LIMIT, S.M7_LIMIT + 0x800), "window up to M7_TRAMP; stubs one page up, same layout")
+        build.check_dsp_assumptions(STOCK_IMG, S)
+        build.check_ctrl_placement(S, (S.M7_DSP, S.M7_DSP_LIMIT))
+        w = lambda a: struct.unpack_from("<I", IMG, a - BASE)[0]
+        self.assertNotEqual(w(S.CTRL_INPUT), 0, "the input stub is at CTRL_INPUT")
+        self.assertNotEqual(w(S.CTRL_STARTUP), 0, "the startup stub is at CTRL_STARTUP")
+
+    def test_a_window_over_our_m7_slice_is_refused(self):
+        """A window one page past M7_TRAMP (over the trampolines), and the old bound's largest (up to CTRL_INPUT, over the
+        whole C slice): refused by the bound itself, not by a later check that happens to trip (the page above M7_TRAMP holds
+        a stock word valued there, 0x081AF024's, which DSP_WINDOW_WORDS would also catch)."""
+        for hi in (S.M7_TRAMP + 0x1000, S.CTRL_INPUT):
+            with self.subTest(hi=hex(hi)):
+                self.refused(lambda: build.check_dsp_assumptions(STOCK_IMG, _Moved(S, M7_DSP_LIMIT=hi)),
+                             "below our M7 slice")
+
+    def test_stubs_inside_the_c_slice_are_refused(self):
+        moved = _Moved(S, CTRL_INPUT=S.M7_LIMIT - 0x200, CTRL_STARTUP=S.M7_LIMIT - 0x100)
+        self.refused(lambda: build.check_ctrl_placement(moved, (S.M7_DSP, S.M7_DSP_LIMIT)), "overlaps our M7 slice")
+        # control: buy-back 1b (the same stubs with the C slice's limit lowered by 0x200) is accepted
+        build.check_ctrl_placement(_Moved(moved, M7_LIMIT=S.M7_LIMIT - 0x200), (S.M7_DSP, S.M7_DSP_LIMIT))
+
+    def test_stubs_inside_the_window_or_past_the_m7_image_are_refused(self):
+        old = _Moved(S, CTRL_INPUT=S.M7_TRAMP - 0x1000, CTRL_STARTUP=S.M7_TRAMP - 0x800)   # BE4.43's place
+        self.refused(lambda: build.check_ctrl_placement(old, (S.M7_DSP, S.M7_DSP_LIMIT)), "overlaps the DSP window")
+        build.check_ctrl_placement(old, None)                 # control: a build without the window (1.6.1's layout)
+        late = _Moved(S, CTRL_STARTUP=build.M7_IMAGE_END - 0x80)
+        self.refused(lambda: build.check_ctrl_placement(late, (S.M7_DSP, S.M7_DSP_LIMIT)), "past the M7 image's end")
+
+
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
 class Oscillator(unittest.TestCase):
     def setUp(self):

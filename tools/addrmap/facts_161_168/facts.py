@@ -275,8 +275,8 @@ REVIEWED = {
     "M7_TRAMP": dict(value=0x080DA000, evidence="0x080D9000..0x080E0000 is all zero in both images; the kit's writes there are ours"),
     "M7_CODE": dict(value=0x080DA400, evidence="as M7_TRAMP"),
     "M7_LIMIT": dict(value=0x080DF000, evidence="as M7_TRAMP"),
-    "CTRL_INPUT": dict(value=0x080D9000, evidence="as M7_TRAMP (hold shortcuts only)"),
-    "CTRL_STARTUP": dict(value=0x080D9800, evidence="as M7_TRAMP (hold shortcuts only)"),
+    "CTRL_INPUT": dict(value=0x080DF000, evidence="BE4.44 W0 (docs/plan-wt-fm.md 5, buy-back 1): moved up one page past M7_LIMIT, same relative layout, so the DSP window grows to 0x080DA000; 0x080DF000..0x080E0000 is all zero in stock 1.6.8 and ends at the disk-mode image 0x080E0000, inside the M7 image's 128 KB sector 0x080C0000..0x080DFFFF; the only stock word valued in that page, 0x0808586C = 0x080DF04F, is an instruction (mov.w r8, #0xd in the function around 0x08085800, the same decode from both halfword alignments), not data: no PC-relative load (ldr / ldrd / vldr / adr, every halfword decoded), no image word and no movw / movt reaches it; build.py check_ctrl_placement keeps the stubs clear of the DSP window and our M7 slice"),
+    "CTRL_STARTUP": dict(value=0x080DF800, evidence="as CTRL_INPUT"),
     # ---- stock fields the black box reads (also in expected_values.py STOCK_168, with the instructions) ----
     "MIDI_RING_RD": dict(value=0x2340, evidence="M4 reader add.w r0,sl,#0x2340 at 0x081053D0; M7 ctor add.w r7,r4,#0x2340 "
                                                "at 0x08082FF6; 7 M4 / 1 M7 add.w #0x2340, as 1.6.1"),
@@ -782,7 +782,7 @@ REVIEWED = {
     # typ2.py, regdump.py; build.py replays / orig checks; test_analog.py and test_inst_xml.py run these sites' own code).
     'M7_DSP': dict(value=0x80d0000, evidence="stock's zero gap 0x080CFC5C..0x080E0000 (M7 .data end literal at 0x08040568 = "
                    "0x080CFC5C); check_dsp_assumptions: zero, no literal or movt into it"),
-    'M7_DSP_LIMIT': dict(value=0x80d9000, evidence="36 KB, up to CTRL_INPUT (BE4.10 layout)"),
+    'M7_DSP_LIMIT': dict(value=0x80da000, evidence='40 KB, up to M7_TRAMP (BE4.44 W0: the hold-shortcut stubs moved to 0x080DF000); 0x080D9000..0x080DA000 is zero in stock and no stock word is valued in it, so DSP_WINDOW_WORDS is unchanged (check_dsp_assumptions)'),
     'DSP_WINDOW_WORDS': dict(value=(0x80f6a94, 0x80f6ba4, 0x80f6f08, 0x81ab750, 0x81ab860, 0x81abbc4, 0x81adaa0),
                              evidence="every aligned word in [M7_DSP, M7_DSP_LIMIT): 3 in the SD-reader image, 4 in M4 rodata, "
                                       "the same words at the same places in 1.6.1 (rc20/s6a lit.py); no PC-relative ldr reads "
