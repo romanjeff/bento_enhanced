@@ -583,7 +583,8 @@ the end (the failure this plan exists to prevent), and the merge would land on t
      audible brightness step. Alternatives: threshold 1.5 (brighter, a little aliasing at peaks, more mip changes), or an
      rms-based bound (brighter still, more aliasing at peaks). Brightness rows at 250/500 will show the size of the step.
    - Not recommended now: a per-sample mip crossfade (about 2x reads and cache footprint).
-   - **Decided (Jeff, 2026-11-16): in between, leaning bright.** Some aliasing under heavy FM is accepted as character
+   - **Decided (Jeff, 2026-11-16): in between, leaning bright.** (W2: built as WT_MIP_THR; default 1.75 proposed from the rows in
+     "W2 result"; BE_WT_MIP builds another.) Some aliasing under heavy FM is accepted as character
      ("we want this engine to make crazy and interesting sounds"). The coarser-mip threshold is **one named constant**
      (hysteresis band derived from it), with the default set well above stock's clean 1.25, toward the bright end. W2
      measures brightness and alias rows at a few candidate values (about 1.5 / 1.75 / 2.0, plus 1.25 as the clean
@@ -802,6 +803,105 @@ committed) rebuilt with BE_ENABLE=drums gives DSP 30,612 B, **10,092 B free**, a
 **CPU (M):** unchanged. P3Identity 50 cases: worst 1.0184 (mod dev=False, 111,922 / 109,899), under the stop line that is
 now tested; total 1.0094. Tier 2's own cost is 69 a call with an envelope and 37 without. An untagged oscillator-block costs
 +27 over stock; a tagged one at gate 0 costs +64..+107, worst 1.0158 x stock's render.
+
+## W2 result (2026-11-17, branch be444)
+
+The reader, its golden and its tests. Build ~/bento/out/be444w2 (default, 1.6.8, BE_WT_MIP unset = 1.75).
+
+**Mip trace first (risk 13: confirmed, and corrected in the reader).**
+- S: stock builds the levels on the M4 (WAV load, 0x08112544..0x081126DE): each of levels 1..6 from the one before, as ONE
+  stream of all 256 frames, through an 11-tap decimator (0x08113DF0, taps at 0x08113EF8, the same STOCK_FIR as the M7's 2x
+  decimator) reset to 12 zero samples per level (0x08113F10). Output m is centred on the previous level's sample 2m - 7.
+- M: the decimator emulated on the stock image equals p3_golden.wt_build_levels bit for bit
+  (WtFmW2.test_the_mip_builder_is_stocks).
+- Consequences: level k lags level 0 by **7 (2^k - 1) / 2048 of a cycle** (level 1: 0.0034, level 6: 0.215; M on a sine
+  table to 1e-9). The reader reads a level other than the note's at the difference of the two skews (WT_MIP_SKEW, exact in
+  Q32: 7 (2^k - 1) << 21). Also from the trace: each level's gain is 0.951 (-0.44 dB a level: a crossfade 2 levels up is
+  -0.9 dB, stock's own per-note behaviour); frame 0 of every level >= 1 starts with the zero padding, and every frame's
+  first samples carry the previous frame's tail (stock's data, played as is).
+- Factory WAVs are not on this machine (names in the image, files on the device's SD). The "factory" rows use tables built
+  by stock's builder (the M-verified decimator) from synthetic WAV frames; the per-level skew is a property of the builder,
+  not of the content.
+
+**Built (S).** dsp/wt_reader.cpp (-O2): rd_q (wt_rd), rd_qx (wt_rdf, the frame crossfade, one index for both frames);
+dsp/wt_mipx.cpp (-Os): rd_qm (wt_rdx, two levels). analog.cpp: wt_play (stock's ladder on the pending flag, Q32 phase in at
+the note's len, the mip choice, one change a block, phase / frame / mipcur out), wt_mip_for, wt_body (stock's render body
+in stock's order with the reader for its kernel; fm_setup for the line; D9 (b): silent freezes unless feeding B), and
+wt_fm_osc's gate (an amount, ramp memory, a mip held). Loops read at the phase, then advance (stock's resampler order, so the
+first reader sample is stock's continuation; the prototype advanced first). build.py: BE_WT_MIP (1.0 .. 4.0, default
+WT_MIP_DEFAULT = 1.75) -> -DWT_MIP_THR, recorded as the manifest's wt_mip. wt_kmodel.py: the kernel model as a fixture.
+p3_golden: wt_build_levels, wt_ladder, wt_peak, wt_mip_choice, wt_read_block (float64 phase), wt_fm_run,
+wt_spectrum_rows; self-tests (WtRead, 6) with 7 golden mutants.
+
+**Tests (M), test_analog WtFmW2 (9).**
+- 7.1, device vs golden: plain blocks len 32 7.9e-7 (bound 2e-6), len 256 1.9e-8 (2e-7), len 2048 5.4e-8 (2e-7); named
+  bounds set here: through zero 1.3e-7, mip change 4.9e-8, frame change 4.1e-8 (each bound 4e-7). Phase within 1e-7 of a
+  cycle; frame, mipcur, off / D / len / flag as the golden's.
+- 7.2: every stock block after a handback equals wt_kmodel's continuation bit for bit (samples and +0xC0..+0xD8); the
+  fixture itself re-checked against stock's kernel (3 rates, 10 blocks, frames fixed and moving).
+- 7.4 continuity (the step at a switch: |second difference| less its neighbours', bound 0.02; a plain |diff| is the
+  signal's own slope at note 72, 0.034): synthetic aligned sine <= 0.0084 (the reader skews levels that table does not
+  have), builder saw <= 0.0017, builder 8-harmonic set <= 0.0012; notes 48 / 72, same mip and a 2-level excursion through
+  the mip-home block.
+- Pending flag, frac 1.0, hysteresis (parked, and +-1 % around the threshold), one change a block, level 0 frozen /
+  running while feeding B, D5's device choice = the golden's over Sub FM 0..1000 at notes 48 / 60 / 72.
+- Mutations (M, private copies, each built and WtFmW2 run): 3, 4, 5, 6, 7, 8, 11, 12, 13, 18, 23, 24 all red. (7's first
+  form, HOME written after the home block regardless, was equivalent; the form used hands back straight from the last FM
+  block when its line ends at 0.)
+- Reviewed W1 changes: an amount now opens the reader, so WtFmW1's "amounts" tier-2 rows became "feed-B" (OSC1 feeding B,
+  gate 0, stock's bit for bit; OSC2's samples and kernel left out, reader=); the stock-rewrites-every-run control uses the
+  envelope set; P3Identity's tier-2 bounds: "osc2 wavetable" 170 a call (M 148: no WAV in that rig, the body stops at the
+  table as stock's render does), "mixed" 55 (M 48: the gate's loads).
+
+**D5 (as decided: one constant, leaning bright). Proposed default: 1.75** (cleaner alternate 1.5, brighter 2.0).
+Golden rows (stock-built saw table, sine Sub an octave down, steady index; level / centroid in carrier harmonics / energy
+off the FM grid in dB; "note level" = the reader pinned at stock's level):
+
+| note ~, Sub FM | note level | 1.25 | 1.5 | 1.75 | 2.0 |
+|---|---|---|---|---|---|
+| 60, 250 | L3 2.44 -38.9 | L4 2.02 -45.1 | L4 2.02 -45.1 | **L3 2.44 -38.9** | L3 2.44 -38.9 |
+| 60, 500 | L3 3.86 -33.2 | L5 2.73 -45.7 | L4 3.35 -36.7 | **L4 3.35 -36.7** | L4 3.35 -36.7 |
+| 60, 1000 | L3 9.53 -23.8 | L6 7.46 -38.2 | L6 7.46 -38.2 | **L5 8.16 -30.7** | L5 8.16 -30.7 |
+| 72, 250 | L4 2.10 -35.1 | L5 1.70 -43.8 | L4 2.10 -35.1 | **L4 2.10 -35.1** | L4 2.10 -35.1 |
+| 72, 500 | L4 3.38 -29.0 | L6 3.06 -42.1 | L5 2.92 -33.5 | **L5 2.92 -33.5** | L5 2.92 -33.5 |
+| 72, 1000 | L4 8.23 -20.1 | L6 7.56 -28.0 | L6 7.56 -28.0 | **L6 7.56 -28.0** | L6 7.56 -28.0 |
+| 96, any | L6 (pinned) | same | same | same | same |
+
+Amount at which the level first steps, at the true note pitches (rate / D = 0.698 at each note's level): 1.25: 215;
+1.5: 275; 1.75: **330**; 2.0: 380 (notes 60..84; note 48: 235 / 300 / 360 / 415). So at 1.75 the plan's "light FM halves
+the harmonics" case (amount about 210) no longer happens: the note's level holds to about a third of the knob, and the heavy
+end aliases about 7 dB more than stock's rule (-30.7 vs -38.2 dB at note 60, full Sub FM). The thresholds act in whole
+levels, so 1.5 / 1.75 / 2.0 differ only in where the steps land; the alternates a step either side are 1.5 and 2.0.
+
+**Sizes (M).** Default: DSP 26,932 B, **13,772 B free** of 40,704 (W1 24,548: +2,384). Reader parts 1,724 B: rd_q 256,
+rd_qx 316, rd_qm 380, wt_play 728, wt_mip_for 44 (**the plan's 1.5 KB exit is missed by 188 B**); wt_body 604, wt_fm_osc
++46. Image 0x189458 (unchanged, 16,092 B to PROVEN_MAX). M4 24,424 B, synth UI 15,858 B (no M4 change). Drums trial (LF
+clone of b290cb6 + main's committed 3597e8e merged, not committed, test_keys / test_native_props taken from be444,
+BE_ENABLE=drums): DSP 32,996 B, **7,708 B free**, image 0x18af20 (9,236 B to PROVEN_MAX); test_drums and test_drum_ui OK
+(1 skipped each).
+
+**CPU (M).** P3Identity 50 cases: worst 1.0184 (unchanged), total 1.0092. Untagged WT oscillator-block +27 over stock;
+tier 2 +75..+118, worst 1.0174 x stock's render (W1 1.0158: the gate's loads). Reader, a sample: rd_q 34.1, rd_qx 45.2,
+rd_qm 55.2; a whole wt_play block (256, note 60): 9,626 / 12,453 / 15,066. The plan's 29.1 / 39.1 were one-route prototypes.
+
+**Plan items found wrong or changed in W2.**
+1. Risk 13 was real: stock's levels are skewed (above); a per-level phase correction is in the reader and the golden.
+2. Stock's levels lose 0.44 dB each and frame 0 carries zero padding (not in the plan).
+3. The reader prototype read after advancing; stock reads first. Built stock's order.
+4. One shared rd_qx / rd_qm loop spills registers (60 a sample at -O2): rd_qx is its own loop (45.2), rd_qm the general one
+   at -Os (55.2, rare). The B route costs every loop about 3 a sample (rd_q 34.1, not 29).
+5. Reader parts 1,724 B, not <= 1.5 KB; wt_play (728) is about twice the plan's 250-400 for mip select / ladder / handback /
+   HOME.
+6. The mip choice's max |A| / max |B| is a scan of every 4th frame in wt_play (not fused into B's writer); the golden states
+   the same stride.
+7. 7.4's "|step| <= 0.02" as a plain first difference is the signal's own slope at note 72; measured as the second
+   difference's excess over its neighbours instead.
+8. Factory tables are not available offline; 7.4's "factory" rows use stock's builder on synthetic frames.
+9. Pulled forward from W3: the body calls fm_setup, so Sub FM on a Wavetable OSC1 plays from buffer A at W2 (not yet tested
+   at the voice level with a sounding sub: Rig's sub is silent; W3). OSC2's FM 1>2 next to an Analog OSC1 opens the reader
+   at index 0 until W3 feeds B to a Wavetable carrier (fmx= missed): a transitional cost, inaudible (in the steady blocks
+   measured, the reader at index 0 matched stock's samples bit for bit).
+10. D5's thresholds act in whole levels; the "1.05" hysteresis is WT_MIP_HYST = 0.84 x the threshold.
 
 ## Review log
 
