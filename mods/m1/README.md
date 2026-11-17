@@ -583,8 +583,9 @@ Port of Lab's K16 hold controls (GPL-3.0-or-later) as in CH10, **without PROJ as
 While a hold button is down, pads don't play notes. PROJ is not a modifier: PROJ + pad
 plays as on stock.
 
-- M7: `m7_controls_input.s` at `0x080D9000` (pad receiver `0x0808D1FE`), startup at
-  `0x080D9800` (`0x080404B6`; on 1.6.8 since BE4.44: `0x080DF000` / `0x080DF800`) initialises only its own state line `0x24048CA0`. Lab's
+- M7: `m7_controls_input.s` (pad receiver hook) and a startup stub (startup site `0x080404B6`, both bases). 1.6.1:
+  at `0x080D9000` / `0x080D9800`, pad receiver site `0x0808D1FE`. 1.6.8 since BE4.44: at `0x080DF000` / `0x080DF800`
+  (the page above our M7 slice), pad receiver site `0x0808DCDE`. The startup stub initialises only its own state line `0x24048CA0`. Lab's
   startup also zeroed lock RAM that is heap in our layout, and its UI startup zeroed
   `0x24048000–0x24048800` (our black-box slice): both dropped.
 - M4: `m4_controls.c` (consumer `0x0813F98C`, INST selection observer `0x0813BD10`,

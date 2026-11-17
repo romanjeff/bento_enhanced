@@ -521,6 +521,47 @@ class WindowGuards(unittest.TestCase):
         late = _Moved(S, CTRL_STARTUP=build.M7_IMAGE_END - 0x80)
         self.refused(lambda: build.check_ctrl_placement(late, (S.M7_DSP, S.M7_DSP_LIMIT)), "past the M7 image's end")
 
+    def test_the_bounds_are_exact(self):
+        """W0 review: each bound at its edge. The startup slot may end exactly at 0x080E0000, not 4 B past it; the stubs may
+        touch our M7 slice or a window on either side, not reach 4 B into it."""
+        win = (S.M7_DSP, S.M7_DSP_LIMIT)
+        end = build.M7_IMAGE_END
+        build.check_ctrl_placement(_Moved(S, CTRL_STARTUP=end - 0x100), win)
+        self.refused(lambda: build.check_ctrl_placement(_Moved(S, CTRL_STARTUP=end - 0xFC), win), "past the M7 image's end")
+        at = lambda lo: _Moved(S, CTRL_INPUT=lo, CTRL_STARTUP=lo + 0x800)        # [lo, lo + 0x900)
+        build.check_ctrl_placement(at(S.M7_LIMIT), win)                          # right above the slice (this layout)
+        self.refused(lambda: build.check_ctrl_placement(at(S.M7_LIMIT - 4), win), "overlaps our M7 slice")
+        self.refused(lambda: build.check_ctrl_placement(at(S.M7_TRAMP - 0x900 + 4), None), "overlaps our M7 slice")
+        lo, hi = S.M7_DSP + 0x1000, S.M7_DSP + 0x3000                           # a window with room on both sides
+        build.check_ctrl_placement(at(hi), (lo, hi))
+        build.check_ctrl_placement(at(lo - 0x900), (lo, hi))
+        self.refused(lambda: build.check_ctrl_placement(at(hi - 4), (lo, hi)), "overlaps the DSP window")
+        self.refused(lambda: build.check_ctrl_placement(at(lo - 0x900 + 4), (lo, hi)), "overlaps the DSP window")
+
+    def test_build_runs_both_checks_with_its_window(self):
+        """W0 review: build() itself calls check_dsp_assumptions and check_ctrl_placement, the latter with the window the
+        former checked (deleting the call, or passing None, would disarm the guard while the direct tests stay green). The
+        checks are wrapped: the real ones run, then the build stops before it writes anything (out already exists)."""
+        import tempfile
+        calls, real = [], (build.check_dsp_assumptions, build.check_ctrl_placement)
+        class Stop(Exception): pass
+        def dsp(img, s):
+            calls.append(("dsp", (s.M7_DSP, s.M7_DSP_LIMIT))); real[0](img, s)
+        def ctrl(s, window):
+            calls.append(("ctrl", window)); real[1](s, window); raise Stop
+        saved = {k: getattr(build, k) for k in ("S", "MARKER", "VERSION", "DISPLAY", "SETTINGS", "DISABLED", "OMITTED")
+                 if hasattr(build, k)}
+        build.check_dsp_assumptions, build.check_ctrl_placement = dsp, ctrl
+        try:
+            with tempfile.TemporaryDirectory() as out, self.assertRaises(Stop):
+                build.build(STOCK_IMG, Path(out))
+        finally:
+            build.check_dsp_assumptions, build.check_ctrl_placement = real
+            for k, v in saved.items():
+                setattr(build, k, v)
+        win = (S.M7_DSP, S.M7_DSP_LIMIT)
+        self.assertEqual(calls, [("dsp", win), ("ctrl", win)])
+
 
 @unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
 class Oscillator(unittest.TestCase):

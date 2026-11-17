@@ -624,6 +624,46 @@ be444, branched from be442 c071ad4. D1 yes, D2 yes, D8 accept, D9 (b); D5 open (
   for W0). If the committed figure holds, the worst case after buy-backs 1-3 is about -120 B (1,636 - 1,756), below the
   1 KB margin, and the best case about 2.75 KB. Re-measure when P4-2's step commits, and before W3's gate.
 
+### W0 as built (after the W0 review, 2026-11-17)
+
+Two reviewers re-built 82804c6 byte for byte, re-diffed it against c071ad4, re-decoded 0x0808586C and the page, and ran
+mutations. Their findings and what was done:
+
+- **Accepted, fixed: build() wiring untested (both reviewers, low).** WindowGuards called the checks directly, so deleting
+  the `check_ctrl_placement` call from build(), or passing `None` for the window, left every suite green. New
+  `test_build_runs_both_checks_with_its_window`: it wraps `check_dsp_assumptions` / `check_ctrl_placement` (the real ones
+  still run), runs `build.build()` on stock 1.6.8 into an existing directory (so it can never write), stops after the
+  placement check, and asserts both ran in that order with the window `(M7_DSP, M7_DSP_LIMIT)`. The reviewer's other
+  option, folding the checks into one `check_layout()`, was not taken: it still needs a wiring test, and folding in
+  `check_region_assumptions` / `check_slice_assumptions` would pull build-state globals into a unit test.
+- **Accepted, fixed: bounds tested only with slack (both, low).** New `test_the_bounds_are_exact`: the startup slot may
+  end exactly at 0x080E0000 and not 4 B past it; stubs may touch our M7 slice and a window on either side, not reach 4 B
+  into them (both edges of each).
+- **Mutations (M, private copy, all of test_analog against be444w0r): every one turned it red:** the build() call
+  deleted, window passed as None, overlap `lo + 4 < b`, overlap `a < hi - 4`, end `> END + 0x7c`, end `>= END`, the
+  `check_dsp_assumptions` call deleted, and the S6a guard reverted to `hi <= S.CTRL_INPUT` (mutation 25). Baseline green.
+- **Accepted, fixed: device images could not be told from BE4.43 (low).** The 1.6.8 version is now 4.44 (build.py
+  BASE_SETTINGS, the per-base rule). The D-W0 device image is built with `BE_TAG=w0`: label "v4.44-w0"
+  (~/bento/out/be444w0r-dev). Later sprint device images take their own tag (w1, ...), so 4.44 alone means the release.
+- **Accepted, fixed: CTRL_INPUT note (info).** "The only stock word" holds for aligned words only; 0x080684EE =
+  0x080DF028 (unaligned, `bic r8, r8, #0xd`) is also in range and is code. Notes in stock_168.py and facts.py now say so.
+- **Accepted, fixed: facts.py CTRL_INPUT had no `note=` (info).** A regeneration would have brought back 1.6.1's
+  "below M7_TRAMP"; facts.py now carries "(zero gap, above M7_LIMIT)". The generator itself (gen_table.py:240
+  TypeError in KEY_RANGES) crashes on c071ad4 too; not W0's, left open, so stock_168.py stays hand-synced with facts.py.
+- **Accepted, fixed: README hold-shortcut bullet mixed the bases (info).** Split into 1.6.1 (0x080D9000 / 0x080D9800,
+  site 0x0808D1FE) and 1.6.8 since BE4.44 (0x080DF000 / 0x080DF800, site 0x0808DCDE).
+- **Confirmed (info): the 6 Vendored.test_hashes failures on the trial were CRLF from `core.autocrlf=true`** in the
+  throwaway clone. Trial clones from now on use `git -c core.autocrlf=false clone`; the re-run is below.
+- **Process note (info):** the two reviewers collided in one mutation directory; the second reviewer's rows from that
+  window are not relied on here (the mutation list above was re-run in a private copy).
+
+**Image:** the default build changes from 82804c6's only in the version label (4.43 -> 4.44); DSP 23,796 B, window free
+16,908 B of 40,704, M7 C slice 15,368 B, M4 24,424 B, synth UI 15,818 B, image 0x189430 (16,132 B to PROVEN_MAX). CPU:
+the DSP code is unchanged from BE4.43, P3Identity 1.0184 worst / 1.0097 total. Suites: all green on be444w0r (test_analog
+152). Still owed: device item D-W0 (every hold shortcut, image v4.44-w0).
+
+## Review log
+
 Two verifier passes; each finding was checked, and the checks that could be cheaply re-run were (be442 build.py:741 guard,
 bases/stock_168.py CTRL/M7 entries, main `git log 435b2f0..HEAD`, plan-p4-drums.md efficiency-pass lines).
 
