@@ -1408,3 +1408,269 @@ note-start block 3 % over the heaviest existing voice).
   W4 takes the recommendation (let it play), with a reviewed behaviour-change test and a checklist/release-notes line.
 - Listening images from W3 (boot labels W3-175 / W3-150 / W3-OFF) packaged as flash/bento_enhanced-v4.44-w3-mip1.75,
   -mip1.5, -mipoff.
+
+## W4 result (2026-11-17, branch be444)
+
+A Wavetable OSC1 as B (3.5), D9, the mixed-sync re-seed, the unrolled reader, lever (a), D2's last case, D4, kit BE4.44 and
+its two alternates, checklist-v4.44.txt, release notes (docs/release-notes-v4.44.md). Builds ~/bento/out/be444w4-rel
+(default, 1.6.8, wt_mip 1.75), be444w4-rel-mip1.5 (BEM1.5), be444w4-rel-mipoff (BEMOFF).
+
+**Built (S).**
+- **B from a Wavetable OSC1 (3.5).** wt_fm_osc's gate opens for the feed-B bit too. wt_body (OSC1) feeds B when OSC2 (Analog,
+  or Wavetable and tagged) has FM 1>2 or its ramp memory, the voice is an_enter's, and the block fits the buffers.
+  - With a line or a mip held, B comes from the reader's samples.
+  - Otherwise B comes from **stock's own kernel**: wt_kern calls S_WT_KERNEL 0x080A2000 (new base entry: stock_168.py and
+    facts.py, reviewed), with tier 2's runs put back around it. OSC1 then plays stock's samples bit for bit.
+  - B is taken before SMOOTH_APPLY / MIX_INTO, then r->fmtag |= B and Run.peak_b (W3's "W4 must set peak_b").
+  - The bit's life: wt_feed keeps it while OSC2's m12 is not 0 (the ramp out hears B). wt_body clears it once OSC2's FM 1>2
+    and m12 are both 0, and calls wt_settle (OSC1 untags if nothing else holds it).
+- **D4 (decided on this sprint's data, below): the frame's DC is taken out of B.** B = f32(f32(s - m) inc1) (wt_feed_b, -O2).
+  - m is the mean of the frame OSC1 ended the block on, at the level it plays (kernel + 0xC8 and len, or the reader's mip),
+    from four f32 running sums.
+  - The same pass gives B's peak about m (max, min), rounded up to 1/4096: a bound, steady by construction. A block whose
+    frame or level changed gets old peak + |old m - new m|.
+  - Kept per (frame, level) in OSC1's saved runs (wt_frame_dc):
+    - wxf: m's float bits, low 11 cleared, plus the key;
+    - AnProps.glide: q, never read on a Wavetable oscillator;
+    - wflags WT_PK_OK (bit 2).
+
+    an_note drops WT_PK_OK and wxf.
+- **D9 (b).** A silent OSC1 with B to feed runs (kernel or reader), writes B, and is not mixed. One that does not feed
+  freezes as stock's.
+- **D2's last case.**
+  - an_osc: OSC2's amount is FM 1>2 next to either OSC1 type (`x |= pp->fm12`; fm_setup's twelve = which == 1).
+  - m4_synth.c want_row: OSC2's slot 5 is FM 1>2 in every combination (one branch; the osc1 argument is gone).
+- **Mixed sync (Jeff: re-seed).** an_osc passes watch() `again` = WT1 tagged with the feed-B bit. While WT1 feeds B, the
+  slave's copy is seeded from WT1's kernel phase in every block that phase moved: not at a note start's restart
+  (mrestart), and not while frozen, so the copy runs on as in BE4.43. D3 (Sub FM as 0 while synced) stands. A feeding WT1
+  under D3 plays stock's kernel (no line), so the copy is exact anyway; the re-seed covers a mip-home block and D9's
+  running.
+- **The unrolled reader (Jeff).** One-route loops: every Wavetable carrier's line has B's term zero on b = a, since a
+  Wavetable OSC1 has Sub FM alone and a Wavetable OSC2 FM 1>2 alone. They run two samples a turn and give rd_q's / rd_qx's
+  samples and phase bit for bit:
+  - wt_rdc: a constant line;
+  - wt_rdr: a ramp;
+  - wt_rdfc: the frame crossfade.
+
+  wt_play routes by the line. wt_rd / wt_rdf stay for two routes.
+- **Lever (a) (Jeff).** wt_play: on stock's pending flag (a note's first block) kc = kt, so the FM level plays from the first
+  sample (rd_q, no rd_qm). The golden has the same rule (wt_read_block, mutant "note_xf" = W3 as built).
+- tools/wt_dc.py: a wavetable WAV's per-frame DC and the OSC2 detune it would give. It is read-only, for a copy of the
+  card's Wavetables folder.
+
+**D4 data and decision.**
+- **Factory tables (M: none here).** None are on this machine:
+  - the SD backups hold Projects and UserPatches only, and UserPatches\Wavetable is empty;
+  - the card itself is off limits.
+
+  So the data is from the families a factory set is likely to hold, plus the test tables (tools/wt_dc.py --synthetic;
+  OSC2's shift at OSC1's pitch, ratio 1 + J m):
+
+  | Frames | Largest per-frame DC | OSC2's shift at FM 1>2 250 / 500 / 1000 |
+  |---|---|---|
+  | band-limited saw, 50 % square, additive (random phases), stock's builder saw | 0 (builder saw, frame 128: below 1e-5, M) | 0 |
+  | PWM sweep 50 % -> 5 % | 0.90 | through 0 at every amount (OSC2 runs backwards) |
+  | half-wave sines | 0.32 | +853 / +1783 / +3129 cents |
+  | hard-sync sweep | 0.17 | -702 / -4968 cents / through 0 |
+
+- **Decision (the plan's rule: subtract a per-frame mean only if large).** Large: an asymmetric frame detunes OSC2 at the
+  lightest amount, and an Analog OSC1's shapes are DC-free (an_peak's "DC-free high side"), so Analog never had this
+  term. OD17 (OSC1's own FM's DC, accepted) is a different, moving term and stays as it is.
+- **Built: the per-frame mean, out of B.**
+  - Size: wt_frame_dc 368 B + wt_feed_b 222 B, against the plan's "about 60 B": the peak shares the pass, and the loop is
+    unrolled.
+  - Cost: one frame pass per frame or level change, plus about 0.9 a sample in wt_feed_b over an_feed.
+  - M: on a PWM table at mean -0.73, B's mean over whole OSC1 cycles is -4.6e-5 x inc1.
+- **Device row:** checklist 5, D4 (OSC2's pitch must not slide with the frame on factory pulse tables).
+  `python tools/wt_dc.py <card copy>/Wavetables/*.wav` gives the factory numbers when you want them.
+
+**Tests (M), test_analog WtFmW4 (10).**
+- **test_the_unrolled_loop_is_rd_qs_bit_for_bit.** wt_rdc / wt_rdr against wt_rd and wt_rdfc against wt_rdf, bit for bit
+  on 108 blocks:
+  - levels 0 / 3 / 6;
+  - I 0 / 1 / 16 / 60 (the clamp);
+  - ramps up and down;
+  - n 37 / 255 / 256;
+  - a phase near the wrap and a skew offset.
+
+  Plus the routing (Span calls) and the golden on each routed case.
+- **test_a_notes_first_block_plays_the_fm_level** (lever (a)). The first block and a retrigger are rd_q at the FM level;
+  every block is the golden's, with no rd_qm in the run. The first block costs within 2k of the median (it ramps in from 0
+  on wt_rdr).
+- **test_b_from_a_wavetable_osc1.** OSC2 Analog and Wavetable; OSC1 at gate 0 and with Sub FM 600:
+  - B = f32(f32(s - m) inc) every block (check_wt_feeds; fm_capture also taps wt_feed_b);
+  - s is wt_kmodel's kernel bit for bit at gate 0 (samples and kernel state: 7.3's B path), and the reader's under Sub FM;
+  - m is wt_frame_stats' for OSC1's frame and level;
+  - OSC2's pa = f32(inc1) q / 4096 exactly in steady blocks, and at least that in change blocks;
+  - the bound is tight (0.9 pa < max |B| <= pa);
+  - the saved runs hold the key, m, WT_PK_OK and q;
+  - every reader block of both oscillators is the golden's, and an Analog OSC2's calls are the kernel's golden.
+- **test_b_known_peak_holds_the_level_at_low_notes.** Notes 24..60 x FM 1>2 300..1000 into a Wavetable OSC2: 0 level
+  changes after entry in every cell (M), and pa > 0 in every block.
+- **test_feeding_follows_fm12_and_its_ramp.** B in blocks 0..4 (the ramp out included), never after; fmx= 0; OSC1 untags
+  after the ramp.
+- **test_d4_a_frames_dc_stays_out_of_b.** On the PWM table B's mean is within 2e-3 of inc1 (M 4.6e-5), against OSC1's
+  -0.73. On the saw |m| < 1e-5.
+- **test_d9_a_silent_osc1_keeps_feeding** (7.3's named divergence test):
+  - Level 0 in blocks 4..11: OSC1's kernel moves in every block, where the control (no FM 1>2) freezes;
+  - B every block, and OSC2's line I(600) is held;
+  - the phase after the silence is not stock's;
+  - the return's largest step is within 1.5 x the run's own.
+- **test_mixed_sync_reseeds_the_slaves_copy_every_block.** Golden wt_seed64 (seed()'s arithmetic):
+  - after every block but the first, the slave's copy equals WT1's kernel phase exactly;
+  - a hand-moved WT1 phase (idx + 37) is followed at once;
+  - the control without FM 1>2 does not follow;
+  - the slave's FM calls are the golden's with the master's events, and B is WT1's.
+- **test_d2_a_be443_projects_hidden_fm12_now_plays** (the reviewed behaviour change). A project-order push of Sub FM 600 and
+  FM 1>2 400 on an Analog OSC2 next to a Wavetable OSC1 with a WAV: FM 1>2 400 plays (lines 0 -> 400, then held; B from
+  OSC1), Sub FM plays nothing (no A fill, no A line).
+- **test_cost** (below).
+- p3_golden: wt_read_block's lever (a) and the mutant "note_xf"; self-test test_a_notes_first_block_plays_the_fm_level
+  (52 tests).
+- **Reviewed changes (BE4.43 / W1-W3 tests whose premise W4 changed).**
+  - **OSC2's Sub FM next to a Wavetable OSC1 no longer plays; FM 1>2 does there.**
+    - FmEnv.test_each_oscillator_has_its_own_envelope: the mixed part is FM 1>2 from a tabled Wavetable OSC1.
+    - Fm12.test_mixed_voices: no WAV is fmx= missed; with a WAV FM 1>2 plays.
+    - Fm12 / SubFm test_the_amounts_cases: "mixed" plays FM 1>2 333, B the Wavetable OSC1's.
+    - SubFm.test_a_mixed_voice: Sub FM silent; FM 1>2 from a Wavetable OSC1, free and as the synced slave.
+    - SubCopy.test_which_oscillator_fills: "OSC1 Wavetable" fills nothing.
+  - **No real sequence reaches two terms any more**, so Fm12.test_both_routes and FmEnv.test_the_switch_block_under_osc2s_
+    envelope keep the two-term block on a crafted state: OSC2's msub forced to 700, BE4.43's ramp memory.
+  - **P3Identity.test_q1_plays_no_amount:** "mixed" keeps FM Atk 2 alone. FM 1>2 333 plays there now (Fm12's cases), and
+    nothing is tagged.
+  - **WtFmW1's tier 2 with feed-B:**
+    - OSC1 stays stock's bit for bit outside the runs;
+    - its saved runs hold B's frame stats;
+    - the 1.02 gate holds the envelope case only, and a feeding OSC1-block is gated at 1.55 x stock's render (M +1.8k ..
+      +3.1k on 6.7k: the body, wt_feed_b, the frame pass on a change).
+  - **WtFmW1's note-start area:** wxf 0, WT_PK_OK cleared.
+  - **WtFmW2.test_no_line_plays_stocks_render:** the no-B case is an OSC1 with no WAV, with a WAV control.
+  - **WtFmW2.test_sizes_and_cost:** the new loops, bound 3,400 B.
+  - **The WtRd harness:** it passed its own B buffer for one route, so it never reached the one-route loops. It now passes
+    b = a, as fm_setup does.
+  - **test_synth_ui:** test_the_fm_slots: slot 5 on OSC2 is FM 1>2 in all four type combinations, and an OSC1 flip changes
+    nothing on OSC2's row; AN_ROW2_WT = AN_ROW2.
+
+**Mutations (M, private copies, each built and its tests run; scratch W4/mut.py, mut.log): all 14 red.**
+- 9: B taken after Level (SMOOTH_APPLY before B).
+- 10: the clamp removed (the unrolled loop).
+- 17: D3 removed.
+- The re-seed off (`again` 0).
+- Lever (a) off.
+- wt_rdc on ramps.
+- wt_rdfc for two routes.
+- The DC kept (m 0).
+- peak_b left 0.
+- The feed-B bit never cleared.
+- wt_feed without m12 (the ramp out loses B).
+- The kernel path replaced by the reader at index 0.
+- WT_PK_OK kept at a note start.
+- OSC2's Sub FM next to a Wavetable OSC1 put back (D2).
+
+**Sizes (M).**
+- **Default DSP 30,252 B, 10,452 B free of 40,704 (>= 1 KB).** W3 as built was 27,652: W4 adds 2,600 B:
+  - wt_rdc 368, wt_rdr 428, wt_rdfc 560;
+  - wt_frame_dc 368, wt_feed_b 222, wt_kern 84;
+  - wt_body +312, wt_play +216 (routing, lever (a)), an_note +16, wt_feed +8, wt_fm_osc +10, an_osc +4.
+- WT FM DSP in all: 6,456 B (W1 752 + W2 2,560 + W3 544 + W4 2,600), against section 4's planned 2.4-3.8 KB: the reader
+  loops (5 specialised, 2,688 B) and D4 take the excess.
+- **The alternates.** BE_WT_MIP=1.5: DSP 30,252 B (the same code, another constant). BE_WT_MIP=off: DSP 29,684 B.
+- **The rest.**
+  - Synth UI 15,846 B (-40: want_row's one branch);
+  - M4 code 24,424 B, M7 C slice 15,368 B;
+  - image 0x189450, 16,100 B to PROVEN_MAX.
+- **Drums trial, information only.** An LF clone of c9937ea with main's committed 3597e8e merged (not committed:
+  test_keys / test_native_props taken from be444; scratch trialW4), built with BE_ENABLE=drums:
+  - DSP 36,316 B, **4,388 B free**;
+  - synth UI 22,710 B; image 0x18af20, 9,236 B to PROVEN_MAX;
+  - test_drums 33 (1 skipped) and test_drum_ui 46 (1 skipped) OK.
+
+  W3 as built had 6,988 B free there: W4's 2,600 B land in the trial too. No reserve taken: Jeff set the drums budget
+  aside; the trims named at W2 (rd_qx into rd_q, R2) remain.
+
+**CPU (M).**
+- P3Identity, 48 cases: worst **1.0165** (mod dev=False, 111,708 / 109,899), total 1.0087 (W3 1.0183 / 1.0092), under the 1.95 % stop line.
+- Tier 2 (envelope only): +108..+121, worst 1.0179 x stock's render. Untagged: +27 (unchanged).
+- Reader, a sample:
+
+  | Loop | W4 | W2/W3 |
+  |---|---|---|
+  | rd_qc (constant line) | 23.6 | rd_q 34.1 |
+  | rd_qr (ramp) | 26.6 | rd_q 34.1 |
+  | rd_qxc (frame crossfade) | 37.2 | rd_qx 45.2 |
+  | rd_q / rd_qx, two routes | 34.1 / 45.2 | |
+  | rd_qm | 55.2 | |
+
+- Voices (WtFmW4.test_cost and WtFmW3.test_cost: an_enter and both renders a voice-block, note 60, I 16; median / max):
+
+  | Voice | Median | Max | Gate |
+  |---|---|---|---|
+  | stock WT | 14,155 | | |
+  | WT1 Sub FM | 22,658 | 23,722 | W3: 25,283 / 30,986 |
+  | WT1 -> A2 FM 1>2 | 19,850 | 21,125 | 20,500 |
+  | WT1 -> WT2 FM 1>2 | 19,151 | 21,550 | 20,000 |
+  | **full WT voice (WT1 Sub FM + WT1 -> WT2)** | **27,362** | **29,514** | S3 28,929: met; W3 estimate 32.7k / 40.7k |
+  | the same with Position every block | 34,509 | 34,511 | heaviest voice 35,309 |
+  | the same at note 36 | 27,384 | 29,984 | |
+  | the same with FM Atk 3 on both | 27,420 | **43,852** | accepted, lever (c); W4_ATK_MAX 46,000 |
+  | A1 Sub FM -> WT2 FM 1>2 (W3's mixed full voice) | 28,156 | 29,127 | 32,000; W3: 30,784 / 36,397, now within S3 |
+  | the same with FM Atk 3 on OSC2 | 28,185 | 36,291 | W3_MIXED_MAX 37,000 (accepted, c) |
+  | Analog full FM | 28,938 | 29,586 | |
+
+  - The first block of every voice without FM Atk is now within the heaviest voice (lever (a)).
+  - The FM Atk excess is the blocks where the rising depth crosses a level boundary on both oscillators at once (rd_qm on
+    each).
+  - Device item: checklist 8, 8-voice heavy FM chords.
+
+**Suites (M, ~/bento/out/be444w4-rel, byte-identical to the be444w4e image they ran on, from the worktree's mods/m1; skips
+in brackets).** All OK:
+- diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20);
+- notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10, native_props 22;
+- **analog 205** (195 + 10 new), synth_ui 64 (2), note0 32, p3_golden self-test 52 (+1).
+
+inst_xml 5 (5) and handles 16 (16) are fully skipped. On the alternates (images byte-identical to their kits; a fresh
+build of c9937ea reproduces the default kit's image, 1e5283fb...):
+- BEM1.5: analog 205 OK, synth_ui 64 (2), native_props 22 OK.
+- BEMOFF: analog 205 (11: the mip-rule tests, which skip on that build by design; WtFmW3.test_mip_off covers it),
+  synth_ui 64 (2), native_props 22 OK.
+- The first BEM1.5 run had 2 red: WtFmW2.test_sizes_and_cost and WtFmW4.test_the_unrolled_loop_is_rd_qs_bit_for_bit
+  used index 1.0 .. 1.25, which a 1.5 threshold puts on a coarser level (rd_qm instead of the loop under test). Their
+  indices are now 0.5 .. 0.6 (the note's level at any threshold the build has); the default build's analog suite
+  re-ran green with them.
+
+**Plan items found wrong or changed in W4.**
+1. 3.5 step 5 "B = inc1 x scratch, written by an_feed (0 B new)": D4's data made the frame mean come out of B (wt_feed_b,
+   wt_frame_dc, 590 B). The plan's "about 60 B" for that had no peak, no state and no unrolling.
+2. 3.5's feed-B bit "set at an_prop time" is not enough. The bit must outlive OSC2's FM 1>2 through its ramp out (wt_feed:
+   fm12 | m12), and the audio path clears it after (wt_body + wt_settle). Otherwise the ramp out had no B (fmx= missed).
+3. The re-seed's premise (W3 review: "a synced Analog OSC2 with FM 1>2 keeps WT1 on the reader for good") does not hold
+   for what 3.5 step 4 built. A feeding WT1 at gate 0 plays stock's kernel, so the copy stays exact; the re-seed is kept as
+   Jeff decided (it covers a mip-home block and D9's running). It is gated on WT1's kernel phase moving (a frozen WT1, with
+   no WAV, must let the copy run on, or the slave would resync to one spot every block) and skips a note start's restart.
+4. "The unrolled reader (about -2.4k a reader block, +150-300 B)": unrolling alone gives about 3 a sample. The rest came
+   from one-route loops (B's term gone) and a constant-line loop. Measured: -2.7k on a steady block (34.1 -> 23.6 a
+   sample), -1.9k on a ramp, -2.0k on a frame block, for +1,356 B.
+5. **Two-route lines are unreachable since D2's last case.** OSC2 always has FM 1>2 alone (its msub can no longer become
+   non-zero), and OSC1 never has FM 1>2. an_render_fm's and the reader's second term are dead in practice; they are kept
+   (an_render_fm untouched for P3Identity) and tested on crafted states.
+6. S3 is met by the full Wavetable voice after the unroll (27.4k against 28,929). W3's re-estimate (32.7k steady, 40.7k at
+   a note start) predates the one-route loops and lever (a). Position every block is 34.5k, 0.8k under 35,309 only
+   because of wt_rdfc: without it, 38.3k (M, this sprint). FM Atk on both oscillators peaks at 43.9k.
+7. D4's factory tables cannot be measured offline: no copy of them on this machine, and the card is off limits. The
+   decision rests on synthetic families and the rule; tools/wt_dc.py measures the real ones.
+8. The tier-2 gate (1.02 x, D8) does not describe a feeding OSC1. That block is the body plus B (+1.8k .. +3.1k), section
+   6's "stock WT1 feeding an FM'd WT2" row, so it is gated apart.
+9. W3's "W4 must set peak_b (the frame's peak x inc1)": with the DC out it is the peak about the frame's mean, and it is
+   set for an Analog OSC2 too (unused there).
+10. 7.3's "B from a Wavetable OSC1: OSC1's output equals stock's render bit for bit while audible" holds at gate 0 (stock's
+    kernel). With OSC1's own Sub FM it is the reader's, as for any FM'd Wavetable oscillator.
+
+**Needs Jeff.**
+- **D5's default: 1.75 (BE4.44), or the alternates by ear.** BE4.44-mip1.5 (BEM1.5) or BE4.44-mipoff (BEMOFF); checklist 7.
+- **D4: accept the mean subtraction as built.** It was decided without factory data; checklist 5's D4 row, or
+  tools/wt_dc.py on a card copy, checks it.
+- **FM Atk on both oscillators peaks at 43.9k a voice-block (+24 % over 35,309), on its level-crossing blocks (accepted,
+  lever (c)).** The device's 8-voice line (checklist 8) says whether it matters. If it does, the lever is rd_qm on a
+  one-route line (as wt_rdfc), about -2k a crossing block and +0.4 KB.
+- **D2's last case plays a BE4.43 project's hidden FM 1>2.** As the plan recommended; release notes and checklist 3 say
+  so.
