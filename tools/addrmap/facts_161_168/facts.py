@@ -922,6 +922,9 @@ REVIEWED = {
     'WT_OSC_VT_SLOT': dict(value=0x80acbb4, orig='411c0808', evidence="osc ctor 0x08081E00 stores 0x080ACBB4 at [osc]; slot 0 = "
                            "WT_OSC_RENDER | 1"),
     'WT_OSC_RENDER': dict(value=0x8081c40, evidence=_AF),
+    'WT_KERNEL': dict(value=0x80a2000, evidence="BE4.44 W4: WT_OSC_RENDER's one call (0x08081D5E bl 0x080A2000): "
+                      "(osc + 0x10C, table, frame, out, [sp] n, s0 rate); the kernel reads n at [sp, #0x80] (9 words, 6 "
+                      "doubles, 0x2C pushed); not in 1.6.1's table (1.6.8 only)"),
     'BUF_FRAMES': dict(value=0x80a2500, evidence=_AF + "; ldr r3,[r0,#4]; cbnz; ldr r3,[r0]"),
     'PARAM_VALUE': dict(value=0x80a09a0, evidence=_AF),
     'NOTE_OCT': dict(value=0x804f680, evidence=_AF),

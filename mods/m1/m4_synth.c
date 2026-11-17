@@ -520,21 +520,17 @@ static void dec(Out *o, u32 v) {
 #define ROW_BYTES 16u
 static volatile u16 *osc_row_keys(void *view, u32 row) { return (volatile u16 *)((u8 *)view + S_SYNTH_VIEW_KEYS + row * ROW_BYTES); }
 static u32 row_handle(void *view, u32 row) { return W(view, S_SYNTH_VIEW_HANDLES + 4u * row); }
-static void want_row(const u16 *stock, u32 row, int me, int osc1, u16 *k) {
+static void want_row(const u16 *stock, u32 row, int me, u16 *k) {
     for (u32 i = 0; i < 8u; i++) k[i] = stock[i];
     if (!k[3]) k[3] = (u16)S_KEY_OSC_TYPE;
-    if (!me) {
-        /* BE4.44 W1 (docs/plan-wt-fm.md 2): a Wavetable oscillator's FM keeps Analog's knob numbers, slot 4 stays empty:
-         * OSC1 Sub FM; OSC2 FM 1>2 (D2: every OSC1 type feeds B); then its FM Atk / FM Dec */
-        if (!k[5]) k[5] = row == 1u ? (u16)S_KEY_OSC_FM12 : (u16)S_KEY_OSC_SUBFM;
-        if (!k[6]) k[6] = (u16)S_KEY_OSC_FMATK;
-        if (!k[7]) k[7] = (u16)S_KEY_OSC_FMDEC;
-        return;
+    if (me) {
+        if (k[2]) k[2] = (u16)S_KEY_OSC_SHAPE;
+        if (!k[4]) k[4] = row == 0u ? (u16)S_KEY_OSC_GLIDE : (u16)S_KEY_OSC_SYNC;   /* BE4.40 J1: OSC2's Sync whatever OSC1's Type */
     }
-    if (k[2]) k[2] = (u16)S_KEY_OSC_SHAPE;
-    if (!k[4]) k[4] = row == 0u ? (u16)S_KEY_OSC_GLIDE : (u16)S_KEY_OSC_SYNC;   /* BE4.40 J1: OSC2's Sync whatever OSC1's Type */
-    /* BE4.43: one FM amount per oscillator, then its envelope: OSC2's is FM 1>2 while OSC1 is Analog (OD3), else Sub FM */
-    if (!k[5]) k[5] = row == 1u && osc1 ? (u16)S_KEY_OSC_FM12 : (u16)S_KEY_OSC_SUBFM;
+    /* BE4.43: one FM amount per oscillator, then its envelope. BE4.44 W1 (docs/plan-wt-fm.md 2): a Wavetable oscillator's FM
+     * keeps Analog's knob numbers, its slot 4 stays empty. BE4.44 W4 (D2's last case): OSC2's slot 5 is FM 1>2 whatever either
+     * Type is (a Wavetable OSC1 feeds B too now; BE4.43 showed an Analog OSC2's Sub FM there next to a Wavetable OSC1) */
+    if (!k[5]) k[5] = row == 1u ? (u16)S_KEY_OSC_FM12 : (u16)S_KEY_OSC_SUBFM;
     if (!k[6]) k[6] = (u16)S_KEY_OSC_FMATK;
     if (!k[7]) k[7] = (u16)S_KEY_OSC_FMDEC;
 }
@@ -556,7 +552,7 @@ static int fix_rows(void *view, const u16 *stock) {
     int a0 = analog_osc(row_handle(view, 0)), a1 = analog_osc(row_handle(view, 1)), changed = 0;
     for (u32 row = 0; row < 2u; row++) {
         u16 k[8];
-        want_row(stock + row * 8u, row, row ? a1 : a0, a0, k);
+        want_row(stock + row * 8u, row, row ? a1 : a0, k);
         volatile u16 *v = osc_row_keys(view, row);
         for (u32 i = 0; i < 8u; i++) if (v[i] != k[i]) { v[i] = k[i]; changed = 1; }
     }

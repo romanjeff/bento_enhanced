@@ -46,6 +46,10 @@ static inline __attribute__((always_inline)) float step_of(const Line &q, const 
 }  // namespace wtr
 
 extern "C" void wt_rd(WtRd *g);
+extern "C" void wt_rdc(WtRd *g);                 /* (W4: rd_q on a one-route line, unrolled: constant, a ramp) */
+extern "C" void wt_rdr(WtRd *g);
+extern "C" void wt_rdfc(WtRd *g);                /* (W4: rd_qx on a one-route line) */
+extern "C" void wt_feed_b(const float *s, float *b, unsigned n, float inc, float m);   /* (W4: B from a Wavetable OSC1) */
 extern "C" void wt_rdf(WtRd *g);
 extern "C" void wt_rdx(WtRd *g);                 /* (wt_mipx.cpp, -Os: rare, and it spills at -O2 too) */
 

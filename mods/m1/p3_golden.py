@@ -1174,7 +1174,7 @@ def fm12_bessel(y2, cc, cm, I, pc0, qm0, walk=0.0, eps_c=SINQ_ERR, eps_m=FM12_EP
 WT_HOME = 0xFF
 WT_LEVELS = 7
 WT_MIP_HYST = 0.84                  # D5: hysteresis derived from the one threshold (stock's 1.25 -> 1.05, plan 3.4)
-WT_RD_MUTANTS = ("clamp_wrap", "fixed_mip", "xf_reversed", "units", "no_skew", "no_hyst", "read_late", "no_wait")
+WT_RD_MUTANTS = ("clamp_wrap", "fixed_mip", "xf_reversed", "units", "no_skew", "no_hyst", "read_late", "no_wait", "note_xf")
 
 
 def wt_level_off(k): return 0x100000 - (0x100000 >> k)
@@ -1264,10 +1264,14 @@ def wt_read_block(tab, st, req, rate, n, line, thr, mutant=None, pa=0.0):
     go backward: a wrap by compare that fails on reverse), "fixed_mip" (the note's level always), "xf_reversed" (crossfade
     weights reversed), "units" (the phase advanced in the note's samples, not cycles), "no_skew" (levels read unskewed),
     "no_hyst", "read_late" (the phase advanced before the read, the reader prototype's order), "no_wait" (W2 as first
-    built: a frame change always wins, so a Position moving every block holds the mip off)."""
+    built: a frame change always wins, so a Position moving every block holds the mip off), "note_xf" (W3 as built: a note's
+    first block crossfades from the note's level to the FM level). W4 (Jeff, "Decisions before W4", lever (a)): a block
+    whose pending flag is set (a note's first, stock's ladder choosing the note's level there, itself a switch with no
+    crossfade) reads the FM level from its first sample: the levels read are (kt, kt)."""
     if mutant not in (None,) + WT_RD_MUTANTS: raise ValueError(f"mutant must be one of {WT_RD_MUTANTS}")
     st = dict(st)
     rate = float(np.float32(rate))
+    fresh = st["flag"]
     if st["flag"]:
         k = wt_ladder(rate)
         L = wt_level_len(k)
@@ -1283,6 +1287,7 @@ def wt_read_block(tab, st, req, rate, n, line, thr, mutant=None, pa=0.0):
     else:
         a, ia, dia, b, ib, dib = line
         kt = kn if thr == "off" else wt_mip_choice(wt_peak(inc, line, n, pa), kn, kc, thr, mutant)
+        if fresh and mutant != "note_xf": kc = kt   # W4 lever (a): a note's first block plays the FM level at once
     if mutant == "fixed_mip": kc = kt = kn
     j = np.arange(n, dtype=np.float64)
     di = inc + (ia + dia * j) * np.asarray(a, np.float64)[:n] + (ib + dib * j) * np.asarray(b, np.float64)[:n]
@@ -2001,6 +2006,32 @@ def _selftest():
                     self.assertTrue(all(6 + b - f <= 1 for b, f in enumerate(frames)), frames)
                 else:
                     self.assertLessEqual(set(mips), {3, WT_HOME}, "starved: the mip never leaves the note's level")
+
+        def test_a_notes_first_block_plays_the_fm_level(self):
+            """W4 lever (a): a block with the pending flag set (a note's first) under an index that wants a coarser level reads
+            that level from its first sample (levels (kt, kt), no crossfade): every sample is the coarse level's plain read
+            at the phase. The block after a held mip still crossfades (no flag: a mip change). "note_xf" (W3 as built)
+            crossfades from the note's level instead."""
+            t = wt_build_levels(wt_saw_frames(200))
+            rate, n = 5.58131, 256
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            a = np.sin(2 * np.pi * 2 * np.arange(n) / n) * inc / 2
+            line = (a, 12.0, 0.0, a, 0.0, 0.0)
+            st = wt_state(idx=1500, frac=0.25, frame=-1, flag=1)
+            y, s1, ks = wt_read_block(t, st, 7, rate, n, line, THR, pa=float(np.float32(inc / 2)))
+            kn = wt_ladder(rate)
+            self.assertGreater(ks[1], kn, "control: the index wants a coarser level")
+            self.assertEqual(ks, (ks[1], ks[1]), "the FM level from the first sample")
+            self.assertEqual((s1["mip"], s1["flag"], s1["frame"]), (ks[1], 0, 7))
+            yx, _, kx = wt_read_block(t, st, 7, rate, n, line, THR, pa=float(np.float32(inc / 2)), mutant="note_xf")
+            self.assertEqual(kx, (kn, ks[1]), "note_xf: from the note's level")
+            self.assertGreater(float(np.max(np.abs(yx[:8] - y[:8]))), 1e-4, "note_xf differs where the crossfade starts")
+            # the plain read at the coarse level, by hand
+            st2 = dict(st, flag=0, D=1 << kn, len=wt_level_len(kn), off=wt_level_off(kn), idx=1500 % wt_level_len(kn),
+                       mip=ks[1])
+            yh, _, kh = wt_read_block(t, st2, 7, rate, n, line, THR, pa=float(np.float32(inc / 2)))
+            self.assertEqual(kh, (ks[1], ks[1]))
+            self.assertTrue(np.array_equal(yh, y), "the same samples as a block that held that level already")
 
         def test_the_mip_rule(self):
             """D5 against a hand table (thr 1.25, hysteresis 1.05): coarser at once, finer only below 1.05 x 2^k, never

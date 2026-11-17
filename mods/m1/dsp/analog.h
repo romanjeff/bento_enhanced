@@ -39,8 +39,9 @@ struct AnOsc {
      * are far below it), the pitch offset still to slide (octaves), what of it was last added to the sub oscillator, and
      * the sub's +0x04 as we left it (stock rewrites that field at every note start: then its new value is the base, review
      * 2026-11-08). BE4.44 (docs/plan-wt-fm.md 3.2): on a tagged Wavetable oscillator the note's two bytes are the WT state
-     * (mipcur: the mip the reader holds, 0..WT_MIPS - 1, else WT_HOME; wflags: WT_FEED_B), and glide's word is wxf (W2's
-     * frame-crossfade state): one saved run with fmk, +140 .. +147 */
+     * (mipcur: the mip the reader holds, 0..WT_MIPS - 1, else WT_HOME; wflags: WT_FEED_B, WT_MIP_WAIT, WT_PK_OK), and glide's
+     * word is wxf (W4: a feeding OSC1's frame mean for B and its key, analog.cpp wt_frame_dc): one saved run with fmk, +140 ..
+     * +147 */
     union {
         unsigned short note;
         struct { unsigned char mipcur, wflags; } wt;
@@ -82,6 +83,7 @@ static_assert(sizeof(AnOsc) <= AN_PROPS_OFF, "Analog state must stay below the o
 #define WT_MIPS 7u                    /* stock's mip levels D = 1 .. 64 */
 #define WT_HOME 0xFFu                 /* mipcur: the reader holds no private mip (any value >= WT_MIPS reads as HOME) */
 #define WT_FEED_B 1u                  /* wflags: this OSC1 feeds buffer B (OSC2 has FM 1>2), set by an_prop */
+#define WT_PK_OK 4u                   /* wflags (W4): a feeding OSC1's frame mean (wxf) and peak (AnProps.glide) are set */
 #define WT_MIP_WAIT 2u                /* wflags (W2 review): the last reader block deferred a mip change for a frame change, so
                                        * this one changes the mip and defers the frame (each waits one block at most). Set only
                                        * while the reader holds a mip (mipcur != HOME), so tier 2 never sees it set */

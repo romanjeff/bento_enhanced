@@ -62,7 +62,9 @@ STOCK_ROW = [LEVEL, PITCH, POSITION, 0, 0, 0, 0, 0]               # stock's own 
 # oscillator in slot 5 (OSC1 Sub FM; OSC2 FM 1>2 while OSC1 is Analog, else Sub FM) and its envelope, FM Atk / FM Dec in 6 / 7
 AN_ROW1 = [LEVEL, PITCH, SHAPE, TYPE, GLIDE, SUBFM, FMATK, FMDEC]   # OSC1 Analog: Shape for Position, Glide
 AN_ROW2 = [LEVEL, PITCH, SHAPE, TYPE, SYNC, FM12, FMATK, FMDEC]     # OSC2 Analog, OSC1 Analog: Sync 1>2, FM 1>2
-AN_ROW2_WT = [LEVEL, PITCH, SHAPE, TYPE, SYNC, SUBFM, FMATK, FMDEC] # OSC2 Analog, OSC1 Wavetable: Sync 1>2 (J1), Sub FM
+# BE4.44 W4 (reviewed change, D2's last case): next to a Wavetable OSC1 too, OSC2's slot 5 is FM 1>2 (a Wavetable OSC1 feeds
+# B), so an Analog OSC2's row is the same whatever OSC1 is (BE4.43: Sub FM there)
+AN_ROW2_WT = [LEVEL, PITCH, SHAPE, TYPE, SYNC, FM12, FMATK, FMDEC]  # OSC2 Analog, OSC1 Wavetable: Sync 1>2 (J1), FM 1>2
 WT_CHILDREN = bytes.fromhex("0606080a0a09090b0b0c0d")           # a Wavetable track's children (stock's list)
 # stock 1.6.8's synth page, measured here on stock's code (rc33 implA p0/t5.py, probe2.py and this suite's runs):
 SLOT0, SLOT_STRIDE = 0x70, 0x468   # the row's 8 encoder widgets: view + SLOT0 + SLOT_STRIDE * slot
@@ -425,14 +427,16 @@ class Rows(unittest.TestCase):
         of OSC1 swaps OSC2's slot 5 within one tick (fix_rows), the shown row rebound.
         BE4.44 W1 (reviewed change, docs/plan-wt-fm.md 2, D2): a Wavetable row has them too, at the same knob numbers: OSC1
         Sub FM, OSC2 FM 1>2 whatever OSC1 is (D2), FM Atk / FM Dec. An Analog OSC2 next to a Wavetable OSC1 keeps BE4.43's Sub
-        FM until W4, where a Wavetable OSC1 feeds B (so its slot 5 shows what plays)."""
+        FM until W4, where a Wavetable OSC1 feeds B (so its slot 5 shows what plays).
+        BE4.44 W4 (reviewed change, D2's last case, plan 8 W4's exit): OSC2's slot 5 is FM 1>2 in all four type combinations;
+        a Type flip of OSC1 leaves OSC2's row as it is (nothing to swap, no repaint of it)."""
         for types in ((0, 0), (1, 0), (0, 1), (1, 1)):
             with self.subTest(types=types):
                 r = Rig(types=types); r.tick()
                 for row in (0, 1):
                     k = r.rows()[row]
                     an = types[row] == 1
-                    amount = (FM12 if types[0] == 1 or not an else SUBFM) if row == 1 else SUBFM
+                    amount = FM12 if row == 1 else SUBFM
                     self.assertEqual(k[5:8], [amount, FMATK, FMDEC], f"row {row}")
                     self.assertEqual(k.count(SUBFM) + k.count(FM12), 1, f"row {row}: one amount")
                     self.assertEqual(k[4] == 0, not an, f"row {row}: slot 4 empty on a Wavetable row")
@@ -443,13 +447,14 @@ class Rows(unittest.TestCase):
                                                                         "FM Dec"])
                     self.assertEqual([r.wvalue(i) for i in (5, 6, 7)], ["0.0%", "0 ms", "Inf"], "the texts (fm_time_text)")
         r = Rig(types=(0, 1)); r.tick(); r.show_row(1)
-        self.assertEqual((r.widgets()[5], r.wtitle(5)), ((SUBFM, r.h2), "Sub FM"), "OSC1 Wavetable: OSC2 shows its Sub FM")
+        self.assertEqual((r.widgets()[5], r.wtitle(5)), ((FM12, r.h2), "FM 1>2"), "OSC1 Wavetable: OSC2 shows FM 1>2 (W4)")
         r.shows.clear(); r.edit(r.h1, TYPE, 1); r.tick()
-        self.assertEqual(r.rows()[1], AN_ROW2, "OSC1 -> Analog: FM 1>2 within one tick")
-        self.assertEqual((r.widgets()[5], r.wtitle(5)), ((FM12, r.h2), "FM 1>2"), "rebound on the shown row")
+        self.assertEqual(r.rows()[1], AN_ROW2, "OSC1 -> Analog: still FM 1>2")
+        self.assertEqual((r.widgets()[5], r.wtitle(5)), ((FM12, r.h2), "FM 1>2"), "still bound on the shown row")
         r.edit(r.h1, TYPE, 0); r.tick()
-        self.assertEqual(r.rows()[1], AN_ROW2_WT, "OSC1 -> Wavetable: Sub FM again within one tick")
-        self.assertEqual((r.widgets()[5], r.wtitle(5)), ((SUBFM, r.h2), "Sub FM"))
+        self.assertEqual(r.rows()[1], AN_ROW2_WT, "OSC1 -> Wavetable: FM 1>2 still (W4)")
+        self.assertEqual(AN_ROW2_WT, AN_ROW2, "W4: one Analog OSC2 row")
+        self.assertEqual((r.widgets()[5], r.wtitle(5)), ((FM12, r.h2), "FM 1>2"))
 
     def test_a_taken_fm_key_leaves_the_page_stock(self):
         """P3 OD2 (one group, eight since BE4.43): Sub FM's key taken by the registry (bit 4) means none of ours is written, the black box
@@ -488,7 +493,8 @@ class Heal(unittest.TestCase):
         r.edit(r.h2, TYPE, 1); r.tick()
         self.assertEqual(r.rows(), [AN_ROW1, AN_ROW2])
         r.edit(r.h1, TYPE, 0); r.tick()
-        self.assertEqual(r.rows(), [WT_ROW1, AN_ROW2_WT], "OSC1 back to Wavetable: OSC2's row keeps Sync 1>2 (J1), loses FM 1>2")
+        self.assertEqual(r.rows(), [WT_ROW1, AN_ROW2_WT], "OSC1 back to Wavetable: OSC2's row keeps Sync 1>2 (J1) and, since "
+                         "BE4.44 W4, FM 1>2")
         self.assertEqual(r.widgets()[:5], [(LEVEL, r.h1), (PITCH, r.h1), (POSITION, r.h1), (TYPE, r.h1), (0, 0)],
                          "stock's Position back on WT1's slot 2, slot 4 empty")
         self.assertIn(" heals=3 ", r.black_box(), "three repairs (the A6 copy's own fix is not counted)")
