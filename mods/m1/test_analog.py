@@ -6424,10 +6424,11 @@ class WtFmW2(unittest.TestCase):
         rate = wt_rate(60); inc = float(f32(rate) * f32(1 / 2048))
         st = G.wt_state(idx=9, frac=0.1, frame=0, flag=0, k=3)
         costs = {}
-        two = dict(J=0.5, J1=0.5)
-        for name, req, line in (("rd_q", 0, wt_line(inc, 256, 1.0, 1.25, **two)), ("rd_qc", 0, wt_line(inc, 256, 1.0, 1.0)),
-                                ("rd_qr", 0, wt_line(inc, 256, 1.0, 1.25)), ("rd_qx", 9, wt_line(inc, 256, 1.0, 1.0, **two)),
-                                ("rd_qxc", 9, wt_line(inc, 256, 1.0, 1.25)), ("rd_qm", 0, wt_line(inc, 256, 0.0, 8.0))):
+        # (W4: small indices, so every case but rd_qm stays on the note's level at any threshold the build has, 1.25 up)
+        two = dict(J=0.25, J1=0.25)
+        for name, req, line in (("rd_q", 0, wt_line(inc, 256, 0.5, 0.6, **two)), ("rd_qc", 0, wt_line(inc, 256, 0.5, 0.5)),
+                                ("rd_qr", 0, wt_line(inc, 256, 0.5, 0.6)), ("rd_qx", 9, wt_line(inc, 256, 0.5, 0.5, **two)),
+                                ("rd_qxc", 9, wt_line(inc, 256, 0.5, 0.6)), ("rd_qm", 0, wt_line(inc, 256, 0.0, 8.0))):
             w.set(st)
             sp = Span(w.r, DSP[{"rd_q": "wt_rd", "rd_qc": "wt_rdc", "rd_qr": "wt_rdr", "rd_qx": "wt_rdf", "rd_qxc": "wt_rdfc",
                                 "rd_qm": "wt_rdx"}[name]])
@@ -7260,11 +7261,12 @@ class WtFmW4(unittest.TestCase):
         rate = wt_rate(60); inc = float(f32(rate) * f32(1 / 2048))
         st = G.wt_state(idx=9, frac=0.1, frame=0, flag=0, k=3)
         loops = ("wt_rd", "wt_rdc", "wt_rdr", "wt_rdf", "wt_rdfc")
-        for name, line, req, want in (("constant", wt_line(inc, 256, 1.0, 1.0), 0, "wt_rdc"),
-                                      ("ramp", wt_line(inc, 256, 1.0, 1.25), 0, "wt_rdr"),
-                                      ("two routes", wt_line(inc, 256, 1.0, 1.0, J=0.5, J1=0.5), 0, "wt_rd"),
-                                      ("no line", None, 0, "wt_rdc"), ("frame", wt_line(inc, 256, 1.0, 1.25), 5, "wt_rdfc"),
-                                      ("frame, two routes", wt_line(inc, 256, 1.0, 1.0, J=0.5, J1=0.5), 5, "wt_rdf")):
+        # (small indices: the note's level at any threshold the build has, so no case is a mip change)
+        for name, line, req, want in (("constant", wt_line(inc, 256, 0.5, 0.5), 0, "wt_rdc"),
+                                      ("ramp", wt_line(inc, 256, 0.5, 0.6), 0, "wt_rdr"),
+                                      ("two routes", wt_line(inc, 256, 0.5, 0.5, J=0.25, J1=0.25), 0, "wt_rd"),
+                                      ("no line", None, 0, "wt_rdc"), ("frame", wt_line(inc, 256, 0.5, 0.6), 5, "wt_rdfc"),
+                                      ("frame, two routes", wt_line(inc, 256, 0.5, 0.5, J=0.25, J1=0.25), 5, "wt_rdf")):
             w.set(st)
             sp = {f: Span(w.r, DSP[f]) for f in loops if f in DSP}
             y, _, _ = w.block(req, rate, 256, line)
