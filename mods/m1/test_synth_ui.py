@@ -52,7 +52,11 @@ SUBFM, FM12 = 0x18B, 0x132                                  # P3 Q1 (docs/plan-p
 BITS = 0x1A4                                                 # BE4.41's Bit Depth: BE4.42 had no such key (slot 6 empty)
 FMATK, FMDEC = 0x1A4, 0x1A0                                  # BE4.43 (plan BE4.43): the FM envelope (0x1A4 Bit Depth's once)
 LEVEL, PITCH, POSITION = 0xC4, 0x03, 0xC9                    # stock's oscillator row (plan 3.4)
-WT_ROW = [LEVEL, PITCH, POSITION, TYPE, 0, 0, 0, 0]           # a Wavetable oscillator: stock's row, Type in the free 4th slot
+# a Wavetable oscillator: stock's row, Type in the free 4th slot; BE4.44 W1 (docs/plan-wt-fm.md 2): its FM in Analog's knob
+# numbers, slot 4 empty: OSC1 Sub FM, OSC2 FM 1>2 (D2: every OSC1 type feeds B), then FM Atk / FM Dec
+WT_ROW1 = [LEVEL, PITCH, POSITION, TYPE, 0, SUBFM, FMATK, FMDEC]
+WT_ROW2 = [LEVEL, PITCH, POSITION, TYPE, 0, FM12, FMATK, FMDEC]
+STOCK_ROW = [LEVEL, PITCH, POSITION, 0, 0, 0, 0, 0]               # stock's own (np_ok false: none of ours)
 # P3 2.2: an Analog row's slot 5 Sub FM; OSC2's slot 7 FM 1>2 only while OSC1 is Analog (OD3: hidden). BE4.42: slot 6
 # (BE4.41's Bit Depth) is empty, so FM 1>2 stays on its encoder. BE4.43 (Jeff's design 2026-11-16): one FM amount per
 # oscillator in slot 5 (OSC1 Sub FM; OSC2 FM 1>2 while OSC1 is Analog, else Sub FM) and its envelope, FM Atk / FM Dec in 6 / 7
@@ -355,7 +359,7 @@ class Disabled(unittest.TestCase):
         for site in ("STR_PREFIX_OSC1", "STR_PREFIX_OSC2", "STR_DEST_OSC_FMT"):
             self.assertTrue(same(getattr(S, site), 12 if site == "STR_DEST_OSC_FMT" else 8), site)
         r = Rig(types=(1, 1)); r.shows.clear(); r.tick(); r.tick()
-        self.assertEqual(r.rows(), [[LEVEL, PITCH, POSITION, 0, 0, 0, 0, 0]] * 2, "stock's rows: no Type, no Analog layout")
+        self.assertEqual(r.rows(), [STOCK_ROW] * 2, "stock's rows: no Type, no Analog layout")
         self.assertEqual(r.shows, [], "no refresh of ours")
         self.assertEqual(r.wtitle(2), "Position")
         self.assertEqual(r.hints(), ["Double-tap to load WAV"] * 2)
@@ -372,7 +376,7 @@ class Rows(unittest.TestCase):
         self.assertEqual([r.wtitle(i) for i in range(3)], ["Level", "Pitch", "Position"])
 
     def test_rows_per_type_for_each_oscillator(self):
-        cases = {(0, 0): (WT_ROW, WT_ROW), (1, 0): (AN_ROW1, WT_ROW), (0, 1): (WT_ROW, AN_ROW2_WT), (1, 1): (AN_ROW1, AN_ROW2)}
+        cases = {(0, 0): (WT_ROW1, WT_ROW2), (1, 0): (AN_ROW1, WT_ROW2), (0, 1): (WT_ROW1, AN_ROW2_WT), (1, 1): (AN_ROW1, AN_ROW2)}
         for types, want in cases.items():
             with self.subTest(types=types):
                 r = Rig(types=types); r.tick()
@@ -417,21 +421,27 @@ class Rows(unittest.TestCase):
     def test_the_fm_slots(self):
         """BE4.43 (Jeff's design; P3 2.2 / OD3 before it): one FM amount per Analog oscillator in slot 5, bound to it: OSC1's
         Sub FM; OSC2's FM 1>2 while OSC1 is Analog, else (mixed: OSC1 Wavetable, whose signal the M7 cannot read) its Sub FM,
-        so OSC2 always has an FM source; then the oscillator's own FM Atk / FM Dec in slots 6 / 7 (no Bit Depth); none of
-        them on a Wavetable row. A Type flip of OSC1 swaps OSC2's slot 5 within one tick (fix_rows), the shown row rebound."""
+        so OSC2 always has an FM source; then the oscillator's own FM Atk / FM Dec in slots 6 / 7 (no Bit Depth). A Type flip
+        of OSC1 swaps OSC2's slot 5 within one tick (fix_rows), the shown row rebound.
+        BE4.44 W1 (reviewed change, docs/plan-wt-fm.md 2, D2): a Wavetable row has them too, at the same knob numbers: OSC1
+        Sub FM, OSC2 FM 1>2 whatever OSC1 is (D2), FM Atk / FM Dec. An Analog OSC2 next to a Wavetable OSC1 keeps BE4.43's Sub
+        FM until W4, where a Wavetable OSC1 feeds B (so its slot 5 shows what plays)."""
         for types in ((0, 0), (1, 0), (0, 1), (1, 1)):
             with self.subTest(types=types):
                 r = Rig(types=types); r.tick()
                 for row in (0, 1):
                     k = r.rows()[row]
                     an = types[row] == 1
-                    amount = FM12 if row == 1 and types[0] == 1 else SUBFM
-                    self.assertEqual(k[5:8], [amount, FMATK, FMDEC] if an else [0, 0, 0], f"row {row}")
-                    self.assertEqual(k.count(SUBFM) + k.count(FM12), 1 if an else 0, f"row {row}: one amount")
-                    if an:
-                        r.show_row(row)
-                        h = (r.h1, r.h2)[row]
-                        self.assertEqual(r.widgets()[5:8], [(amount, h), (FMATK, h), (FMDEC, h)])
+                    amount = (FM12 if types[0] == 1 or not an else SUBFM) if row == 1 else SUBFM
+                    self.assertEqual(k[5:8], [amount, FMATK, FMDEC], f"row {row}")
+                    self.assertEqual(k.count(SUBFM) + k.count(FM12), 1, f"row {row}: one amount")
+                    self.assertEqual(k[4] == 0, not an, f"row {row}: slot 4 empty on a Wavetable row")
+                    r.show_row(row)
+                    h = (r.h1, r.h2)[row]
+                    self.assertEqual(r.widgets()[5:8], [(amount, h), (FMATK, h), (FMDEC, h)])
+                    self.assertEqual([r.wtitle(i) for i in (5, 6, 7)], ["FM 1>2" if amount == FM12 else "Sub FM", "FM Atk",
+                                                                        "FM Dec"])
+                    self.assertEqual([r.wvalue(i) for i in (5, 6, 7)], ["0.0%", "0 ms", "Inf"], "the texts (fm_time_text)")
         r = Rig(types=(0, 1)); r.tick(); r.show_row(1)
         self.assertEqual((r.widgets()[5], r.wtitle(5)), ((SUBFM, r.h2), "Sub FM"), "OSC1 Wavetable: OSC2 shows its Sub FM")
         r.shows.clear(); r.edit(r.h1, TYPE, 1); r.tick()
@@ -446,7 +456,7 @@ class Rows(unittest.TestCase):
         says keys=TAKEN:272 (0x110), and the page is stock's whatever the Types say (np_ok)."""
         r = Rig(types=(1, 1), occupy=SUBFM); r.tick(); r.tick()
         self.assertIn(" keys=TAKEN:272 ", r.black_box())
-        self.assertEqual(r.rows(), [[LEVEL, PITCH, POSITION, 0, 0, 0, 0, 0]] * 2, "stock's rows: no Type, no Analog layout")
+        self.assertEqual(r.rows(), [STOCK_ROW] * 2, "stock's rows: no Type, no Analog layout")
         self.assertEqual(r.wtitle(2), "Position")
 
     def test_the_fm_slots_edit_their_keys(self):
@@ -468,17 +478,17 @@ class Heal(unittest.TestCase):
     """A Type edit (stock's 0xD0 path, no page rebuild) is shown within one tick pass."""
     def test_a_type_edit_is_shown_within_one_tick(self):
         r = Rig(); r.tick(); r.tick()
-        self.assertEqual(r.rows(), [WT_ROW, WT_ROW])
+        self.assertEqual(r.rows(), [WT_ROW1, WT_ROW2])
         r.shows.clear()
         r.edit(r.h1, TYPE, 1)
         r.tick()
-        self.assertEqual(r.rows(), [AN_ROW1, WT_ROW])
+        self.assertEqual(r.rows(), [AN_ROW1, WT_ROW2])
         self.assertEqual(r.shows, [1], "one refresh of the shown row")
         self.assertEqual(r.widgets()[:5], [(k, r.h1) for k in AN_ROW1[:5]])
         r.edit(r.h2, TYPE, 1); r.tick()
         self.assertEqual(r.rows(), [AN_ROW1, AN_ROW2])
         r.edit(r.h1, TYPE, 0); r.tick()
-        self.assertEqual(r.rows(), [WT_ROW, AN_ROW2_WT], "OSC1 back to Wavetable: OSC2's row keeps Sync 1>2 (J1), loses FM 1>2")
+        self.assertEqual(r.rows(), [WT_ROW1, AN_ROW2_WT], "OSC1 back to Wavetable: OSC2's row keeps Sync 1>2 (J1), loses FM 1>2")
         self.assertEqual(r.widgets()[:5], [(LEVEL, r.h1), (PITCH, r.h1), (POSITION, r.h1), (TYPE, r.h1), (0, 0)],
                          "stock's Position back on WT1's slot 2, slot 4 empty")
         self.assertIn(" heals=3 ", r.black_box(), "three repairs (the A6 copy's own fix is not counted)")
@@ -509,7 +519,7 @@ class Heal(unittest.TestCase):
         for h, k, v in sent:
             r.edit(h, k, v)
         r.tick()
-        self.assertEqual(r.rows()[0], WT_ROW, "turning Type on the page switches the layout on the next pass")
+        self.assertEqual(r.rows()[0], WT_ROW1, "turning Type on the page switches the layout on the next pass")
         self.assertEqual(r.turn(2, 0x3200)[0][1], POSITION, "slot 2 edits stock's Position again")
 
     def test_an_oscillator_that_turns_analog_gets_its_settings_again(self):
@@ -536,6 +546,27 @@ class Heal(unittest.TestCase):
         r = Rig(types=(1, 1)); r.props.clear(); r.tick(); r.tick()
         self.assertEqual(r.props, [], "an oscillator Analog before the page saw it: stock's push sent everything")
 
+    def test_an_oscillator_that_turns_wavetable_gets_its_fm_again(self):
+        """BE4.44 W1 (docs/plan-wt-fm.md 2, "Resend on a Type flip"): the M7 forgets an Analog oscillator's area when it
+        leaves Analog, and a Wavetable oscillator now keeps its FM settings (Sub FM / FM 1>2, FM Atk, FM Dec), so a flip to
+        Wavetable sends the same seven keys once (Shape / Sync / Glide go along: the M7 ignores them on a Wavetable
+        oscillator). Both directions, each oscillator; a Type rewritten with the same kind (Wavetable 0 -> 7) sends nothing."""
+        r = Rig(types=(1, 1)); r.tick()
+        r.set(r.w1, SUBFM, 640); r.set(r.w1, FMATK, 3); r.set(r.w1, FMDEC, 40)
+        r.edit(r.h1, TYPE, 0)
+        r.props.clear(); r.tick()
+        th = r.r32(r.track + 0x10)
+        self.assertEqual(r.props, [(th, SHAPE, 48, 0), (th, SYNC, 0, 0), (th, GLIDE, 0, 0), (th, SUBFM, 640, 0),
+                                   (th, FM12, 0, 0), (th, FMATK, 3, 0), (th, FMDEC, 40, 0)], "OSC1 -> Wavetable: its seven")
+        r.props.clear(); r.tick(); r.tick()
+        self.assertEqual(r.props, [], "once")
+        r.set(r.w2, FM12, 900); r.edit(r.h2, TYPE, 0); r.props.clear(); r.tick()
+        self.assertEqual([(k, v, i) for _, k, v, i in r.props if k in (FM12, FMATK, FMDEC)],
+                         [(FM12, 900, 1), (FMATK, 0, 1), (FMDEC, 128, 1)], "OSC2 -> Wavetable: its FM 1>2 and envelope")
+        r.edit(r.h2, TYPE, 7); r.props.clear(); r.tick()
+        self.assertEqual(r.props, [], "Wavetable to another Wavetable value: nothing")
+        self.assertIn(" resends=2", r.black_box())
+
 
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
 class Defensive(unittest.TestCase):
@@ -545,7 +576,7 @@ class Defensive(unittest.TestCase):
         for t in (2, 7, 0x101, -1):
             with self.subTest(type=t):
                 r = Rig(types=(t, t)); r.tick(); r.tick()
-                self.assertEqual(r.rows(), [WT_ROW, WT_ROW])
+                self.assertEqual(r.rows(), [WT_ROW1, WT_ROW2])
                 self.assertEqual(r.hints(), ["Double-tap to load WAV"] * 2)
                 self.assertEqual(r.titles_(), ["OSC1: ", "OSC2: "])
                 self.assertEqual(r.paint(0), 0, "no dial")
@@ -619,7 +650,7 @@ class Defensive(unittest.TestCase):
         for t in (7, -1, 0x101):
             with self.subTest(type=t):
                 r = Rig(types=(t, 0)); r.posts.clear(); r.tick(); r.tick()
-                self.assertEqual(r.rows()[0], WT_ROW)
+                self.assertEqual(r.rows()[0], WT_ROW1)
                 self.assertEqual((r.wtitle(3), r.wvalue(3)), ("Type", "Wavetable"))
                 self.assertEqual(r.prop(r.w1, TYPE), t)
                 self.assertEqual([p for p in r.posts if p[0] == 0xD0], [])

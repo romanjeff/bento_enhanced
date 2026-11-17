@@ -665,6 +665,65 @@ mutations. Their findings and what was done:
 the DSP code is unchanged from BE4.43, P3Identity 1.0184 worst / 1.0097 total. Suites: all green on be444w0r (test_analog
 152). Still owed: device item D-W0 (every hold shortcut, image v4.44-w0).
 
+## W1 result (2026-11-17, branch be444)
+
+Storage and the switch, no reader: a gate that is not 0 plays as gate 0. Build ~/bento/out/be444w1 (default, 1.6.8).
+
+- **Layout as built (S).** Tag pair at +0 / +4 (magic, then its complement in phase's word). WT state in AnOsc.note's two
+  bytes (mipcur, wflags: bit 0 feed-B) next to fmk, and glide's word as wxf (W2's frame-crossfade state, 0 until then).
+  msub / m12 / fme and AnProps are contiguous, so the saved set is **three runs, 36 B** (+0..+7, +140..+147, +172..+191),
+  not "four runs, about 32 B". Run 2 (five words) is copied with one LDM / STM. Field audit: fm_setup, fm_env_step, feeds and
+  an_feed read or write only fmk (+142), msub / m12 (+172 / +174), fme (+176) and AnProps (+180..+191), all inside the
+  runs; an_render / an_render_fm (phase, delayed at +4 / +8) are never called on a Wavetable oscillator.
+- **Props (S).** an_prop: a Wavetable oscillator's Sub FM / FM 1>2 / FM Atk / FM Dec go to wt_prop (default state, tag,
+  value; wt_settle untags when idle); every Type and FM 1>2 message of either oscillator recomputes OSC1's feed-B
+  (wt_feed). an_note: START and mipcur HOME on a tagged oscillator. an_osc's non-Analog return compares the magic's high
+  half and calls wt_fm_osc (noinline), which checks the pair, saves the runs, calls stock's body 0x08081C40, restores, and
+  steps the envelope (or holds DEC j 0).
+- **M4 (S).** Wavetable rows: Level, Pitch, Position, Type, -, OSC1 Sub FM / OSC2 FM 1>2, FM Atk, FM Dec. Texts are
+  fm_time_text's (unchanged code, already per handle). The resend now also runs on a flip to Wavetable.
+- **Tests (M).** test_analog WtFmW1 (10 tests): tier 1 stock's bit for bit (samples and the whole voice after every
+  block; notes 24..120, three back-to-back note starts, WTOscReset on and off, Position fixed and moving, Level 0); tier 2
+  stock's bit for bit outside the runs, same notes plus 16 blocks at note 120 (many wraps), Position moving (frame
+  crossfades), the runs holding the settings and fme the golden envelope's (p3_golden fm_env f32) after every block; a
+  write hook shows stock's render writes every run (so each restore matters); default-state init; the untag rule; the
+  bounded mipcur; the tag pair (render side and props side); feed-B in any message order; note start; Type flips with the
+  resend. test_synth_ui: the WT rows and texts, the resend on a flip to Wavetable. Reviewed changes: P3Identity's
+  test_q1_plays_no_amount ("osc2 wavetable" and "mixed" now tag a Wavetable oscillator: runs masked, tier 2's own
+  instructions carved out and bounded at 120 a call, M 69 / 37), Props' WT-untouched case (defaults only now), test_synth_ui
+  WT_ROW -> WT_ROW1 / WT_ROW2.
+- **Mutations (M, private copies under scratch, each built and run):** 1 (check word ignored in wt_fm_osc; and in
+  wt_tagged, caught after adding test_the_props_side_reads_the_pair_too), 2 (each of the three runs not restored), 14, 15,
+  19 (infinite recursion), 20, 21, 22: all red. **16:** moving the tag compare in front of the AN_MAGIC test turns
+  P3Identity red on its 2 % bound (worst 1.0210); inlining wt_fm_osc into an_osc costs the Analog path nothing (worst stays
+  1.0184) and is caught only because test_q1's Span cannot find the symbol, not by cost.
+- **Sizes (M).** DSP 24,548 B used, **16,156 B free** of 40,704 (W0: 23,796): **+752 B** = an_prop +116, wt_prop 188,
+  wt_feed 112, wt_fm_osc 132, wt_init 64, wt_settle 58, wt_tagged 34, an_osc +40, an_note +16. Synth UI 15,858 B (+40). M4
+  code 24,424 B. Image 0x189458, **16,092 B to PROVEN_MAX**. Drums trial: see the commit's report line below.
+- **CPU (M).** P3Identity 50 cases: worst **1.0184** (mod dev=False, unchanged from W0), total 1.0094. Untagged WT
+  oscillator-block: +27 over stock. Tagged, gate 0: +64..+107 over stock, worst **1.0158 x** stock's render (gate 1.02).
+
+**Plan items found wrong or changed in W1.**
+1. Saved set: three runs / 36 B, not four / about 32 B (msub..AnProps is one run).
+2. Size: W1's parts are 752 B against section 4's roughly 400-500 for the same rows (an_prop branch 200-320 + envelope 60-100
+   + stub 72 + part of the body). Most of it is control-rate code (an_prop and helpers, 572 B, already minsize / noinline).
+3. 3.1 step 4 (feed-B on OSC2's FM 1>2 and OSC1's Type) is not enough: an Analog OSC2 leaving Analog forgets its FM 1>2,
+   so OSC2's Type must recompute it too. Built: any Type or FM 1>2 message of either oscillator.
+4. 3.2 Tagging: "first write the full default state, then the value" would leave our bytes in a BE4.43 project's
+   Wavetable oscillators pushed at their defaults (k+0x60.. is rewritten only at a frame change), breaking 7.3's memory
+   identity. Built: a default value on an untagged oscillator writes nothing.
+5. D2 storage: a Wavetable OSC1's FM 1>2 and a Wavetable OSC2's Sub FM play nothing, so the M7 does not keep them (a hidden
+   value cannot tag an oscillator); the M4 keeps and saves them.
+6. D2 on an Analog OSC2 next to a Wavetable OSC1 is **deferred to W4**: its slot 5 stays BE4.43's Sub FM (which plays) until a
+   Wavetable OSC1 can feed B; flipping it now would replace a working control with a silent one.
+7. D8 "under 1 % of its render": tier 2's own work is 37 (no envelope) / 69 (envelope) instructions a call, better than
+   section 6's 40-55 + 39.5, but with the +27 every Wavetable oscillator pays the total is 1.0-1.6 % over stock's render
+   (within the 1.02 gate, not under 1 %).
+8. Mutation 16 is caught by P3Identity's cost only in the compare-reordering form (and only past 2 %, not the 1.95 % stop
+   line); see above.
+9. The P3Identity set itself tags Wavetable oscillators (FM 1>2 333 on an Analog OSC2 next to a Wavetable OSC1 sets
+   feed-B), a reviewed change the plan did not list.
+
 ## Review log
 
 Two verifier passes; each finding was checked, and the checks that could be cheaply re-run were (be442 build.py:741 guard,

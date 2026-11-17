@@ -37,6 +37,10 @@
  *     OSC2's FM 1>2 while OSC1 is Analog (else OSC2's Sub FM: OSC2's Sub FM no longer plays next to an Analog OSC1), times
  *     the oscillator's own FM envelope (FM Atk / FM Dec, fm_env_step: p3_golden fm_env's float32 law, at block rate on the
  *     index lines' two ends), retriggered at every note start (an_note, slot 2: per voice, legato included).
+ *   - BE4.44 W1 (docs/plan-wt-fm.md 3.1 .. 3.3): a Wavetable oscillator keeps FM settings too (Sub FM on OSC1, FM 1>2 on OSC2,
+ *     FM Atk / FM Dec), in its own area at AnOsc / AnProps's offsets behind a tag pair (wt_init, wt_prop, wt_settle), and
+ *     OSC1 the feed-B bit (wt_feed); an_osc sends a tagged one to wt_fm_osc, which runs stock's render body with the saved
+ *     runs put back around it (tier 2) and steps its FM envelope. No table reader yet: nothing of it is heard (W2).
  * Four vtable words point at build.py's trampolines (in this window, before this ELF):
  *   A1  Wavetable root slot 18 (voice render): an_enter(root, voice), then stock's render
  *   A2  Wavetable oscillator slot 0 (render): an_osc(osc, scratch, out) != 0 means handled, else stock
@@ -176,6 +180,14 @@ static void forget(void *osc) {
     volatile u32 *a = (volatile u32 *)state(osc);
     for (u32 i = 0; i < AN_AREA / 4u; i++) a[i] = 0;
 }
+/* BE4.44 W1 (docs/plan-wt-fm.md 3.2, 3.3): a Wavetable oscillator's tag pair (analog.h WT_TAG_HI), and its mip read
+ * bounded (a byte out of 0..WT_MIPS - 1 is HOME: it can never index the mip table). */
+static inline u32 wt_tag(const void *osc) { return WT_TAG_HI | ((u32)osc >> 4 & 0xFFFFu); }
+__attribute__((noinline)) static int wt_tagged(void *osc) {
+    u32 t = wt_tag(osc);
+    return state(osc)->magic == t && W(state(osc), 4) == ~t;
+}
+static inline u32 wt_mip(const AnOsc *g) { u32 m = g->wt.mipcur; return m < WT_MIPS ? m : WT_HOME; }
 /* The voice an oscillator belongs to, and which of its two it is: stock's root ctor keeps WT1 / WT2's pointers in the
  * voice (+0x178 / +0x17C), so the oscillator finds its voice without any state of ours. 0 if neither matches. */
 static u8 *voice_of(void *osc, u32 *which) {
@@ -224,12 +236,71 @@ static u16 amount(int v) { return (u16)(v < 0 ? 0 : v > (int)AN_FM_MAX ? AN_FM_M
  * errno under -fno-builtin (build.py refuses libm by name). */
 static inline float an_sqrt(float x) { float r; __asm__("vsqrt.f32 %0, %1" : "=t"(r) : "t"(x)); return r; }
 static inline float an_index(u32 v) { float f = (float)v; return f * an_sqrt(f) * (float)(16.0 / 31622.776601683792); }
+static u32 clamp_to(int v, u32 top) { return v < 0 ? 0u : v > (int)top ? top : (u32)v; }
+
+/* BE4.44 W1 (docs/plan-wt-fm.md 3.1, 3.2 "Tagging", 3.3): a Wavetable oscillator's FM settings. While it is untagged its area
+ * is stock's table history, never read as settings: the first value that is not a default writes the whole default state
+ * first (AnProps at the template's defaults, fmk DEC at j 0 (env 1, held while unset: an envelope set mid-note starts from
+ * 1, as on Analog), msub = m12 = 0, fme 0, mipcur HOME, wflags and wxf 0), then the tag pair, then the value. A default
+ * value on an untagged oscillator writes nothing (a BE4.43 project at its defaults leaves stock's bytes alone). D2: OSC2's
+ * slot 5 is FM 1>2 whatever OSC1 is, so a Wavetable OSC2's Sub FM and a Wavetable OSC1's FM 1>2 play nothing and are not
+ * kept here (the M4 keeps and saves them). Untag (wt_settle): only when nothing is left to play or to finish: no amount,
+ * no ramp memory, the mip home, no envelope, not feeding B. */
+__attribute__((noinline, minsize)) static void wt_init(void *osc) {
+    AnOsc *g = state(osc);
+    AnProps *p = props(osc);
+    *p = AnProps();
+    p->fmdec = (u8)AN_FM_DEC_INF;
+    g->fmk = (u16)(AN_FE_DEC << 13); g->msub = g->m12 = 0; g->fme = 0.f;
+    g->wt.mipcur = (u8)WT_HOME; g->wt.wflags = 0; g->wxf = 0;
+    u32 t = wt_tag(osc);
+    g->magic = t; W(g, 4) = ~t;
+}
+__attribute__((noinline, minsize)) static void wt_settle(void *osc) {
+    AnOsc *g = state(osc);
+    AnProps *p = props(osc);
+    if (!(p->subfm | p->fm12 | g->msub | g->m12 | p->envf | (g->wt.wflags & WT_FEED_B)) && wt_mip(g) == WT_HOME) g->magic = 0;
+}
+__attribute__((noinline, minsize)) static void wt_prop(void *osc, u32 which, u32 key, int v) {
+    if (key == (which ? S_KEY_OSC_SUBFM : S_KEY_OSC_FM12)) return;
+    u32 x = key == S_KEY_OSC_FMATK ? clamp_to(v, AN_FM_ATK_MAX) : key == S_KEY_OSC_FMDEC ? clamp_to(v, AN_FM_DEC_INF) : amount(v);
+    if (!wt_tagged(osc)) {
+        if (x == (key == S_KEY_OSC_FMDEC ? AN_FM_DEC_INF : 0u)) return;
+        wt_init(osc);
+    }
+    AnProps *p = props(osc);
+    if (key == S_KEY_OSC_SUBFM) p->subfm = (u16)x;
+    else if (key == S_KEY_OSC_FM12) p->fm12 = (u16)x;
+    else {
+        if (key == S_KEY_OSC_FMATK) p->fmatk = (u8)x;
+        else p->fmdec = (u8)x;
+        p->envf = (u8)env_set(p->fmatk, p->fmdec);
+    }
+    wt_settle(osc);
+}
+/* 3.5's feed-B bit: a Wavetable OSC1 feeds B while OSC2 (Analog, or Wavetable and tagged) has FM 1>2, so the audio path never
+ * asks voice_of for it. Recomputed on every Type and FM 1>2 message of either oscillator, so any message order (a project's
+ * push, a resend) ends right; tagging OSC1 for it if needed. */
+__attribute__((noinline, minsize)) static void wt_feed(u8 *v) {
+    void *o1 = v + S_VOICE_WT1, *o2 = v + S_VOICE_WT2;
+    if (is_analog(o1)) return;
+    u32 want = (is_analog(o2) || wt_tagged(o2)) && props(o2)->fm12 ? WT_FEED_B : 0u;
+    AnOsc *g = state(o1);
+    if (!wt_tagged(o1)) {
+        if (!want) return;
+        wt_init(o1);
+    }
+    g->wt.wflags = (u8)((g->wt.wflags & ~WT_FEED_B) | want);
+    wt_settle(o1);
+}
 extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
     u32 key = *(volatile u16 *)((u8 *)msg + MSG_KEY);
     int v = (int)W(msg, MSG_VALUE);
     if (!ours(key)) return 0;
     AnOsc *g = state(osc);
     AnProps *p = props(osc);
+    u32 which = 2;
+    u8 *vo = voice_of(osc, &which);
     if (key == S_KEY_OSC_TYPE) {
         if (v == 1) {
             if (!is_analog(osc)) {
@@ -237,23 +308,24 @@ extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
                 p->type = 1; p->shape = (u8)AN_SHAPE_DEFAULT; p->fmdec = (u8)AN_FM_DEC_INF;
             }
         } else if (g->magic == AN_MAGIC) {
-            u32 which = 2;
-            u8 *vo = voice_of(osc, &which);
             if (vo && which == 0) sub_follow(g, vo, 0.f);
             forget(osc);
         }
     } else if (is_analog(osc)) {
-        if (key == S_KEY_OSC_SHAPE) p->shape = (u8)(v < 0 ? 0 : v > (int)AN_SHAPE_MAX ? AN_SHAPE_MAX : (u32)v);
+        if (key == S_KEY_OSC_SHAPE) p->shape = (u8)clamp_to(v, AN_SHAPE_MAX);
         else if (key == S_KEY_OSC_SYNC) p->sync = v != 0 ? 1u : 0u;
-        else if (key == S_KEY_OSC_GLIDE) p->glide = (u16)(v < 0 ? 0 : v > (int)AN_GLIDE_MAX ? AN_GLIDE_MAX : (u32)v);
+        else if (key == S_KEY_OSC_GLIDE) p->glide = (u16)clamp_to(v, AN_GLIDE_MAX);
         else if (key == S_KEY_OSC_SUBFM) p->subfm = amount(v);
         else if (key == S_KEY_OSC_FM12) p->fm12 = amount(v);
         else {
-            if (key == S_KEY_OSC_FMATK) p->fmatk = (u8)(v < 0 ? 0 : v > (int)AN_FM_ATK_MAX ? AN_FM_ATK_MAX : (u32)v);
-            else p->fmdec = (u8)(v < 0 ? 0 : v > (int)AN_FM_DEC_INF ? AN_FM_DEC_INF : (u32)v);   /* (S_KEY_OSC_FMDEC) */
+            if (key == S_KEY_OSC_FMATK) p->fmatk = (u8)clamp_to(v, AN_FM_ATK_MAX);
+            else p->fmdec = (u8)clamp_to(v, AN_FM_DEC_INF);   /* (S_KEY_OSC_FMDEC) */
             p->envf = (u8)env_set(p->fmatk, p->fmdec);
         }
+    } else if (vo && (key == S_KEY_OSC_SUBFM || key == S_KEY_OSC_FM12 || key == S_KEY_OSC_FMATK || key == S_KEY_OSC_FMDEC)) {
+        wt_prop(osc, which, key, v);                          /* BE4.44 W1: a Wavetable oscillator's FM settings */
     }
+    if (vo && (key == S_KEY_OSC_TYPE || key == S_KEY_OSC_FM12)) wt_feed(vo);
     if (area_ok()) STATS->props++;
     return 1;
 }
@@ -549,6 +621,10 @@ __attribute__((noinline)) static float *feeds(Run *r, u8 *v, u32 which, int a2, 
  * voice note start 0x0807C7F8, a retrigger, a legato note) is covered (I). Plan fix 2: nothing unless WT2's Sync is on. */
 extern "C" __attribute__((used)) void an_note(void *osc) {
     if (is_analog(osc)) { state(osc)->fmk = AN_FE_START; return; }   /* BE4.43: the FM envelope retriggers, per voice */
+    if (wt_tagged(osc)) {                                     /* BE4.44 W1 (plan 3.1): the same retrigger, and the mip home, */
+        AnOsc *g = state(osc);                                /* so the note's first block sees stock's fresh D (tier 2) */
+        g->fmk = AN_FE_START; g->wt.mipcur = (u8)WT_HOME;
+    }
     u32 which = 2;
     u8 *v = voice_of(osc, &which);
     if (!v || which != 0 || is_analog(osc)) return;
@@ -602,11 +678,43 @@ static float glide_coef(Root *e, u32 glide, u32 n, float div) {
 
 template <int V> struct Tf { static constexpr int value = V; };   /* (an_osc's two part loops) */
 
+/* BE4.44 W1 (docs/plan-wt-fm.md 3.3): a Wavetable oscillator whose magic has the tag's high half (an_osc's only extra work
+ * on its non-Analog return; out of line, so an_osc's Analog paths are not touched). Tier 1, the pair not ours (a table's
+ * NaN word, a check word gone): 0, stock's render, untouched. Tier 2, tagged: stock's own render body (S_WT_OSC_RENDER, not
+ * the trampolined slot), with the saved runs (analog.h WT_RUN*) taken before it and put back after it: stock writes the
+ * area before it reads it (plan 3.2, M), so its samples and its kernel state (+0xC0 .. +0xD8) are its own bit for bit, and
+ * the settings survive its rewrites. Then the FM envelope keeps the note's time (fm_env_step while it is set; held at DEC j
+ * 0 while unset, as an_osc does on Analog). W1: no reader yet, so a gate that is not 0 (an amount, ramp memory, a mip held:
+ * plan 3.3) plays as gate 0. */
+/* five words with one LDM and one STM (the settings run; the compiler copies it with a loop or a memcpy call otherwise) */
+static inline __attribute__((always_inline)) void copy5(void *to, const void *from) {
+    __asm volatile("ldm %1, {r0, r1, r2, r3, r12}\n\tstm %0, {r0, r1, r2, r3, r12}"
+                   :: "r"(to), "r"(from) : "r0", "r1", "r2", "r3", "r12", "memory");
+}
+static_assert(WT_RUN2_W == 5, "copy5: the settings run");
+__attribute__((noinline)) static int wt_fm_osc(void *osc, void *scratch, void *out) {
+    AnOsc *g = state(osc);
+    u32 t = wt_tag(osc);
+    if (g->magic != t || W(g, 4) != ~t) return 0;
+    u32 *k = (u32 *)g;                                       /* (not volatile: the call takes osc, so nothing is cached across it) */
+    u32 a0 = k[WT_RUN0 / 4u], a1 = k[WT_RUN0 / 4u + 1u], b0 = k[WT_RUN1 / 4u], b1 = k[WT_RUN1 / 4u + 1u], c[WT_RUN2_W];
+    static_assert(WT_RUN0_W == 2 && WT_RUN1_W == 2, "two words each");
+    copy5(c, k + WT_RUN2 / 4u);
+    FN(S_WT_OSC_RENDER, void (*)(void *, void *, void *))(osc, scratch, out);
+    k[WT_RUN0 / 4u] = a0; k[WT_RUN0 / 4u + 1u] = a1; k[WT_RUN1 / 4u] = b0; k[WT_RUN1 / 4u + 1u] = b1;
+    copy5(k + WT_RUN2 / 4u, c);
+    AnProps *p = props(osc);
+    if (p->envf) { float env[2]; fm_env_step(g, p, env); }
+    else g->fmk = (u16)(AN_FE_DEC << 13);
+    return 1;
+}
+
 /* A2, the oscillator render (r0 osc, r1 scratch buffer, r2 output buffer): 1 = rendered (or silent), 0 = stock's render
  * (a Wavetable oscillator: its state is stock's, untouched). */
 extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out) {
     AnOsc *self = state(osc);
-    if (self->magic != AN_MAGIC) return 0;                    /* a Wavetable oscillator */
+    if (self->magic != AN_MAGIC)                              /* a Wavetable oscillator (BE4.44: tagged, wt_fm_osc) */
+        return __builtin_expect(self->magic >> 16 == WT_TAG_HI >> 16, 0) ? wt_fm_osc(osc, scratch, out) : 0;
     if (props(osc)->type != 1u) { forget(osc); return 0; }    /* (an_prop ends Analog at once; this is the guard) */
     if (!area_ok()) return 1;                                 /* not the header's word for it: silent, state kept */
     u32 which = 2;

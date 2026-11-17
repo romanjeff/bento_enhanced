@@ -38,15 +38,21 @@ struct AnOsc {
     /* glide, kept in WT1's state for the voice: the note playing (BE4.43: 16 bits, AN_NO_NOTE none; stock's note numbers
      * are far below it), the pitch offset still to slide (octaves), what of it was last added to the sub oscillator, and
      * the sub's +0x04 as we left it (stock rewrites that field at every note start: then its new value is the base, review
-     * 2026-11-08) */
-    unsigned short note;
+     * 2026-11-08). BE4.44 (docs/plan-wt-fm.md 3.2): on a tagged Wavetable oscillator the note's two bytes are the WT state
+     * (mipcur: the mip the reader holds, 0..WT_MIPS - 1, else WT_HOME; wflags: WT_FEED_B), and glide's word is wxf (W2's
+     * frame-crossfade state): one saved run with fmk, +140 .. +147 */
+    union {
+        unsigned short note;
+        struct { unsigned char mipcur, wflags; } wt;
+    };
     /* BE4.43 (docs/plan-p3-fm-bits.md BE4.43, p3_golden fm_env): the FM envelope's position, both oscillators: stage
      * (AN_FE_*) << 13 | blocks into it (at most 3750). AN_FE_START (0, also after reset / forget): a note started (an_note,
      * every caller of slot 2) and the next block starts the envelope at 0 (1 for FM Atk 0); while the envelope is
      * unset (AnProps.envf 0) an_osc keeps it at AN_FE_DEC << 13 (held at 1: DEC at j 0 reads as 1 whatever fme is;
      * review, an envelope set mid-note) */
     unsigned short fmk;
-    float glide, sub_applied, sub_written;
+    union { float glide; unsigned wxf; };
+    float sub_applied, sub_written;
     /* BE4.40 mixed sync (WT1 Wavetable, WT2 Analog), in WT2's state: WT1's cycle phase as a 64-bit fraction (mphase the
      * high word: 2^32 = one cycle; mphase_lo below it), exact for any float rate (plan fix 3); mrestart: WT1's note start
      * restarted it (the slave restarts with it at frame 0 of the next block); mlive: 0 the copy is not WT1's (cleared while
@@ -66,6 +72,28 @@ struct AnOsc {
 };
 static_assert(sizeof(AnOsc) == 180, "Analog state: 180 bytes at oscillator +0x10C (none left below AnProps)");
 static_assert(sizeof(AnOsc) <= AN_PROPS_OFF, "Analog state must stay below the oscillator's settings (AnProps)");
+
+/* BE4.44 W1 (docs/plan-wt-fm.md 3.2, 3.3): a Wavetable oscillator given WT FM work keeps its FM state in the same area, at
+ * AnOsc / AnProps's own offsets (fm_setup, fm_env_step and an_feed then run on it unchanged), marked by a tag pair stock's
+ * table samples cannot form: magic = WT_TAG_HI | (osc >> 4 & 0xFFFF) (a NaN payload) and, in the next word (phase's), its
+ * complement. Stock's render rewrites the area (k + 0x00 .. 0x5F at every wrap, k + 0x60 .. 0xBF on a frame change, S/M):
+ * the saved runs below are put back after every stock call on a tagged oscillator; nothing WT-only lives outside them. */
+#define WT_TAG_HI 0x7FA50000u
+#define WT_MIPS 7u                    /* stock's mip levels D = 1 .. 64 */
+#define WT_HOME 0xFFu                 /* mipcur: the reader holds no private mip (any value >= WT_MIPS reads as HOME) */
+#define WT_FEED_B 1u                  /* wflags: this OSC1 feeds buffer B (OSC2 has FM 1>2), set by an_prop */
+/* the saved runs, as (offset, words) in the area: the tag pair; the WT state (mipcur, wflags), fmk and wxf; msub, m12, fme
+ * and AnProps (one run: they are contiguous) */
+#define WT_RUN0 0u
+#define WT_RUN1 140u
+#define WT_RUN2 172u
+#define WT_RUN0_W 2u
+#define WT_RUN1_W 2u
+#define WT_RUN2_W 5u
+static_assert(__builtin_offsetof(AnOsc, phase) == WT_RUN0 + 4 && __builtin_offsetof(AnOsc, note) == WT_RUN1 &&
+              __builtin_offsetof(AnOsc, fmk) == WT_RUN1 + 2 && __builtin_offsetof(AnOsc, wxf) == WT_RUN1 + 4 &&
+              __builtin_offsetof(AnOsc, msub) == WT_RUN2 && __builtin_offsetof(AnOsc, fme) == WT_RUN2 + 4 &&
+              WT_RUN2 + 8 == AN_PROPS_OFF && WT_RUN2 + 4 * WT_RUN2_W == AN_AREA, "the WT runs: tag pair, state, FM + settings");
 
 /* An oscillator's settings, as stock's set_property delivered them (N3: dsp/analog.cpp an_prop), each clamped when stored.
  * P3 Q1: subfm and fm12 are stored (and so reach the M7 with every push, edit and resend). P3 Q5: subfm plays (Sub FM,

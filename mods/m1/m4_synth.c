@@ -12,7 +12,8 @@
  * slots 5 and 7 (BE4.42: Bit Depth, 0x1A4 / bento_bits in slot 6, is gone; slot 6 stays empty). BE4.43
  * (docs/plan-p3-fm-bits.md BE4.43, Jeff's design): one FM amount per oscillator in slot 5 (OSC1 Sub FM; OSC2 FM 1>2 while
  * OSC1 is Analog, else Sub FM) and its FM envelope, FM Atk (0x1A4, bento_fmatk) and FM Dec (0x1A0, bento_fmdec), in slots 6
- * and 7, shown as the times the M7 plays (fm_time_text). Nothing here holds
+ * and 7, shown as the times the M7 plays (fm_time_text). BE4.44 W1 (docs/plan-wt-fm.md 2): a Wavetable oscillator's row
+ * has them too (OSC1 Sub FM, OSC2 FM 1>2), and a flip to Wavetable resends them as a flip to Analog does. Nothing here holds
  * Analog state: the BE4.22..BE4.31 table (AN4), its handle hooks (H1-H3), the XML hooks (X1, X2), the value hook (X3), the
  * menu entry (A3-A5) and the edit hook (A9) are gone for Analog. Stock never range-checks a value (a file is read raw), so
  * every reader here clamps, and Type is Analog only when it is exactly 1.
@@ -508,8 +509,9 @@ static void dec(Out *o, u32 v) {
  * slot to the row's object (keys above 0xDA: the row's own handle), so a row whose keys we rewrite is shown with them by
  * SYNTH_ROW_SHOW (docs/plan-native-props.md P0 T5, measured on stock's page). Stock's rows 0 / 1 are {Level, Pitch, Position,
  * 0, 0, 0, 0, 0} (the flash table A6 copies). Ours, per Type:
- *   Wavetable: Level, Pitch, Position, Type
- *   Analog:    Level, Pitch, Shape, Type, then Glide (OSC1) / Sync 1>2 (OSC2, whatever OSC1's Type: BE4.40 J1, OSC1 is the
+ *   Wavetable: Level, Pitch, Position, Type; BE4.44 W1 (docs/plan-wt-fm.md 2): slot 4 empty, then OSC1 Sub FM / OSC2 FM 1>2
+ *              (D2) in slot 5, FM Atk, FM Dec (Analog's knob numbers)
+ *   Analog:   Level, Pitch, Shape, Type, then Glide (OSC1) / Sync 1>2 (OSC2, whatever OSC1's Type: BE4.40 J1, OSC1 is the
  *              master as Analog or as Wavetable, docs/plan-be440-sync-identity.md Track S), then (P3 2.2) Sub FM in slot 5
  *              and, on OSC2 while OSC1 is Analog, FM 1>2 in slot 7 (OD3: hidden while OSC1 is Wavetable, whose signal the M7
  *              cannot read; the tick heals the rows, so a Type flip of OSC1 shows or hides it within a tick). BE4.42: slot
@@ -521,7 +523,14 @@ static u32 row_handle(void *view, u32 row) { return W(view, S_SYNTH_VIEW_HANDLES
 static void want_row(const u16 *stock, u32 row, int me, int osc1, u16 *k) {
     for (u32 i = 0; i < 8u; i++) k[i] = stock[i];
     if (!k[3]) k[3] = (u16)S_KEY_OSC_TYPE;
-    if (!me) return;
+    if (!me) {
+        /* BE4.44 W1 (docs/plan-wt-fm.md 2): a Wavetable oscillator's FM keeps Analog's knob numbers, slot 4 stays empty:
+         * OSC1 Sub FM; OSC2 FM 1>2 (D2: every OSC1 type feeds B); then its FM Atk / FM Dec */
+        if (!k[5]) k[5] = row == 1u ? (u16)S_KEY_OSC_FM12 : (u16)S_KEY_OSC_SUBFM;
+        if (!k[6]) k[6] = (u16)S_KEY_OSC_FMATK;
+        if (!k[7]) k[7] = (u16)S_KEY_OSC_FMDEC;
+        return;
+    }
     if (k[2]) k[2] = (u16)S_KEY_OSC_SHAPE;
     if (!k[4]) k[4] = row == 0u ? (u16)S_KEY_OSC_GLIDE : (u16)S_KEY_OSC_SYNC;   /* BE4.40 J1: OSC2's Sync whatever OSC1's Type */
     /* BE4.43: one FM amount per oscillator, then its envelope: OSC2's is FM 1>2 while OSC1 is Analog (OD3), else Sub FM */
@@ -984,7 +993,9 @@ static void page_tick(volatile An4 *a, void *view) {
     for (u32 row = 0; row < 2u; row++) {
         u32 h = row_handle(view, row), t = 0;
         prop(h, S_KEY_OSC_TYPE, &t);
-        if (h == a->last_h[row] && a->last_t[row] != 1u && t == 1u) resend(h);
+        /* BE4.44 W1: also on a flip to Wavetable (the M7 forgets an Analog oscillator's area then; a Wavetable one keeps
+         * its FM settings, plan 2 "Resend on a Type flip") */
+        if (h == a->last_h[row] && (a->last_t[row] == 1u) != (t == 1u)) resend(h);
         /* the pane's texts (A7) and title (T1) are for another oscillator or Type: the page was built (stock set them before
          * the rows had objects, or from a reused view's old handles), or the Type changed; stock's own row refresh only runs
          * for the shown row (SYNTH_ROW_SHOW). B3 (BE4.40 identity): a new handle is refreshed whatever its Type (a stale

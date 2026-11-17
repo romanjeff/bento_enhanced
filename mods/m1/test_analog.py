@@ -1126,16 +1126,19 @@ class Props(unittest.TestCase):
         Wavetable oscillator (its kernel area is stock's history), and a fresh Analog state starts them at 0, with the AnOsc
         ramp memory msub / m12 (P3 3.3) at 0; leaving Analog zeroes them with the area. BE4.42: 0x1A4 (BE4.41's Bit Depth) was
         stock's. BE4.43: FM Atk (0x1A4) and FM Dec (0x1A0) are ours the same way: a fresh state at Atk 0 / Dec Inf, its
-        envelope at AN_FE_START (fmk 0, fme 0)."""
+        envelope at AN_FE_START (fmk 0, fme 0). BE4.44 W1: a Wavetable oscillator keeps them too, once one is not a default
+        (WtFmW1); at the defaults its area stays stock's history."""
         r = Rig(); root, v = r.voice(0x6A)
         o = r.osc(v, 1)
         hist = bytes(range(0xC0))
         r.u.mem_write(o + S.OSC_KERNEL, hist)
         props = lambda: r.r32(SA + SA_STATS + 16)              # (slot 8 returns nothing: the props count says whose it was)
-        for k in (K_SUBFM, K_FM12, K_FMATK, K_FMDEC):
-            n0 = props(); r.prop(o, k, 3)
+        # BE4.44 W1 (reviewed change, docs/plan-wt-fm.md 3.1): a Wavetable oscillator keeps a value that is not a default
+        # (WtFmW1); its defaults, and OSC2's Sub FM (D2), write nothing
+        for k, x in ((K_SUBFM, 3), (K_FM12, 0), (K_FMATK, 0), (K_FMDEC, FM_DEC_INF)):
+            n0 = props(); r.prop(o, k, x)
             self.assertEqual(props() - n0, 1, f"{k:#x}: ours")
-        self.assertEqual(bytes(r.u.mem_read(o + S.OSC_KERNEL, 0xC0)), hist, "Wavetable: untouched")
+        self.assertEqual(bytes(r.u.mem_read(o + S.OSC_KERNEL, 0xC0)), hist, "Wavetable at its defaults: untouched")
         n0 = props(); r.prop(o, 0xC9, 3)
         self.assertEqual(props(), n0, "control: a stock key is stock's")
         r.prop(o, K_TYPE, 1)
@@ -1856,10 +1859,15 @@ class P3Identity(unittest.TestCase):
             r.prop(osc, k, v, handle, index)
 
     @classmethod
-    def masked(cls, voice, oscs):
+    def masked(cls, voice, oscs, wt=()):
         """The voice's bytes with P3's settings bytes of the Analog oscillators oscs zeroed (test_q1_plays_no_amount), and
-        (BE4.43) the envelope's bytes of every Analog oscillator (ENV_BYTES; its magic in the area says which)."""
+        (BE4.43) the envelope's bytes of every Analog oscillator (ENV_BYTES; its magic in the area says which). BE4.44 W1: and
+        the saved runs (WT_RUNS) of the Wavetable oscillators wt, tagged on this build (WtFmW1 checks what they hold)."""
         b = bytearray(voice)
+        for i in wt:
+            k = (S.VOICE_WT1, S.VOICE_WT2)[i] + S.OSC_KERNEL
+            for off, n in WT_RUNS:
+                b[k + off:k + off + n] = bytes(n)
         for i in oscs:
             for at in cls.P3_BYTES:
                 b[(S.VOICE_WT1, S.VOICE_WT2)[i] + S.OSC_KERNEL + at] = 0
@@ -1930,6 +1938,7 @@ class P3Identity(unittest.TestCase):
 
     def mixed_case(self, r, shape=48, blocks=24, p3=(0, 0, 0)):
         m = Mixed(r=r, shape=shape, frames=r.frames)
+        r.v = m.v                                                # (check: the voice, for its tagged Wavetable oscillators)
         for k, x in zip((K_GLIDE, K_SUBFM, K_FMATK, K_FM12), (0,) + tuple(p3)):   # (BE4.43: 0x1A4 is FM Atk's)
             m.prop(k, x)
         r.stored = [r.settings(m.v, i) for i in (0, 1)]
@@ -1942,7 +1951,7 @@ class P3Identity(unittest.TestCase):
         st = struct.unpack("<16I", r.u.mem_read(SA + SA_STATS, 64))
         return f32le(m.x1 + m.x2), bytes(r.u.mem_read(m.v, 0xB88)) + f32le(m.wr), [st[i] for i in ID_STATS], cyc
 
-    def check(self, name, run, dev, mask=(), fills=None, fill_max=None, env=False):
+    def check(self, name, run, dev, mask=(), fills=None, fill_max=None, env=False, wtier=False):
         """mask: the Analog oscillators whose P3 settings bytes (stored on this build, not on BE4.40) the voice leaves out.
         fills: P3 Q4, this build fills buffer A (Sub FM set) that many times: sub_fill's own instructions (Span, its stock
         helpers included) are the copy's, recorded and left out of the +2 % bound, which holds for the rest (a carve-out,
@@ -1952,11 +1961,15 @@ class P3Identity(unittest.TestCase):
         ra = Rig(dev=dev)
         span = Span(ra, dsp_sym("sub_fill")) if fills is not None else None
         espan = Span(ra, dsp_sym("feeds")) if env else None
+        # BE4.44 W1 (wtier): tier 2 (wt_fm_osc) and stock's render inside it, for the cases that tag a Wavetable oscillator
+        wspan = (Span(ra, dsp_sym("wt_fm_osc")), Span(ra, S.WT_OSC_RENDER)) if wtier else None
         a = run(ra)
         b = run(Rig(img=REF_IMG, dev=dev, dsp=REF_DSP))
         self.assertGreater(max(abs(x) for x in struct.unpack(f"<{len(b[0]) // 4}f", b[0])), 0.05, f"{name}: control, it plays")
         same(self, a[0], b[0], f"{name}: the output")
-        same(self, self.masked(a[1], mask), self.masked(b[1], mask),
+        wt = tuple(i for i in (0, 1) if wt_tagged(a[1], (S.VOICE_WT1, S.VOICE_WT2)[i] + S.OSC_KERNEL,
+                                                    ra.v + (S.VOICE_WT1, S.VOICE_WT2)[i])) if wtier else ()
+        same(self, self.masked(a[1], mask, wt), self.masked(b[1], mask, wt),
              f"{name}: the voice (both oscillators, their kernel areas, the sub)")
         self.assertEqual(a[2], b[2], f"{name}: the stats words")
         copy = 0
@@ -1969,6 +1982,15 @@ class P3Identity(unittest.TestCase):
             self.assertGreater(espan.calls, 0, f"{name}: control, the envelope stepped")
             copy += espan.total
             self.copies.append((name + " (envelope steps)", espan.calls, espan.total))
+        if wspan:
+            # BE4.44 W1: a tagged Wavetable oscillator (tier 2) is the Wavetable path's cost, not the Analog FM-off path's
+            # this bound is for: wt_fm_osc's own instructions (its runs, the envelope step; stock's render inside it stays in
+            # the count, as on BE4.40) are recorded and bounded on their own (WtFmW1 holds tier 2 to 1.02 x stock's render)
+            own = wspan[0].total - wspan[1].total
+            self.assertEqual(len(wt), 1, f"{name}: control, one oscillator tagged")
+            self.assertLessEqual(own, wspan[0].calls * 120, f"{name}: tier 2's own {own / wspan[0].calls:.0f} a call")
+            copy += own
+            self.copies.append((name + " (WT tier 2)", wspan[0].calls, own))
         self.costs.append((name, a[3] - copy, b[3]))
         self.assertLessEqual(a[3] - copy, b[3] * 1.02, f"{name}: instructions {a[3]} - {copy} (the copy) vs BE4.40's {b[3]} (M1: +2 %)")
 
@@ -2077,7 +2099,11 @@ class P3Identity(unittest.TestCase):
         made Sub FM's part its expected change: 700 left AMOUNTS, and the same seven cases with it are
         SubFm.test_the_amounts_cases_are_the_expected_change. Q6 (FM 1>2) made the five both-Analog cases its own
         (Fm12.test_the_amounts_cases_are_the_expected_change); FM 1>2 333 stays here on the two voices where it cannot play.
-        BE4.43: the 2 on 0x1A4 is FM Atk 2, stored (control) and stepped on every Analog oscillator, playing nothing here."""
+        BE4.43: the 2 on 0x1A4 is FM Atk 2, stored (control) and stepped on every Analog oscillator, playing nothing here.
+        BE4.44 W1 (reviewed change, docs/plan-wt-fm.md 3.2, 3.5): a Wavetable oscillator keeps FM values too, so in "osc2
+        wavetable" OSC2 (FM Atk 2, FM 1>2 333) and in "mixed" the Wavetable OSC1 (feeding B for OSC2's FM 1>2 333) are tagged:
+        tier 2, stock's render with the saved runs put back. Output still BE4.40's byte for byte; the voice too outside those
+        runs (masked; WtFmW1 checks their contents); tier 2's own instructions carved out of the +2 % and bounded here."""
         p3 = self.AMOUNTS
         # sub_fill a call, upper bounds (M, Q4: Rig's zero sub (core wave 0) 606 / 1,118 at n = 128 / 256, stock's root's
         # default sub 1,908 / 3,701; +5 %), keyed (stock's root, dev)
@@ -2104,7 +2130,7 @@ class P3Identity(unittest.TestCase):
                     # P3 Q5 (reviewed edit): with Sub FM 0 nothing fills A (Q4's 8 / 11 / 24 fills went with Sub FM 700),
                     # so no carve-out: the whole count is under M1's +2 %, the output and voice BE4.40's byte for byte
                     self.check(f"amounts {name} dev={dev}", stored, dev, mask=oscs, fills=fills if p3[0] else None,
-                               fill_max=FILL_MAX[(name == "root voice", dev)], env=bool(p3[1]))
+                               fill_max=FILL_MAX[(name == "root voice", dev)], env=bool(p3[1]), wtier=True)
 
     def test_the_harness_goes_red(self):
         """The control (plan 6.2): the comparison fails on a one-ulp change of one output sample, and the replay itself
@@ -5145,6 +5171,365 @@ class FmEnv(unittest.TestCase):
         self.assertLessEqual(rows["off+env"] - rows["off"], 180, "the envelope on the FM-off voice")
         self.assertLessEqual(rows["full+env"] - rows["full"], 180, "the envelope on the full FM voice")
         self.assertGreater(rows["off+env"], rows["off"], "control: it is stepped (costs something)")
+
+
+# ---- BE4.44 W1 (docs/plan-wt-fm.md 3.1 .. 3.3, 3.5's bit, 7.3): FM state on a Wavetable oscillator, tiers 1 and 2
+WT_TAG_HI, WT_HOME, WT_FEED_B = 0x7FA50000, 0xFF, 1        # analog.h, typed here
+WT_RUNS = ((0, 8), (140, 8), (172, 20))                    # the saved runs in the area: tag pair; mipcur, wflags, fmk, wxf;
+                                                           # msub, m12, fme, AnProps
+WT_MIP_AT, WT_FLAGS_AT, WXF_AT = 140, 141, 144
+OSC_POS_SRC = 0x2C                                         # Position's own source value (the knob, 0..1: the osc ctor's)
+WT_MIP_OFFS = ((1, 0), (2, 0x80000), (4, 0xC0000), (8, 0xE0000), (16, 0xF0000), (32, 0xF8000), (64, 0xFC000))   # Rig.tabled's
+
+
+def wt_tag(osc): return WT_TAG_HI | (osc >> 4 & 0xFFFF)
+
+
+def wt_tagged(mem, k, osc):
+    m, c = struct.unpack_from("<II", mem, k)
+    return m == wt_tag(osc) and c == ~wt_tag(osc) & 0xFFFFFFFF
+
+
+def rich_table(r):
+    """Rig.tabled's table with frames that differ (a sine, plus a 3rd harmonic growing and a 5th falling with the frame), so
+    a Position change crossfades different data; every mip level band-limited the same way."""
+    if getattr(r, "rich", False):
+        return
+    for d, off in WT_MIP_OFFS:
+        L = 2048 // d
+        k = np.arange(L) / L
+        f = np.arange(256)[:, None] / 255.0
+        w = np.sin(2 * np.pi * k) + 0.6 * f * np.sin(6 * np.pi * k) + 0.3 * (1 - f) * np.cos(10 * np.pi * k)
+        r.u.mem_write(r.tab + 4 * off, w.astype(np.float32).tobytes())
+    r.rich = True
+
+
+class WtRun:
+    """Both oscillators Wavetable with the rich table (Mixed's voice, type2=0: WT1 with a pitch source, WT2 a fifth up), on
+    stock 1.6.8 or this build, our keys pushed the same way to both (stock's slot 8 has no case for them)."""
+    def __init__(self, stock, reset=(1, 1)):
+        self.m = m = Mixed(stock=stock, type2=0)
+        self.r = r = m.r
+        r.tabled(m.o2); rich_table(r)
+        self.oscs = (m.o1, m.o2)
+        for o, x in zip(self.oscs, reset):
+            r.u.mem_write(o + 0x1ED, bytes([x]))               # WTOscReset (OSC_RESET_FLAG)
+        self.mems = []
+
+    def push(self, i, key, val): self.r.prop(self.oscs[i], key, val, self.m.handle, i)
+
+    def area(self, i): return bytes(self.r.u.mem_read(self.oscs[i] + S.OSC_KERNEL, 0xC0))
+
+
+def wt_play(stock, blocks, pushes=(), notes=None, pos=None, levels=None, reset=(1, 1), each=None):
+    """One scenario, block by block: each(w, b) first, then a note start, the Positions pos(b, i), the Levels levels(b);
+    the voice's bytes after every block."""
+    w = WtRun(stock, reset)
+    m, r = w.m, w.r
+    for i, k, v in pushes:
+        w.push(i, k, v)
+    notes = {0: 60} if notes is None else notes
+    for b in range(blocks):
+        if each:
+            each(w, b)
+        if b in notes:
+            m.note(notes[b])
+        if pos:
+            for i, o in enumerate(w.oscs):
+                r.wf(o + OSC_POS_SRC, pos(b, i))
+        if levels:
+            for i, l in enumerate(levels(b)):
+                r.level(m.v, i, l)
+        m.block()
+        w.mems.append(bytes(r.u.mem_read(m.v, 0xB88)))
+    return w
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class WtFmW1(unittest.TestCase):
+    """BE4.44 W1 (docs/plan-wt-fm.md 3.1 .. 3.3, 7.3): storage and the switch, no reader yet (a gate that is not 0 plays as
+    gate 0). Tier 1: a Wavetable oscillator never given WT FM work is stock's render, bit for bit, samples and memory. Tier 2:
+    a tagged one (an envelope, an amount, feeding B) is stock's render body with the saved runs put back around it: samples
+    and every byte outside the runs stock's, the runs holding the settings through stock's rewrites (wraps, frame changes),
+    the note-start block included. The props side: default-state init before the first value, the tag pair, the untag rule,
+    the bounded mipcur, the feed-B bit in any message order, the note start's START + HOME, Type flips with the resend."""
+    PUSH_ENV = ((0, K_FMATK, 3), (0, K_FMDEC, 6), (1, K_FMDEC, 10))
+    PUSH_AMT = ((0, K_SUBFM, 700), (1, K_FM12, 400), (1, K_FMATK, 2))
+
+    def compare(self, name, a, b, tagged):
+        """a this build, b stock: samples, and the voice after every block with the runs of the tagged oscillators masked (on
+        both); tagged oscillators tagged after every block, the others never."""
+        same(self, f32le(a.m.x1), f32le(b.m.x1), f"{name}: OSC1's samples")
+        same(self, f32le(a.m.x2), f32le(b.m.x2), f"{name}: OSC2's samples")
+        self.assertGreater(max(abs(x) for x in a.m.x1 + a.m.x2), 0.1, f"{name}: control, it plays")
+        ks = [o - a.m.v + S.OSC_KERNEL for o in a.oscs]
+        for blk, (ma, mb) in enumerate(zip(a.mems, b.mems)):
+            ma, mb = bytearray(ma), bytearray(mb)
+            for i, k in enumerate(ks):
+                self.assertEqual(wt_tagged(ma, k, a.oscs[i]), i in tagged, f"{name}: block {blk}: OSC{i + 1} tagged")
+                if i in tagged:
+                    for off, n in WT_RUNS:
+                        ma[k + off:k + off + n] = mb[k + off:k + off + n] = bytes(n)
+            if ma != mb:
+                at = next(j for j in range(len(ma)) if ma[j] != mb[j])
+                self.fail(f"{name}: block {blk}: the voice differs from stock's at +{at:#x} (OSC kernel areas at "
+                          f"{[hex(k) for k in ks]})")
+
+    def test_untagged_is_stocks_bit_for_bit(self):
+        """Tier 1 (7.3): no WT FM work, the FM keys pushed at their defaults (and the two D2 leaves no Wavetable oscillator
+        keeps: OSC1's FM 1>2, OSC2's Sub FM): samples and the whole voice (both oscillators, every byte) stock 1.6.8's after
+        every block, over notes 24 .. 120 with note starts, WTOscReset on and off, Position fixed and moving, Level 0 on OSC1
+        for three blocks; nothing tagged. Cost (S2): at most +40 instructions an oscillator-block over stock (plan: +28)."""
+        pushes = ((0, K_SUBFM, 0), (0, K_FM12, 500), (0, K_FMATK, 0), (0, K_FMDEC, FM_DEC_INF),
+                  (1, K_SUBFM, 700), (1, K_FM12, 0), (1, K_FMATK, 0), (1, K_FMDEC, FM_DEC_INF))
+        kw = dict(notes={0: 24, 6: 60, 7: 60, 12: 96, 18: 120}, pos=lambda b, i: 0.0 if b < 9 else ((b * 37 + 91 * i) % 256) / 255,
+                  levels=lambda b: (0.0 if 3 <= b < 6 else 1.0, 1.0))
+        for reset in ((1, 1), (0, 0)):
+            with self.subTest(reset=reset):
+                a = wt_play(False, 24, pushes, reset=reset, **kw)
+                b = wt_play(True, 24, pushes, reset=reset, **kw)
+                self.compare(f"untagged reset={reset}", a, b, ())
+                d = [x - y for ca, cb in zip(a.m.counts, b.m.counts) for x, y in zip(ca, cb)]
+                self.assertLessEqual(max(d), 40, f"an untagged oscillator-block over stock: {sorted(d)[-3:]}")
+                self.assertGreater(min(d), 0, "control: the trampoline and an_osc's return cost something")
+        print(f"\n  WT FM W1: untagged oscillator-block over stock: +{min(d)} .. +{max(d)} instructions", file=sys.stderr)
+
+    def tier2(self, name, pushes, tagged, envs, blocks=40, reset=(1, 1)):
+        """Tier 2 against stock (7.3): note starts at 0 and three back to back (6, 7, 8), Position fixed to 11 then moving
+        (frame crossfades rewrite k + 0x60 .. 0xBF), note 120 from 24 (many wraps: k + 0x00 .. 0x5F at each). envs: per
+        oscillator (atk, dec) or None (no envelope: fmk held at DEC j 0, fme 0). The runs after every block: the tag pair,
+        the settings, msub = m12 = 0, mipcur HOME, wxf 0, fme the golden envelope's (p3_golden fm_env, f32)."""
+        notes = {0: 60, 6: 60, 7: 60, 8: 60, 24: 120}
+        kw = dict(notes=notes, pos=lambda b, i: 0.25 + 0.5 * i if b < 12 else ((b * 53 + 77 * i) % 256) / 255, reset=reset)
+        a = wt_play(False, blocks, pushes, **kw)
+        b = wt_play(True, blocks, pushes, **kw)
+        self.compare(name, a, b, tagged)
+        nb = sorted(notes)
+        for i, osc in enumerate(a.oscs):
+            if i not in tagged:
+                continue
+            p = [0, 0, 0, 0, 0, 0, 0, FM_DEC_INF, 0]           # settings(): type, shape, sync, fmatk, glide, subfm, fm12, fmdec, envf
+            for j, k, v in pushes:
+                if j == i:
+                    at = {K_FMATK: 3, K_SUBFM: 5, K_FM12: 6, K_FMDEC: 7}[k]
+                    if (k, i) not in ((K_FM12, 0), (K_SUBFM, 1)):
+                        p[at] = v
+            p[8] = int(p[3] != 0 or p[7] != FM_DEC_INF)
+            e1 = G.fm_env(*envs[i], blocks, notes=nb, law="f32")[1] if envs[i] else None
+            k = osc - a.m.v + S.OSC_KERNEL
+            for blk, mem in enumerate(a.mems):
+                self.assertEqual(list(struct.unpack_from("<BBBBHHHBB", mem, k + PROPS_AT)), p, f"{name}: block {blk}: OSC{i + 1}'s settings")
+                mip, flags, fmk, wxf = struct.unpack_from("<BBHI", mem, k + 140)
+                msub, m12, fme = struct.unpack_from("<HHf", mem, k + MSUB_AT)
+                self.assertEqual((mip, msub, m12, wxf), (WT_HOME, 0, 0, 0), f"{name}: block {blk}: mipcur, msub, m12, wxf")
+                self.assertEqual(flags, WT_FEED_B if i == 0 and any(j == 1 and kk == K_FM12 and v for j, kk, v in pushes) else 0,
+                                 f"{name}: block {blk}: feed-B")
+                if e1 is None:
+                    self.assertEqual((fmk, fme), (AN_FE_DEC_HOLD, 0.0), f"{name}: block {blk}: no envelope: held at DEC j 0")
+                else:
+                    self.assertEqual(fme, f32(e1[blk]), f"{name}: block {blk}: OSC{i + 1}'s envelope (fme) the golden's")
+        return a, b
+
+    def test_tagged_gate0_is_stocks(self):
+        """Tier 2 (7.3), D8: an envelope with no amount on both (OSC1 Atk 3 / Dec 6, OSC2 Dec 10), and W1's amounts (OSC1 Sub
+        FM 700, OSC2 FM 1>2 400: OSC1 feeds B; OSC2 Atk 2), which play as gate 0 here (no reader yet); WTOscReset on and off.
+        Both oscillators stock's bit for bit outside the runs, the note-start blocks (0, three back to back, the jump to 120)
+        included."""
+        cases = (("envelope", self.PUSH_ENV, ((3, 6), (0, 10))), ("amounts", self.PUSH_AMT, (None, (2, FM_DEC_INF))))
+        d = []
+        for name, pushes, envs in cases:
+            for reset in ((1, 1), (0, 0)):
+                with self.subTest(case=name, reset=reset):
+                    a, b = self.tier2(f"{name} reset={reset}", pushes, (0, 1), envs, reset=reset)
+                    d += [(x - y, y) for ca, cb in zip(a.m.counts, b.m.counts) for x, y in zip(ca, cb)]
+        # the cost (plan 6 and D8: gated at 1.02 x stock's render; the trampoline and an_osc's return (+27, tier 1's), the
+        # tag check, the runs, the envelope's step (fm_env_step, as on Analog))
+        worst = max(d, key=lambda t: t[0] / t[1])
+        print(f"\n  WT FM W1: tagged (gate 0) oscillator-block over stock: +{min(x for x, _ in d)} .. +{max(x for x, _ in d)} "
+              f"instructions, worst {1 + worst[0] / worst[1]:.4f} x stock's ({worst[0]} on {worst[1]})", file=sys.stderr)
+        self.assertLessEqual(1 + worst[0] / worst[1], 1.02, "tier 2 within 1.02 x stock's render (plan 6, D8)")
+
+    def test_stock_rewrites_every_run_so_each_restore_matters(self):
+        """The control for mutation 2 (a missed restore of one run): in tier 2 stock's render itself writes into each saved
+        run (code outside the DSP window, seen by a write hook): the tag pair at the wraps, the WT state word and the
+        settings run at the frame changes. So a run not put back would hold stock's bytes, which test_tagged_gate0's runs
+        check sees."""
+        w = WtRun(False)
+        for i, k, v in self.PUSH_AMT:
+            w.push(i, k, v)
+        k1 = w.m.o1 + S.OSC_KERNEL
+        seen = set()
+        def hook(u, acc, a, size, val, _):
+            pc = u.reg_read(UC_ARM_REG_PC)
+            if not S.M7_DSP <= pc < S.M7_DSP_LIMIT:
+                seen.update(range(a - k1, a - k1 + size))
+        w.r.u.hook_add(UC_HOOK_MEM_WRITE, hook, begin=k1, end=k1 + 0xBF)
+        w.m.note(120)
+        for b in range(8):
+            w.r.wf(w.m.o1 + OSC_POS_SRC, b / 7)
+            w.m.block()
+        for off, n in WT_RUNS:
+            self.assertTrue(set(range(off, off + n)) <= seen, f"stock writes the whole run at +{off} ({n} B)")
+        self.assertTrue(wt_tagged(w.area(0), 0, w.m.o1), "and the tag is back after it")
+
+    def fresh(self):
+        """This build, both Wavetable, the rich table, stock's renders filling the areas with table bytes (Position moving)."""
+        w = WtRun(False)
+        w.m.note(60)
+        for b in range(4):
+            for o in w.oscs:
+                w.r.wf(o + OSC_POS_SRC, b / 3)
+            w.m.block()
+        return w
+
+    def test_the_first_value_writes_the_default_state_first(self):
+        """3.2 Tagging (mutation 21): an untagged area is stock's table history; the first value that is not a default writes
+        the default state, the tag pair, then the value. A default value on an untagged oscillator writes nothing; D2: a
+        Wavetable OSC1's FM 1>2 and a Wavetable OSC2's Sub FM are not kept (no write). Values clamp as on Analog."""
+        w = self.fresh()
+        for i in (0, 1):
+            self.assertTrue(any(w.area(i)[0x60:0xC0]), f"control: OSC{i + 1}'s area holds stock's bytes")
+        before = [w.area(i) for i in (0, 1)]
+        for i, k, v in ((0, K_SUBFM, 0), (0, K_FMATK, -4), (0, K_FMDEC, 500), (1, K_FM12, 0), (0, K_FM12, 800), (1, K_SUBFM, 800)):
+            w.push(i, k, v)
+        self.assertEqual([w.area(i) for i in (0, 1)], before, "defaults and D2's leaves: nothing written")
+        w.push(0, K_SUBFM, 300)
+        a = w.area(0)
+        t = wt_tag(w.m.o1)
+        self.assertEqual(struct.unpack_from("<II", a, 0), (t, ~t & 0xFFFFFFFF), "the tag pair")
+        self.assertEqual(t >> 16, 0x7FA5, "a NaN payload")
+        self.assertEqual(struct.unpack_from("<BBBBHHHBB", a, PROPS_AT), (0, 0, 0, 0, 0, 300, 0, FM_DEC_INF, 0),
+                         "AnProps: the defaults, then Sub FM 300")
+        self.assertEqual(struct.unpack_from("<BBHI", a, 140), (WT_HOME, 0, AN_FE_DEC_HOLD, 0), "mipcur HOME, wflags 0, fmk DEC j 0, wxf 0")
+        self.assertEqual(struct.unpack_from("<HHI", a, MSUB_AT), (0, 0, 0), "msub, m12, fme 0")
+        self.assertEqual(a[8:140], before[0][8:140], "the rest of the area: stock's (not part of the state)")
+        for k, v, at, want in ((K_SUBFM, 5000, 5, 1000), (K_SUBFM, -3, 5, 0), (K_FMATK, 999, 3, 127), (K_FMDEC, -1, 7, 0),
+                               (K_FMDEC, 129, 7, FM_DEC_INF), (K_SUBFM, 437, 5, 437)):
+            w.push(0, k, v)
+            self.assertEqual(struct.unpack_from("<BBBBHHHBB", w.area(0), PROPS_AT)[at], want, f"{k:#x} = {v}")
+
+    def test_the_untag_rule(self):
+        """3.3 (mutations 15, 22): an oscillator untags only with no amount, no ramp memory, the mip home, no envelope (envf)
+        and not feeding B; mipcur is read bounded (7.., a corrupt byte, is HOME: no out-of-table mip); a valid one (3: the
+        reader holds a mip) keeps the tag."""
+        w = self.fresh()
+        o = w.m.o1
+        tagged = lambda: wt_tagged(w.area(0), 0, o)
+        w.push(0, K_SUBFM, 300); self.assertTrue(tagged())
+        w.push(0, K_SUBFM, 0); self.assertFalse(tagged(), "nothing left: untagged")
+        w.push(0, K_FMATK, 2); w.push(0, K_SUBFM, 300); w.push(0, K_SUBFM, 0)
+        self.assertTrue(tagged(), "the envelope is set (envf): still tagged")
+        w.push(0, K_FMATK, 0); self.assertFalse(tagged(), "envelope unset: untagged")
+        for mip, keeps in ((9, False), (WT_MIPS_N, False), (0x80, False), (3, True), (0, True), (WT_MIPS_N - 1, True)):
+            with self.subTest(mipcur=mip):
+                w.push(0, K_SUBFM, 300)
+                w.r.u.mem_write(o + S.OSC_KERNEL + WT_MIP_AT, bytes([mip]))
+                w.push(0, K_SUBFM, 0)
+                self.assertEqual(tagged(), keeps, f"mipcur {mip}: {'a mip held' if keeps else 'HOME (bounded)'}")
+                w.r.u.mem_write(o + S.OSC_KERNEL + WT_MIP_AT, bytes([WT_HOME])); w.push(0, K_SUBFM, 0)
+                self.assertFalse(tagged())
+        w.push(0, K_SUBFM, 300)
+        w.r.u.mem_write(o + S.OSC_KERNEL + MSUB_AT, struct.pack("<H", 5)); w.push(0, K_SUBFM, 0)
+        self.assertTrue(tagged(), "ramp memory left (msub): still tagged")
+
+    def test_the_tag_pair(self):
+        """3.3 (mutation 1): a table word equal to the tag, with any other word after it, is not ours: stock's render runs
+        (tier 1) and leaves the area its own, byte for byte, as on stock; so does a word with the tag's high half alone."""
+        for name, check in (("check word wrong", lambda t: t ^ 1), ("check word zero", lambda t: 0),
+                            ("high half alone", None)):
+            with self.subTest(case=name):
+                def each(w, b):
+                    if b == 2:
+                        t = wt_tag(w.m.o1)
+                        x = t if check else t ^ 1                # (the high half alone: another oscillator's tag, its pair)
+                        pair = struct.pack("<II", x, check(t) if check else ~x & 0xFFFFFFFF)
+                        w.r.u.mem_write(w.m.o1 + S.OSC_KERNEL, pair)
+                kw = dict(notes={0: 72}, pos=lambda b, i: 0.6, each=each)
+                a = wt_play(False, 6, **kw)
+                b = wt_play(True, 6, **kw)
+                self.compare(name, a, b, ())
+
+    def test_the_props_side_reads_the_pair_too(self):
+        """3.3 (mutation 1, the props side): with the tag word and a wrong check word in the area (table bytes), a note start
+        writes nothing and the first value still writes the whole default state and a good pair (the oscillator was not
+        tagged); a wrong low half (another oscillator's tag) the same."""
+        for name, bad in (("check word wrong", lambda t: (t, t ^ 1)), ("another oscillator's pair", lambda t: (t ^ 1, ~(t ^ 1)))):
+            with self.subTest(case=name):
+                w = self.fresh()
+                o, t = w.m.o1, wt_tag(w.m.o1)
+                w.r.u.mem_write(o + S.OSC_KERNEL, struct.pack("<II", *(x & 0xFFFFFFFF for x in bad(t))))
+                before = w.area(0)
+                w.m.note(60)
+                self.assertEqual(w.area(0), before, "the note start: not ours, nothing written")
+                w.push(0, K_FMDEC, 20)
+                a = w.area(0)
+                self.assertEqual(struct.unpack_from("<II", a, 0), (t, ~t & 0xFFFFFFFF), "a good pair")
+                self.assertEqual(struct.unpack_from("<BBBBHHHBB", a, PROPS_AT), (0, 0, 0, 0, 0, 0, 0, 20, 1), "the defaults first")
+                self.assertEqual(struct.unpack_from("<BBHI", a, 140), (WT_HOME, 0, AN_FE_DEC_HOLD, 0))
+
+    def test_feed_b(self):
+        """3.5's bit (mutation 14): a Wavetable OSC1 feeds B while OSC2 (Analog, or Wavetable and tagged) has FM 1>2; set and
+        cleared by OSC2's FM 1>2 and by either Type, in any order (a project's push, a resend); clearing it leaves OSC1
+        tagged for its own work; an Analog OSC1 has no WT state."""
+        def state(w):
+            a1, a2 = w.area(0), w.area(1)
+            return (wt_tagged(a1, 0, w.m.o1), a1[WT_FLAGS_AT] if wt_tagged(a1, 0, w.m.o1) else None,
+                    wt_tagged(a2, 0, w.m.o2), struct.unpack_from("<I", a2, 0)[0] == AN_MAGIC)
+        w = self.fresh()
+        w.push(1, K_FM12, 500)
+        self.assertEqual(state(w), (True, WT_FEED_B, True, False), "both Wavetable: OSC2 keeps FM 1>2, OSC1 feeds B")
+        w.push(1, K_FM12, 0)
+        self.assertEqual(state(w), (False, None, False, False), "FM 1>2 0: both untagged")
+        w.push(0, K_SUBFM, 200); w.push(1, K_FM12, 300); w.push(1, K_FM12, 0)
+        self.assertEqual(state(w), (True, 0, False, False), "OSC1 keeps its own Sub FM, the bit cleared")
+        w.push(0, K_SUBFM, 0)
+        w.push(1, K_TYPE, 1); w.push(1, K_FM12, 300)
+        self.assertEqual(state(w), (True, WT_FEED_B, False, True), "an Analog OSC2's FM 1>2")
+        w.push(1, K_TYPE, 0)
+        self.assertEqual(state(w), (False, None, False, False), "OSC2 leaves Analog (its area forgotten): cleared")
+        w.push(1, K_FM12, 300)
+        self.assertEqual(state(w), (True, WT_FEED_B, True, False), "the resend's FM 1>2 on the Wavetable OSC2: set again")
+        w.push(0, K_TYPE, 1)
+        self.assertEqual(struct.unpack_from("<I", w.area(0), 0)[0], AN_MAGIC, "OSC1 Analog: its own state, no WT bit")
+        w.push(1, K_FM12, 0); w.push(1, K_FM12, 700)                # (OSC2's FM 1>2 arrives while OSC1 is Analog)
+        w.push(0, K_TYPE, 0)
+        self.assertEqual(state(w), (True, WT_FEED_B, True, False), "OSC1 back to Wavetable after OSC2's value: set")
+
+    def test_the_note_start_sends_the_mip_home(self):
+        """3.1 / 3.6 (mutation 20): a tagged oscillator's note start sets fmk to START (the envelope's retrigger, as on
+        Analog) and mipcur to HOME (the reader holds no mip into the note's first block); an untagged one's area is not
+        written (test_untagged's note starts)."""
+        w = self.fresh()
+        o = w.m.o1 + S.OSC_KERNEL
+        w.push(0, K_FMATK, 2)
+        w.r.u.mem_write(o + WT_MIP_AT, bytes([2])); w.r.u.mem_write(o + FMK_AT, struct.pack("<H", 0x4005))
+        w.m.note(64)
+        self.assertEqual(struct.unpack_from("<BBH", w.area(0), 140), (WT_HOME, 0, 0), "mipcur HOME, fmk START")
+
+    def test_type_flips_keep_the_values(self):
+        """7.4 (M7 side): what the M4 sends (Type, then its resend's seven: test_synth_ui) moves an oscillator's FM between
+        its Analog and its Wavetable state: WT -> Analog -> WT keeps Sub FM, FM Atk, FM Dec (FM 1>2 on OSC1 is not kept on
+        Wavetable: D2)."""
+        w = self.fresh()
+        vals = ((K_SUBFM, 600), (K_FMATK, 3), (K_FMDEC, 40))
+        for k, v in vals:
+            w.push(0, k, v)
+        resend = lambda: [w.push(0, k, v) for k, v in ((K_SHAPE, 70), (K_SYNC, 0), (K_GLIDE, 0), (K_SUBFM, 600), (K_FM12, 0))
+                          + vals[1:]]
+        settings = lambda: struct.unpack_from("<BBBBHHHBB", w.area(0), PROPS_AT)
+        self.assertEqual(settings(), (0, 0, 0, 3, 0, 600, 0, 40, 1))
+        w.push(0, K_TYPE, 1); resend()
+        self.assertEqual(struct.unpack_from("<I", w.area(0), 0)[0], AN_MAGIC)
+        self.assertEqual(settings(), (1, 70, 0, 3, 0, 600, 0, 40, 1), "Analog: the resend's values")
+        w.push(0, K_TYPE, 0)
+        self.assertEqual(w.area(0), bytes(0xC0), "leaving Analog forgets the area")
+        resend()
+        self.assertTrue(wt_tagged(w.area(0), 0, w.m.o1))
+        self.assertEqual(settings(), (0, 0, 0, 3, 0, 600, 0, 40, 1), "Wavetable again: the FM values, nothing of Analog's")
+
+
+AN_FE_DEC_HOLD = 2 << 13    # AnOsc.fmk at DEC j 0: the envelope held at 1 (analog.h AN_FE_DEC << 13)
+WT_MIPS_N = 7               # analog.h WT_MIPS
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])
