@@ -1674,3 +1674,153 @@ build of c9937ea reproduces the default kit's image, 1e5283fb...):
   one-route line (as wt_rdfc), about -2k a crossing block and +0.4 KB.
 - **D2's last case plays a BE4.43 project's hidden FM 1>2.** As the plan recommended; release notes and checklist 3 say
   so.
+
+### W4 as built (after the W4 review, 2026-11-17)
+
+Two reviewers rebuilt 124ecd7 byte for byte (default and both alternates, identical to the kits), ran every suite, ran 17
+mutations of their own and probed the costs off the note-60 rig. Findings and what was done (M = measured, S = from
+source, I = estimated). Commit 890e89a (firmware, tests, release notes, checklist), then this section.
+
+1. **Accepted, fixed: D4's frame pass made the low-note Position-LFO voice 26 % over the heaviest voice (medium /
+   major, both reviewers; reproduced).** wt_frame_dc read the whole frame at OSC1's level: 2,048 floats at level 0, 10.3k
+   instructions and 8 KB of table, every block a Position LFO moves the frame. With light FM OSC1 stays on that level, so
+   the full Wavetable voice at note 24 was 44.5k steady (M), 39.4k at note 36, and 49.2k with FM Atk and retriggers;
+   test_cost only measured note 60 at full depth (a coarse level).
+   - Measured first (scratch W4fix/coarse*.py, strided.py, on stock's builder levels of seven synthetic families: saw,
+     smooth / stepped / alternating PWM, half-wave sines, a naive sync-saw sweep, a naive 5 % pulse):
+     - reading level L >= the played k and scaling by the builder's DC gain (G = sum of STOCK_FIR = 0.9510514 a level,
+       G^-(L - k)) gives the played frame's mean within 1.5e-4 on every band-limited family, 2.3e-2 on the naive sync
+       sweep, for L = 3 and L = 4 alike; except frame 0 (2.5e-2), whose coarser levels start with the builder's zero
+       padding. The reviewers' "the DC is the same at every level" holds only up to that gain (tools/wt_dc.py already
+       said 0.951 a level);
+     - a strided read of the played level (256 samples) is within 1.4e-3 (naive 1.4e-2), but still touches every cache
+       line of the frame (8 KB at level 0) on the device: kept for frame 0 only;
+     - the played peak against level 4's scaled peak: saw 1.09 .. 1.11, pulses 0.98 .. 1.07, half-wave 1.00, naive sync up
+       to 1.21.
+   - Built (S): wt_frame_dc reads level 4 for a level-0..3 frame (128 samples, 512 B of table), mean x G^-(4 - k), peak
+     about the read mean x G^-(4 - k) x 1.125; levels 4..6 their own frame (exact, as before); frame 0 at levels 0..3
+     every 2^(3 - k)-th sample of its own (256), peak x 1.125. The scan is eight samples a turn with immediate offsets
+     (dc_scan, 4.4 instructions a sample; inlined for the plain and the strided case). wt_feed_b runs eight a turn on
+     two pointers (the same arithmetic; 1,426 -> 1,261 a block).
+   - A first cut on level 3 (256 samples) left the note-24 voice at 35.3k, 18 over the ceiling: level 4 halves the read
+     at the same accuracy. A 1.25 peak margin moved OSC2's level one step coarser at note 60 (a +4.6k rd_qm block and a
+     darker OSC2): 1.125 is the saw's measured ratio, so the peak is now an estimate at levels 0..3, -7 % .. +15 % of the
+     played frame's (+1 .. +3 % on a saw, +5 .. +15 % on pulses, -7 % on the naive sync sweep, where OSC2 can sit one
+     level finer at a borderline amount). Levels 4..6 keep the bound.
+   - M: wt_frame_dc 685 instructions a block at note 24 (was 10,316), 234 at note 60 (unchanged). The light-FM low-note
+     voice is 34.7k .. 34.8k steady at notes 12 .. 72 (probe4b), against 44.5k / 39.4k before. One case (note 24, Sub FM
+     300, FM 1>2 300, the LFO) has one block of 39.4k: OSC2 settles one level coarser after the entry block (rd_qm),
+     where the exact peak had kept it; any estimate moves some borderline amount the same way, once a note (hysteresis).
+   - Tests: WtFmW4.test_d4_the_frame_read_is_level_4_at_low_notes (m and q follow wt_frame_stats' rule at notes 24..72 and
+     at frame 0; within 2e-4 / 2e-3 of the played frame's exact mean; q within -2 % .. +16 %; the read <= 800 instructions
+     a block); wt_frame_stats rewritten to the new rule; test_cost gains three low-note rows (notes 24 / 36, Sub FM 300
+     or 50, FM 1>2 300, Position every block): every block but one within HEAVIEST_VOICE, that one within W4_ATK_MAX.
+     test_d4_a_frames_dc_stays_out_of_b's saw |m| bound is 1e-4 (M 3.2e-5 from level 4: under 1 cent at FM 1>2 500).
+   - Not taken: the peak only for a Wavetable OSC2 (the over case was WT -> WT), the coarse peak plus a large margin (the
+     1.25 above), a (table, frame) cache (no room in the 11 key bits, and a frame change every block defeats any cache).
+2. **Accepted: checklist 8 missed the worst case, and its "low notes: the slowest case for the table's memory" was wrong
+   (major, reviewer 2).** Full depth sends the reader to coarse levels: the cheap case. Section 8 now has the worst case
+   (an 8-voice chord around C0 / C1, Sub FM about 10 %, FM 1>2 about 30 %, an LFO on Position on both, held and re-struck:
+   34.8k steady, 39.4k one block a note), a light-FM Position chord with a short FM Dec pluck re-struck (M: 34.8k /
+   39.4k), and the corrected sentence. Recopied into all three kits.
+3. **Accepted: the release notes' CPU table understated (minor, reviewer 2).** A low-note light-FM Position row (34.8k /
+   39.4k) and a line that it is the heaviest steady case; the header says when a row is not note 60.
+4. **Accepted: sync is sample-accurate, the docs said per block (low, reviewer 1).** The release notes' mixed-sync bullet
+   and checklist "What changed" / section 6 now say sync stays as BE4.43's and the re-seed is a safety net; the "Known
+   limits" line is gone. (The plan's W4 item 3 already said so.)
+5. **Accepted, tests added: four guards survived mutation (low, both).** Each new test run against its mutant, built on a
+   private copy (scratch W4fix/muts.sh, trees in ~/bento/mutfix; WtFmW4):
+   - mB / m1, the change-block peak cover removed: RED in test_b_known_peak_covers_every_block_of_a_sweep (a PWM sweep
+     toward smaller peaks at notes 72 / 84, Sub FM 0 / 300: max |B| <= pa in every block);
+   - m2, re-seed while WT1 is frozen: RED in test_mixed_sync_reseed_waits_for_wt1s_phase_to_move (no-WAV WT1, FM 1>2 1000,
+     mixed sync: the copy advances one constant step a block, equals FM 1>2 0's, output byte-identical);
+   - mE / m3, the mrestart skip removed: RED in test_mixed_sync_keeps_the_slaves_restart_at_a_note_start (notes 36..72, a
+     retrigger at block 2: the slave's first FM call of blocks 0 and 2 has events[0] = 0);
+   - mV, the r->voice check removed: RED in test_a_long_block_or_another_voice_feeds_nothing (Run.voice another voice's:
+     no B write, no B tag; the control feeds and tags);
+   - mR, the n <= AN_FM_FRAMES check on feeding removed: GREEN, and equivalent: fm_setup gives no line past the buffers,
+     and wt_body's long-block return (`!bk.fi && n > AN_FM_FRAMES`) comes before the feed. The same test (512-frame
+     blocks: B and past it untouched, no feed, fmx= skipped) is RED with both guards removed (mRR), so the behaviour is
+     pinned whichever guard holds it.
+6. **Rejected: key the frame cache on the table so a note start does not rescan (minor, reviewer 2).** The note start's
+   rescan was the 10.3k level-0 pass; it is now 0.7k (level 4) or about 1.5k (frame 0, strided), inside the first block's
+   30.5k (M). wxf has no free bits for a table identity, and an_note's drop is what refreshes the mean when a WAV is
+   swapped under a held note, at the next note.
+7. **Accepted: stale docs (minor, reviewer 2).** WtFmW1.test_tagged_gate0_is_stocks' docstring names wt_frame_dc and says
+   FEED_MAX is measured at note 60 (M now +1,634 .. +2,312, 1.34 x); low notes and Position are gated as voices
+   (WtFmW4.test_cost and the frame-read test). WtFmW4's class docstring no longer names wt_peak_b.
+8. **Accepted, noted, not changed (info, reviewer 1): D4's residual while Position sweeps.** m is the frame OSC1 ends the
+   block on; a kernel block before stock's wrap and a reader frame-crossfade block play part of the old frame, about
+   (m_old - m_new) / 2 a block of a sweep: I about +30 cents at FM 1>2 500 on a fast PWM sweep (3.8 frames a block), less
+   on a slow LFO, far below OD17 (OSC1's own Sub FM DC, -850 .. +1,087 cents, the same on Analog, accepted). Subtracting
+   it costs a second read on every change block. Checklist 5's D4 row says OSC1 Sub FM 0, or OD17 masks it.
+
+**Sizes (M).**
+- **Default DSP 30,884 B, 9,820 B free of 40,704 (>= 1 KB).** W4 result 30,252: +632 (wt_frame_dc 368 -> 892: the two
+  inlined scans and the level / gain logic; wt_feed_b 222 -> 322; alignment 8).
+- BE_WT_MIP=1.5: DSP 30,884 B. BE_WT_MIP=off: DSP 30,300 B.
+- Synth UI 15,846 B, M4 code 24,424 B, M7 C slice 15,368 B (unchanged); image 0x189450, 16,100 B to PROVEN_MAX.
+- **Drums trial, information only.** The W4 result's trial tree (scratch trialW4: c9937ea + main's committed 3597e8e)
+  copied to ~/bento/trialW4f with this commit's two DSP files' diff applied, BE_ENABLE=drums: DSP 36,948 B, **3,756 B
+  free** (W4 result 4,388); synth UI 22,710 B; image 0x18af20, 9,236 B to PROVEN_MAX. Not committed; test_drums /
+  test_drum_ui were not re-run on it (the diff touches no drum code).
+
+**CPU (M, ~/bento/out/be444w4f-rel).**
+- P3Identity, 48 cases: worst **1.0165** (mod dev=False, 111,708 / 109,899), total 1.0087: unchanged.
+- Tier 2 (envelope only): +108 .. +121, worst 1.0179. A feeding OSC1 at gate 0 (note 60): +1,634 .. +2,312, worst
+  1.3415 (FEED_MAX 1.55). Untagged +27.
+- Reader a sample: unchanged (rd_qc 23.6, rd_qr 26.6, rd_qxc 37.2, rd_q 34.1, rd_qx 45.2, rd_qm 55.2).
+- Voices (WtFmW4.test_cost: an_enter and both renders a voice-block; note 60, I 16 unless named; median / max):
+
+  | Voice | Median | Max | Gate |
+  |---|---|---|---|
+  | stock WT | 14,155 | 14,389 | |
+  | WT1 Sub FM | 22,658 | 23,722 | |
+  | WT1 -> A2 FM 1>2 | 19,691 | 20,867 | 20,500 |
+  | WT1 -> WT2 FM 1>2 | 18,992 | 21,292 | 20,000 |
+  | full WT voice | 27,203 | 29,395 | S3 28,929 (median) |
+  | the same, Position every block | 34,390 | 34,392 | heaviest voice 35,309 |
+  | the same at note 36 | 27,225 | 29,806 | |
+  | the same, FM Atk 3 on both | 27,261 | 43,733 | W4_ATK_MAX 46,000 (lever c) |
+  | **note 24, Sub FM 300 + FM 1>2 300, Position every block** | **34,760** | 39,392 (one block) | all but one <= 35,309; max <= 46,000 |
+  | note 36, the same | 34,753 | 34,755 | the same |
+  | note 24, Sub FM 50 + FM 1>2 300, Position every block | 34,738 | 34,740 | the same |
+  | Analog full FM | 28,938 | 29,586 | |
+
+  Before the fix the three new rows were 39,411 / 36,851 / 44,521 steady (M, the W4 result's image). The reviewers' other
+  cases on this image (scratch W4fix/probe4b.py; Position fast on both unless "lfo"): note 24 Sub 50 FM 1>2 1000 34,778 /
+  34,780; note 12 34,705; notes 48 / 60 Sub 300 lfo 34,753; note 72 34,733; note 24 Sub 1000 lfo 34,843; note 24 Sub 50 ->
+  Analog OSC2 31,686 / 31,767 (was 41,469); WT1 at gate 0 -> WT2 at note 24 22,133 / 23,390; note 24 + FM Atk 3,
+  retriggered every 6 blocks, 34,818 / 39,428 (was 44,601 / 49,211); note 24 FM Dec pluck retriggered every 4 34,820 /
+  39,440 (was 39,479 / 49,218).
+- WtFmW3.test_cost unchanged (A1 Sub FM -> WT2 28,156 / 29,127; FM Atk 3 on OSC2 28,185 / 36,291).
+
+**Suites (M, ~/bento/out/be444w4f: the source of 890e89a, the image byte-identical to the release kit's, fc1c3232...;
+from the worktree's mods/m1; skips in brackets).** All OK: diag 92 (6), polyat 51 (2), conditions 18, holdstep 18,
+controls 62, retrig 43, step 95 (16), mod 24 (20), notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25,
+step_xml 11, keys 10, native_props 22, **analog 210** (205 + 5 new), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16),
+note0 32, p3_golden self-test 52. Alternates (their kits' images): BEM1.5 analog 210 OK, synth_ui 64 (2), native_props 22 OK; BEMOFF analog 210 (12: the mip-rule tests, by design, now with the new peak-cover test), synth_ui 64 (2), native_props 22 OK.
+
+**Kits (built from 890e89a; this section's commit changes docs only; git-ignored, never committed).**
+
+| Kit | Boot label | wt_mip | bento1.bin sha256 |
+|---|---|---|---|
+| flash\bento_enhanced-v4.44 | BE4.44 | 1.75 | fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff |
+| flash\bento_enhanced-v4.44-mip1.5 | BEM1.5 | 1.5 | 54b389a3c2c7b9a2693351af45854b529727adcfde1700668ce1ec93b2481ac9 |
+| flash\bento_enhanced-v4.44-mipoff | BEMOFF | off | 10a70d9d09a66ea522360c59b8d84c23df1fcd5836e7a7f3d45ab75e379c5fd7 |
+
+Each kit: 01_TEST_FIRMWARE (the image and stock 1.6.8's bento2.bin), 03_RESTORE_STOCK (stock 1.6.8), manifest.json,
+DEVICE_CHECKLIST.txt (= docs/checklist-v4.44.txt), SHA256SUMS.txt (verified). They replace the earlier kits
+(1e5283fb..., b89770fc..., 560944fb...).
+
+**Needs Jeff.**
+- D5's default by ear (checklist 7): BE4.44 (1.75), BEM1.5 or BEMOFF.
+- D4 as built: the mean subtraction (decided without factory data), now read on level 4 below it. Checklist 5's D4 row
+  (at C1 and C3), or tools/wt_dc.py on a card copy.
+- B's peak at levels 0..3 is an estimate (+1 .. +15 % on band-limited tables, -7 % on naive ones): OSC2 can sit one
+  level coarser (on a naive table, finer) than the exact peak gave at a borderline FM 1>2 amount. Levers if the ear
+  objects: a smaller margin (pulses get exact, a saw reads up to 10 % low) or an exact level-k scan for a Wavetable OSC2
+  only (back to +5k a change block at note 24: not recommended).
+- The worst steady case is now 34.8k (98.5 % of the heaviest existing voice), and FM Atk's crossing blocks 43.7k: the
+  device's 8-voice rows (checklist 8, the C0 / C1 Position chord first) decide whether either matters.
+- D2's last case plays a BE4.43 project's hidden FM 1>2 (release notes, checklist 3).
