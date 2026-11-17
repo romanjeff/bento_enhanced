@@ -1395,3 +1395,16 @@ note-start block 3 % over the heaviest existing voice).
   while OSC2 is synced to a Wavetable OSC1 (its value kept); alternatives: re-seed the slave's copy each block, or an exact
   index-0 step.
 - **Device images:** three images to compare by ear (above); they all boot as "BE4.44".
+
+## Decisions before W4 (Jeff, 2026-11-17)
+
+- **Steady-state CPU: take the unrolled reader in W4** (about -2.4k a reader block, +150-300 B).
+- **Note-start blocks: lever (a)** - the first block of a note goes straight to the FM level, no crossfade (stock's ladder
+  switches there too); the excess on FM Atk level-crossing blocks is accepted (c).
+- **Mixed sync with FM 1>2 from a Wavetable OSC1: re-seed the slave's phase copy each block** (not D3's mute): sync and
+  FM 1>2 both keep working; sync timing against the WT master is block-quantised. Needs its own golden/test and a
+  device-checklist row (listen for roughness).
+- D2's last case (a BE4.43 project's hidden FM 1>2 on an Analog OSC2 next to a WT OSC1 starts playing): no answer yet;
+  W4 takes the recommendation (let it play), with a reviewed behaviour-change test and a checklist/release-notes line.
+- Listening images from W3 (boot labels W3-175 / W3-150 / W3-OFF) packaged as flash/bento_enhanced-v4.44-w3-mip1.75,
+  -mip1.5, -mipoff.
