@@ -653,7 +653,10 @@ mutations. Their findings and what was done:
 - **Accepted, fixed: README hold-shortcut bullet mixed the bases (info).** Split into 1.6.1 (0x080D9000 / 0x080D9800,
   site 0x0808D1FE) and 1.6.8 since BE4.44 (0x080DF000 / 0x080DF800, site 0x0808DCDE).
 - **Confirmed (info): the 6 Vendored.test_hashes failures on the trial were CRLF from `core.autocrlf=true`** in the
-  throwaway clone. Trial clones from now on use `git -c core.autocrlf=false clone`; the re-run is below.
+  throwaway clone. Trial clones from now on use `git -c core.autocrlf=false clone`. Re-run (M): an LF clone of 250fdb2
+  with main's committed 3597e8e merged (not committed; test_keys / test_native_props conflicts taken from be444), built
+  with BE_ENABLE=drums: DSP 29,860 B, **10,844 B free**, synth UI 22,670 B, image 0x18AEF8 (9,276 B to PROVEN_MAX);
+  test_drums 33 OK (1 skipped), test_drum_ui 46 OK, test_controls 62 OK.
 - **Process note (info):** the two reviewers collided in one mutation directory; the second reviewer's rows from that
   window are not relied on here (the mutation list above was re-run in a private copy).
 
