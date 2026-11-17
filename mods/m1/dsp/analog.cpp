@@ -133,7 +133,9 @@ struct Run {                       /* the hooks' running state, M7 private (two 
                                     * (AN_FMTAG_A the sub's copy, AN_FMTAG_B OSC1's); 0 at every an_enter that names a voice,
                                     * meaningful only while voice is the voice rendering. P3 Q4: A set by sub_fill */
     u32 inc_sub;                   /* P3: buffer A's sub increment x 2^-32 (float bits), for the golden checks (Q4: set) */
-    u32 r11, r12, r13, r14, r15;
+    u32 peak_b;                    /* BE4.44 W3 review: B's known peak (float bits): OSC1's increment x its Shape's peak
+                                    * (an_peak), set with fmtag B by the Analog OSC1 that wrote B (wt_body's pa for B) */
+    u32 r12, r13, r14, r15;
 };
 static_assert(sizeof(Run) == 64, "two lines");
 #define AN_FMTAG_A 1u
@@ -353,6 +355,12 @@ static float an_shape(float s) {
         return (s - (float)AN_SHAPE_TRI_LO) * (0.5f / (float)(AN_SHAPE_TRI_LO - AN_SHAPE_SINE_END)) - 0.5f;
     return -1.f;
 }
+/* BE4.44 W3 review: the peak of an Analog oscillator's waveform at shape k (an_shape's), from the kernel's set_shape / wave:
+ * the LOW regime's weights sum to 1 (1); the saw..square blend (k <= 0.5) 1; past the square the pulse narrows, its DC-free
+ * high side 1 - dc = 1 + (k - 0.5) 1.68 (1.84 at k 1). Non-decreasing in k, so a block's ramp k0 -> k1 peaks at the larger.
+ * The edges' two-point residuals stay between the step's ends; the corners' (LOW) are below inc / 0.75 (I): not counted.
+ * (p3_golden.an_peak) */
+static inline float an_peak(float k) { return k > .5f ? 1.f + (k - .5f) * 1.68f : 1.f; }
 
 /* J4 (Track M): the modulation stock routes to a parameter, without the parameter's own value: the sum PARAM_VALUE takes over
  * slots 1..4 (slot 0, the knob, left out), unclamped. An Analog oscillator's Position knob is not on its page (Shape is), so
@@ -863,9 +871,18 @@ __attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out
     AnProps d3;
     if (which == 0) {                                         /* D3: an Analog OSC2 synced to this OSC1 */
         void *o2 = v + S_VOICE_WT2;
-        if (is_analog(o2) && props(o2)->sync == 1u) { d3 = *p; d3.subfm = 0; p = &d3; g->msub = 0; }
+        if (is_analog(o2) && props(o2)->sync == 1u) {
+            d3 = *p; d3.subfm = 0; p = &d3; g->msub = 0;
+            /* W3 review: with no mip held, stock's render whatever feed-B says (a hidden FM 1>2 on the synced OSC2 sets it,
+             * and nothing reads B from a Wavetable OSC1 before W4): the index-0 reader's Q32 step would drift WT1's phase
+             * off the slave's copy. A held mip still gets its one mip-home block */
+            if (wt_mip(g) == WT_HOME) return 0;
+        }
     }
     bk.fi = fm_setup(r, v, g, p, which == 1, bk.n, &fi, env) ? &fi : 0;
+    /* W3 review: a block longer than the FM buffers (fm_setup: no line, fmx=) with a mip held: the mip goes home at once
+     * (stock's level, no crossfade) rather than the reader's zero line reading past buffer A */
+    if (!bk.fi && bk.n > AN_FM_FRAMES) { g->wt.mipcur = (u8)WT_HOME; g->wt.wflags &= (u8)~WT_MIP_WAIT; return 0; }
     /* W2 review: no line this block and no mip held (an amount that plays nothing: OSC2's FM 1>2 with B not written this
      * voice-block, fmx=; a WT OSC2's hidden Sub FM, D2; Sub FM under D3) and not feeding B: stock's render (tier 2), bit for
      * bit, not the reader at index 0. What this body set above (Level's smoother target, rate, frame) stock's body sets again
@@ -881,6 +898,11 @@ __attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out
         if (core[0] == 3u) pk += __builtin_fabsf(1.f - (float)W(core, 0x18) * 4.6566128730773926e-10f);
         __builtin_memcpy(&bk.pa, &r->inc_sub, 4);
         bk.pa *= pk;
+    } else if (bk.fi) {
+        /* W3 review: B on its own route (a Wavetable OSC2's FM 1>2: fm_setup gives a = B) has its known peak too, OSC1's
+         * increment x its Shape's peak (an_osc, peak_b): at low notes OSC1's period spans blocks, and a scan of B flipped
+         * the level with OSC1's phase (as A's did at W2). W4: a Wavetable OSC1 writing B must set peak_b (0: scanned) */
+        __builtin_memcpy(&bk.pa, &r->peak_b, 4);
     }
 #endif
     bk.s = FN(S_SCRATCH_PTR, float *(*)(void *))(scratch);
@@ -1080,7 +1102,11 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
     };
     if (fm || bo) parts_loop(Tf<1>());
     else parts_loop(Tf<0>());
-    if (bo) r->fmtag |= AN_FMTAG_B;
+    if (bo) {
+        r->fmtag |= AN_FMTAG_B;
+        float pb = inc * an_peak(k0 > k1 ? k0 : k1);          /* B's known peak (wt_body: a Wavetable OSC2's pa) */
+        __builtin_memcpy(&r->peak_b, &pb, 4);
+    }
     if (!silent) {
         FN(S_SMOOTH_APPLY, void (*)(void *, float *, u32, u32))((u8 *)osc + OSC_SMOOTH, s, 0, n);
         FN(S_MIX_INTO, void (*)(void *, void *))(out, scratch);

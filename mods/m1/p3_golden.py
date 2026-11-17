@@ -1214,10 +1214,22 @@ def wt_mip_for(x, thr, k):
     return k
 
 
+def an_peak(k):
+    """W3 review (B's known peak): the peak of an Analog oscillator's waveform at shape k (an_shape's, -1..1), from the
+    kernel's wave(): LOW (k < 0) its three weights sum to 1, so 1; the saw..square blend (0..0.5) 1; past 0.5 the pulse
+    narrows, width w = 0.5 - (k - 0.5) 0.84, and its DC-free high side is 1 - dc = 2 - 2 w (1.84 at k 1). Written from the
+    waveform (set_shape, wave), not from analog.cpp's an_peak."""
+    if not k > 0.5:
+        return 1.0
+    w = 0.5 - (min(k, 1.0) - 0.5) * 0.84
+    return 2.0 - 2.0 * w
+
+
 def wt_peak(inc, line, n, pa=0.0):
     """The peak step in base-table samples a sample, float32 as the M7 forms it: (inc + I max|a| + J max|b|) 2048, I, J the
     larger end of each index line (I_n = f32(ia + dia n)); max|a| = pa when it is known (Sub FM's A: inc_sub x the sub
-    wave's peak, W2 review), else, and max|b| always, the max over every 4th sample of the block (the scan's stride)."""
+    wave's peak, W2 review; B on its own route, a Wavetable OSC2's FM 1>2: inc1 x an_peak of OSC1's Shape, W3 review), else,
+    and max|b| always, the max over every 4th sample of the block (the scan's stride)."""
     a, ia, dia, b, ib, dib = line
     f = np.float32
     ma = f(pa) if pa else f(np.max(np.abs(np.asarray(a, f)[0:n:4])))

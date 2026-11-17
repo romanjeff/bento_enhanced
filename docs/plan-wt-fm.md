@@ -390,10 +390,10 @@ check_dsp_assumptions. If the efficiency pass needs more than 1,000 B, the drums
 | Analog FM-off (P3Identity vs BE4.40) | 1.84 % at BE4.43; 1.72 % with the gate prototype | M | Don't bank the drop: codegen noise is about +/-0.15 % (I). All WT FM work stays in noinline wt_fm_osc; an_osc only gets the tag compare on its non-Analog return; an_render and an_render_fm are **not** edited. P3Identity re-run at every sprint exit. **Stop line 1.95 %**: if crossed, rework the layout (attributes, moving the compare) before anything else. |
 | Untagged WT oscillator | +5 a block over BE4.43 (+28 over stock, 0.40 %) | M | WtOff.test_cost: <= stock + 40 a block (S2) |
 | Tagged WT, gate 0 (envelope only, feeds B, handback block, note-start block) | about 40 to 55 + 39.5 env | I | Gated at <= 1.02x stock's render. Parallels BE4.43's accepted "envelope set, FM-off +1.1 %" |
-| FM'd WT oscillator-block, steady | about 10.4 to 11.2k against stock 6.7 to 8.7k (about +3.7k, +50 %) | I on M parts | Reader 7,451 (M) |
+| FM'd WT oscillator-block, steady | about 10.4 to 11.2k against stock 6.7 to 8.7k (about +3.7k, +50 %). **W3 (M): reader and body about +6.7k on a 7.1k render, about +95 %** | I on M parts; W3 M | Reader 7,451 (M); W2 as built: wt_play 9,636 a block |
 | Position-change block | rd_qx +2,570 (M) | M | |
-| Mip-change block | rd_qm about +2.5 to 3k (I) | I | Prototype and count at W2; hysteresis keeps these rare; never in the same block as a frame change |
-| WT voices | Sub FM OSC1 only: about 22k. Both: about 26 to 27k. Stock WT1 feeding an FM'd WT2: about 18k. +2.6k per FM'd oscillator with a Position LFO | I | WtFm.test_cost: full WT FM voice (note 60, I = 16) <= 28,929 (S3). With Position moving every block, <= 35,309 (heaviest existing voice). **New cases:** Position LFO plus a decaying FM Dec at once (mip and frame both wanting to change); an index ramp sitting on a 1.25 x 2^k threshold (toggling) |
+| Mip-change block | rd_qm about +2.5 to 3k (I). **W3 review (M): wt_play 15,142 against 9,684, +5.4k; not rare: every note start under an amount, FM Atk / Dec level crossings, sweeps, retriggers** | I; W3 M | Prototype and count at W2; hysteresis keeps toggling away; never in the same block as a frame change. Its blocks set the voice max ("W3 as built" items 6, 7) |
+| WT voices | (W3 as built, M: WT1 Sub FM 25,281 / 30,986 median / max; mixed full FM voice 30,784 / 36,397; W4 full WT voice I about 32.7k steady, about 40.7k at a note start) Sub FM OSC1 only: about 22k. Both: about 26 to 27k. Stock WT1 feeding an FM'd WT2: about 18k. +2.6k per FM'd oscillator with a Position LFO | I | WtFm.test_cost: full WT FM voice (note 60, I = 16) <= 28,929 (S3). With Position moving every block, <= 35,309 (heaviest existing voice). **New cases:** Position LFO plus a decaying FM Dec at once (mip and frame both wanting to change); an index ramp sitting on a 1.25 x 2^k threshold (toggling) |
 | Device | reader about 30 to 40 cycles a sample; full WT FM voice about 40 to 65k cycles = 3 to 5 % of a 1,277,952-cycle block | I | cpi-report lever #1 (IRQ-free cycle sampling) before judging on the device. Unrolling (about 24 to 25 a sample, +150 to 300 B) held in reserve |
 
 **Not done first:** the cpi-report VDIV and branchless levers. The reader has no VDIV and no FP compare (M); VDIV exists
@@ -1283,3 +1283,115 @@ fixed in the tests and re-run on it: OK.
    nothing, as for a silent Analog OSC2. Not gated on the WAV (it would need the table check in OSC1's path).
 7. Section 8's W3 gate "DSP size measured in the merged drums build" is information only now (Jeff: the drums budget is set
    aside): 7,092 B free there, 13,148 B in the default build (>= 1 KB).
+
+### W3 as built (after the W3 review, 2026-11-17)
+
+Two reviewers rebuilt 5c81a90 byte for byte (default, off, 1.5 and the drums trial), ran every suite on both builds (the
+off build's full test_analog too, which "W3 result" had not repeated), ran about 20 mutations of their own and probed the
+reader and the costs on the device harness. Findings and what was done (M = measured, S = from source, I = estimated):
+
+1. **Accepted, fixed: B's scanned peak flipped the mip at low and mid notes (high, reviewer 1; reproduced).** FM 1>2 from
+   an Analog OSC1 into a Wavetable OSC2 still took B's peak from a scan of one block, so where OSC1's period spans blocks the
+   level followed OSC1's phase: note 48 / FM 1>2 700 changed level on 30 of 44 blocks (rd_qm each time, a timbre flutter
+   and 26.3k a voice-block against 20.9k). W2's "B's low-note toggling is measured at W3" had not been done.
+   - Fix (the same as W2's for A): B's known peak. The Analog OSC1 that writes B stores `Run.peak_b` = inc1 x an_peak(k)
+     (the word after inc_sub), k the larger of the block's Shape ends; an_peak is the waveform's peak from the kernel's
+     wave(): 1 for the sine..square range (LOW's weights sum to 1; the saw / square blend), and past the square the
+     narrowing pulse's DC-free high side 1 + (k - 0.5) 1.68 (1.84 at Shape 127). wt_body passes it as pa when B is the
+     carrier's one route (a Wavetable OSC2's FM 1>2: fm_setup gives a = B; a Wavetable carrier never has both routes).
+     p3_golden.an_peak is written from the waveform, wt_peak's docstring says what pa now covers.
+   - Road not taken: a decaying peak-hold of the scan across blocks. It needs state in the oscillator and still lets go
+     below some note; the known peak is exact and free. It does not cover W4's Wavetable OSC1 as B: **W4 must set peak_b
+     there** (the frame's peak x inc1, or a held peak; 0 means "scan" and brings the toggling back).
+   - Test `WtFmW3.test_b_known_peak_and_low_notes`: pa on every FM block = f32(inc1) an_peak(k) from OSC1's own render
+     calls (Shapes 0, 48, 127), and it is a tight bound (0.9 pa < max |B| <= pa (1 + 1e-3)); notes 24 / 36 / 48 / 60 x FM
+     1>2 300 / 500 / 700 / 1000, 40 blocks: at most one level change after the entry block (M: the scan-free level is steady at every cell). Mutations
+     "B scanned" and "Shape factor dropped": red.
+   - Cost (M): A1 -> WT2 FM 1>2 at note 48 / 700 is now 20,914 a voice-block (was 26,285).
+2. **Accepted, fixed: D3 broke when OSC1 had the feed-B bit (medium, reviewer 1; reproduced).** A hidden FM 1>2 on the
+   synced Analog OSC2 sets the bit, and W2's tier-2 fallback excluded feed-B, so a muted Sub FM still ran the index-0
+   reader every block, whose truncating Q32 step drifts WT1 off stock's phase and so off the slave's copy (M: all output
+   blocks differed at notes 24 / 36 / 50), at +4.9k a voice-block. Fix (the reviewer's candidate, verified): in D3's branch,
+   no mip held means stock's render (return 0) whatever feed-B says; a held mip still gets its one home block. Test
+   `test_d3_with_a_hidden_fm12_and_its_analog_guard`, notes 24 and 50 (the feed-B bit asserted set): byte for byte as Sub
+   FM 0, no reader call. Mutation: red. "Mixed sync plays as BE4.43" now holds with a hidden FM 1>2 too.
+   - **For W4:** once a Wavetable OSC1 really writes B, a synced Analog OSC2 with FM 1>2 keeps WT1 on the reader for
+     good and the drift comes back. W4 needs a rule: extend D3 to "FM 1>2 under mixed sync" too (simplest, recommended),
+     re-seed the slave's copy from WT1 each block, or make the index-0 step exact.
+3. **Accepted (low, reviewer 1): the A1 -> WT2 gate was loose and the headline overstated.** The gate is now 22,000 (the
+   measurement +5 %, not the re-estimate's 24.2k), and the same gate holds a non-pinned note (48 / 700). Wording: S3 is
+   **missed at W3** by the mixed full FM voice (30,784 against 28,929, +6 %) and **predicted missed at W4** (below);
+   W3 passed only the gates re-set at its start.
+4. **Accepted, fixed: two black-box claims were untested (low, reviewer 1; medium, reviewer 2).** test_the_black_box now
+   checks that peak_cyc holds at least 0.9 of the heaviest wt_play block (Span; an_enter's cycles alone are a few hundred),
+   and that wt= counts a silent Wavetable OSC1 that feeds B (D9 (b): it plays the reader unheard). Mutations "reader cycles
+   not added" and "wt= only when audible": red.
+5. **Accepted, fixed: D3's is-Analog guard was untested (low, both).** Same new test: a Wavetable OSC2 whose AnProps sync
+   byte is 1 (after a Type flip from Analog with Sync on; the flip forgets the byte, so the test forces it, as the stale
+   bytes the mutation would read) leaves OSC1's Sub FM playing. Mutation "D3 without is_analog": red.
+6. **Accepted as a measurement and a decision for Jeff, not fixed (high, reviewer 2): the mixed full FM voice goes over
+   the heaviest existing voice on its rd_qm blocks.** test_cost took the median and max(per[1:]), so block 0 (the note
+   start, which under a preset amount is a mip change from HOME) was never counted. Re-measured (M, this build, note 60,
+   I 16, median / max over **every** block): WT1 Sub FM 25,281 / 30,986; A1 -> WT2 FM 1>2 20,908 / 26,839; A1 Sub FM -> WT2
+   FM 1>2 30,784 / **36,397**; the same with Position every block 33,616 / 36,397; with FM Atk 3 on OSC2 30,813 / **36,419**
+   (blocks 0..2 rd_qm); Analog full FM 28,955 / 29,603; WT1 Sub FM with Position every block 28,345 / 30,986; Position LFO
+   + FM Dec 28,377 / 31,023; index parked on a threshold 25,235 / 30,718 (levels 3, then 4 held). Every Wavetable-only
+   case is within 35,309 on every block; the mixed voice is 3 % over it on its rd_qm blocks (reviewer 2: up to 36,515 on
+   a note-108 retrigger). test_cost now gates every block: the Wavetable-only cases at 35,309, the mixed cases at
+   W3_MIXED_MAX 37,000 (the measured level, a regression guard; the miss itself goes to Jeff).
+7. **Accepted (high, reviewer 2): section 6's mip-change row was wrong and the decision was framed on medians.** An rd_qm
+   block is wt_play 15,142 against 9,684 for a plain one (reviewer 2's Span, M; W2 measured 15,077 / 9,636): +5.4k, not
+   +2.5-3k, and it is not rare: every note that starts under an amount (HOME to the FM level), every block of an FM Atk
+   that crosses a level, and many of an FM Dec, an amount sweep or a retrigger. Section 6's rows are corrected. W4's full
+   Wavetable voice: steady about 32.7k (I, unchanged); its note-start block, with both oscillators at rd_qm, about 31.0k
+   - 7.1k (WT2's stock render, already in the 31.0k) + 15.1k + 0.9k (body) + 0.8k (B) = **about 40.7k (I)**, 15 % over
+   35,309 (reviewer 2's 47k added WT2's reader without taking out its stock render). The unroll (-2.4k a reader block) does
+   not touch this; the levers that do are in "Needs Jeff" below.
+8. **Accepted, fixed: the mip-home block could read past buffer A (low, reviewer 2; pre-existing W2).** With a mip held and
+   a block longer than the FM buffers, the zero line read n > 256 samples from A on into B (0 x NaN = NaN). Device blocks
+   are 128 frames (the scratch capacity bounds n), so this was unreachable in practice. Fix: such a block (fm_setup gives
+   no line) sends the mip home at once (stock's level, no crossfade) and plays stock's render. test_a_longer_block now
+   forces a held mip at a 512-frame block with B full of NaN: stock's render bit for bit, mipcur HOME, no reader call.
+   Mutation: red.
+9. **Info (reviewer 2): device safety.** Bounds, NaN clamps, divides, the D3 struct copy and the stack (at most 520 B
+   from the voice-render entry, as Analog full FM) checked; no crash or hang path in any of the three images.
+
+**Sizes (M).** Default DSP **27,652 B** (+96: peak_b and the two wt_body branches), **13,052 B free** of 40,704 (>= 1 KB).
+BE_WT_MIP=off 27,196 B; 1.5 27,652 B. Image 0x189478 (16,060 B to PROVEN_MAX), M4 code 24,424 B, synth UI 15,886 B (no M4
+change). WT FM DSP so far 3,856 B (W1 752 + W2 2,560 + W3 544) against section 4's 2.4-3.8 KB, W4 to come. Drums trial,
+information only (trialW3 with this fix's mods/m1 diff applied, the merge of main's committed 3597e8e still uncommitted,
+BE_ENABLE=drums): DSP 33,716 B, **6,988 B free**, image 0x18af48 (9,196 B to PROVEN_MAX); test_drums 33 (1 skipped) and test_drum_ui 46 (1 skipped) OK. No reserve taken.
+
+**CPU (M).** P3Identity, 48 cases: worst **1.0183** (mod dev=False, 111,913 / 109,899), total 1.0092 (W3 1.0180 / 1.0089: within codegen noise), under the 1.95 % stop line. Tier 2 and untagged unchanged (the new store is behind an_osc's B branch only). Voices: item 6.
+
+**Suites (M, ~/bento/out/be444w3-dev, from the worktree's mods/m1; skips in brackets):** diag 92 (6), polyat 51 (2),
+conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20), notemod 16, notemod_route 8, notemod_real 14,
+slice 20, s3_m7 25, step_xml 11, keys 10, native_props 22, **analog 195** (193 + 2), synth_ui 64 (2), note0 32, p3_golden
+self-test 51: all OK. inst_xml 5 (5) and handles 16 (16) are fully skipped. Off image (be444w3-dev-mipoff): analog 195 (9),
+synth_ui 64 (2), native_props 22, p3_golden 51: OK. 1.5 image (be444w3-dev-mip1.5): analog 195, synth_ui 64 (2), native_props 22, p3_golden 51: OK.
+
+**Mutations (M, private copies, scratch W3fix/mut.sh, mut2.sh; each built and WtFmW3 (or the named test) run): all red.**
+B's peak scanned (test_b_known_peak, and test_cost); the Shape factor dropped (pa = inc1); D3's return dropped (the
+feed-B reader under D3); D3 without is_analog (red on the new WtFmW3 test; WtFmW1 / WtFmW2 stay green, as the review found); mutation 17 (D3 removed); reader cycles not
+added; wt= only when audible; the long-block home dropped.
+
+**Device images for Jeff's listening comparison (not the release):** ~/bento/out/be444w3-dev (v4.44, wt_mip 1.75),
+~/bento/out/be444w3-dev-mip1.5 (v4.44-mip1.5), ~/bento/out/be444w3-dev-mipoff (v4.44-mipoff, "never go darker"). Kit
+version and marker carry the suffix; the boot label is "BE4.44" on all three (BE_LABEL not set), so note which one is
+flashed. D3 is in, so nothing known makes them unsafe to flash; the known CPU caveat is item 6 (a mixed full FM voice's
+note-start block 3 % over the heaviest existing voice).
+
+**Needs Jeff (before W4).**
+- **S3 (28,929 a voice-block) is missed:** the mixed full FM voice at W3 measures 30,784 (+6 %), W4's full Wavetable voice is
+  estimated at about 32.7k steady (+13 %). Accept re-set gates, or take the unrolled reader in W4 (about -2.4k a reader
+  block, +150-300 B).
+- **The heaviest-voice ceiling (35,309) is missed on rd_qm blocks:** 36.4k now (mixed voice, note start / FM Atk), about
+  40.7k (I) for W4's full Wavetable voice at a note start. Levers, strongest first: (a) on the note-start block (stock's
+  pending flag) play the FM level directly with no crossfade, as stock's own ladder switches level there; it removes
+  the +5.4k from every note start (FM Atk blocks keep theirs); (b) build rd_qm at -O2 (rd_qm is at -Os as "rare"; cost and
+  size to measure); (c) accept, since the excess is one or a few blocks a note. Recommendation: (a) in W4, with (c) for the
+  FM Atk blocks.
+- **W4 rule for mixed sync with FM 1>2 from a Wavetable OSC1** (item 2): recommended, extend D3 so FM 1>2 also plays as 0
+  while OSC2 is synced to a Wavetable OSC1 (its value kept); alternatives: re-seed the slave's copy each block, or an exact
+  index-0 step.
+- **Device images:** three images to compare by ear (above); they all boot as "BE4.44".
