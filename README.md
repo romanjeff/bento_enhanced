@@ -8,7 +8,7 @@ Community firmware mods and reverse-engineering research for the [1010music Bent
 
 **Current release: [v4.46](https://github.com/romanjeff/bento_enhanced/releases/tag/v4.46)** (`BE4.46` on the boot screen), built on **stock Bento 1.6.8** and tested on hardware. **To build it for your own Bento, follow [`BUILDING.md`](BUILDING.md)**: one page, no programming needed, starting from your own download of the official 1.6.8 firmware. The build checks that your result is byte for byte the image tested on hardware.
 
-**Patch in your browser:** https://romanjeff.github.io/bento_enhanced/ (no install; your stock files never leave your computer)
+**Patch in your browser:** coming soon. The web patcher (no install; your stock files never leave your computer) is described in [`docs/web-patcher.md`](docs/web-patcher.md); its page is not deployed yet.
 
 The `main` branch is where development happens; always build a release from its tag, as BUILDING.md shows. (Up to [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40), the mods were built on stock 1.6.1.)
 
@@ -27,7 +27,7 @@ The `main` branch is where development happens; always build a release from its 
 
 **Coming next:** a per-track compressor and clipper in the mixer, then a Drum Synth track with its own synthesized drum engines.
 
-**Projects that use the mods' features are not supported on stock firmware:** they usually open there, but may not play correctly. The mod never touches the bootloader, so going back to stock is the normal firmware install. Release notes, features, usage and internals: [release notes](https://github.com/romanjeff/bento_enhanced/blob/v4.46/docs/release-notes-v4.46.md), [`mods/m1/`](mods/m1/). Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
+**Projects that use the mods' features are not supported on stock firmware:** they usually open there, but may not play correctly. The mod never touches the bootloader, so going back to stock is the normal firmware install. Release notes, features, usage and internals: [release notes](https://github.com/romanjeff/bento_enhanced/blob/v4.46/docs/release-notes-v4.46.md), [`mods/m1/`](https://github.com/romanjeff/bento_enhanced/tree/v4.46/mods/m1). Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
 
 ## Why this exists
 

@@ -25,14 +25,14 @@ Review raised three design problems the draft had missed, and all three are now 
 |---|---|---|---|
 | Storage | DK4 (M4 slice, 64-128 entries) plus a new DT4 track table; H1-H4 carry them; X1/X2 save and load | Native template keys: engine + 7 knobs on every type-1 pad (saminst), a flag on the type-0x0E track. Stock saves, loads, clones, duplicates and copies them. DK4, DT4, H1-H4, X1, X2 and X3 all go | M (p4np) |
 | Pad object types | "types 1 and 2" (plan-native-props 5) | **Type 1 only.** Type 2 is loopinst; samasst (type 5) is unchanged | M |
-| Template size | 0x30D, padded to 0x310 (budget map) | **Drums builds only:** 0x303 + 9 = 0x30C, a multiple of 4, so no pad entry is needed. The **default build** stays BE4.41's 0x303 padded to 0x304 with the type-0xFF entry (M1). np_template has to be generalised (3.3 N1) | M (prototype); S (build.py:1720-1748, re-checked) |
+| Template size | 0x30D, padded to 0x310 (budget map) | **Drums builds only:** since the v4.46 merge 0x2FC + 8 (BE4.43's Analog keys) + 9 = 0x30D, padded to **0x310 with three type-0xFF pad entries** (open: P4-D13, 8). The **default build** stays v4.46's 0x304, no pad entry. (P4-1 on BE4.41: 0x303 + 9 = 0x30C, no pad.) np_template generalised (3.3 N1) | M (prototype); S (build.py:1720-1748, re-checked) |
 | How the M7 learns pad settings | The M4 publishes 64-128 knob lines to SA_DKTAB with a seqlock | Stock pushes pad keys by **pad handle** through ENGINE_PROPERTY (message 0x3E). A new SAMPLER_PROCESS trampoline stores them per root. The builder and the M7-take re-push call PROP_PUSH explicitly (3.3, 3.6) | M (push seen on the M4 side, project load); S (transport, M7 side) |
 | Engine key | 0x1A0, 0x1A2, 0x1A4, 0x1A7, 0x1AB | 0x1A4/0x1A7/0x1AB went to P3. Use **0x1A8 = engine index, 0x1A2 = track flag** | S / M |
 | Engine values | "1..5" / ids 1, 3, 5, 7, 9 | Key 0x1A8 stores a dense **index 0..5** (0 = none, 1 Kick, 2 Snare, 3 HiHat, 4 Clap, 5 Tom). The M7 maps it to synth_shared.h's ids 1/3/5/7/9 (3.1) | S |
 | Menu | Drum Synth = cell 9, count 8 -> 10 | Analog's entry is gone (BE4.40). Drum Synth = **cell 8** (0x0819ADD0), count 8 -> **9** | S |
 | Build state | The drums group was assumed to build | **Broken since d21225d** (P3 Q2): DSP_REFUSED_LIBM refuses dsp_lib.cpp's own `powf`/`sinf`. With a scratch exemption it builds and the drum suites pass. **Fixed in P4-0** (P4-D1 (a), 0.5) | M (build.py:661/719, dsp_lib.cpp:63/85) |
 | Stale tests | none noted | test_handles (10) and test_inst_xml (3) fail on every drums build because they assert BE4.22-4.31 Analog state. **Retired in P4-0** (0.5) | M |
-| DSP window | "+0.5 KB binder, 1-3 KB per engine" | 6,772 B free with today's Kick. Four more engines plus the crossfade and the efficiency pass **do not reliably fit** in the window (4) | M / I |
+| DSP window | "+0.5 KB binder, 1-3 KB per engine" | v4.46 layout: **1,508 B free** with today's Kick (BE4.41: 6,772 B). P4-2's binder work may not fit, and the lean engines do not fit without a placement decision (4, **P4-D14**) | M / I |
 | Re-strike | S7: handoff at render; orphan freed "on its next render"; crossfade as a known-risk fix | Handoff **at VOICE_START** (binder site), orphan freed in the re-strike block, one-block crossfade **in scope** | S (re-checked: S7 plan lines 199-206) |
 | Copy paths (D9) | needed H2/H4 | NODE_CLONE, CHILD_DUP, STORE_COPY_ALL and STORE_CLONE_H carry keys and flag natively (M). A drum pad pasted into a plain One-Shot keeps engine != 0, so it needs a normalizer that recognises the clipboard's two-step copy (3.2) | M / S |
 
@@ -194,9 +194,10 @@ Kept as is: test_handles Sites (the three sites, the bisect case) and Stock (sto
 - **N1** (build.py): np_template takes runs `[(type, [(key, default), ..]), ..]`. Each run keeps the contiguity check, and the
   duplicate and "already in stock's template" checks now cover every run. The drum runs come from `dr_template_runs()`, which
   is read only in drums builds: the engine 0x1A8 and the knobs 0x1AE..0x1B4 go after the type-1 (saminst) run, and the flag 0x1A2
-  goes after the type-0x0E (One-Shot track) run. All default to 0. Drums build: 0x2FC + 7 + 9 = **0x30C entries, no 0xFF pad**.
+  goes after the type-0x0E (One-Shot track) run. All default to 0. Drums build: 0x2FC + 7 + 9 = **0x30C entries, no 0xFF pad** (on BE4.41; since the v4.46 merge 0x30D
+  padded to 0x310 with three pads, see the merge note below).
   Type 1 and type 0x0E gain the drum keys and type 6 keeps P3's seven; every other type is stock's (template dump, M). Default
-  build: BE4.41's 0x304 with its one pad entry. In a drums build the template, literal, cmp and REG_BUILD sites are labelled
+  build: BE4.41's 0x304 with its one pad entry (v4.46's: 0x304, no pad). In a drums build the template, literal, cmp and REG_BUILD sites are labelled
   "Synth:", so a bisect leaves them stock only when analog and drums are both off. The default build keeps "Analog:" byte
   for byte. drums without analog is refused.
 - **N2** (m4_synth.c `dr_np_keys`, called second in the drums N2 wrapper after `np_keys`; the UI-tick `drum_keys` stays as the
@@ -218,7 +219,8 @@ Kept as is: test_handles Sites (the three sites, the bisect case) and Stock (sto
   - DrumProject: stock's writer and reader carry the pad and track keys, PROP_PUSH sends pad 0's keys to the pad handle, and
     stock 1.6.8 and BE4.41 open the project with no drum key and drop bento_* when they save it again.
   - **DefaultImage** (new, from the review): a build at version 4.41 on 1.6.8 with BE4.41's disabled and omitted groups must be
-    BE4.41's image byte for byte. It skips for any other build, so a version bump retires it. It passes on the default build and fails against a
+    BE4.41's image byte for byte (since the v4.46 merge: a default build at any version in tools/release_hashes.json must be
+    that release's image). It skips for any other build, so a version bump retires it. It passes on the default build and fails against a
     copy of m1-be441 with one byte flipped (M).
   - The BE4.41-opens test now **fails** if ~/bento/out/m1-be441 is missing. Before, it skipped.
   - test_keys checks the nine descriptors. test_drum_ui checks the descriptors and the X1 round trip.
@@ -262,7 +264,9 @@ reader checks are unchanged); the default build keeps v4.46's 0x304, no pad. tes
 DefaultImage now checks a default build at a released version against tools/release_hashes.json (v4.46: d09bcff5...).
 The default build is v4.46's image byte for byte (P4-0 / P4-1 change nothing there). On v4.46's layout (DSP window
 0x080D0140..0x080DA000, 40,640 B), a drums build is: image 0x18B37C (proven max 0x18D334), 140 writes, DSP 39,132 B (fits,
-1,508 B left), synth UI 23,830 B. The table above (0x30C, DSP 29,836 B) is P4-1 on BE4.41.
+1,508 B left), synth UI 23,830 B. The table above (0x30C, DSP 29,836 B) is P4-1 on BE4.41. Review of the merge: 0.2, 3.3 N1, 4,
+5 and 8 updated to these figures; the pad entries are open decision P4-D13 and the DSP budget P4-D14 (both before P4-2);
+DrumProject also opens the project on v4.46 (BE_REF446, ~/bento/out/m1-be446, the release image byte for byte).
 
 ---
 
@@ -409,7 +413,7 @@ The 7 knob values are shared across engines, and turning Engine resets them to t
 
 | Site | Patch | Notes |
 |---|---|---|
-| N1 template | drums builds: +1 key on type 0x0E, +8 on type 1; 0x303 -> 0x30C, no 0xFF pad. Default build: unchanged BE4.41 template | np_template takes a per-type key list, with the same contiguity check and "not already present" check for runs 1 and 0x0E as for 6 (S, build.py:1720-1748 today handles only type 6) |
+| N1 template | drums builds: +1 key on type 0x0E, +8 on type 1; 0x304 -> 0x30D, padded to 0x310 with three 0xFF pads (v4.46 merge; P4-D13). Default build: unchanged v4.46 template (0x304, no pad) | np_template takes a per-type key list, with the same contiguity check and "not already present" check for runs 1 and 0x0E as for 6 (S, build.py:1720-1748 today handles only type 6) |
 | N2 descriptors | real tokens and titles; integer type; min/max per key (engine 0..5) | registry title is global; the page overrides it per engine |
 | MENU_CELL 0x0819ADD0 | {ACT 0x10F4, "Drum Synth", 0, 0, 1} | as BE4.22-4.31 (S) |
 | MENU_COUNT 0x08142EB4 | `movs r3,#8` -> `#9` | (S) |
@@ -503,14 +507,20 @@ If pad-handle messages don't reach the root, the M4 publishes the table itself: 
 
 ## 4. Budgets
 
+v4.46 merge (2026-11-18): v4.46 grew the default DSP code from 23,772 to 33,068 B and the window only from 36,608 to
+40,640 B (0x080D0140..0x080DA000), so the drums headroom fell from 6,772 B to **1,508 B**. The drum code itself costs the
+same on both lines (+6,064 B; drum_kick 442, drums 2,602, svf 678, synthbassdrum 1,838 B). BE4.41 figures are kept in
+parentheses for the deltas.
+
 | Budget | Now (HEAD, drums on) | P4 delta | After | Label |
 |---|---|---|---|---|
-| DSP window, 36,608 B | 29,836 used, 6,772 free | −0.4 KB detector; +0.6-1.0 KB binder/provider/handoff/crossfade/cap | about 6.1-6.6 KB free (Kick only) | M / I |
-| + P4-5 engines | | Snare 1.6 + HiHat ~1.2 + Tom ~0.4 + Clap 1-2 + 4 × 0.4 glue = 5.8-6.8 KB, plus the efficiency-pass code (unbudgeted) | **does not reliably fit** (about −0.7 to +0.8 KB) | I on M sizes |
-| Mitigation, planned from P4-5 start | | non-hot engine code (init, coefficient setup) in the M7 C slice (4,088 B free) or `-Os`; Clap may slip (P4-D9) | | M (free space) / I |
+| DSP window, 40,640 B (v4.46) | 39,132 used, **1,508 free** (BE4.41: 29,836 / 6,772 of 36,608) | −0.4 KB detector; +0.6-1.0 KB binder/provider/handoff/crossfade/cap | about 0.9-1.3 KB free (Kick only), before Track FX takes its share of the same window | M / I |
+| Lean engines replace DaisySP (Decisions) | | the DaisySP Kick out (BE4.41 measured 10,254 B free without it: +3,482 B); five lean engines at <= 1.5 KB each, plus glue | about 5.0 KB free (1,508 + 3,482, I), 4.4-4.8 KB after P4-2's delta; five engines at up to ~7.5 KB: **does not fit** in this window | M (BE4.41 delta) / I |
+| + P4-5 engines (BE4.41 sizing) | | Snare 1.6 + HiHat ~1.2 + Tom ~0.4 + Clap 1-2 + 4 × 0.4 glue = 5.8-6.8 KB, plus the efficiency-pass code (unbudgeted) | does not fit: about −4.5 to −5.9 KB on v4.46 with the DaisySP Kick kept, about −1.0 to −2.4 KB with it removed | I on M sizes |
+| Mitigation: **P4-D14, decide before P4-2** | | non-hot engine code (init, coefficient setup) in the M7 C slice (4,088 B free at BE4.41; re-measure) or `-Os`; another DSP window; Clap may slip (P4-D9) | | M (free space, BE4.41) / I |
 | Engine sizes | Snare 1,604 B, HiHat ~1.1-1.3 KB, sizeof Snare 288 B / HiHat 220 B | measured on Playground's **modified** copies; re-measure on unmodified upstream 2c72eaf (5) | provisional | M (on wrong source) |
 | M7 trampolines (1 KB at 0x080DA000) | 752 B used | SAMPLER_PROCESS (~60 B) + 2 binders (~60 B) | about 150 B spare | S / I |
-| M4 image vs max 0x18D334 | 0x18AA98, 10,396 B free | removes DK4, H1-H4, X1-X3, the name match; adds menu, builder, PAD_OPEN, PAD_HAS_FILE, filter, label, LED stubs, normalizer, re-push, N1 (+36 B) | probably 8-11 KB free | M / I |
+| M4 image vs max 0x18D334 | 0x18B37C, **8,120 B free** (v4.46; BE4.41: 0x18AA98, 10,396 B) | removes DK4, H1-H4, X1-X3, the name match; adds menu, builder, PAD_OPEN, PAD_HAS_FILE, filter, label, LED stubs, normalizer, re-push, N1 (+36 B) | probably 6-9 KB free (v4.46), less Track FX's M4 code | M / I |
 | SA area | cells to 0x4400, DRUN to 0x4600 | table 0x1000, scratch 0x1800, cells 0x2400..0x5400, DRUN 0x5400 | all below 0x6000 | S |
 | Engine state | Kick 180 B | ≤ 320 B per cell | RingMod HiHat (464 B) doesn't fit (P4-D4) | M |
 | Project size | | 8 attributes on **every** One-Shot pad, 1 on every One-Shot track | | M (writer) |
@@ -562,8 +572,9 @@ If pad-handle messages don't reach the root, the M4 publishes the table itself: 
 
 **M4 (test_drum_ui, test_native_props, test_synth_ui, test_keys).**
 - Template:
-  - drums builds: 0x30C, every type except 1 and 0x0E stock-identical apart from P3's type 6;
-  - default build: BE4.41's 0x304 with 0xFF.
+  - drums builds: 0x30D padded to 0x310 with three 0xFF pads (v4.46 merge; until P4-D13 closes them), every type except
+    1 and 0x0E stock-identical apart from type 6's Analog keys;
+  - default build: v4.46's 0x304, no pad (DefaultImage: the release image byte for byte).
 - Tokens on pads and track survive a write/read round trip.
 - Menu: cell, count, posts. With the 0xA5F0 lock set, nothing is flagged or built.
 - Builder: 16 pairs in [1,5,...] order, 0x73 = 0..15, samasst 0x81 = "", defaults. PROP_PUSH runs after the build, and a pad ENGINE_PROPERTY is seen with no save/reload.
@@ -661,7 +672,8 @@ Each sprint ends offline-green and is committed (standing OK). Nothing is pushed
 | A file action reaches a drum pad through a caller the entry hooks miss | low (P4-0 lists all callers, S) / medium | hooks at the operations, not the posters; NAVIGATE gate |
 | Push and XML load on **every** One-Shot project | low / low-medium | flow control (latency, not loss); device item 10 |
 | CPU: busy kit over budget at an unknown CPI | high / high | BE4.50 cap 6-8; stats line; efficiency pass; earlier quiet-end option |
-| DSP window: four engines don't reliably fit | high / medium | C slice / -Os for non-hot code from P4-5 start; Clap may slip (P4-D9) |
+| DSP window: on v4.46's layout 1,508 B free before P4-2; the lean engines don't fit (4) | **certain** / high | P4-D14 before P4-2: C slice / -Os for non-hot code, or another window; Clap may slip (P4-D9) |
+| Pad entries back in drums builds (0x30D -> 0x310, three type-0xFF entries: type 0xFF creatable again, the hazard v4.43 closed; Hazard passes with them) | certain in drums builds / low-medium (no reader path asks for type 0xFF: Hazard's reader tests) | **P4 acceptance item: P4-D13 before BE4.50.** Track FX's keys change the count again |
 | Engine sizes measured on modified Playground copies | certain / low-medium | re-measure on vendored upstream in P4-5 |
 | The scratch buffer assumes a root's voices render consecutively | low / high | Rig tag test; fallback per-cell buffer is too big (16 KB), so failing this would need a different crossfade design (I) |
 | Hook sites depend on this image's callee-saved registers | low / high | build.py byte checks at every site |
@@ -717,6 +729,8 @@ Each sprint ends offline-green and is committed (standing OK). Nothing is pushed
 | P4-D10 | Cut on a drum pad (Cut = copy + UNLOAD; the UNLOAD hook makes it copy-only) | (a) accept copy-only for drum pads; (b) make UNLOAD on a drum pad reset it to engine Kick + defaults instead of refusing; (c) grey Cut for drum pads | **(c).** Consistent with P4-D5 (inert, greyed): a Cut that leaves the pad behind looks like a bug. (b) is more useful but invents a meaning for Unload |
 | P4-D11 | MultiSam (0x3A) on drum pads skips the binder site | (a) pin 0x3A = 0 on drum pads (builder, normalizer; D5 never shows it); (b) also hook the 0x08095900 / 0x08087D60 path | **(a).** 0x3A has no meaning for a drum pad, the page doesn't offer it, and (b) is a third M7 site for a state the UI can't reach. Revisit only if hand-edited XML matters |
 | P4-D12 | Which Kick BE4.50 ships, given docs/p4-engine-spec.md (own engines) | (a) today's DaisySP Kick unchanged, cap 6, lean engines in P4-5; (b) KF1 (bit-identical, −44 %) as interim glue; (c) pull the spec's lean Kick forward into P4-2 | **(a).** BE4.50's job is proving the track (A, B, re-strike, cap, CPI line); today's Kick is already golden-tested. (c) puts an engine still on the review's fix list (re-strike clipping) into the riskiest kit. (b) is work thrown away in P4-5 |
+| P4-D13 | Pad entries in drums builds (v4.46 merge: 0x2FC + 8 + 9 = 0x30D, three type-0xFF pads to 0x310) | (a) land the count on a multiple of 4 with real keys (take Track FX's keys in the same template change, or 3 more drum keys); (b) a filler that stock already knows instead of type 0xFF; (c) accept, with Hazard's reader tests as the guard | **Decide before BE4.50 ships; (a) with Track FX's keys** if their count fits, since every key change moves the pad count anyway. (c) only with a device check |
+| P4-D14 | P4's DSP budget on v4.46's layout (1,508 B free before P4-2) | (a) `-Os` for the drum code; (b) non-hot engine code in the M7 C slice; (c) another DSP window; (d) fewer engines in BE4.60 | **Decide before P4-2**, after re-measuring the C slice's free space on v4.46. Track FX (be447) takes from the same window first |
 | P4-D9 | Clap in BE4.60 | (a) ship all four engines; (b) Snare, HiHat, Tom first, Clap in a later kit if the window allows | **(b).** Clap is the least-sized engine (1-2 KB) and the window doesn't reliably fit all four |
 
 ---
