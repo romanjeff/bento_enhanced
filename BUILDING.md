@@ -126,8 +126,8 @@ The last lines look like this:
 ```
 kit: /mnt/c/bento-kit/bento_enhanced-v4.46
 built BE4.46 (bento_enhanced v4.46 on stock 1.6.8)
-  01_TEST_FIRMWARE/bento1.bin sha256 fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff
-  reference      sha256 fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff
+  01_TEST_FIRMWARE/bento1.bin sha256 d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5
+  reference      sha256 d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5
   MATCH: byte for byte the image the author tested on hardware.
 ```
 
