@@ -24,7 +24,10 @@ The W4 DSP layout this builds on is `docs/plan-wt-fm.md`, "W4 as built". FM Env 
 - **Stock.** Stock loads such a route as an inert key 0.
 - **Budgets.** Synth first. The default build keeps >= 1 KB free in the DSP window. The P3Identity stop line is 1.95 %. The heaviest steady voice must stay under 35,309.
 
-## Sprint X1 (M4): the table, rows, names; routings stored, inert in sound
+## Sprint X1 (M4) as built: the table, rows, names; routings stored, inert in sound
+
+As built after the X1 review (its dispositions are at the end of this section). The one review change to the design:
+the piano roll's destination list keeps stock's table (section "The piano roll's list stays stock's").
 
 ### Q8 first: the row-id byte (+0x14) is the page's CC column, display only (S, M)
 
@@ -90,13 +93,18 @@ The row filler does not read the count word. It hard-codes the count twice:
   - OSC2: Pitch, Level, Position, **FM 1>2**, **Sub FM**;
   - then stock's 14 other rows, unchanged.
 
-  The table is 26 x 24 B plus 40 B of strings, at the end of the synth UI block (after N1's template): 664 B (M).
+  The table is 26 x 24 B, 40 B of strings and its own u32 count word (26), at the end of the synth UI block (after
+  N1's template): 668 B (M).
 - **Patches:**
-  - the four literals point at our copy;
-  - the count word holds 26 (patched in place, so the three count literals stay as they are);
+  - three table literals point at our copy: 0x081347E0 (0x08134700), 0x0814DB8C (the row filler), 0x08159C88 (DEST_NAME);
+  - their two count literals point at our count word: 0x081347DC (`MX_WT_DEST_N_LIT_1`), 0x08159C84 (`MX_WT_DEST_N_LIT_4`);
   - `movs r2, #0x1a`;
   - `addw r7, r4, #0x270`.
-- **Refusals.** The build refuses a stock table whose layout, oscillator rows or count differ from the above, and refuses one that already holds our keys.
+- **Left stock's:** the enumerator's table literal 0x0815941C and count literal 0x08159414 (`MX_WT_DEST_N_LIT_3`),
+  stock's table and stock's count word (still 23). Each count literal has exactly one loader, a pc-relative ldr in its
+  own function (0x08134790, 0x081593B4, 0x08159B32; S, every pc-relative load of the image).
+- **Refusals.** The build refuses a stock table whose layout, oscillator rows or count differ from the above, one that
+  already holds our keys, any other reference to the table or count word, and literals that do not hold stock's values.
 
 **The order costs nothing.**
 - Rows are stored by key, so no index is persisted.
@@ -114,9 +122,29 @@ The row filler does not read the count word. It hard-codes the count twice:
 - Our three rows carry their own name (+0x10: "Sub FM", "FM 1>2"). The filler then never asks the registry, whose title would be null if N2 ever left our keys out.
 - The longest name is "OSC1: Position" (14 + NUL), within the 16 B field.
 
-**Also seen (S, M).** DEST_NAME's own list (0x08159DCC: the destination list of the view at + 0x11CD08, the piano roll's) lists every table row of a child's type. So it now offers "OSC1: Sub FM", "OSC2: FM 1>2" and "OSC2: Sub FM" as well (`FmTargets.test_dest_name_lists_them_too`).
-- What a lane on them does is X2's business. Until then nothing routes them.
-- Device check: whether that list is the piano roll's automation-lane picker, and what a lane on a WT destination stores.
+### The piano roll's list stays stock's (X1 review; S, M)
+
+**What the list is (S).** The destination list builder 0x08159CA8 is called only from the piano roll: 0x08159EFC (in
+0x08159E80) and 0x0815C40E (in `PIANO_EVENT`). It is the piano roll's destination picker. It walks the enumerator
+0x08159358 (its only callers, 0x08159D1E / 0x08159D9C) and names entries with DEST_NAME (0x08159DCC).
+
+**Why our rows cannot go there as they are (S, M).**
+- The enumerator yields (type, key) with no instance, and the builder matches each child against each row by type only
+  (`cmp r3, r8` at 0x08159DA8), deduplicating by name (0x0817CCB2).
+- So with our table the list gave every type-6 key to both oscillators: 27 entries instead of 23 (M, emulator), among
+  them **"OSC1: FM 1>2"** (OSC1, 0x132: not one of the three) and **"OSC2: Sub FM"**, which has no knob.
+- A lane there would write a value with no knob to see or reset it.
+
+**Built.** The enumerator keeps stock's table and count word (above). The list is stock's, entry for entry (only T0's
+"OSC1: / OSC2:" rename of DEST_NAME's format, as in BE4.44), and offers none of ours
+(`FmTargets.test_the_piano_roll_list_is_stocks`, which runs 0x08159CA8 on this build and on stock).
+
+**Still on our table:** DEST_NAME (its other caller is 0x0815A002, in 0x08159F6C) names our keys if asked, and
+0x08134700 posts our keys (below).
+
+**Open (for Jeff):** piano-roll lanes on Sub FM / FM 1>2. They would need an M4 hook in the builder's type match that
+skips (6, 0x132) on instance 0 and (6, 0x18B) on instance 1, plus knowing what a lane stores and how it reaches the M7
+(not traced). Not in X1 or X2's scope as decided.
 
 ### Routings: create, save, load, stock and BE4.44 (M, test_native_props FmTargets)
 
@@ -159,39 +187,68 @@ BE4.41 and later have the tokens too (I). BE4.40 does not, so it gives key 0 lik
 - `FmTargets.test_the_per_type_key_post_carries_our_keys`. 0x08134700 (model, obj, type) posts one 0x3F `{obj, key, slot 3, source 0}` per table row of a type (stock: 3, 0xC4, 0xC9 twice). For type 6 it now posts our keys too: 3, 0xC4, 0xC9, 0x18B, 3, 0xC4, 0xC9, 0x132, 0x18B. Stock's slot 10 ignores them.
 
 **X2 must handle this message.** It is slot 3 (PARAM_CONNECT's r2 = 3, which the feasibility note reads as the PARAM's fixed slot at + 0x20: I), source 0, and the caller's r3 in the message's instance field (+2). The plan did not list it.
+It matches rows by type only, like the piano roll's list, so **one object gets every type-6 key, the other oscillator's
+too**: OSC1 gets a post for 0x132 (and OSC2's 0x18B row and OSC1's are both sent to each). X2's slot-10 hook must
+ignore 0x132 on instance 0, and must not treat these source-0 posts as clearing a matrix route of another slot.
 
-**Firmware outside the M4 is byte-identical to BE4.44 (M, an image compare against be444w4f).** The only differences are:
-- the four literals, the count word and the two row-filler bounds;
-- the version digit (two bytes);
-- the 664 B appended (the table and its strings).
+**The image against BE4.44 (M, byte compare of an untagged build, ~/bento/out/be445x1fu, against be444w4f).** The only
+differences are:
+- the three table literals, the two count literals and the two row-filler bounds;
+- the version digit (0x0818DD99) and the marker string's digit (0x081BD185, "v4.44" -> "v4.45");
+- the 668 B appended (the table, its strings and its count word).
 
-The M7, the DSP window and every M4 code byte are unchanged.
+The M7, the DSP window and every other M4 byte are unchanged. A tagged build (`BE_TAG=X1`) differs in more places only
+because its marker string is longer ("v4.45-X1"): the M4 code after the marker moves by 2 bytes, and so does one bl
+displacement in stock code that reaches it (0x08131342). That is the tag, not X1.
 
-### Sizes (M, ~/bento/out/be445x1)
+### Sizes (M, ~/bento/out/be445x1f, after the review)
 
 - **DSP:** 30,884 B, **9,820 B free** of 40,704 (unchanged).
-- **M4:** M4 code 24,424 B and M7 C slice 15,368 B (unchanged). The manifest's synth UI figure is now 16,510 B, which is 15,846 (code and N1 template, unchanged) + 664.
-- **X1's table:** 664 B in the synth UI block.
-- **Image:** 0x1896E8, **15,436 B to PROVEN_MAX** (BE4.44: 16,100). That is the M4 room left for X2's M4 part and for P4.
-- **Kit image:** `BE_TAG=X1`, sha256 e22fd49c992f4ed50e12447442a0b6ee8a651da217494431eb9a2495b6539e6f (not a release kit).
+- **M4:** M4 code 24,424 B and M7 C slice 15,368 B (unchanged). The manifest's synth UI figure is now 16,514 B, which is 15,846 (code and N1 template, unchanged) + 668.
+- **X1's table:** 668 B in the synth UI block (26 x 24 + 40 B of strings + the 4 B count word).
+- **Image:** 0x1896EC, **15,432 B to PROVEN_MAX** (BE4.44: 16,100). That is the M4 room left for X2's M4 part and for P4.
+- **Kit image:** `BE_TAG=X1`, sha256 6d5cf83df4c71d3eb99f556cd4452aedcc3f00f0cd487e9fb54664c8cbcefd39 (not a release kit;
+  before the review: e22fd49c...b6539e6f). Untagged: 76b4471fad6ac07a4c3935336d48b2229b55fedd977ef21e55e6f9a941d08c4c.
 
-### CPU (M, the suite on be445x1)
+### CPU (M, the suite on be445x1f)
 
-There is no M7 or DSP change (byte-identical, above), and the measurements are BE4.44's:
+There is no M7 or DSP change (byte-identical, above), and the measurements are BE4.44's (P3Identity re-measured on
+be445x1f, the same figures):
 - P3Identity, 48 cases: worst **1.0165** (mod dev=False, 111,708 / 109,899), total 1.0087. The stop line is 1.95 %.
 - WtFmW4 voices: the heaviest steady voice is 34,760 (note 24, light FM, Position every block), against the 35,309 ceiling. Its one-block maximum is 39,392.
 
 The routed cost per voice-block belongs to X2: nothing runs for these keys yet.
 
-### Suites (M, ~/bento/out/be445x1, from the worktree's mods/m1; skips in brackets)
+### Suites (M, ~/bento/out/be445x1f after the review, from the worktree's mods/m1; skips in brackets)
 
 All OK:
 - diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20);
 - notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10;
-- **native_props 30** (22 + 8), **analog 211** (210 + 1), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32;
+- **native_props 31** (22 + 9), **analog 211** (210 + 1), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32;
 - p3_golden self-test 52.
 
 Drums suites: not run (the default build leaves drums out). The 1.6.1 build still builds (no analog group there, so no X1 patch).
+
+### X1 review: dispositions
+
+1. **Medium (both reviewers): the piano roll's list offered a fourth destination, "OSC1: FM 1>2", and the knobless
+   OSC2 Sub FM; the doc said three; no test ran the list.** Holds (reproduced: 27 entries vs stock's 23). Fixed by
+   keeping that list on stock's table (Jeff's decision is exactly three destinations, on the Mod Matrix). Variant of the
+   reviewer's option (a): instead of a new "23" word for the enumerator, our table carries its own count word (26) and
+   the two other count literals point at it, so the enumerator's bytes, stock's table and stock's count word are all
+   stock's. The list's screen is identified (S): its only callers are in the piano roll. The doc is corrected and
+   `test_the_piano_roll_list_is_stocks` asserts the exact list against stock's. The cross-instance 0x3F post of
+   0x08134700 (OSC1 gets 0x132) is kept and carried to X2 (its slot-10 hook ignores 0x132 on instance 0).
+2. **Low: "every M4 code byte unchanged" is not literally true for a tagged image.** Holds. Compared an untagged build
+   against be444w4f (only the intended words, the version digit and the marker digit differ) and reworded the claim.
+3. **Low: facts.py evidence strings cut off and apostrophes dropped.** Holds. All 15 X1 entries rewritten with the full
+   reviewed text from stock_168.py, quoted, apostrophes kept.
+4. **Low: some mutants were caught only by structural asserts; the DEST_NAME test cannot tell the tables apart.**
+   Holds. Added behavior coverage: the piano-roll list test, and a memory-read hook requiring DEST_NAME to read our
+   table. Image-level mutants (M, ~/bento/out/be445x1f-*): the enumerator on our table with 26 (the pre-review X1),
+   on our table with 23, and DEST_NAME back on stock's table each fail two tests (the behavior test and the
+   structural one). The structural asserts stay as regression guards.
+5. **Info: mutation sweep, no defect.** No action.
 
 ## Sprint X2 (M7 / DSP), the plan carried forward (not built)
 
@@ -219,10 +276,14 @@ Drums suites: not run (the default build leaves drums out). The 1.6.1 build stil
 
 ## Tests added in X1
 
-- **test_native_props `FmTargets` (8):**
-  - the table: stock's with ours, the names, a blank CC, the literals, the count, the bounds, stock's table untouched;
+- **test_native_props `FmTargets` (9):**
+  - the table: stock's with ours, the names, a blank CC, the literals (ours, and the enumerator's left stock's), our
+    count word and the two count literals on it, stock's count word still 23, the bounds, stock's table untouched;
   - the rows on the page, on this build and on stock (Q7);
-  - DEST_NAME;
+  - DEST_NAME names ours and reads our table (a memory-read hook: the name alone cannot tell the tables apart, since
+    with stock's table DEST_NAME falls back to the registry title, the same words);
+  - the piano roll's list (0x08159CA8, run on this build and on stock): stock's entries exactly, none of ours, the
+    enumerator's bytes stock's (X1 review);
   - the per-type key post;
   - create and read back, and remove;
   - save and load;
@@ -237,8 +298,10 @@ Drums suites: not run (the default build leaves drums out). The 1.6.1 build stil
 3. **"A rollback to BE4.40 loads it as key 0".** That holds for BE4.40 (I). BE4.41 .. BE4.44 have the tokens, keep the keys, and save them back (BE4.44: M).
 4. **"Stored as a type-1 child node".** It is in the object's routing list (obj + 0x14, linked by + 4), not in NODE_CHILDREN.
 5. **Not in the plan:**
-   - the table also feeds DEST_NAME's list (the piano roll's, I);
-   - 0x08134700's per-type 0x3F slot-3 posts now carry our keys. X2 must handle slot 3.
+   - the table also feeds the piano roll's destination list (0x08159CA8, S), which has no notion of instance; X1 keeps
+     that list on stock's table (above);
+   - 0x08134700's per-type 0x3F slot-3 posts now carry our keys, by type only (OSC1 gets 0x132 too). X2 must handle
+     slot 3 and ignore 0x132 on instance 0.
 6. **Confirmed as the plan said:**
    - the four literal users and three count users (complete, M scan);
    - the row filler's `#0x17` / `#0x228`;
