@@ -1,0 +1,7 @@
+# bento_enhanced build toolchain: what mods/m1/build.py and tools/make_kit.py need. Python 3.12.
+# Exact pins: the versions the published hashes were built with.
+#   python -m pip install -r requirements.txt
+# For the emulated tests (make_kit.py --test) install requirements-test.txt instead (it includes this file).
+ziglang==0.15.1         # zig cc / zig c++: the compiler for our M7 / M4 / DSP code
+keystone-engine==0.9.2  # assembler for the patch stubs
+capstone==5.0.9         # disassembler: the build checks stock's code at its patch sites

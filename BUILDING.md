@@ -1,0 +1,193 @@
+# Build bento_enhanced for your own Bento
+
+This page takes you from nothing to a flashing kit, built on your computer from **your own copy of
+the official Bento firmware**. You don't need to know how to program. Follow it top to bottom and
+type the commands exactly as shown, changing only what's in `<angle brackets>`.
+
+**Not affiliated with 1010music.** Installing modified firmware is at your own risk. The mod never
+touches the Bento's bootloader, so the official way back to stock always works (step 8).
+
+## What you need
+
+- A **Bento** and its SD card, plus a way to copy files to the card.
+- A **computer**:
+  - **Windows 10 or 11**: you'll use WSL (Ubuntu inside Windows). It's free and step 1 installs it.
+  - **Linux** (x86-64): Ubuntu 24.04 or similar.
+  - **macOS on Intel**: expected to work, not tested yet. **Apple Silicon (M1 to M4)**: not tested.
+    One of the tools (keystone-engine) has no native Apple Silicon package; see Troubleshooting.
+- **Python 3.12** and **git**. Step 1 installs both.
+- About 1 GB of disk space and 15 minutes.
+
+You build a specific release, identified by its **tag** (for example `v4.44`). Each release says
+which stock firmware it needs. **v4.44 needs stock Bento firmware 1.6.8**, exactly that version.
+
+## 1. Install the tools
+
+**Windows.** Open PowerShell as Administrator (Start menu, type `PowerShell`, right-click, *Run as
+administrator*) and run:
+
+```
+wsl --install -d Ubuntu-24.04
+```
+
+Restart when asked. Ubuntu then opens a window and asks you for a new user name and password: pick
+anything, and remember the password. From now on, every command on this page goes into that
+**Ubuntu** window (Start menu, `Ubuntu`), not PowerShell. Install git and Python there:
+
+```
+sudo apt update
+sudo apt install -y git python3.12-venv
+```
+
+**Linux (Ubuntu 24.04).** Open a terminal and run the same two `sudo apt` lines.
+
+**macOS.** Install Python 3.12 from <https://www.python.org/downloads/macos/> (the "macOS 64-bit
+universal2 installer" for 3.12.x). For git, run `git --version` in Terminal and accept the offer to
+install the developer tools. Then use `python3.12` wherever this page says `python3.12`.
+
+Check: `python3.12 --version` prints `Python 3.12.x`, and `git --version` prints a version.
+
+## 2. Download the stock firmware from 1010music
+
+Go to 1010music's downloads page (<https://1010music.com/downloads>, Bento section) and download
+**firmware 1.6.8**. It usually comes as a zip (for example `bento-1.6.8.zip`) that holds
+`bento1.bin` and `bento2.bin`. You can leave it zipped.
+
+Note where it went. On Windows that is normally your Downloads folder, which Ubuntu sees as
+`/mnt/c/Users/<your Windows user name>/Downloads/`. (Not sure of the name? In Ubuntu, run
+`ls /mnt/c/Users/`.)
+
+This file is 1010music's, and this project never includes it: everyone downloads their own.
+
+## 3. Get the source
+
+```
+cd ~
+git clone https://github.com/romanjeff/bento_enhanced.git
+cd bento_enhanced
+git checkout v4.44
+```
+
+`git checkout` prints a note about a "detached HEAD": that is normal. Keep the clone in your Linux
+home folder (`~`), not under `/mnt/c/`: it is faster there.
+
+## 4. Install the Python packages
+
+```
+python3.12 -m venv ~/be-venv
+source ~/be-venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+The first line makes a private Python folder for this project (`~/be-venv`), the second switches to
+it (your prompt now starts with `(be-venv)`), the third downloads the exact tool versions the
+release was built with (zig, keystone-engine, capstone; about 60 MB).
+
+**Every time you open a new terminal** later, run `cd ~/bento_enhanced` and
+`source ~/be-venv/bin/activate` again before step 5.
+
+## 5. Build the kit
+
+```
+python tools/make_kit.py <the stock zip or folder> <where the kit goes>
+```
+
+On Windows, put the kit somewhere Windows can see, for example your Desktop:
+
+```
+python tools/make_kit.py /mnt/c/Users/<you>/Downloads/bento-1.6.8.zip /mnt/c/Users/<you>/Desktop/bento-kit
+```
+
+`make_kit.py` first checks that both stock files are the genuine 1.6.8 (it refuses anything else and
+says why), then builds (about a minute; it prints many lines), then packages the kit.
+
+## 6. Check the result
+
+The last lines look like this:
+
+```
+kit: /mnt/c/Users/<you>/Desktop/bento-kit/bento_enhanced-v4.44
+built BE4.44 (bento_enhanced v4.44 on stock 1.6.8)
+  01_TEST_FIRMWARE/bento1.bin sha256 fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff
+  reference      sha256 fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff
+  MATCH: byte for byte the image the author tested on hardware.
+```
+
+**MATCH** means your file is identical, bit for bit, to the one tested on a real Bento. If it says
+**MISMATCH**, don't flash it: see Troubleshooting.
+
+The kit folder `bento_enhanced-v4.44` holds:
+
+| | |
+|---|---|
+| `01_TEST_FIRMWARE/` | `bento1.bin` (the mod) and `bento2.bin` (stock, unchanged): what you install |
+| `03_RESTORE_STOCK/` | your stock 1.6.8 pair: the way back |
+| `DEVICE_CHECKLIST.txt` | what's new in this release and what to try on the device |
+| `manifest.json`, `SHA256SUMS.txt` | what the image contains; the hash of every file |
+
+Optional, for the curious: `python -m pip install -r requirements-test.txt` and then the step 5
+command with `--test` at the end also runs the emulated test suites (several more minutes, a fresh
+output folder or `--force`).
+
+## 7. Install it on the Bento
+
+1. **Back up your SD card** (copy the whole card to a folder on your computer). The mod saves
+   projects that stock still opens, but a backup costs nothing.
+2. Copy **both** files from `01_TEST_FIRMWARE/` (`bento1.bin` and `bento2.bin`) to the **root** of
+   the SD card (not in a folder), replacing any there.
+3. Put the card in the Bento. Hold **power** to start the bootloader, then press **REC** to install.
+4. The boot screen shows **BE4.44**. Then go through `DEVICE_CHECKLIST.txt` if you like.
+
+## 8. Going back to stock
+
+Do step 7 with the two files from `03_RESTORE_STOCK/` instead. That is the official firmware,
+installed the official way; the boot screen no longer shows `BE`. You can switch back and forth.
+Projects saved with the mod open on stock; stock just ignores the extra settings.
+
+## What you may not do
+
+- **Never share the kit** or any `.bin` from it: it contains 1010music's firmware. Each person
+  builds their own from their own download, which is what this page is for. Don't upload it, post
+  it or attach it anywhere.
+- Don't change the bootloader, and don't flash an image that printed MISMATCH.
+- This is a community project, not 1010music's: please don't ask 1010music support about it.
+
+## Troubleshooting
+
+- **`python3.12: command not found`**: step 1 didn't finish. On Ubuntu run the two `sudo apt` lines
+  again. On Ubuntu 22.04 or older there is no Python 3.12 package: use Ubuntu 24.04
+  (`wsl --install -d Ubuntu-24.04` on Windows).
+- **`python: command not found`, or `No module named keystone` / `ziglang`**: the venv isn't
+  active. Run `source ~/be-venv/bin/activate` (prompt shows `(be-venv)`), and step 4 if you skipped it.
+- **`NOT stock 1.6.8`** / **`is stock 1.6.1, not 1.6.8`**: you gave a different firmware version or
+  a modified file. Download 1.6.8 again from 1010music. Don't use a kit's `01_TEST_FIRMWARE` files
+  as the stock input.
+- **`no bento1.bin and bento2.bin here`**: give the zip itself, or the folder that holds the two
+  `.bin` files. Paths with spaces need quotes: `"/mnt/c/Users/<you>/My Downloads/bento-1.6.8.zip"`.
+  No such file? Check with `ls /mnt/c/Users/<you>/Downloads/`.
+- **`already exists`**: you built this version into that folder before. Delete the old kit folder,
+  pick another output folder, or add `--force`.
+- **MISMATCH**: check you are on the tag (`git describe --tags` prints `v4.44`) with no changes
+  (`git status` says *nothing to commit*), and that `python -m pip freeze` shows exactly the
+  versions in `requirements.txt`. Also make sure no `BE_` setting was passed with `--set`. If it still
+  doesn't match, don't flash it; tell the person who sent you this page.
+- **pip fails installing keystone-engine** (it tries to compile, asks for `cmake`): your platform
+  has no ready-made package. Use Linux x86-64, WSL, or an Intel Mac. On Apple Silicon you can try
+  the x86-64 side of the python.org universal Python through Rosetta (untested):
+  `arch -x86_64 python3.12 -m venv ~/be-venv`, then `arch -x86_64 ~/be-venv/bin/python -m pip
+  install -r requirements.txt` and `arch -x86_64 ~/be-venv/bin/python tools/make_kit.py ...`.
+- **Native Windows (without WSL)**: see the note below. If anything misbehaves there, use WSL.
+- **The Bento doesn't boot, or behaves oddly**: install `03_RESTORE_STOCK` (step 8). The bootloader
+  is never touched, so that always works.
+
+### Native Windows (without WSL)
+
+<!-- native-windows-result -->
+Not covered yet: use WSL.
+
+---
+
+Developers: `tools/make_kit.py` runs `mods/m1/build.py` (see [mods/m1/README.md](mods/m1/README.md#build-and-test)
+for the build knobs and the test suites). The published reference hashes are in
+[`tools/release_hashes.json`](tools/release_hashes.json). The shell scripts in
+[`tools/lab-build-wsl/`](tools/lab-build-wsl/) are the author's own dev setup, not needed for this page.
