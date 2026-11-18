@@ -74,7 +74,7 @@ GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_en
 BASE_SETTINGS = {
     "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0", "drums"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.45", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.46", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
                               "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx", "drums"), omit_off=("drums",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
@@ -370,7 +370,13 @@ GROUP_NAMES = {
                "PR_DEST_LIST", "PR_DEST_MATCH", "PR_DEST_ENUM", "PR_DEST_ENUM_LEN", "PR_DEST_ENUM_SHA", "MX_GRAN_DEST_COUNT",
                "PR_LANE_TOGGLE", "WT_ROOT_BLOCK", "WT_ROOT_LANES_END",
                # X3 review: the builder's bytes (its frame), the root's clear-all (message 0x48) and the loop's next message (tests)
-               "PR_DEST_LIST_LEN", "PR_DEST_LIST_SHA", "WT_ROOT_CLEAR_ALL", "WT_ROOT_MSG_NEXT"),
+               "PR_DEST_LIST_LEN", "PR_DEST_LIST_SHA", "WT_ROOT_CLEAR_ALL", "WT_ROOT_MSG_NEXT",
+               # BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (fmenv_connect)
+               "FMENV_IDX_TBH", "FMENV_IDX_PAD", "FMENV_IDX_NEXT", "FMENV_SUB_TBH", "FMENV_SUB_PAD", "FMENV_SUB_NEXT",
+               "WT_VOICE_ALLOC", "WT_VOICE_OSC1",   # (S1 fix: the connect's Wavetable-voice gate)
+               # BE4.46 S2: the Wavetable Mod Matrix page lists them (the source list, the validator, the names)
+               "MX_WT_SRC_LIST", "MX_WT_SRC_LIT", "MX_SRC_VALID_LIT", "MX_WT_ROWS_SITE", "MX_WT_ROWS", "MX_SRC_VALID",
+               "MX_SRC_NAME", "MXV_TYPE", "MXV_SRC_LIST", "MXV_SRC_N", "TYPE_WAVETABLE"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -894,6 +900,97 @@ def synth_bytes():
     if not m:
         raise SystemExit("synth_shared.h: no SYNTH_BYTES")
     return int(m.group(1), 16)
+
+def synth_define(name):
+    m = re.search(rf"^#define {name} (0x[0-9A-Fa-f]+)u", (HERE / "synth_shared.h").read_text(), re.M)
+    if not m:
+        raise SystemExit(f"synth_shared.h: no {name}")
+    return int(m.group(1), 16)
+
+def fmenv_offsets():
+    """BE4.46 S1: the voice-tail layout of FM Env 1 / 2 (synth_shared.h FMENV_*, the DSP's): (src, val, on, slack end)."""
+    o = tuple(synth_define(n) for n in ("FMENV_SRC", "FMENV_VAL", "FMENV_ON", "FMENV_SLACK_END"))
+    src, val, on, end = o
+    if not (val == src + 4 and on >= val + 8 and on + 4 <= end and src % 4 == 0 and on < 0x1000):
+        raise SystemExit(f"synth_shared.h FMENV_*: layout {[hex(x) for x in o]} is not src, src + 4 (two values), flag")
+    return o
+
+# BE4.46 S1 (docs/feasibility-fm-env-sources.md, "Recommended route", M7): stock's Wavetable routing connect (WT_ROUTE,
+# message 0x3F) picks the source object by id in two tbh tables, the oscillator / envelope / LFO / filter path (instances
+# 0 / 1, indexed by id - 1, the voice in r5) and the sub path (instances 2.., indexed by id - 2, the voice in r3); ids 3 and
+# 6 (Env 3 / LFO 3, which a Wavetable voice does not have) go to "no source" (movs r1, #0) in both. Their four entries are
+# repointed at a stub in each table's alignment padding (nops, no branch into them: S): r1 = the voice's tail (FMENV_SRC,
+# + 4 for 6), then on to a body among the DSP trampolines (fmenv_body). S1 fix (review, S): the same connect also serves the
+# class-0x5A root (ROOT_5A_CTOR: voices of 0xFE8 B whose OSC1 lives at + 0x7A8, so voice + 0xB84.. is inside a live
+# oscillator there), so the body first checks the voice is a Wavetable one ([voice + VOICE_OSC1] == voice + 0x7A4, as
+# WT_ROOT_CTOR leaves it: WT_VOICE_OSC1) and otherwise takes stock's own movs r1, #0 (no source: stock's behaviour, byte for
+# byte). On a Wavetable voice it sets FMENV_ON on the first connect only and then writes 1.0 into both values (the unset
+# value, until the next an_enter / an_note publishes), so a later connect (an amount step) never overwrites a published
+# value. Scratch: r3 (idx path) / r2 (sub path), written before any read on every path from the join (S); the flags are set
+# before any read there too (idx: adds r0, r5, r0; sub: cmp r6, #2).
+FMENV_STUB_BYTES = 14
+FMENV_OSC1_PTR, FMENV_OSC1_AT = 0x178, 0x7A4          # the voice's OSC1 pointer and where a Wavetable voice's OSC1 is (S)
+def fmenv_stub(at, voice, body):
+    """(bytes, offset of id 6's entry, offset of id 3's entry): addw r1, voice, #src + 4 (id 6); b.n join; addw r1, voice,
+    #src (id 3); join: b.w body."""
+    src = fmenv_offsets()[0]
+    parts = [asm(f"addw r1, {voice}, #{src + 4:#x}", at), b"", asm(f"addw r1, {voice}, #{src:#x}", at + 6)]
+    join = at + 10
+    parts[1] = struct.pack("<H", 0xE000 | ((join - (at + 4 + 4)) >> 1 & 0x7FF))         # b.n join (T2, encoded by hand)
+    parts.append(asm(f"b.w #{body:#x}", join))
+    code = b"".join(parts)
+    if [len(p) for p in parts] != [4, 2, 4, 4] or len(code) != FMENV_STUB_BYTES:
+        raise SystemExit(f"FM Env stub at {at:#x}: unexpected encoding {[len(p) for p in parts]}")
+    check_branches(code, at, {join, body}, f"FM Env stub at {at:#x}")
+    return code, 0, 6
+
+def fmenv_body(voice, tmp, nxt):
+    """The connect's body for one path (r1 = the stub's pointer): not a Wavetable voice -> stock's movs r1, #0 (nxt - 2);
+    else FMENV_ON 0 (first connect) -> FMENV_ON = r1 and both values 1.0; then the join (nxt). 42 B."""
+    src, val, on, end = fmenv_offsets()
+    return (f"ldr.w {tmp}, [{voice}, #{FMENV_OSC1_PTR:#x}]; subw {tmp}, {tmp}, #{FMENV_OSC1_AT:#x}; cmp {tmp}, {voice}; "
+            f"bne other; ldr.w {tmp}, [{voice}, #{on:#x}]; cbnz {tmp}, done; str.w r1, [{voice}, #{on:#x}]; "
+            f"mov.w {tmp}, #0x3f800000; str.w {tmp}, [{voice}, #{val:#x}]; str.w {tmp}, [{voice}, #{val + 4:#x}]; "
+            f"done: b.w #{nxt:#x}; other: b.w #{nxt - 2:#x}")
+
+def fmenv_connect(img_base, S, patch, tramp):
+    """BE4.46 S1: place the two bodies (tramp: among the DSP trampolines), patch the two tables and place the two stubs (see
+    FMENV_STUB_BYTES). Refuses a base where the entries do not go to stock's "no source" path, the join is not right after
+    its movs r1, #0, the padding is not all nops, the voice is not allocated as 0xB88 B (the slack: synth_shared.h), or a
+    Wavetable voice's OSC1 is not at + 0x7A4 (the gate). Returns {name: body address}."""
+    src, val, on, end = fmenv_offsets()
+    def fail(what): raise SystemExit(f"FM Env sources (BE4.46 S1, {S.label}): {what}")
+    if img_base[S.WT_VOICE_ALLOC - BASE:S.WT_VOICE_ALLOC - BASE + 4] != asm("movw r2, #0xb88", S.WT_VOICE_ALLOC) or end != 0xBA0:
+        fail("the Wavetable voice is not allocated as 0xB88 B (its slack 0xB88..0xBA0 is FM Env's)")
+    o1 = S.WT_VOICE_OSC1
+    if img_base[o1 - BASE:o1 - BASE + 4] != asm(f"addw r7, r4, #{FMENV_OSC1_AT:#x}", o1) or \
+            img_base[o1 + 0x18 - BASE:o1 + 0x1C - BASE] != asm(f"strd r7, r6, [r4, #{FMENV_OSC1_PTR:#x}]", o1 + 0x18):
+        fail(f"WT_ROOT_CTOR does not place OSC1 at voice + {FMENV_OSC1_AT:#x} (the gate's test)")
+    bodies = {}
+    for tbh, n, pad, padn, nxt, voice, tmp, first, name in (
+            ("FMENV_IDX_TBH", 6, "FMENV_IDX_PAD", 28, "FMENV_IDX_NEXT", "r5", "r3", 1, "idx"),
+            ("FMENV_SUB_TBH", 5, "FMENV_SUB_PAD", 26, "FMENV_SUB_NEXT", "r3", "r2", 2, "sub")):
+        t, p, x = getattr(S, tbh), getattr(S, pad), getattr(S, nxt)
+        if img_base[x - 2 - BASE:x - BASE] != b"\x00\x21":
+            fail(f"{nxt} {x:#x} does not follow stock's movs r1, #0")
+        nops = img_base[p - BASE:p - BASE + padn]
+        if nops != (b"\x00\xbf" if padn % 4 else b"") + b"\xaf\xf3\x00\x80" * (padn // 4):
+            fail(f"{pad} {p:#x} is not {padn} B of nops")
+        ent = list(struct.unpack_from(f"<{n}H", img_base, t - BASE))
+        i3, i6 = 3 - first, 6 - first
+        if t + 2 * ent[i3] != x - 2 or t + 2 * ent[i6] != x - 2:
+            fail(f"{name} table: ids 3 / 6 do not go to stock's no-source path {x - 2:#x}")
+        body = bodies[name] = tramp(fmenv_body(voice, tmp, x), {x, x - 2}, f"FM Env connect body, {name} path")
+        code, o6, o3 = fmenv_stub(p, voice, body)
+        if len(code) > padn:
+            fail(f"the stub does not fit {pad}")
+        ent[i3], ent[i6] = (p + o3 - t) // 2, (p + o6 - t) // 2
+        # (the rest of the padding: nop.n, so no half of a stock nop.w is left after the stub's b.w; never reached)
+        patch(p, code + b"\x00\xbf" * ((padn - len(code)) // 2), S.orig(pad),
+              f"FM Env sources (BE4.46 S1): routing connect stub, {name} path (ids 3 / 6 -> voice + {src:#x} / {src + 4:#x})")
+        patch(t, struct.pack(f"<{n}H", *ent), S.orig(tbh),
+              f"FM Env sources (BE4.46 S1): routing connect {name} table, ids 3 / 6 -> the stub")
+    return bodies
 
 def check_region_assumptions(img, S, synth=False):
     """Refuse a base whose ext pool no longer has room for the Region where we put it. S6a (synth): the same
@@ -1759,6 +1856,11 @@ def m7_dsp(base_img, patch, sources, out, inc):
             raise SystemExit("Wavetable oscillator slot 2 does not hold stock's note start")
         note_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_note']:#x}; pop {{r0, r1, r2, r3, r4, lr}}; "
                         f"b.w {S.WT_NOTE_START:#x}", {sd["an_note"], S.WT_NOTE_START}, "Analog note start trampoline")
+        sd.update(tramp_voice=voice, tramp_osc=osc_at, tramp_prop=prop_at, tramp_note=note_at)
+        # BE4.46 S1: FM Env 1 / 2 as routing sources 3 / 6 (its two connect bodies are trampolines here, right after the
+        # note trampoline: S1 fix), then BE4.45 X2's slot 9 / 10 trampolines
+        fe = fmenv_connect(base_img, S, patch, tramp)
+        sd.update(tramp_fmenv_idx=fe["idx"], tramp_fmenv_sub=fe["sub"])
         # BE4.45 X2 (docs/plan-fm-targets.md): the oscillator's slot 10, connect (osc r0, source r1, key r2, slot r3, amount
         # s0), and slot 9, clear (osc r0). Ours first, then stock's always (it ignores our keys and keeps its own). The
         # connect passes the root: WT_ROUTE's r4 (its r0, kept there throughout: the sha below holds it to the bytes that
@@ -1777,8 +1879,7 @@ def m7_dsp(base_img, patch, sources, out, inc):
                         f"movw r3, #{S.WT_ROUTE_LEN:#x}; cmp r12, r3; ite lo; movlo r3, r4; movhs r3, #0; "
                         f"bl {sd['x2_connect']:#x}; vpop {{s0, s1}}; pop {{r0, r1, r2, r3, r4, lr}}; b.w {S.WT_OSC_CONNECT:#x}",
                         {sd["x2_connect"], S.WT_OSC_CONNECT}, "X2 connect trampoline")
-        sd.update(tramp_voice=voice, tramp_osc=osc_at, tramp_prop=prop_at, tramp_note=note_at, tramp_clear=clear_at,
-                  tramp_conn=conn_at)
+        sd.update(tramp_clear=clear_at, tramp_conn=conn_at)
     an_end = len(tramps)
     if inc("drums"):
         with S.group("drums"):
@@ -1795,7 +1896,7 @@ def m7_dsp(base_img, patch, sources, out, inc):
         raise SystemExit("DSP trampolines overrun their block")
     if an_end:
         patch(lo, bytes(tramps[:an_end]), bytes(an_end),
-              "Analog (S6a): M7 trampolines (voice enter, oscillator render, property, note start; X2: clear, connect)")
+              "Analog (S6a): M7 trampolines (voice enter, oscillator render, property, note start; BE4.46 S1: FM Env connect bodies; X2: clear, connect)")
     if len(tramps) > an_end:
         patch(lo + an_end, bytes(tramps[an_end:]), bytes(len(tramps) - an_end),
               "Drums (S6c): M7 trampoline (D1 render entry)")
@@ -1991,6 +2092,52 @@ def mx_dest_patches(base_img, patch, at, data, n):
         patch(getattr(S, site), c, S.orig(site), f"FM targets: row filler bound ({site}: {src})")
 
 
+# BE4.46 S2 (docs/feasibility-fm-env-sources.md): FM Env 1 / FM Env 2 (stock's source ids 3 / 6, which S1's M7 connect
+# gives to the oscillators' FM envelopes) in a Wavetable track's Mod Matrix: the page's source list, the routing validator and
+# the source names (m4_synth.c mx_wt_rows, mx_src_valid, mx_src_name). The list is our copy (stock's stays, with its two
+# literals, for Granular and the validator's other types); MX_BUILD's bl of the Wavetable row filler is the one site that
+# installs it, so the filler's own bytes (which BE4.45 X1 patches for the destinations) stay stock's here.
+FMENV_SOURCES = (3, 6)          # FM Env 1, FM Env 2, in that order
+FMENV_AFTER = 2                 # right after Env 2 (source id 2)
+FMENV_STOCK_N = 16              # stock's Wavetable list (MX_WT_SRC_LIST)
+
+
+def fmenv_matrix(base_img, patch, code, ss):
+    """S2: refused unless stock's list, its literals, the filler's call and both entries are what m4_synth.c assumes."""
+    lst = S.MX_WT_SRC_LIST
+    stock = list(struct.unpack_from(f"<{FMENV_STOCK_N}H", base_img, lst - BASE))
+    if stock[0] != 0 or FMENV_AFTER not in stock or any(s in stock for s in FMENV_SOURCES):
+        raise SystemExit(f"S2: stock's Wavetable source list {stock} is not None first, with Env 2 and without ids 3 / 6")
+    refs = one_reference(base_img, {lst})[lst]
+    if sorted(refs) != sorted([S.MX_WT_SRC_LIT, S.MX_SRC_VALID_LIT]):
+        raise SystemExit(f"S2: the source list is referenced at {[hex(a) for a in refs]}, not only by its two literals")
+    i = stock.index(FMENV_AFTER) + 1
+    ours = stock[:i] + list(FMENV_SOURCES) + stock[i:] + [0]          # + the None MX_EDIT reads at index == count
+    blob = struct.pack(f"<{len(ours)}H", *ours)
+    if code.count(blob) != 1:
+        raise SystemExit(f"S2: m4_synth.c's mx_wt_sources is not {ours} (stock's list with 3 / 6 after Env 2, then 0)")
+    if S.orig("MX_WT_ROWS_SITE") != asm(f"bl {S.MX_WT_ROWS:#x}", S.MX_WT_ROWS_SITE):
+        raise SystemExit("S2: MX_WT_ROWS_SITE is not stock's bl MX_WT_ROWS")
+    # the C stubs (stock_valid / stock_src_name) replay stock's first instructions and resume at site + 5 (Thumb): their
+    # bytes must be exactly stock's entry, then movw / movt r3 = site + 5, bx r3 (S2 review: one check ties the C to stock)
+    for site, displaced, stub in (("MX_SRC_VALID", "mov ip, r1; ldrh r1, [r1, #4]", "stock_valid"),
+                                  ("MX_SRC_NAME", "push {lr}; mov lr, r0", "stock_src_name")):
+        replays(site, displaced)
+        at, back = ss[stub] & ~1, getattr(S, site) + 5
+        want = asm(f"{displaced}; movw r3, #{back & 0xFFFF:#x}; movt r3, #{back >> 16:#x}; bx r3", at)
+        got = code[at - SYNTH_CODE:at - SYNTH_CODE + len(want)]
+        if got != want or got[:4] != S.orig(site):
+            raise SystemExit(f"S2: {stub} at {at:#x} is {got.hex()}, not stock's {site} entry replayed, resuming at {back:#x}")
+    patch(S.MX_WT_ROWS_SITE, asm(f"bl {ss['mx_wt_rows']:#x}", S.MX_WT_ROWS_SITE), S.orig("MX_WT_ROWS_SITE"),
+          "FM Env sources (BE4.46 S2): a Wavetable Mod Matrix page lists FM Env 1 / 2 after Env 2 (mx_wt_rows)")
+    for site, fn, why in (("MX_SRC_VALID", "mx_src_valid", "sources 3 / 6 valid on a Wavetable track"),
+                          ("MX_SRC_NAME", "mx_src_name", "3 / 6 named FM Env 1 / FM Env 2 on a Wavetable track")):
+        c = asm(f"b.w {ss[fn]:#x}", getattr(S, site))
+        if len(c) != 4:
+            raise SystemExit(f"S2: {site}'s branch is not 4 bytes")
+        patch(getattr(S, site), c, S.orig(site), f"FM Env sources (BE4.46 S2): {why} ({fn})")
+
+
 def one_reference(img, addrs):
     """{addr: the aligned words of img holding addr}; fails if a movw / movt pair (movt within 4 instructions of the movw,
     same register) builds one of the addresses (T0's 'one literal reference')."""
@@ -2157,6 +2304,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                 was = orig.split(b"\0")[0].decode()
                 patch(getattr(S, site), text.ljust(len(orig), b"\0"), orig, f"Analog (identity T0): {was!r} -> {text.decode()!r}",
                       site=True)                         # (12 bytes: a site all the same, stock's under BE_DISABLE=analog)
+            fmenv_matrix(base_img, patch, code, ss)
             # D1: the Wavetable pane class's paint slot -> an_wave_paint (the Shape dial on an Analog pane, else stock's paint)
             if S.orig("WT_PANE_PAINT_SLOT") != struct.pack("<I", S.WT_PANE_PAINT | 1):
                 raise SystemExit("WT_PANE_PAINT_SLOT does not hold stock's WT_PANE_PAINT")

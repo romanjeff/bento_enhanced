@@ -853,6 +853,36 @@ REVIEWED = {
     'WT_ENGINE_INIT': dict(value=0x807f180, evidence="(root): called once per root at 0x08058BD0 after WT_ROOT_CTOR's caller (S); "
                            "connects each voice's modulation (pitch gets a root source) and leaves osc+0x108 = 2.0 on WT1 / WT2 "
                            "(M: impl_SM pprobe.py; plan-analog-fm F0 verdict). Tests only (the device-shaped rig)"),
+    # BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (stock_168.py's notes carry the
+    # full evidence; added to the table by hand, as BE4.44 W0's entries: gen_table.py does not run on the current tables)
+    'WT_ROUTE': dict(value=0x807c8a0, evidence="(root, msg 0x3F) routing connect; tbh by id - 1 (instances 0 / 1, voice r5) at "
+                     "0x0807CA7A and by id - 2 (instances 2.., voice r3) at 0x0807C922 (S; M: test_analog FmEnvSrc)"),
+    'FMENV_IDX_TBH': dict(value=0x807ca7e, orig='bb07240831008408e9083100', evidence="entries [2] / [5] (ids 3 / 6) -> 0x0807CAE0 "
+                          "movs r1, #0 (S)"),
+    'FMENV_IDX_PAD': dict(value=0x807cac4, orig='aff30080' * 7, evidence="nop.w x 7, no branch targets it (S: envsrc v2.py)"),
+    'FMENV_IDX_NEXT': dict(value=0x807cae2, evidence="after movs r1, #0; r0 / r2 / r3 written before read (S)"),
+    'FMENV_SUB_TBH': dict(value=0x807c926, orig='84033d00b90184013d00', evidence="entries [1] / [4] (ids 3 / 6) -> 0x0807C9A0 "
+                          "movs r1, #0 (S)"),
+    'FMENV_SUB_PAD': dict(value=0x807c966, orig='00bf' + 'aff30080' * 6, evidence="nop + nop.w x 6, no branch targets it (S)"),
+    'FMENV_SUB_NEXT': dict(value=0x807c9a2, evidence="after movs r1, #0; r3 the voice kept, r2 written before read (S)"),
+    'WT_VOICE_ALLOC': dict(value=0x809cb40, orig='40f68832', evidence="movw r2, #0xb88; NAMED_ALLOC rounds to 0xBA0 (0x080A05E6) (S)"),
+    'WT_VOICE_OSC1': dict(value=0x809cb52, orig='04f2a477', evidence="addw r7, r4, #0x7a4, then strd r7, r6, [r4, #0x178] at 0x0809CB6A: "
+                          "[voice + 0x178] == voice + 0x7A4 on a Wavetable voice; the class-0x5A root's is + 0x7A8 (S). BE4.46 S1 fix"),
+    'ROOT_5A_CTOR': dict(value=0x809c9a0, evidence="class 0x5A root ctor (vtable 0x080ACF08, 6 voices of 0xFE8 B, OSC1 at + 0x7A8); "
+                         "shares WT_ROUTE through vtable slot 2 0x0807F2A1 (S). Tests only (BE4.46 S1 fix)"),
+    # BE4.46 S2 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 in the Wavetable Mod Matrix source list (stock_168.py's
+    # notes carry the full evidence; added by hand, as S1's)
+    'MX_WT_SRC_LIST': dict(value=0x81a1304, orig='00000d00200001000200040005000800', evidence="16 u16: 0, 13, 32, 1, 2, 4, 5, 8, 14, 26, "
+                           "30, 31, 9, 10, 11, 12; held only by MX_WT_SRC_LIT and MX_SRC_VALID_LIT (S: be446 s2 lists.py, scan.py)"),
+    'MX_WT_SRC_LIT': dict(value=0x814edf8, orig='04131a08', evidence="ldr r2 at 0x0814ECFA (Wavetable) and 0x0814ECB8 (Granular) (S)"),
+    'MX_SRC_VALID_LIT': dict(value=0x814dbf0, orig='04131a08', evidence="ldr r0, [pc, #0x10] at 0x0814DBDC, types 0x0F / 0x12 / 0x13 (S)"),
+    'MX_WT_ROWS_SITE': dict(value=0x814ed08, orig='fef7b2fe', evidence="bl 0x0814DA70 in MX_BUILD's type-0x12 case (tbh 0x0814E94A) (S)"),
+    'MX_SRC_VALID': dict(value=0x814db94, orig='8c468988', evidence="(view, routing copy): unlisted source -> 0; callers 0x0814DD3C, "
+                         "0x0814E2A0, 0x0814E696 (S)"),
+    'MX_SRC_NAME': dict(value=0x814d8f0, orig='00b58646', evidence="(view, id) -> the registry's name; callers 0x0814E53C, 0x0814E6AC (S)"),
+    'MXV_TYPE': dict(value=0x8ac4c, evidence="strb.w r0, [r6, #0xc4c] at 0x0814E8D0 (S)"),
+    'MXV_SRC_LIST': dict(value=0x8acc8, evidence="str.w r2, [r3, #0xcc8] at 0x0814ECFC; read 0x0814DC56 / 0x0814E2B2 (S)"),
+    'MXV_SRC_N': dict(value=0x8ac4e, evidence="strb.w r2, [r3, #0xc4e] at 0x0814ED02; read 0x0814DC30 / 0x0814E266 (S)"),
     'ENGINE_CTOR': dict(value=0x805b300, evidence="(engine r0): the M7 engine's constructor, called once at 0x0808E752 on a 0x15C20-byte "
                         "allocation; ends with memset(engine+0x8CB2, 0, 0x1F2) and the key flags 0x05 / 0x27 / 0x31 = 1 (strb at "
                         "0x0805B634..3C), the table H_INPUT_SITE's 0x3E case tests at 0x08059A40 (S; M: test_analog Props runs its "
@@ -1377,7 +1407,7 @@ REVIEWED = {
     'MX_WT_DEST_N_LIT_1': dict(value=0x81347dc, orig='140d1a08', evidence="loaded only by ldr r3, [pc, #0x48] at 0x08134790 in MX_TYPE_KEYS_POST, paired with MX_WT_DEST_LIT_1 4 B after it (S: be445x x1f pcl.py, every pc-relative load of the image)"),
     'MX_WT_DEST_N_LIT_3': dict(value=0x8159414, orig='140d1a08', evidence="loaded only by ldr r3, [pc, #0x5c] at 0x081593B4 in the enumerator 0x08159358, whose Wavetable part then reads MX_WT_DEST_LIT_3 (ldr r2, [pc, #0x30] at 0x081593E8) (S: be445x x1f pcl.py). The enumerator's only callers are 0x08159D1E / 0x08159D9C in the destination list builder 0x08159CA8, which the piano roll calls (0x08159EFC in 0x08159E80, 0x0815C40E in PIANO_EVENT) (S)"),
     'MX_WT_DEST_N_LIT_4': dict(value=0x8159c84, orig='140d1a08', evidence="loaded only by ldr r3, [pc, #0x150] at 0x08159B32 in DEST_NAME, paired with MX_WT_DEST_LIT_4 4 B after it (S: be445x x1f pcl.py)"),
-    'MX_WT_ROWS': dict(value=0x814da70, orig='2de9f047', evidence="(view r0): children of the context [view+0x8AC44] of types 6..11 by (type, instance 0 / 1); per table entry (instance <= 1, the object present): handle, snprintf(+0x8AE04 + 16 i, 16, fmt, name or the registry title 0x081683D0(key)), CC byte = entry +0x14 (0x0814DA70..0x0814DB86). Called by MX_BUILD (0x0814ED08). The view's arrays hold 60 rows (MX_REFRESH's clears: keys 0x78 B, CC bytes 0x3C B at 0x0814E0FE..16; handles to +0x8ADBC 0x0814DF8C..9C) (S)"),
+    'MX_WT_ROWS': dict(value=0x814da70, orig='2de9f047', evidence="(view r0): children of the context [view+0x8AC44] of types 6..11 by (type, instance 0 / 1); per table entry (instance <= 1, the object present): handle, snprintf(+0x8AE04 + 16 i, 16, fmt, name or the registry title 0x081683D0(key)), CC byte = entry +0x14 (0x0814DA70..0x0814DB86). Called by MX_BUILD (0x0814ED08). The view's arrays hold 60 rows (MX_REFRESH's clears: keys 0x78 B, CC bytes 0x3C B at 0x0814E0FE..16; handles to +0x8ADBC 0x0814DF8C..9C) (S). BE4.46 S2: it clears +0x8ACCC..+0x8ADB8 (str r1, [r3, #4]! from +0x8ACC8: MXV_SRC_LIST itself is not written) and never reads MXV_SRC_LIST or MXV_SRC_N (S: 0x0814DA70..0x0814DB86) (S)"),
     'MX_WT_ROWS_N': dict(value=0x814da92, orig='1722', evidence="movs r2, #0x17; strb.w r2, [r3, #0xc4d] (0x0814DA92..94): the count is not read from MX_WT_DEST_COUNT (S)"),
     'MX_WT_ROWS_END': dict(value=0x814da9e, orig='04f50a77', evidence="r4 = MX_WT_DEST_TAB (0x0814DA98); r7 bounds the key loop (cmp r3, r7 at 0x0814DAAC) and the row loop (cmp r4, r7 at 0x0814DB50), and is not written in between (S)"),
     'MX_SET_ROUTE': dict(value=0x81347e4, orig='2de9f04f', evidence="the model handler's case 0xD1 (tbh at 0x08141ED4 -> 0x0814240E: bl 0x081347E4); MX_EDIT posts it (0x0814DCB4..EE); source 0 removes the slot's node (0x08134858), else the node is found by slot and key or created (0x0812F6D0, type 1) and +4 source, +6 key, +8 slot, +0 amount stored (0x08134936..40); it never reads MX_WT_DEST_TAB (S)"),

@@ -1,0 +1,94 @@
+bento_enhanced v4.46: FM Env 1 / FM Env 2 as Mod Matrix sources (stock 1.6.8) - delta checklist on top of v4.44
+==============================================================================================================
+
+Kit: flash\bento_enhanced-v4.46, boot label BE4.46.
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.46.txt)
+
+Plan: docs\feasibility-fm-env-sources.md (its decisions and the "S1 / S2 as built" sections). Release notes:
+docs\release-notes-v4.46.md. Everything below was measured in the emulator only. This is a delta on BE4.44:
+docs\checklist-v4.44.txt still applies (its D5 pick, section 7, is not needed again unless you want to change it).
+The two BE4.44 alternate kits (mip 1.5, mip off) are not rebuilt for BE4.46: this release has the release threshold (1.75).
+
+What changed since BE4.44:
+  - A Wavetable track's Mod Matrix page has two more sources, right after Envelope 2:
+        [None], Velocity, Pressure, Envelope 1, Envelope 2, FM Env 1, FM Env 2, LFO 1, LFO 2, Mod Seq, Key, Mod Wheel,
+        Macro X, Macro Y, Auto A, Auto B, Auto C, Auto D
+    FM Env 1 is OSC1's FM envelope (its FM Atk / FM Dec), FM Env 2 is OSC2's: on an Analog and on a Wavetable oscillator.
+  - They are per voice and restart at every note, like Envelope 1 / 2. They run whenever the oscillator's FM Atk / FM Dec
+    is set, even at FM amount 0, so you can use the FM envelope as a third / fourth envelope without any FM.
+  - An oscillator whose envelope is unset (FM Atk 0 and FM Dec Inf) gives a constant full value (1, as its FM depth does):
+    a routing from it is a fixed offset.
+  - Nothing else changes. No other track type lists them (Granular's list is stock's).
+What to expect that is not a bug:
+  - The value moves once per audio block (2.7 ms), as stock's own envelopes do.
+  - Routed to an Envelope or LFO parameter (Env 1 / 2 times, LFO rate / depth), FM Env acts one block late, the same lag
+    stock already has between its own sources there.
+  - In the file the routing is stock's: src="env3" (FM Env 1) or src="lfo3" (FM Env 2). Section 6 says what older firmware
+    does with it.
+
+0. Gate
+[ ] Back up the SD card (folder copy), as before.
+[ ] ON THE COMPUTER: copy a BE4.44 project with Wavetable tracks to a NEW folder FMENV_A44 (keep the original).
+
+1. Boot, black box
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.46.
+[ ] Open FMENV_A44: it plays as on BE4.44 (nothing in it routes FM Env). Save as FMENV_A.
+[ ] BENTO_SAVES.log: "firmware BE4.46"; the ANALOG line has keys=ok.
+
+2. The list (FMENV_A, a new Wavetable track; load a factory WAV on both oscillators)
+[ ] Open its Mod Matrix page, pick a row (OSC1: Pitch), turn the Source encoder through the whole list: the order is the
+    one above (18 entries, FM Env 1 / FM Env 2 right after Envelope 2), and the last one is Auto D. One step past Auto D
+    may show [None] (MX_EDIT reads one past the list, as on stock / BE4.44): not a bug. Photo of the page with
+    FM Env 1 selected.
+[ ] Do the same on slot 2 and slot 3 of a row: the same list.
+[ ] A Granular track's Mod Matrix page: stock's list (no FM Env). Any other track type's page: as before.
+[ ] Anywhere else a source name shows (an encoder popup, the row's text, a value overlay): does it say "FM Env 1" /
+    "FM Env 2"? If anything shows "Envelope 3" or "LFO 3" instead, write down where (plan risk 8: offline only the
+    matrix page's own name call was found).
+
+3. Hearing it (FMENV_A track 1; OSC1 Analog, saw; OSC2 Level 0; Filter 1 cutoff low)
+[ ] OSC1 FM Atk short, FM Dec about 40 % (Sub FM 0: no FM at all). Route FM Env 1 -> Filter 1 cutoff, amount +100 %.
+    Each note opens the filter with OSC1's FM envelope (a pluck), every note again. Amount -100 %: inverted.
+[ ] The same with FM Atk long (about 60 %), FM Dec Inf: a slow swell that holds.
+[ ] FM Atk 0, FM Dec Inf (unset): the filter sits fully open by the routing's amount, no movement (expected: a constant).
+[ ] FM Env 2 -> OSC1 Pitch with OSC2's FM Atk / FM Dec set (OSC2 may stay at Level 0): OSC1's pitch follows OSC2's
+    envelope. FM Env 2 -> OSC2 Position on a Wavetable OSC2: the frame sweeps with the envelope.
+[ ] Both oscillators Wavetable (BE4.44's Wavetable FM envelopes): FM Env 1 -> Filter 1 cutoff follows OSC1's FM Atk /
+    FM Dec as on an Analog OSC1.
+[ ] Per voice: hold a chord, add notes one by one: each new note's filter starts its own envelope, the held ones go on.
+[ ] FM Env 1 -> OSC1 Sub FM? Not offered here (FM amounts are not destinations yet: the destinations lane, BE4.45).
+
+4. Edits on the page
+[ ] Change the amount of an FM Env slot: it keeps its source (FM Env 1 stays). Change its source to LFO 1 and back.
+[ ] Set the source to [None]: the routing is gone (as stock).
+
+5. Save, load, copy
+[ ] Save FMENV_A, power off, power on, open it: the routings are there with their amounts and play the same.
+[ ] Copy the track to another slot (stock's track copy) and paste: does the copy have the same routings and play them?
+    (Not measured offline: write down what you see. Stock's copy of a stock routing behaves the same way, whatever it is.)
+[ ] Change the track's instrument type (to Granular, or a new Wavetable instrument): the matrix starts empty (expected:
+    offline, the instrument replace makes a new track, no routing carries over).
+
+6. Rollback (on COPIES: FMENV_B = a copy of FMENV_A made on the computer)
+[ ] Flash 03_RESTORE_STOCK (stock 1.6.8). Open FMENV_B: it loads, the FM Env routings play nothing (stock has no source
+    for them on a Wavetable voice). On the Mod Matrix page those slots show [None]
+    (a row stock refreshes on its own after a routing echo may show "Envelope 3" / "LFO 3" instead: its one-row path
+    skips the validator; either is expected, note which).
+[ ] Without touching those slots, save FMENV_B; back on the computer its project file still has src="env3" / "lfo3".
+[ ] On stock, change the AMOUNT of one of those slots: that routing is removed (expected: stock's page sends it back with
+    source None). The others stay.
+[ ] Flash BE4.46 again, open FMENV_B: the untouched FM Env routings work again; the edited one is gone.
+[ ] (Optional) the same on BE4.44: as stock.
+
+7. CPU (the "DSP nn%" on OSC1's title; after a save the ANALOG line's avg_cyc / peak_cyc / voices_peak)
+[ ] BE4.44's worst case (checklist-v4.44 section 8, the C0 / C1 light-FM Position chord) without any FM Env routing:
+    as on BE4.44 (offline +5 instructions a voice-block: 34.8k).
+[ ] The same chord with FM Env 1 -> Filter 1 cutoff and FM Env 2 -> OSC2 Pitch: offline +50..+75 a voice-block (34.8k
+    steady, 39.5k heaviest). No reset, no freeze, no OVER that stays on.
+
+Bring back: BENTO_SAVES.log, BENTO_CRASHES.log if any, the photo (section 2), notes on sections 2's last item, 3 (does it
+sound like the FM envelope?), 5 and 6.

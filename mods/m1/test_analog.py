@@ -8757,6 +8757,395 @@ class X2Identity(unittest.TestCase):
               f"worst {worst[1]:.5f} ({worst[0]}), " + ", ".join(f"{n} {x:.5f}" for n, x in ratios), file=sys.stderr)
 
 
+# BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6, in the voice's allocation slack
+# (typed here independently of synth_shared.h FMENV_*): source 3's pointer voice + FE_SRC, 6's + FE_SRC + 4, so FM Env 1 is
+# the float at + FE_VAL, FM Env 2 at + FE_VAL + 4; FE_ON the stub's "a route was connected" word; the slack ends at FE_END
+FE_SRC, FE_VAL, FE_ON, FE_END = 0xB84, 0xB88, 0xB90, 0xBA0
+FE_VOICE = 0xB88                                            # stock's voice allocation (the slack starts here)
+FE_ONE = 0x3F800000
+
+
+def fe_route(r, root, inst, key, src, amount=500, slot=0):
+    """Stock's routing connect (WT_ROUTE, message 0x3F): +2 instance, +0xC key, +0x10 slot, +0x14 source id, +0x16 amount
+    (s16, x 0.001), on every voice of the root."""
+    m = r.alloc(0x40)
+    r.u.mem_write(m, struct.pack("<HH", 0, inst)); r.u.mem_write(m + 0xC, struct.pack("<H", key))
+    r.u.mem_write(m + 0x10, struct.pack("<H", slot)); r.u.mem_write(m + 0x14, struct.pack("<Hh", src, amount))
+    return r.call(S.WT_ROUTE, root, m)[1]
+
+
+@unittest.skipUnless(HAVE and S.has("WT_ROUTE"), "no analog group in this image (1.6.1, or left out)")
+class FmEnvSrc(unittest.TestCase):
+    """BE4.46 S1 (docs/feasibility-fm-env-sources.md, S1's tests): FM Env 1 / FM Env 2 (each oscillator's FM envelope) as
+    mod-matrix sources 3 / 6 of a Wavetable voice (the M4 side, list / names / validator, is S2). M7: stock's routing connect
+    (WT_ROUTE) sends ids 3 / 6 through two stubs (build.py fmenv_connect) to the voice's slack, voice + FE_SRC / + FE_SRC + 4,
+    which PARAM_VALUE reads at + 4; the stub's body (a DSP trampoline) gives that only to a Wavetable voice ([voice + 0x178]
+    == voice + 0x7A4; S1 fix: the class-0x5A root shares the connect) and, on its first connect, sets FE_ON and 1.0 in both
+    values. DSP: while FE_ON is set, an_enter publishes each oscillator's e0 (fm_env_step's first line, read only; 1 unset
+    or untagged Wavetable) before the renders, and an_note the note's start value. Checked: the stubs, bodies and tables;
+    the connect on both paths against stock's (every other id identical); the class-0x5A root's voices stock's for every
+    id; a reconnect (an amount step) leaves the published values alone; the published values against p3_golden.fm_env's
+    f32 e0, block by block, on Analog, tagged and untagged Wavetable oscillators, and the routed Filter 1 / Position (Shape)
+    / Pitch parameters reading them; an envelope unset and set again mid-note; the publish changes nothing else; a write
+    trace of the slack over a voice's life (stock: no write at all); the cost (nothing unless routed, an_enter within
+    BE4.44's + a load and a branch)."""
+    # (instance, key): OSC1 Position (an Analog OSC1's Shape), Filter 1 (keys 0xCD..0xCF, one parameter: frequency, I),
+    # OSC2 Pitch, the sub's Pitch (the sub path), each a parameter of the voice at this offset (probe, M)
+    DESTS = {"OSC1 Position": (0, 0xC9, 0x7D4), "Filter 1": (0, 0xCD, 0x5C4), "OSC2 Pitch": (1, 0x03, 0xA04),
+             "sub Pitch": (2, 0x03, 0xD0)}
+
+    def test_stubs_and_tables(self):
+        """The image: ids 3 / 6 of both tables point at a stub in the table's padding; every other entry is stock's; each
+        stub is exactly: addw r1, voice, #0xB88 (id 6); b.n join; addw r1, voice, #0xB84 (id 3); join: b.w its body; the
+        rest of the padding nop.n. Each body (a DSP trampoline, S1 fix) is exactly: the Wavetable-voice gate ([voice +
+        0x178] - 0x7A4 == voice, else stock's own movs r1, #0); FE_ON 0 -> FE_ON = r1 and 1.0 in both values; b.w the join
+        after stock's movs. WT_VOICE_ALLOC is stock's movw r2, #0xb88 (the slack is the pool's rounding to 0xBA0) and
+        WT_VOICE_OSC1 stock's addw r7, r4, #0x7a4 (the gate's offset)."""
+        md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
+        h = lambda img, a, n: struct.unpack_from(f"<{n}H", img, a - BASE)
+        for tbh, n, pad, padn, nxt, voice, tmp, first, body in (
+                ("FMENV_IDX_TBH", 33, "FMENV_IDX_PAD", 28, "FMENV_IDX_NEXT", "r5", "r3", 1, DSP["tramp_fmenv_idx"]),
+                ("FMENV_SUB_TBH", 32, "FMENV_SUB_PAD", 26, "FMENV_SUB_NEXT", "r3", "r2", 2, DSP["tramp_fmenv_sub"])):
+            t, p, x = getattr(S, tbh), getattr(S, pad), getattr(S, nxt)
+            ours, stock = h(IMG, t, n), h(STOCK_IMG, t, n)
+            for i in range(n):
+                tgt = t + 2 * ours[i]
+                if i + first == 3:
+                    self.assertEqual(tgt, p + 6, f"{tbh}: id 3 -> the stub's second addw")
+                elif i + first == 6:
+                    self.assertEqual(tgt, p, f"{tbh}: id 6 -> the stub's first addw")
+                else:
+                    self.assertEqual(ours[i], stock[i], f"{tbh}: id {i + first} is stock's")
+            self.assertEqual(t + 2 * stock[3 - first], x - 2, "control: stock sends id 3 to no source")
+            got = [(i.mnemonic, i.op_str) for i in md.disasm(IMG[p - BASE:p - BASE + 14], p)]
+            want = [("addw", f"r1, {voice}, #0xb88"), ("b", f"#{p + 10:#x}"), ("addw", f"r1, {voice}, #0xb84"),
+                    ("b.w", f"#{body:#x}")]
+            self.assertEqual(got, want, f"{pad}: the stub")
+            self.assertEqual(IMG[p + 14 - BASE:p + padn - BASE], b"\x00\xbf" * ((padn - 14) // 2), "the padding's rest: nop.n")
+            got = [(i.mnemonic, i.op_str) for i in md.disasm(IMG[body - BASE:body - BASE + 42], body)]
+            want = [("ldr.w", f"{tmp}, [{voice}, #0x178]"), ("subw", f"{tmp}, {tmp}, #0x7a4"), ("cmp", f"{tmp}, {voice}"),
+                    ("bne", f"#{body + 38:#x}"), ("ldr.w", f"{tmp}, [{voice}, #0xb90]"), ("cbnz", f"{tmp}, #{body + 34:#x}"),
+                    ("str.w", f"r1, [{voice}, #0xb90]"), ("mov.w", f"{tmp}, #0x3f800000"),
+                    ("str.w", f"{tmp}, [{voice}, #0xb88]"), ("str.w", f"{tmp}, [{voice}, #0xb8c]"),
+                    ("b.w", f"#{x:#x}"), ("b.w", f"#{x - 2:#x}")]
+            self.assertEqual(got, want, f"{pad}: its body")
+            self.assertEqual(STOCK_IMG[x - 2 - BASE:x - BASE], b"\x00\x21", "control: x - 2 is stock's movs r1, #0")
+            self.assertTrue(S.M7_DSP <= body < S.M7_DSP + 0x100, "the body among the DSP trampolines")
+        self.assertEqual(IMG[S.WT_VOICE_ALLOC - BASE:S.WT_VOICE_ALLOC - BASE + 4], bytes.fromhex("40f68832"), "movw r2, #0xb88")
+        self.assertEqual(IMG[S.WT_VOICE_ALLOC - BASE:S.WT_VOICE_ALLOC - BASE + 4],
+                         STOCK_IMG[S.WT_VOICE_ALLOC - BASE:S.WT_VOICE_ALLOC - BASE + 4], "the allocation is not patched")
+        o1 = S.WT_VOICE_OSC1
+        self.assertEqual([(i.mnemonic, i.op_str) for i in md.disasm(STOCK_IMG[o1 - BASE:o1 - BASE + 4], o1)],
+                         [("addw", "r7, r4, #0x7a4")], "WT_VOICE_OSC1: OSC1 at voice + 0x7A4")
+
+    def root(self, r):
+        """Stock's root (ctor, engine init) and its 10 voices on Rig's bump pool (0xB88 rounded to 0xBA0, as stock's)."""
+        pool_alloc(r)
+        root = r.alloc(0x2F0); r.call(S.WT_ROOT_CTOR, root); r.call(S.WT_ENGINE_INIT, root)
+        r.w32(root + S.ROOT_HANDLE, 0x4646)
+        vs = [r.r32(root + 0x14 + 4 * i) for i in range(10)]
+        for v in vs:
+            for o in (S.VOICE_WT1, S.VOICE_WT2):
+                r.w32(v + o + 0x18, r.nowav)
+        return root, vs
+
+    def test_connect_gives_the_tail(self):
+        """Every source id 0..35 to each destination (both tbh paths: instances 0 / 1 and the sub's 2), on this build and on
+        stock from the same start: for every id but 3 / 6 the ten voices' bytes (0 .. 0xBA0) are stock's after the route;
+        for 3 the routed slot of every voice holds voice + 0xB84, for 6 voice + 0xB88 (stock: 0, no source), its amount is
+        stock's, FE_ON holds the pointer and both values are 1.0 (a first connect), and nothing else of the voice differs."""
+        ra, rb = Rig(dev=True), Rig(img=STOCK_IMG, dev=True)
+        (root, vs), (root_b, vs_b) = self.root(ra), self.root(rb)
+        self.assertEqual((root, vs), (root_b, vs_b), "control: the same addresses on both rigs")
+        self.assertEqual(vs[1] - vs[0], FE_END, "control: voices 0xBA0 apart (the slack)")
+        for name, (inst, key, par) in self.DESTS.items():
+            for src in range(36):
+                fe_route(ra, root, inst, key, src); fe_route(rb, root, inst, key, src)
+                for v in vs:
+                    a, b = bytes(ra.u.mem_read(v, FE_END)), bytes(rb.u.mem_read(v, FE_END))
+                    if src not in (3, 6):
+                        if a != b:
+                            same(self, a, b, f"{name}, id {src}: the voice is stock's")
+                        continue
+                    ptr = v + FE_SRC + (4 if src == 6 else 0)
+                    self.assertEqual(struct.unpack_from("<I", a, par + 8)[0], ptr, f"{name}, id {src}: the slot")
+                    self.assertEqual(struct.unpack_from("<I", b, par + 8)[0], 0, f"{name}, id {src}: stock: no source")
+                    self.assertEqual(a[par + 12:par + 16], b[par + 12:par + 16], f"{name}, id {src}: the amount")
+                    self.assertEqual(struct.unpack_from("<I", a, FE_ON)[0], ptr, f"{name}, id {src}: FE_ON")
+                    self.assertEqual(struct.unpack_from("<II", a, FE_VAL), (FE_ONE, FE_ONE), f"{name}, id {src}: 1.0 in both")
+                    self.assertEqual(b[FE_VOICE:FE_END], bytes(FE_END - FE_VOICE), "stock: the slack untouched")
+                    m = bytearray(a)
+                    m[par + 8:par + 12] = b[par + 8:par + 12]
+                    m[par + 0x28:par + 0x34] = b[par + 0x28:par + 0x34]   # (PARAM_CONNECT's order and count: one slot more)
+                    self.assertEqual(struct.unpack_from("<I", a, par + 0x30)[0], struct.unpack_from("<I", b, par + 0x30)[0] + 1,
+                                     f"{name}, id {src}: one routed slot more than stock's")
+                    m[FE_VOICE:FE_END] = b[FE_VOICE:FE_END]
+                    same(self, bytes(m), b, f"{name}, id {src}: nothing else differs")
+                    # (the next id must start from stock's state again: the voice's slot and slack back as stock's)
+                    ra.u.mem_write(v, b)
+
+    def test_other_root_is_stock(self):
+        """S1 fix (review, high): WT_ROUTE is also the class-0x5A root's connect (ROOT_5A_CTOR: 6 voices of 0xFE8 B, its
+        OSC1 at + 0x7A8, so voice + 0xB84.. lies inside a live oscillator). Every source id 0..35 to each destination on
+        that root, this build and stock from the same start: every voice's bytes (0 .. 0x1000, the pool's rounding) and
+        the root's are stock's after every route, ids 3 / 6 included (the body's gate takes stock's no-source path); the
+        body ran (control) and never reached its FE_ON store."""
+        def root5a(r):
+            pool_alloc(r)
+            root = r.alloc(0x2F0); r.call(S.ROOT_5A_CTOR, root); r.call(S.WT_ENGINE_INIT, root)
+            r.w32(root + S.ROOT_HANDLE, 0x4646)
+            return root, [r.r32(root + 0x14 + 4 * i) for i in range(6)]
+        ra, rb = Rig(dev=True), Rig(img=STOCK_IMG, dev=True)
+        (root, vs), (root_b, vs_b) = root5a(ra), root5a(rb)
+        self.assertEqual((root, vs), (root_b, vs_b), "control: the same addresses on both rigs")
+        self.assertEqual(vs[1] - vs[0], 0x1000, "control: voices of 0xFE8 B (0x1000 apart)")
+        self.assertEqual([ra.r32(v + 0x178) - v for v in vs], [0x7A8] * 6, "control: OSC1 at + 0x7A8, not a Wavetable voice")
+        hits = {"body": 0, "store": 0}
+        for k, a, off in (("body", DSP["tramp_fmenv_idx"], 0), ("body", DSP["tramp_fmenv_sub"], 0),
+                          ("store", DSP["tramp_fmenv_idx"], 0x12), ("store", DSP["tramp_fmenv_sub"], 0x12)):
+            ra.u.hook_add(UC_HOOK_CODE, lambda uc, _a, _s, _u, k=k: hits.__setitem__(k, hits[k] + 1), begin=a + off, end=a + off)
+        for name, (inst, key, par) in self.DESTS.items():
+            for src in range(36):
+                fe_route(ra, root, inst, key, src); fe_route(rb, root, inst, key, src)
+                same(self, bytes(ra.u.mem_read(root, 0x2F0)), bytes(rb.u.mem_read(root, 0x2F0)), f"{name}, id {src}: the root")
+                for v in vs:
+                    a, b = bytes(ra.u.mem_read(v, 0x1000)), bytes(rb.u.mem_read(v, 0x1000))
+                    if a != b:
+                        same(self, a, b, f"{name}, id {src}: the class-0x5A voice is stock's")
+        self.assertGreater(hits["body"], 0, "control: ids 3 / 6 ran the body on this root")
+        self.assertEqual(hits["store"], 0, "the gate: never FE_ON on a class-0x5A voice")
+
+    def test_a_reconnect_keeps_the_values(self):
+        """Review (medium): only a voice's first connect writes 1.0. A later connect on id 3 / 6 (the M4 sends one per amount
+        step) changes the slot's amount as stock's would and leaves FE_ON and both published values as they were."""
+        w = WtVoice(self, types=(1, 1), env={0: (5, 8), 1: (3, 6)}, capture=False)
+        r, v = w.r, w.v
+        fe_route(r, w.root, 0, 0xCD, 3, amount=500)
+        self.assertEqual((r.r32(v + FE_ON), r.r32(v + FE_VAL), r.r32(v + FE_VAL + 4)), (v + FE_SRC, FE_ONE, FE_ONE),
+                         "the first connect: FE_ON and 1.0 in both")
+        w.note(w.note_n)
+        for _ in range(3):
+            w.block()
+        before = (r.r32(v + FE_ON), r.rf(v + FE_VAL), r.rf(v + FE_VAL + 4))
+        self.assertTrue(all(0.0 < e < 1.0 for e in before[1:]), f"control: both mid-attack {before[1:]}")
+        par = v + self.DESTS["Filter 1"][2]
+        for amt, src, inst, key in ((-300, 3, 0, 0xCD), (700, 6, 1, 0x03), (100, 3, 2, 0x03)):
+            fe_route(r, w.root, inst, key, src, amount=amt)
+            self.assertEqual((r.r32(v + FE_ON), r.rf(v + FE_VAL), r.rf(v + FE_VAL + 4)), before,
+                             f"id {src}, amount {amt}: FE_ON and the values untouched")
+        self.assertAlmostEqual(r.rf(par + 12), -0.3, places=6, msg="control: the reconnect set Filter 1's amount")
+
+    def test_unset_and_set_again_mid_note(self):
+        """Review (low, mutants B / D / P6): OSC1's envelope (Atk 1 / Dec 2) runs to its end (e 0) and is then unset mid-note
+        (Atk 0 / Dec Inf): FM Env 1 is 1 from the next block on (what FM depth sees; fmk / fme keep their stale end values
+        until the render's hold); held unset (fmk DEC j 0, fme still 0) it stays 1; set again (Dec 2, Atk 0) mid-note it
+        is 1 in that block (fm_env_step reads DEC j 0 as 1, not the stale fme) and then decays as fm_env_step's own."""
+        w = WtVoice(self, types=(1, 1), env={0: (1, 2)}, capture=False)
+        r, v, o = w.r, w.v, w.o[0]
+        fe_route(r, w.root, 0, 0xCD, 3)
+        fmk = lambda: struct.unpack("<H", r.u.mem_read(o + S.OSC_KERNEL + FMK_AT, 2))[0]
+        fme = lambda: r.rf(o + S.OSC_KERNEL + FME_AT)
+        w.note(w.note_n)
+        for b in range(64):
+            w.block()
+            if fmk() >> 13 == 3:                         # (analog.h AN_FE_END)
+                break
+        w.block()                                        # (one block in END: its e0 is the end's 0)
+        self.assertEqual((fmk() >> 13, r.rf(v + FE_VAL), fme()), (3, 0.0, 0.0), "control: at its end, published 0")
+        end_k = fmk()
+        w.prop(K_FMATK, 0, 0); w.prop(K_FMDEC, FM_DEC_INF, 0)
+        self.assertEqual((fmk(), fme()), (end_k, 0.0), "control: the prop message leaves fmk / fme stale")
+        for b in range(3):
+            w.block()
+            self.assertEqual(r.rf(v + FE_VAL), 1.0, f"unset, block {b}: FM Env 1 = 1")
+        self.assertEqual((fmk(), fme()), (AN_FE_DEC_HOLD, 0.0), "control: held at DEC j 0 with fme a stale 0")
+        w.prop(K_FMDEC, 2, 0)
+        w.block()
+        self.assertEqual(r.rf(v + FE_VAL), 1.0, "set again mid-note (Dec 2): FM Env 1 = 1 in that block")
+        e1 = fme()
+        self.assertTrue(0.0 < e1 < 1.0, f"control: it decays from 1 ({e1})")
+        w.block()
+        self.assertEqual(r.rf(v + FE_VAL), e1, "the next block: fm_env_step's own value")
+
+    # cases: (name, types, env {osc: (Atk, Dec)}, notes again at, blocks)
+    CASES = (("Analog 5/8 + 3/Inf", (1, 1), {0: (5, 8), 1: (3, FM_DEC_INF)}, (9, 10), 24),
+             ("Analog unset", (1, 1), {}, (5,), 8),
+             ("Analog 0/0 + 1/2", (1, 1), {0: (0, 0), 1: (1, 2)}, (4,), 10),
+             ("Wavetable tagged 2/4 + 0/3", (0, 0), {0: (2, 4), 1: (0, 3)}, (7,), 12),
+             ("Wavetable untagged", (0, 0), {}, (3,), 6),
+             ("mixed A1 4/6, WT2 untagged", (1, 0), {0: (4, 6)}, (8,), 12))
+
+    def test_values_follow_the_golden(self):
+        """Per block, the published FM Env 1 / 2 (after the block: an_enter wrote them before the renders, which do not)
+        are p3_golden.fm_env's f32 e0 of each oscillator's own envelope bit for bit (1 unset, 1 on an untagged Wavetable
+        oscillator), the note's start value right after each note start (an_note, before the block); the routed parameters
+        read them: Filter 1 and OSC2 Pitch (PARAM_VALUE) = clamp(their value at 0 + amount x e0), and an Analog OSC1's Shape
+        (Position routed: J4) ends the block at 48 + amount x e0 x 127 (within its 1/512 step)."""
+        for name, types, env, notes, n in self.CASES:
+            with self.subTest(case=name):
+                w = WtVoice(self, types=types, env=env, capture=False)
+                r, v = w.r, w.v
+                fe_route(r, w.root, 0, 0xC9, 3); fe_route(r, w.root, 0, 0xCD, 3); fe_route(r, w.root, 1, 0x03, 6)
+                want = [G.fm_env(*env.get(i, (0, FM_DEC_INF)), n, notes=(0,) + notes, law="f32")[0] for i in (0, 1)]
+                tagged = [types[i] == 1 or i in env for i in (0, 1)]
+                amt = r.rf(v + 0x7D4 + 12)
+                r.wf(v + 0x5C0, 0.25)                        # (Filter 1's knob, its source at voice + 0x5BC: inside 0..1)
+                for b in range(n):
+                    if b in notes:
+                        w.note(w.note_n)
+                        for i in (0, 1):
+                            self.assertEqual(r.rf(v + FE_VAL + 4 * i), f32(want[i][b] if tagged[i] else 1.0),
+                                             f"block {b}: FM Env {i + 1} at the note start (an_note)")
+                    w.block()
+                    for i in (0, 1):
+                        self.assertEqual(r.rf(v + FE_VAL + 4 * i), f32(want[i][b] if tagged[i] else 1.0),
+                                         f"block {b}: FM Env {i + 1} = the golden's e0")
+                    for dn, i in (("Filter 1", 0), ("OSC2 Pitch", 1)):
+                        par = v + self.DESTS[dn][2]
+                        e = r.rf(v + FE_VAL + 4 * i)
+                        pv = r.call(S.PARAM_VALUE, par)[0]
+                        pv = r.rf(par + 0x3C)                    # (PARAM_VALUE's result, cached at +0x3C)
+                        r.wf(v + FE_VAL + 4 * i, 0.0); r.call(S.PARAM_VALUE, par); p0 = r.rf(par + 0x3C)
+                        r.wf(v + FE_VAL + 4 * i, e)
+                        lo, hi = r.rf(par + 0x34), r.rf(par + 0x38)
+                        self.assertTrue(lo < p0 < hi, f"{dn}: control, its value at 0 is inside its range")
+                        self.assertAlmostEqual(pv, min(max(p0 + r.rf(par + 12) * e, lo), hi), delta=2e-6,
+                                               msg=f"block {b}: {dn} reads FM Env {i + 1}")
+                    if types[0] == 1:
+                        sh = struct.unpack("<H", r.u.mem_read(w.o[0] + S.OSC_KERNEL + 166, 2))[0] / 512
+                        self.assertLessEqual(abs(sh - (48 + amt * want[0][b] * 127)), 1 / 512 + 1e-6,
+                                             f"block {b}: OSC1's Shape follows FM Env 1")
+                if any(i in env for i in (0, 1)):
+                    self.assertTrue(any(0.0 < x < 1.0 for i in (0, 1) for x in want[i]), "control: the envelope moves")
+
+    def test_the_publish_changes_nothing_else(self):
+        """The same voices played twice from the same start, once with FE_ON set by hand on every voice (no route): the
+        output and every voice's bytes below the slack are the same, and only the slack's two values differ (published).
+        With FE_ON 0, an_enter never calls fm_env_publish and the slack stays as it was."""
+        for name, types, env, notes, n in self.CASES[::2]:
+            with self.subTest(case=name):
+                runs = []
+                for on in (0, 1):
+                    w = WtVoice(self, types=types, env=env, sub=300, x12=500, capture=False)
+                    sp = Span(w.r, dsp_sym("fm_env_publish"))
+                    if on:
+                        w.r.w32(w.v + FE_ON, 1)
+                    w.run(n, notes=notes)
+                    runs.append((b"".join(w.outs), bytes(w.r.u.mem_read(w.v, FE_VOICE)),
+                                 bytes(w.r.u.mem_read(w.v + FE_VOICE, FE_END - FE_VOICE)), sp.calls))
+                same(self, runs[0][0], runs[1][0], f"{name}: the output")
+                same(self, runs[0][1], runs[1][1], f"{name}: the voice below the slack")
+                self.assertEqual(runs[0][2], bytes(FE_END - FE_VOICE), f"{name}: FE_ON 0: the slack untouched")
+                self.assertEqual((runs[0][3], runs[1][3]), (0, n), f"{name}: fm_env_publish only while FE_ON")
+
+    def test_write_trace_of_the_slack(self):
+        """A root's life (ctor, engine init, our keys and FM envelopes, every other source id routed to four destinations,
+        notes, retriggers, renders, Type changes) writes nothing into any voice's slack, on this build and on stock; then
+        ids 3 / 6 routed: on this build only the stubs, fm_env_publish and an_note write there (FE_VAL .. FE_ON + 4), on
+        stock still nothing."""
+        for img in (IMG, STOCK_IMG):
+            r = Rig(img=img, dev=True)
+            writes = []
+            def wr(uc, acc, a, size, val, _):
+                if 0xC5F10000 <= a < 0xC5F10000 + 10 * FE_END and (a - 0xC5F10000) % FE_END >= FE_VOICE:  # addr-ok: harness
+                    writes.append((uc.reg_read(UC_ARM_REG_PC), (a - 0xC5F10000) % FE_END, phase[0]))  # addr-ok: harness
+            phase = ["life"]
+            r.u.hook_add(UC_HOOK_MEM_WRITE, wr)
+            root, v0, sub, _ = SubCopy.voice(self, r, 4, 1000, fm=(300, 0), types=(1, 0), glide=100, pw=300, fine=0)
+            for i, (a, d) in ((0, (3, 5)), (1, (2, FM_DEC_INF))):
+                r.root_prop(root, K_FMATK, a, i); r.root_prop(root, K_FMDEC, d, i)
+            r.root_prop(root, K_FM12, 400, 1)
+            m = r.call(r.r32(r.r32(root) + 0x4C) & ~1, root)[0]
+            acc, scr, out = r.buf(DEV_N * m, 1024), r.buf(DEV_N * m, 1024), r.buf(DEV_N, 1024)
+            slot18 = r.r32(r.r32(root) + 0x48)
+            def play(blocks, note_at=()):
+                for b in range(blocks):
+                    if b in note_at:
+                        SubCopy.note(self, r, v0, sub, 48 + b)
+                    r.w32(acc[0] + 4, DEV_N * m); r.w32(scr[0] + 4, DEV_N * m); r.w32(out[0] + 4, DEV_N)
+                    r.call(slot18 & ~1, root, v0, 0, scr[0], sargs=(acc[0], 0, out[0]))
+                    r.block()
+            for name, (inst, key, par) in self.DESTS.items():
+                for src in range(36):
+                    if src not in (3, 6):
+                        fe_route(r, root, inst, key, src, slot=src % 4)
+            play(6, (0, 3, 4))
+            r.root_prop(root, K_TYPE, 0, 0); r.root_prop(root, K_TYPE, 1, 1); play(3, (1,))
+            r.root_prop(root, K_TYPE, 1, 0); play(3, (0,))
+            self.assertEqual(writes, [], f"{'this build' if img is IMG else 'stock'}: no write into the slack over a life")
+            phase[0] = "routed"
+            fe_route(r, root, 0, 0xCD, 3, slot=1); fe_route(r, root, 1, 0x03, 6, slot=2); fe_route(r, root, 2, 0x03, 3, slot=3)
+            play(5, (0, 2))
+            if img is STOCK_IMG:
+                self.assertEqual(writes, [], "stock: no write into the slack, ids 3 / 6 routed")
+                continue
+            allowed = [(DSP["tramp_fmenv_idx"], DSP["tramp_fmenv_idx"] + 42), (DSP["tramp_fmenv_sub"], DSP["tramp_fmenv_sub"] + 42),
+                       sym_range("fm_env_publish"), sym_range("an_note")]
+            self.assertTrue(writes, "control: the routes and the publish write there")
+            for pc, off, ph in writes:
+                self.assertTrue(any(lo <= pc < hi for lo, hi in allowed), f"write at slack +{off:#x} from {pc:#x}")
+                self.assertIn(off, (FE_VAL, FE_VAL + 4, FE_ON), f"write at slack +{off:#x}")
+            for v in [r.r32(root + 0x14 + 4 * i) for i in range(10)]:
+                self.assertNotEqual(r.r32(v + FE_ON), 0, "every voice: FE_ON set by the connect")
+
+    def voice_cost(self, on, blocks=16, **kw):
+        """WtFmW3.voice_cost's per-voice-block instructions (an_enter and both renders), FE_ON set (a route) or not, and
+        fm_env_publish's own Span."""
+        w = WtVoice(self, frames=G.wt_saw_frames(200), capture=False, **{k: x for k, x in kw.items() if k != "pos"})
+        pos = kw.get("pos")
+        if on:
+            fe_route(w.r, w.root, 0, 0xCD, 3); fe_route(w.r, w.root, 0, 0xCD, 6, slot=1)   # (Filter 1: no change of pitch)
+        sp = [Span(w.r, DSP["an_enter"])] + [Span(w.r, a) for a in {w.r.r32(w.r.r32(o)) & ~1 for o in w.o}]
+        pub = Span(w.r, dsp_sym("fm_env_publish"))
+        per = []
+        for b in range(blocks):
+            if pos:
+                for o in w.o:
+                    w.r.wf(o + OSC_POS_SRC, pos(b))
+            t0 = sum(s.total for s in sp)
+            w.block()
+            per.append(sum(s.total for s in sp) - t0)
+        return per, pub, sp[0]
+
+    def test_cost(self):
+        """Per voice-block (an_enter and both renders, note 60 unless named): without a route to 3 / 6 fm_env_publish never
+        runs; with one it is at most PUBLISH_MAX a voice-block, and the heaviest steady voice (W4: note 24, light FM,
+        Position every block) stays within the heaviest existing voice (35,309) in every block but its one level-change
+        block (W4_ATK_MAX). Printed: median / max with and without, the publish's own and an_enter's."""
+        lfo = lambda b: (b * 7 % 200) / 255
+        rows = []
+        med = lambda per: sorted(per[4:])[len(per[4:]) // 2]
+        for name, kw in (("stock WT voice", {}),
+                         ("Analog full FM, FM Atk 3 / Dec 8", dict(types=(1, 1), sub=1000, x12=1000, env={0: (3, 8), 1: (3, 8)})),
+                         ("full WT voice, FM Atk 3", dict(sub=1000, x12=1000, env={0: (3, FM_DEC_INF), 1: (3, FM_DEC_INF)})),
+                         ("full WT voice, note 24, light FM, Position every block", dict(sub=300, x12=300, note=24, pos=lfo))):
+            (p0, pub0, en0), (p1, pub1, en1) = self.voice_cost(0, **kw), self.voice_cost(1, **kw)
+            self.assertEqual(pub0.calls, 0, f"{name}: no route, no publish")
+            # (review: "~0 without a route" at its own granularity: an_enter a call and the voice-block median within
+            # BE4.44's + NO_ROUTE_TOL, a load and a branch. A merge that adds to an_enter, e.g. the destinations lane, moves
+            # these bounds: re-measure BE4.44 + that lane, not this feature)
+            en_base, med_base = self.NO_ROUTE_BE444[name]
+            self.assertLessEqual(en0.total / en0.calls, en_base + self.NO_ROUTE_TOL, f"{name}: no route, an_enter a call")
+            self.assertLessEqual(med(p0), med_base + self.NO_ROUTE_TOL, f"{name}: no route, the voice-block median")
+            self.assertEqual(pub1.calls, len(p1), f"{name}: routed, one publish a voice-block")
+            self.assertLessEqual(pub1.total, pub1.calls * self.PUBLISH_MAX, f"{name}: the publish's cost")
+            rows.append((name, med(p0), max(p0), med(p1), max(p1), pub1.total / pub1.calls, en0.total / en0.calls,
+                         en1.total / en1.calls))
+            if "Position" in name:
+                self.assertLessEqual(sorted(p1)[-2], HEAVIEST_VOICE, f"{name}: routed, every block but one")
+                self.assertLessEqual(max(p1), WtFmW4.W4_ATK_MAX, f"{name}: routed, its level-change block")
+        print("\n  FM Env sources cost (instructions per voice-block; median / max without a route, with one; the publish a "
+              "call; an_enter a call without / with): " + "; ".join(
+                  f"{n} {a} / {b}, {c} / {d}, publish {e:.0f}, an_enter {f:.0f} / {g:.0f}" for n, a, b, c, d, e, f, g in rows),
+              file=sys.stderr)
+    PUBLISH_MAX = 80
+    # BE4.44 (c541f3b, measured with this harness: an_enter's Span a call, the voice-block median; S1 fix scratch en.py, M)
+    NO_ROUTE_BE444 = {"stock WT voice": (59.0, 14155), "Analog full FM, FM Atk 3 / Dec 8": (156.62, 28109),
+                      "full WT voice, FM Atk 3": (99.56, 27261),
+                      "full WT voice, note 24, light FM, Position every block": (99.56, 34760)}
+    NO_ROUTE_TOL = 8
+
+
 def r_settings(r, osc):
     """AnProps of an oscillator: (type, shape, sync, fmatk, glide, subfm, fm12, fmdec, envf)."""
     return struct.unpack("<BBBBHHHBB", r.u.mem_read(osc + S.OSC_KERNEL + PROPS_AT, 12))

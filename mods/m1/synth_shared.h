@@ -150,6 +150,23 @@ typedef struct {
 #define AN_FM_FRAMES 256u                                   /* one buffer: 2N, the device's oscillator block */
 #define SA_FMBUF_A SA_FMBUF
 #define SA_FMBUF_B (SA_FMBUF + 4u * AN_FM_FRAMES)
+/* BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / FM Env 2 (OSC1's / OSC2's FM envelope) as mod-matrix sources
+ * 3 / 6 of a Wavetable voice, in the voice's allocation slack: stock's root ctor allocates a voice as 0xB88 B (0x0809CB40)
+ * and its pool rounds that to 0xBA0 (0x080A05E6), so voice + 0xB88 .. + 0xB9F is ours (S; no stock code writes it: M,
+ * test_analog FmEnvSrc). The pool (kind 2, 0x080A0720) is a bump allocator from 0x24001080, never freed, no header, inside
+ * the bss the M7 reset zeroes (0x08040492: 0x240001D0 .. 0x2401EDBC), so the slack is 0 at allocation (S). Stock's routing
+ * connect (0x0807C8A0, build.py fmenv_connect's stubs and bodies) gives source 3 the pointer voice + FMENV_SRC and source 6
+ * voice + FMENV_SRC + 4, on a Wavetable voice only ([voice + 0x178] == voice + 0x7A4: the class-0x5A root shares the
+ * connect); PARAM_VALUE reads a source's float at +4, so FM Env 1 is the float at voice + FMENV_VAL and FM Env 2 the next.
+ * On a voice's first such connect the body writes the pointer into FMENV_ON (nonzero: a route to 3 or 6 was connected on
+ * this voice since its allocation, sticky) and 1.0 into both values (later connects leave them); while FMENV_ON is 0 the DSP publishes
+ * nothing (an_enter: one load and a branch). Published: e0, the envelope's value at the block's start (fm_env_step's
+ * first line, read only), 1 for an unset envelope (Atk 0 / Dec Inf) and an untagged Wavetable oscillator. build.py reads
+ * these four (fmenv_offsets) */
+#define FMENV_SRC 0xB84u
+#define FMENV_VAL 0xB88u
+#define FMENV_ON 0xB90u
+#define FMENV_SLACK_END 0xBA0u
 /* +0x0080 drum stats, four 32 B lines (M7 writes and cleans after each block with a drum voice, M4 reads) */
 #define SA_DSTATS 0x0080u
 typedef struct {

@@ -34,6 +34,9 @@
  *          an_wave_paint (the Shape dial); B1' the 0x3F post of a double-tap on a Wavetable pane (BROWSE_POST_SITE, a shim
  *          with the oscillator's handle) -> an_browse: none for an Analog oscillator; V1 / Y1 the encoder widget's three
  *          value-text writes (bl SLOT_TITLE, VALUE_TEXT_1..3) -> an_value_text
+ *   BE4.46 S2 (docs/feasibility-fm-env-sources.md): the Mod Matrix page of a Wavetable track lists FM Env 1 / FM Env 2
+ *          (stock's source ids 3 / 6) right after Env 2: MX_WT_ROWS_SITE (MX_BUILD's bl of the row filler) -> mx_wt_rows,
+ *          MX_SRC_VALID (the routing validator's entry) -> mx_src_valid, MX_SRC_NAME (the source name's entry) -> mx_src_name
  *   X6     m4_diag.c calls the entry table: slot 0 an_tick (every UI loop pass), slot 1 an_print (save time: the ANALOG and
  *          DRUMS lines of the black box)
  * The drum page (S6c-2, BE4.31; group drums, default-off on 1.6.8 since BE4.40, built only with BE_ENABLE=drums), after
@@ -1041,6 +1044,57 @@ static void page_tick(volatile An4 *a, void *view) {
             u32 ev[4] = {0xC3u, row_handle(view, row), 0, 0};
             FN(S_SYNTH_VIEW_NOTIFY, u32 (*)(void *, void *))(view, ev);
         }
+}
+
+/* ---- M4 (BE4.46 S2, docs/feasibility-fm-env-sources.md): FM Env 1 / 2 in a Wavetable track's Mod Matrix ------------
+ * The M7 side (S1) gives stock's source ids 3 ("env3", Envelope 3) and 6 ("lfo3", LFO 3), which bind nothing on a
+ * Wavetable voice, to each oscillator's FM envelope. Here the page offers them on a Wavetable track only:
+ *   MX_WT_ROWS_SITE  MX_BUILD's bl of the Wavetable row filler -> mx_wt_rows: our source list (stock's 16, FM Env 1 / 2
+ *                    right after Env 2, 18) into the view, then stock's filler. Stock's list and its two literals stay
+ *                    (Granular and the validator's types 15 / 19 keep reading it).
+ *   MX_SRC_VALID     the routing validator's entry -> mx_src_valid: 3 / 6 are valid on a Wavetable track (stock writes 0
+ *                    into the caller's copy of a routing whose source is not in the type's list), every other case stock's.
+ *   MX_SRC_NAME      the source name's entry -> mx_src_name: "FM Env 1" / "FM Env 2" on a Wavetable track, else stock's.
+ * The save format does not change: the routing is stock's, src="env3" / "lfo3". The view's track type is the byte
+ * MX_BUILD stores at MXV_TYPE (the object type of the page's track: 0x12 Wavetable). */
+#define MX_FMENV1 3u                                   /* stock's env3: OSC1's FM envelope on a Wavetable voice (S1) */
+#define MX_FMENV2 6u                                   /* stock's lfo3: OSC2's */
+#define MX_WT_SOURCES_N 18u
+/* stock's Wavetable list (MX_WT_SRC_LIST: None, Velocity, Pressure, Env 1, Env 2, LFO 1, LFO 2, Mod Seq, Key, Mod Wheel,
+ * Macro X / Y, Auto A..D) with ours after Env 2 (build.py checks this against the base image), then a 0: MX_EDIT accepts
+ * an index up to the count itself (blt, not ble) and reads one past the list, which on stock is the next list's None */
+__attribute__((used, retain)) const u16 mx_wt_sources[MX_WT_SOURCES_N + 1u] =
+    {0, 13, 32, 1, 2, MX_FMENV1, MX_FMENV2, 4, 5, 8, 14, 26, 30, 31, 9, 10, 11, 12, 0};
+static int mx_fmenv(void *view, u32 src) {
+    return ANALOG_ON && (src == MX_FMENV1 || src == MX_FMENV2) && B(view, S_MXV_TYPE) == S_TYPE_WAVETABLE;
+}
+/* MX_WT_ROWS_SITE: reached only from MX_BUILD's Wavetable case (type 0x12), which has just stored stock's list. */
+__attribute__((used, retain)) void mx_wt_rows(void *view) {
+    if (ANALOG_ON) {
+        W(view, S_MXV_SRC_LIST) = (u32)mx_wt_sources;
+        B(view, S_MXV_SRC_N) = (u8)MX_WT_SOURCES_N;
+    }
+    FN(S_MX_WT_ROWS, void (*)(void *))(view);
+}
+/* The validator's stock entry, its two instructions replayed (naked: r0 / r1 stay; r3 is written by stock before it is read). */
+__attribute__((naked, noinline)) static void stock_valid(void *view, void *routing) {
+    __asm volatile("mov ip, r1\n\t ldrh r1, [r1, #4]\n\t movw r3, %[lo]\n\t movt r3, %[hi]\n\t bx r3"
+                   :: [lo] "i"((S_MX_SRC_VALID + 5u) & 0xFFFFu), [hi] "i"((S_MX_SRC_VALID + 5u) >> 16));
+}
+/* MX_SRC_VALID (view, routing {+4 u16 source}): a routing read back for the page (MX_EDIT, MX_BAR, MX_ROWS_BUILD). */
+__attribute__((used, retain)) void mx_src_valid(void *view, void *routing) {
+    if (mx_fmenv(view, H(routing, 4))) return;
+    stock_valid(view, routing);
+}
+/* The name's stock entry replayed (naked: its push {lr} saves our caller's return; r2 / r3 are written before read). */
+__attribute__((naked, noinline)) static const char *stock_src_name(void *view, u32 id) {
+    __asm volatile("push {lr}\n\t mov lr, r0\n\t movw r3, %[lo]\n\t movt r3, %[hi]\n\t bx r3"
+                   :: [lo] "i"((S_MX_SRC_NAME + 5u) & 0xFFFFu), [hi] "i"((S_MX_SRC_NAME + 5u) >> 16));
+}
+/* MX_SRC_NAME (view, id) -> the source's name (stock: the registry's display name; "[None]" for an unknown id). */
+__attribute__((used, retain)) const char *mx_src_name(void *view, u32 id) {
+    if (mx_fmenv(view, id)) return id == MX_FMENV1 ? "FM Env 1" : "FM Env 2";
+    return stock_src_name(view, id);
 }
 
 /* ---- the CPU indicator (D3) ---------------------------------------------------------------------------------------
