@@ -250,29 +250,184 @@ Drums suites: not run (the default build leaves drums out). The 1.6.1 build stil
    structural one). The structural asserts stay as regression guards.
 5. **Info: mutation sweep, no defect.** No action.
 
-## Sprint X2 (M7 / DSP), the plan carried forward (not built)
+## Sprint X2 (M7 / DSP) as built: the routings play
 
-**Storage per root.**
-- Take amount plus source per key, per slot, as a voice-relative offset, or an absolute address if the source is global.
-- **First verify that the per-voice sources sit at fixed voice offsets.** WT_ROUTE resolves `env[i]` at voice + 0x184 + 0xFC i, the LFOs and so on per voice (S, be445 S1's note). That has to be checked for every source id the matrix offers.
+The design is the plan's (slot 9 and 10 trampolines, a per-root store, a per-block sum and clamp into msub / m12, the gates
+see the routings). Below: what had to be traced first, what was built, and where the plan was wrong.
 
-**Hooks.**
-- Slot 10 (0x08081B60) gets a trampoline for 0x18B / 0x132 only. Every other key goes to stock.
-- Slot 3 messages from 0x08134700 must be accepted and ignored, or stored as stock does for its fixed slot. Decide from what stock's PARAM slot 4 means (S, to trace).
-- Slot 9 (clear) runs per voice with no key. X2's store needs its own clear on the same path, or an epoch.
+### How a routing reaches an oscillator (S)
 
-**Per block.**
-- Compute `v = clamp(knob + 1000 * sum amount_i * src_i, 0, 1000)` for each of the three keys of a routed oscillator.
-- Feed the result to the existing msub / m12 ramp (Q4: travel, then the square law).
-- The FM gate also sees "has routes", so a routed oscillator with knob 0 renders FM.
-- OSC2 Sub FM's base is its saved value.
+- The root's message loop (0x0807ACE0..) takes a 0x3F message to WT_ROUTE (`bl 0x0807C8A0` at 0x0807B280).
+- **WT_ROUTE** (0x0807C8A0..0x0807E4C6) reads `{+2 instance, +0xC key, +0x10 slot, +0x14 source id, +0x16 amount}`. The
+  amount becomes `f32(amount) x f32(0.001)` (0x0807C8D4). For each of the root's voices (root + 0x14 + 4 i, count from the
+  root's vtable 0x50: 10) it resolves the source **for that voice** and calls slot 10 of oscillator[instance]
+  (`ldr.w fp, [ip, #0x28]; blx fp` at 0x0807CB38, and the per-source copies of that call).
+- **Slot 10** (0x08081B60) is `(osc, source pointer, key, slot, amount s0)`. It routes keys 0xC4 / 0xC9 / 3 to
+  PARAM_CONNECT and `bx lr`s on any other key.
+- **Slot 9** (0x08081C20) is `(osc)`: it clears the routed slots of Position, Pitch and Level. The root's clear (message
+  0x48) calls it per voice for WT1, WT2 and the sub (0x0807B242..5C). It has no key.
+- **Slot 10 has no root argument**, and per-root storage needs the root. WT_ROUTE does `mov r4, r0` at 0x0807C8B0, and
+  no other instruction in 0x0807C8A0..0x0807E4C6 writes r4 (every instruction's written registers, x2 r4b.py). So at
+  every slot-10 call it makes, r4 is the root.
 
-**Identity.** With no route on these keys, today's path must run bit for bit: P3Identity, FmEnv, WtFmW1..W4 unchanged.
+### Q8 continued: the source ids, traced (M, `FmTargetsX2.test_sources_sit_at_fixed_voice_offsets_and_the_store_finds_them`)
 
-**Costs to measure and report:**
-- the routed cost per voice-block;
-- the cost with no routes (about 0: one flag load);
-- the DSP bytes, keeping >= 1 KB free.
+The plan asked to verify that per-voice sources sit at fixed voice offsets. For every id of stock's Wavetable source list
+(0x081A1304), on a real root (stock's ctor and engine init, 10 voices), the pointer stock's own connect stores is:
+
+| Ids | Source | Pointer | Connect slot |
+|---|---|---|---|
+| 0x01, 0x02 | env 1, env 2 | voice + 0x1B0, + 0x2AC | the matrix slot |
+| 0x04, 0x05 | LFO 1, LFO 2 | voice + 0x3B8, + 0x4B8 | the matrix slot |
+| 0x08 | seq | voice + 0x79C | the matrix slot |
+| 0x0D, 0x0E, 0x20 | velocity, key, pressure (aftertouch) | voice + 0x34, + 0x44, + 0x3C | the matrix slot |
+| 0x1A, 0x1E, 0x1F | modwheel, macro X, macro Y | root + 0x28C, + 0x2DC, + 0x2E4 | the matrix slot |
+| 0x09..0x0C | seq1..seq4 | root + 0x140, + 0x148, + 0x150, + 0x158 | **3, whatever the matrix slot** |
+
+The same offset in all 10 voices, or one root address: **no source of this list needs an absolute address** (the plan
+allowed for one). Ids 9..12 go to stock's connect slot 3 (PARAM slot 4, + 0x20): WT_ROUTE's case for them
+(0x0807CEF0..) passes `movs r3, #3` and `root + 0xF8 + 8 id` (S). That is what "PARAM slot 4" means, the plan's open
+point: the mod seq lanes' slot. 0x08134700's per-type post (X1: `{key, slot 3, source 0}`) clears it.
+
+The FM Env sources of the later feature (ids 3 / 6, `docs/feasibility-fm-env-sources.md`) resolve to voice + 0xB84 /
++ 0xB88, inside the voice's 0xBA0 bytes: the store's voice-relative form holds them as they are.
+
+### What was built (dsp/analog.cpp, build.py, synth_shared.h)
+
+**Two trampolines** (build.py `m7_dsp`, in the DSP trampoline block, after the four of BE4.40..BE4.44):
+- slot 9 -> `x2_clear(osc)`, then stock's slot 9 always;
+- slot 10 -> `x2_connect(osc, source, key | slot << 16, root, amount s0)`, then stock's slot 10 always (it keeps its own
+  keys and ignores ours). `root` is r4 only when the call's return address lies inside WT_ROUTE
+  (`lr - WT_ROUTE < WT_ROUTE_LEN`), else 0. s0 is saved for stock's (vpush {s0, s1}).
+- build.py refuses unless both vtable words hold stock's functions and **WT_ROUTE's 0x1C26 bytes hash to WT_ROUTE_SHA**,
+  the bytes whose r4 was read.
+
+**The Analog oscillator equivalent is the same two trampolines.** An Analog oscillator is a Wavetable-class oscillator
+with Type Analog (the class vtable 0x080ACBB4, BE4.40 N3), so there is no separate class to hook.
+
+**The store** (`X2Root`, SA + 0x440..+ 0x600, inside the area the M7 zeroes at its take; the count in the run state's
+word 1, Run.x2n):
+- 8 entries of 56 B, one per Wavetable root (8 tracks): `{root, handle, u16 src[12], s16 amt[12]}`, key k (OSC1 Sub FM,
+  OSC2 FM 1>2, OSC2 Sub FM) slot s at [4 k + s];
+- `src` is the source's offset in the voice (1 .. 0xB9F), or 0x8000 | its offset in the root; 0 is none. `amt` is the
+  routing's amount (-1000..1000), recovered from s0 by rounding (stock's s0 is `f32(amount) x f32(0.001)`, and we
+  recompute exactly that).
+- An entry belongs to its root while root + 0x0C is the handle it was made with (stock reuses roots: the glide lines'
+  rule). A stale entry is dropped when its root is next seen. With the store full, entries whose root has another
+  handle now are dropped first; a routing that still does not fit, or a source outside the voice and the root (only a
+  MIDI CC id, >= 0x8000, could be: not in the Wavetable list), is not kept and counted once (SaFmStats.x2_lost, +24).
+
+**x2_connect:**
+- takes only keys 0x18B / 0x132, slots 0..3, a root, and an oscillator whose voice is one of the root's 10;
+- ignores 0x132 on instance 0 (0x08134700 posts every type-6 key to both oscillators, X1);
+- keeps slot 3 as stock keeps it (the seq lanes; the per-type post's source 0 clears it, as on stock);
+- source 0 clears the slot. When a slot that held a routing clears, `x2_tidy` runs over **all** the root's voices at once
+  (the connect comes per voice; after the first the entry may be gone). It drops the entry once it routes nothing,
+  untags a Wavetable oscillator nothing holds any more (wt_settle's rule), and calls wt_feed, so a Wavetable OSC1 keeps
+  feeding B while OSC2's m12 ramps down, exactly as after the knob turned to 0.
+
+**x2_clear** (slot 9, per voice and oscillator): clears this oscillator's keys in its root's entry (OSC1: Sub FM;
+OSC2: FM 1>2 and Sub FM), then the same tidy.
+
+**Per voice-block** (`x2_enter`, called from an_enter while Run.x2n != 0, before the all-Wavetable early return):
+- Q4: `v = clamp(knob + 1000 sum amt_i src_i, 0, 1000)`, in float32 as `m = fma(f32(amt_i) x f32(0.001), [src_i + 4], m)`
+  over slots 0..3 in order (stock's PARAM_VALUE's order and its VFMA), then `fma(m, 1000, knob)`, rounded to the
+  nearest whole amount (msub / m12 hold whole amounts: the next block's ramp starts where this one ended). NaN plays 0.
+- The knob is the oscillator's stored Sub FM / FM 1>2. OSC2's Sub FM has no knob: the base is its stored value. An
+  Analog OSC2 keeps it (an_prop); a Wavetable OSC2 does not (BE4.44 W4 D2: wt_prop drops it), so there the base is 0.
+- The result goes to Run.xm (which keys are routed) and Run.xv[3]. fm_setup plays xv in place of the knob for this voice
+  only, into the existing msub / m12 ramps. **OSC2's Sub FM, which plays nothing unrouted (D2), plays while routed** as
+  the second term next to FM 1>2 (A on Sub FM's line, B on FM 1>2's; the kernel's two-term line).
+- A Wavetable oscillator a routing needs is tagged here (wt_init) before the voice-block renders. That is its own key;
+  OSC1 is also tagged for OSC2's FM 1>2, which it feeds.
+
+**The FM gate sees the routings** (one load and branch each when nothing is routed):
+- an_osc's FM word (Analog): OSC1 or's in Sub FM and FM 1>2 routed (it feeds B), OSC2 FM 1>2 and Sub FM;
+- wt_fm_osc's gate (Wavetable, `x2_gate`): the same;
+- feeds (an Analog OSC1 feeds B) and wt_body's feed-B test (a Wavetable OSC1): OSC2's FM 1>2 routed;
+- D3 (a Wavetable OSC1 synced to an Analog OSC2): a routed OSC1 Sub FM plays as 0, as its knob does.
+
+**Nothing routed** (Run.x2n 0): an_enter stores Run.xm = 0 and tests x2n; each gate tests Run.xm. Every value is
+today's: X2Identity (below) shows it byte for byte against BE4.44.
+
+### Results (M, ~/bento/out/be445x2a unless named)
+
+**Identity, nothing routed** (`X2Identity`, new): BE4.44 (be444w4f, its own image and DSP symbols) and this build run the
+same 8 cases on the device's path (stock's root, voice render and sub). The cases are the four type pairs, with FM knobs,
+FM envelopes, a stock Position routing moving every block, a retrigger, and a stored OSC2 Sub FM. Every output sample,
+the whole voice's 0xBA0 bytes and the FM stats words are **equal**. P3Identity (vs BE4.40), FmEnv and WtFmW1..W4 are
+unchanged and green.
+
+**The law, bit for bit** (`FmTargetsX2`): the routed voice equals the same voice with the knob turned to `v`, every block:
+- Analog OSC1 Sub FM, Analog OSC2 FM 1>2, Wavetable OSC1 Sub FM, Wavetable OSC2 FM 1>2 (from a Wavetable and from an
+  Analog OSC1);
+- knob 200, amount 600, source values 0, 0.5, 1, -1, 2, 0.25, -0.25, 0.125, 0.75, 0.375, so both clamps are hit;
+- removal (source 0 through WT_ROUTE) and the root's clear (slot 9 per voice) at block 4 equal the knob turned to 0
+  there, its ramp out included. The store is empty afterwards and both kernel areas end as the knob's run left them
+  (Analog and Wavetable, OSC1 Sub FM and OSC2 FM 1>2).
+- Knob 0 with a routing renders FM (all three destinations, both types): the gate sees it.
+- OSC2 Sub FM: its stored value alone plays nothing (as BE4.44); routed, msub = base + travel (350 on an Analog OSC2 with
+  base 100, 250 on a Wavetable one), next to FM 1>2's 300, nothing missed.
+
+**CPU** (instructions per voice-block, an_enter and both oscillators' renders, note 60, the median of the steady blocks /
+the max; `FmTargetsX2.test_cost`):
+
+| Voice | Knobs (today's path) | The same sound routed | + OSC2 Sub FM routed |
+|---|---|---|---|
+| Analog both (Sub FM 300, FM 1>2 300) | 28,071 / 28,385 | 28,425 / 28,739 | 30,815 / 31,210 |
+| Wavetable both (the same) | 27,181 / 29,793 | 27,585 / 30,197 | 30,360 / 32,202 |
+
+- **The routed cost**, two routed destinations, the same sound: **+354 (Analog) / +404 (Wavetable) instructions per
+  voice-block** (x2_enter, its tags and the gates). Gated at 600. OSC2 Sub FM routed adds an FM term today has none of
+  (+2.4k / +2.8k), still within the heaviest existing voice (35,309): max 32,202.
+- **The cost with nothing routed:** X2Identity's instructions, this build / BE4.44, are 1.0006 .. 1.0021 over the 8
+  cases (worst: a Wavetable OSC1 next to an Analog OSC2 with OSC2's Sub FM stored). That is about 15..60 instructions per
+  voice-block: the loads and branches above, and the compiler's layout of the functions that grew.
+- P3Identity (vs BE4.40, the stop line 1.95 %), 48 cases: worst **1.0177** (mod dev=False, 111,848 / 109,899; X1:
+  1.0165), total 1.0098. 0.18 % of margin is left to the stop line.
+- WtFmW4 (nothing routed): the heaviest steady voice **34,806** (note 24, light FM, Position every block; BE4.44 34,760),
+  against the 35,309 ceiling; its one-block maximum 39,438 (BE4.44 39,392).
+
+**Sizes:**
+- **DSP:** 32,652 B, **8,052 B free** of 40,704 (BE4.44 / X1: 30,884, 9,820 free): **+1,768 B**. The largest parts:
+  x2_connect 396, x2_enter 304, x2_clear 176, x2_tidy 120, an_osc +124, fm_setup +72, an_enter +68, wt_body +68 (the
+  message-loop functions at `minsize`).
+- The DSP trampolines: 0x70 + 44 B of the 0x100 block.
+- **M7 C slice, M4 and the synth UI block:** unchanged (15,368 / 24,424 / 16,514 B). X2 is M7 only.
+- **Image:** 0x1896EC, **15,432 B to PROVEN_MAX** (0x18D334; unchanged since X1): the M4 room left.
+- SA: the store's 448 B are in the run-state page (+0x440..+0x600), free on main too.
+
+**Kit and images:**
+- Release kit `flash\bento_enhanced-v4.45` (boot label BE4.45; not on the SD card): bento1.bin sha256
+  dd78cd75cf65a5e90a60281bd17644371daeb69feb63b0664db7ee512ea5a7aa (~/bento/out/be445x2rel, byte-identical to be445x2a,
+  the build every suite ran on), DEVICE_CHECKLIST.txt = docs/checklist-v4.45.txt, release notes
+  docs/release-notes-v4.45.md.
+- Sprint image `BE_TAG=X2` (~/bento/out/be445x2): sha256 0f3fd52805fc2016eb59d7e45faa9342845bf6b3926c223e956fd4390c41cb7a.
+
+**Suites** (M, ~/bento/out/be445x2a, from the worktree's mods/m1; skips in brackets). All OK:
+- diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20);
+- notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10;
+- native_props 31, **analog 224** (211 + FmTargetsX2 12 + X2Identity 1), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16),
+  note0 32;
+- p3_golden self-test 52. Drums suites: not run (the default build leaves drums out).
+
+### Rollback and stock
+
+Nothing about the saved form changed in X2 (X1's tests still hold): stock 1.6.8 loads these routings as inert key 0, and
+BE4.44 keeps them with their keys, inert. On BE4.45 a project's push brings them to the M7 through WT_ROUTE like stock's.
+
+### Open (for Jeff)
+
+1. **A Wavetable OSC2's stored Sub FM is not the routed base** (it is 0 there). It is kept by the M4 and saved, but BE4.44
+   W4 (D2) stopped the M7 keeping it. It is normally 0 (no knob since BE4.43); a nonzero one only comes from an old
+   project. Keeping it on the M7 would tag the oscillator for a value that plays nothing unrouted (today's path would
+   change), so it was left. Say if it matters.
+2. **Seq lanes (seq1..seq4) share one slot per destination**, as on stock: two of them routed to the same FM destination
+   keep only the last, whatever the matrix slots (stock's own rule for its destinations, WT_ROUTE's slot 3).
+3. **The FM Env sources feature, when rebased on top:** its publish in an_enter must come before x2_enter, or an FM Env
+   routed to an FM amount reads the previous block's value.
+4. **Device check** (checklist-v4.45.txt): the routings at the device's message order (a project's push, the clear
+   before a resend), CPU at 8 voices with routings, the sound of block-rate FM depth.
 
 ## Tests added in X1
 
@@ -291,6 +446,20 @@ Drums suites: not run (the default build leaves drums out). The 1.6.1 build stil
   - BE4.44 loads with keys and keeps them (BE_REF444, default ~/bento/out/be444w4f).
 - **test_analog:** `ShapeMod.test_x1_fm_destinations_are_inert_until_x2`.
 
+## Tests added in X2
+
+- **test_analog `FmTargetsX2` (12):** the trampolines installed (stock's words were stock's functions); every source of
+  the Wavetable list at a fixed voice offset or in the root, and the store decoding to stock's pointer in stock's slot for
+  all 10 voices (the table above); only WT_ROUTE stores, only our three destinations, slots 0..3, the per-type post's
+  slot 3 clear, OSC1's FM 1>2 ignored, stock's keys still connected; routed = the knob, bit for bit (Analog OSC1 Sub FM,
+  Analog OSC2 FM 1>2, Wavetable OSC1 Sub FM, Wavetable OSC2 FM 1>2 from either OSC1); knob 0 plus a routing renders FM (3
+  destinations x 2 types); OSC2 Sub FM only routed; removal and clear = the knob to 0 (8 cases); per root and handle, the
+  store full, a freed root's entry reclaimed, x2_lost once a routing; the cost.
+- **test_analog `X2Identity` (1):** nothing routed, BE4.44 byte for byte (8 cases; BE_REF444, default
+  ~/bento/out/be444w4f); `WtVoice` takes a rig for it.
+- **test_analog `ShapeMod`:** X1's inert test is now `test_slot_10_called_from_outside_the_route_handler_keeps_nothing`
+  (the same checks: a direct call stores and writes nothing).
+
 ## Plan items found wrong (feasibility-wt-fm-matrix.md, part b)
 
 1. **"Names come for free from the registry titles ('WT1: Sub FM')".** The rows do take the registry title, but under stock's "WT1:" format. BE4.44's page says "WT1: Pitch" (Q7, M). X1 uses "OSC1: / OSC2:" for all oscillator rows.
@@ -306,3 +475,27 @@ Drums suites: not run (the default build leaves drums out). The 1.6.1 build stil
    - the four literal users and three count users (complete, M scan);
    - the row filler's `#0x17` / `#0x228`;
    - the view's capacity (60 rows).
+
+### Found wrong at X2 (part b and this doc's X2 plan)
+
+7. **"Storage per root: amount plus source as a voice-relative offset, or an absolute address if the source is global".**
+   No source of the Wavetable list is global: each is at a fixed voice offset or in the root (M, the table above). The
+   store keeps voice- or root-relative offsets only; anything else is not kept and counted.
+8. **"3 keys x 3 slots".** Stock's connect has 4 slots: WT_ROUTE puts seq1..seq4 (ids 9..12) in slot 3 (PARAM slot 4)
+   whatever the matrix slot (S, 0x0807CEF0..; M). The store keeps 4 per key, as stock's PARAMs do. This also settles the
+   plan's open "slot 3 messages from 0x08134700": stored as stock stores them, so that post's source 0 clears slot 3.
+9. **"About 1.2 KB" of store** (16 roots x ...). Built: 8 entries x 56 B = 448 B (8 tracks: one Wavetable root each), in
+   the run-state page.
+10. **"DSP about 0.8-1 KB".** Built: 1,768 B (the message-loop functions at minsize).
+11. **Per root, but slot 10 carries no root.** The plan did not say how the connect finds it. Built: the trampoline takes
+    WT_ROUTE's r4, only for a call that returns into WT_ROUTE (S; the build checks WT_ROUTE's bytes by sha256).
+12. **"Slot 9 (clear) runs per voice with no key; X2's store needs its own clear on the same path, or an epoch".** Own
+    clear, as planned. But the connect and the clear both come per voice, and the entry can go at the first voice, so the
+    tidy (untagging, OSC1's feed of B for OSC2's ramp down) runs over all the root's voices at once.
+13. **"OSC2 Sub FM's base is its saved value".** True for an Analog OSC2. A Wavetable OSC2's stored Sub FM is not on the
+    M7 (BE4.44 W4 D2), so its base is 0 (open 1).
+14. **"The FM gate also checks has routes".** One gate in the plan; four in the code: an_osc's FM word, wt_fm_osc's gate,
+    feeds (an Analog OSC1 feeding B) and wt_body's feed-B test (a Wavetable OSC1).
+15. **be445 S1's source listing** (scratch out_ids.txt, used by the FM Env sources feasibility) has ids 9..12 at
+    voice + 0x79C. It read OSC1 Pitch's slot 1, which still held id 8's pointer: ids 9..12 go to slot 4, from the root
+    (above). Only id 8 is voice + 0x79C.

@@ -1,0 +1,73 @@
+bento_enhanced v4.45: FM amounts as Mod Matrix destinations (stock 1.6.8) - delta checklist on top of v4.44
+=============================================================================================================
+
+Kit:
+  flash\bento_enhanced-v4.45          boot label BE4.45
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.45.txt)
+
+Plan: docs\plan-fm-targets.md (X1 and X2 as built). Release notes: docs\release-notes-v4.45.md. Everything below was
+measured in the emulator only. This is a delta on BE4.44: docs\checklist-v4.44.txt still applies in full (nothing
+unrouted changed: the emulator shows BE4.44's output byte for byte with nothing routed to the new rows).
+
+What changed since BE4.44:
+  - A Wavetable track's Mod Matrix has three more rows: OSC1: Sub FM (after OSC1: Position), OSC2: FM 1>2 and
+    OSC2: Sub FM (after OSC2: Position). 26 rows. The oscillator rows now read "OSC1: ..." / "OSC2: ..." (BE4.44 showed
+    "WT1: ..." / "WT2: ..."). The CC column of the new rows is blank.
+  - A routing moves the knob: amount 100 % with the source at full moves the knob by the whole travel (0..100 %), then
+    the usual depth curve. The knob is where the travel starts; the result is held to 0..100 %.
+  - OSC2: Sub FM has no knob (since BE4.43). It plays only while routed, starting from 0, next to FM 1>2.
+  - The depth follows the source once per block (2.7 ms), ramped across the block (no zipper).
+  - Works on Analog and Wavetable oscillators; with the knob at 0 a routing alone turns FM on.
+  - The piano roll's destination list is unchanged (stock's): no lanes on these.
+What to expect that is not a bug:
+  - The modulation is block rate: an LFO above about 100 Hz on an FM amount aliases (folds above 187 Hz). Use the FM
+    rows' own audio-rate sources (Sub FM, FM 1>2) for audio-rate effects.
+  - seq1..seq4 routed to the same FM row share one slot (stock's rule for every destination): the last one wins.
+  - A Wavetable OSC2's Sub FM starts from 0 even if an old project stored a value for it (an Analog OSC2 starts from it).
+
+0. Gate
+[ ] Back up the SD card (folder copy), as before.
+[ ] ON THE COMPUTER: copy a BE4.44 project with Wavetable tracks to a NEW folder FMT_A44 (keep the original).
+
+1. Boot and old projects
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.45. New empty project FMT_A, save: BENTO_SAVES.log says
+    "firmware BE4.45"; the ANALOG line has keys=ok.
+[ ] Load FMT_A44: no crash; every track sounds as on BE4.44 (A/B by ear on two tracks with FM).
+
+2. The rows (FMT_A, a new Wavetable track, Mod Matrix page)
+[ ] 26 rows: OSC1: Pitch, Level, Position, Sub FM; OSC2: Pitch, Level, Position, FM 1>2, Sub FM; then Sub, filters,
+    envelopes, LFOs as before. Photo. No "WT1:" left. The CC column of the three new rows is blank.
+[ ] Scroll to the end and back: nothing cut off, no stray text.
+
+3. The sound (track 1: OSC1 Analog Shape 0, OSC2 Analog; sub Sine an octave below; one held note C3)
+[ ] OSC1 Sub FM knob 0. Route LFO1 (slow, 1 Hz) to OSC1: Sub FM, amount 50 %: the FM depth swings 0..50 % and back,
+    smooth, no clicks or zipper. Amount -50 %: nothing (held at 0) except when the knob is up: knob 50 %, amount -50 %:
+    the depth swings 0..50 % the other way round.
+[ ] Knob 80 %, LFO amount 50 %: the top is held at 100 % (a flat top in the swing). Write down how it sounds.
+[ ] Velocity to OSC1: Sub FM, 70 %: soft notes plain, hard notes bright.
+[ ] Env 2 (short decay) to OSC2: FM 1>2, 100 %, OSC1 Level 0: a plucked FM tone on OSC2; each note retriggers it.
+[ ] OSC2: Sub FM, from LFO1 50 %: OSC2 gets the sub's FM (on top of FM 1>2 if that is up). Remove the routing: it goes
+    back to plain within a block, no click.
+[ ] The same three rows on a track with both oscillators Wavetable (factory WAVs): each works, knob 0 plus a routing
+    turns FM on.
+[ ] seq1 to OSC1: Sub FM: steps of depth, each a 2.7 ms glide.
+[ ] Remove each routing (source None) during a held note: the depth goes back to the knob, no click.
+
+4. Save, load, rollback
+[ ] Save FMT_A with all three rows routed, load another project and FMT_A again: the routings and the sound are back.
+[ ] (End of session) Flash BE4.44's kit, load FMT_A: it opens, the three routings do nothing (BE4.44 has no such rows),
+    the rest plays. Flash stock 1.6.8, load FMT_A: it opens and plays; the routings do nothing.
+
+5. CPU (write down "DSP nn%" on OSC1's title, OVER or not; the ANALOG line after a save)
+[ ] An 8-voice chord around C2, both oscillators Wavetable, OSC1 Sub FM 50 % and OSC2 FM 1>2 50 % from knobs, an LFO on
+    Position: note the DSP %. Then the same depths from routings (knobs 0, velocity 100 % on both, play hard) plus
+    LFO1 on OSC2: Sub FM 50 %: note the DSP %. Offline the routing adds about 400 instructions a voice-block and OSC2's
+    Sub FM a second FM term (about 3k): the heaviest offline voice is 32.2k (the ceiling 35.3k).
+[ ] The same on Analog oscillators. No reset, no freeze, no "!!!" in the log, no OVER that stays on.
+
+Bring back: BENTO_SAVES.log, BENTO_CRASHES.log if any, the row photo (section 2), notes on section 3 (how the clamp and
+the block-rate depth sound), section 5's figures.
