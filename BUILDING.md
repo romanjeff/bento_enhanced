@@ -207,6 +207,8 @@ plays recorded aftertouch as plain notes.
   versions in `requirements.txt`. Also make sure no `BE_` setting was passed with `--set`. If it still
   doesn't match, tell the person who sent you this page. The `build-<time>` folder it leaves is
   for that diagnosis only: never flash anything from it, and delete it afterwards.
+- **pip stops with `Read timed out`** (or another network error): the download was interrupted. Run
+  the same `pip install` line again; it picks up where it stopped.
 - **pip fails installing keystone-engine** (it tries to compile, asks for `cmake`): your platform
   has no ready-made package. Use Linux x86-64, WSL, or an Intel Mac. On Apple Silicon you can try
   the x86-64 side of the python.org universal Python through Rosetta (untested):
