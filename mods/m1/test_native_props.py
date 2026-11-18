@@ -27,8 +27,9 @@ values that play BE4.42's static depth.
 P4-1 (docs/plan-p4-drums.md 3.3 N1 / N2), a drums build (BE_ENABLE=drums): the template also has the drum keys on type 1 and
 0x0E (written on BE4.41: 0x30C entries, no pad entry; since the v4.46 merge, on BE4.43's eight keys: 0x2FC + 8 + 9 = 0x30D,
 padded to 0x310 with three pad entries, so type 0xFF is creatable again in a drums build, the hazard Hazard guards);
-DrumProject writes and reads a Drum Synth track's pads and flag with stock's own code, and stock 1.6.8 and BE4.41
-(BE_REF441, default ~/bento/out/m1-be441) open it.
+DrumProject writes and reads a Drum Synth track's pads and flag with stock's own code, and stock 1.6.8, BE4.41
+(BE_REF441, default ~/bento/out/m1-be441) and v4.46 (BE_REF446, default ~/bento/out/m1-be446: a default build of the v4.46
+tag, its sha256 the release's in tools/release_hashes.json) open it.
 Typed independently of the code under test: our keys and tokens (plan-native-props 3.1, plan-p3-fm-bits 2.1), Shape's
 default 48, stock's seven type-6 keys in order, the template count rule (cmp.w encodes every multiple of 4 from 0x300), the
 set_property message's index (WT1 0, WT2 1). Skipped on a build without the analog group (1.6.1).
@@ -51,6 +52,7 @@ KIT422 = Path(sys.argv[3]) if len(sys.argv) > 3 else HERE.parents[2] / "flash" /
 REF440 = Path(os.environ.get("BE_REF", str(Path.home() / "bento" / "out" / "m1-be440")))   # BE4.40 (P3 Q1: the rollback)
 REF441 = Path(os.environ.get("BE_REF441", str(Path.home() / "bento" / "out" / "m1-be441")))   # BE4.41 (BE4.42: Bit Depth's files; P4-1: the drums' rollback)
 REF442 = Path(os.environ.get("BE_REF442", str(Path.home() / "bento" / "out" / "m1-be442")))   # BE4.42 (BE4.43: no envelope)
+REF446 = Path(os.environ.get("BE_REF446", str(Path.home() / "bento" / "out" / "m1-be446")))   # v4.46 (the release; the drums' rollback since the v4.46 merge)
 del sys.argv[1:4]
 SYM = {k[6:]: int(v, 16) for k, v in MAN.get("m4_symbols", {}).items() if k.startswith("synth.")}
 BUILT = "analog" not in MAN.get("omitted", []) and "np_keys" in SYM
@@ -645,7 +647,8 @@ def drum_pads(r, store):
 @unittest.skipUnless(HAVE and DR_TPL, "no drums in this build's template (BE_ENABLE=drums builds them)")
 class DrumProject(unittest.TestCase):
     """P4-1 (docs/plan-p4-drums.md 3.3 N1 / N2, 5): the drum keys are stock properties of every One-Shot pad and track, so
-    stock's writer and reader carry them with no hook of ours, and stock 1.6.8 and BE4.41 (the rollbacks) open the project."""
+    stock's writer and reader carry them with no hook of ours, and stock 1.6.8, BE4.41 and v4.46 (the rollbacks) open the
+    project."""
     @classmethod
     def setUpClass(cls):
         r = cls.r = Rig()
@@ -721,6 +724,27 @@ class DrumProject(unittest.TestCase):
         again = r.save(st)
         self.assertNotIn("bento_", again)
 
+    def test_be446_opens_it_as_a_plain_one_shot(self):
+        """v4.46 merge review: v4.46 (the released image, no drums, BE4.43's eight Analog keys on type 6, template 0x304 with no
+        pad) is now the likeliest rollback: it opens the project as stock does and its next save has no bento_ attribute.
+        The reference must be the release byte for byte (tools/release_hashes.json); a missing one fails, as BE4.41's."""
+        img = REF446 / "bento1.bin"
+        self.assertTrue(img.exists(), f"no v4.46 build at {REF446} (BE_REF446): a default build of the v4.46 tag is this test's reference")
+        rel = json.loads((HERE.parents[1] / "tools" / "release_hashes.json").read_text())["releases"]["4.46"]
+        self.assertEqual(hashlib.sha256(img.read_bytes()).hexdigest(), rel["bento1.bin"], f"{img} is not the v4.46 release image")
+        man = json.loads((REF446 / "manifest.json").read_text())
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        self.assertEqual(sym["np_template_n"], 0x304, "v4.46's template: Analog's eight keys, no pad")
+        r = Rig(img=img.read_bytes(), sym=sym)
+        st = r.load(self.text)
+        t, pads = drum_pads(r, st)
+        self.assertEqual(len(pads), 3)
+        self.assertTrue(all(r.prop(p, k) is None for p in pads for k in DR_KEYS), "no drum key on v4.46's pads")
+        self.assertIsNone(r.prop(t, 0x1A2))
+        again = r.save(st)
+        self.assertNotIn("bento_", again)
+        self.assertEqual(again.count('<cell type="saminst">'), 3)
+
 
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
 class Hazard(unittest.TestCase):
@@ -740,8 +764,10 @@ class Hazard(unittest.TestCase):
             self.assertIsNone(x, "BE4.43: no pad entry, so no object (BE4.41 / BE4.42: one made, the hazard this class guarded)")
             self.assertEqual(n, 0x304)
             return
-        # P4-1 on BE4.43's eight keys (the v4.46 merge): only a drums build has pad entries (0x30D -> 0x310, three)
+        # P4-1 on BE4.43's eight keys (the v4.46 merge): only a drums build has pad entries (0x30D -> 0x310, three). A known
+        # open item, not a fix: docs/plan-p4-drums.md P4-D13 must close it before BE4.50 (merge review)
         self.assertTrue(DR_TPL, f"pad entries ({npad}) only in a drums build")
+        print(f"  (OPEN P4-D13: {npad} type-0xFF pad entries in this drums build's template; type 0xFF is creatable)")
         self.assertIsNotNone(x, "a drums build: the pad entries make one (the hazard this class guards)")
         self.assertEqual([(k, v) for v, k, _ in a.props_of(x)], [(0, 0)] * npad, "one property, key 0, per pad entry")
 
@@ -795,14 +821,19 @@ class DefaultImage(unittest.TestCase):
     """P4 (review): P4's default build promises the last release's image (BE4.41's when P4-1 was written; v4.46's since the
     v4.46 merge): a default build (no BE_ENABLE / BE_DISABLE: the groups typed here) at a released version
     (tools/release_hashes.json) on that release's base is the released image byte for byte; any other build (a drums
-    build, a bisect, another base, a bumped version) skips. Retires itself when the version changes on purpose."""
+    build, a bisect, another base, a bumped version) skips. Retires itself when the version changes on purpose.
+    A release in release_hashes.json with no DEFAULT_GROUPS entry fails (merge review): otherwise the guard would skip
+    quietly from the next release on. Add each release's default (disabled, omitted) from its make_kit manifest."""
     DEFAULT_GROUPS = {"4.46": (["drums", "irq30", "modtest", "mx", "stall"], ["drums", "mx"])}   # (disabled, omitted)
     def test_a_default_build_at_a_release_is_its_image(self):
         rel = json.loads((HERE.parents[1] / "tools" / "release_hashes.json").read_text())["releases"].get(MAN.get("version"))
         if not rel or MAN.get("base_label") != f"stock-{rel['base']}":
             self.skipTest(f"version {MAN.get('version')} on {MAN.get('base_label')}: not a released image")
+        want = self.DEFAULT_GROUPS.get(MAN.get("version"))
+        self.assertIsNotNone(want, f"release {MAN.get('version')} has no DEFAULT_GROUPS entry: add its default build's "
+                                   "(disabled, omitted), from the manifest make_kit wrote")
         mine = (sorted(MAN.get("disabled", [])), sorted(MAN.get("omitted", [])))
-        if mine != self.DEFAULT_GROUPS.get(MAN.get("version")):
+        if mine != want:
             self.skipTest(f"groups {mine}: not the default build")
         self.assertEqual(hashlib.sha256(IMG).hexdigest(), rel["bento1.bin"], "the default build differs from the released image")
 
