@@ -7774,7 +7774,7 @@ class WtFmW4(unittest.TestCase):
         self.assertLessEqual(rows["full WT voice, FM Atk 3"][1], self.W4_ATK_MAX, "FM Atk's level crossings (accepted, c)")
 
 
-# BE4.45 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6, in the voice's allocation slack
+# BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6, in the voice's allocation slack
 # (typed here independently of synth_shared.h FMENV_*): source 3's pointer voice + FE_SRC, 6's + FE_SRC + 4, so FM Env 1 is
 # the float at + FE_VAL, FM Env 2 at + FE_VAL + 4; FE_ON the stub's "a route was connected" word; the slack ends at FE_END
 FE_SRC, FE_VAL, FE_ON, FE_END = 0xB84, 0xB88, 0xB90, 0xBA0
@@ -7793,7 +7793,7 @@ def fe_route(r, root, inst, key, src, amount=500, slot=0):
 
 @unittest.skipUnless(HAVE and S.has("WT_ROUTE"), "no analog group in this image (1.6.1, or left out)")
 class FmEnvSrc(unittest.TestCase):
-    """BE4.45 S1 (docs/feasibility-fm-env-sources.md, S1's tests): FM Env 1 / FM Env 2 (each oscillator's FM envelope) as
+    """BE4.46 S1 (docs/feasibility-fm-env-sources.md, S1's tests): FM Env 1 / FM Env 2 (each oscillator's FM envelope) as
     mod-matrix sources 3 / 6 of a Wavetable voice (the M4 side, list / names / validator, is S2). M7: stock's routing connect
     (WT_ROUTE) sends ids 3 / 6 through two stubs (build.py fmenv_connect) to the voice's slack, voice + FE_SRC / + FE_SRC + 4,
     which PARAM_VALUE reads at + 4; the stub sets FE_ON and 1.0 there. DSP: while FE_ON is set, an_enter publishes each
@@ -7963,8 +7963,8 @@ class FmEnvSrc(unittest.TestCase):
             r = Rig(img=img, dev=True)
             writes = []
             def wr(uc, acc, a, size, val, _):
-                if 0xC5F10000 <= a < 0xC5F10000 + 10 * FE_END and (a - 0xC5F10000) % FE_END >= FE_VOICE:
-                    writes.append((uc.reg_read(UC_ARM_REG_PC), (a - 0xC5F10000) % FE_END, phase[0]))
+                if 0xC5F10000 <= a < 0xC5F10000 + 10 * FE_END and (a - 0xC5F10000) % FE_END >= FE_VOICE:  # addr-ok: harness
+                    writes.append((uc.reg_read(UC_ARM_REG_PC), (a - 0xC5F10000) % FE_END, phase[0]))  # addr-ok: harness
             phase = ["life"]
             r.u.hook_add(UC_HOOK_MEM_WRITE, wr)
             root, v0, sub, _ = SubCopy.voice(self, r, 4, 1000, fm=(300, 0), types=(1, 0), glide=100, pw=300, fine=0)

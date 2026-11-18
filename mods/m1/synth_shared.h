@@ -142,7 +142,7 @@ typedef struct {
 #define AN_FM_FRAMES 256u                                   /* one buffer: 2N, the device's oscillator block */
 #define SA_FMBUF_A SA_FMBUF
 #define SA_FMBUF_B (SA_FMBUF + 4u * AN_FM_FRAMES)
-/* BE4.45 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / FM Env 2 (OSC1's / OSC2's FM envelope) as mod-matrix sources
+/* BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / FM Env 2 (OSC1's / OSC2's FM envelope) as mod-matrix sources
  * 3 / 6 of a Wavetable voice, in the voice's allocation slack: stock's root ctor allocates a voice as 0xB88 B (0x0809CB40)
  * and its pool rounds that to 0xBA0 (0x080A05E6), so voice + 0xB88 .. + 0xB9F is ours (S; no stock code writes it: M,
  * test_analog FmEnvSrc). Stock's routing connect (0x0807C8A0, build.py fmenv_connect's stubs) gives source 3 the pointer

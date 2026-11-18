@@ -193,7 +193,7 @@ __attribute__((noinline)) static int wt_tagged(void *osc) {
     return state(osc)->magic == t && W(state(osc), 4) == ~t;
 }
 static inline u32 wt_mip(const AnOsc *g) { u32 m = g->wt.mipcur; return m < WT_MIPS ? m : WT_HOME; }
-/* BE4.45 S1 (docs/feasibility-fm-env-sources.md; synth_shared.h FMENV_*): the oscillator's FM envelope as a mod-matrix
+/* BE4.46 S1 (docs/feasibility-fm-env-sources.md; synth_shared.h FMENV_*): the oscillator's FM envelope as a mod-matrix
  * source. e0, its value at the start of the block about to render: fm_env_step's own first line, read only (the step itself
  * runs in the oscillator's render, after this, and returns this same value as env[0]): AN_FE_START (a note started) 0, or 1
  * for FM Atk 0; DEC at j 0 1 (also the hold while unset); else fme (the last step's end). 1 while the envelope is unset
@@ -451,7 +451,7 @@ extern "C" __attribute__((used)) void an_enter(void *root, void *voice) {
         r->idx = idx;
     }
     u8 *v = (u8 *)voice;
-    /* BE4.45 S1: FM Env 1 / 2 published for the matrix (before the renders and the filters read them), only on a voice a
+    /* BE4.46 S1: FM Env 1 / 2 published for the matrix (before the renders and the filters read them), only on a voice a
      * route to source 3 / 6 was connected on; else one load and a branch. Here, before a1 / a2, nothing more is live across
      * the call than across finish's (M: after them an_enter grew 64 B) */
     if (__builtin_expect(W(v, FMENV_ON) != 0u, 0)) fm_env_publish(v);
@@ -668,7 +668,7 @@ extern "C" __attribute__((used)) void an_note(void *osc) {
     }
     u32 which = 2;
     u8 *v = voice_of(osc, &which);
-    /* BE4.45 S1: the note's start value (0, or 1 for FM Atk 0 or an unset envelope) at once, for the readers that run before
+    /* BE4.46 S1: the note's start value (0, or 1 for FM Atk 0 or an unset envelope) at once, for the readers that run before
      * the next an_enter (env 2, the LFOs and the mod sequencer tick before the voice render) */
     if (v && W(v, FMENV_ON)) F(v, FMENV_VAL + 4u * which) = fm_env_e0(osc);
     if (!v || which != 0 || an) return;

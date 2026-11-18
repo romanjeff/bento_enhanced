@@ -845,7 +845,7 @@ REVIEWED = {
     'WT_ENGINE_INIT': dict(value=0x807f180, evidence="(root): called once per root at 0x08058BD0 after WT_ROOT_CTOR's caller (S); "
                            "connects each voice's modulation (pitch gets a root source) and leaves osc+0x108 = 2.0 on WT1 / WT2 "
                            "(M: impl_SM pprobe.py; plan-analog-fm F0 verdict). Tests only (the device-shaped rig)"),
-    # BE4.45 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (stock_168.py's notes carry the
+    # BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (stock_168.py's notes carry the
     # full evidence; added to the table by hand, as BE4.44 W0's entries: gen_table.py does not run on the current tables)
     'WT_ROUTE': dict(value=0x807c8a0, evidence="(root, msg 0x3F) routing connect; tbh by id - 1 (instances 0 / 1, voice r5) at "
                      "0x0807CA7A and by id - 2 (instances 2.., voice r3) at 0x0807C922 (S; M: test_analog FmEnvSrc)"),

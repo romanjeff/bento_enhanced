@@ -74,7 +74,7 @@ GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_en
 BASE_SETTINGS = {
     "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0", "drums"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.45", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.46", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
                               "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx", "drums"), omit_off=("drums",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
@@ -359,7 +359,7 @@ GROUP_NAMES = {
                "STR_PREFIX_OSC1", "STR_PREFIX_OSC2", "STR_DEST_OSC_FMT", "PREFIX_LIT_OSC1", "PREFIX_LIT_OSC2", "DEST_FMT_LIT",
                "PANE_TITLE_SITE", "WT_PANE_PAINT_SLOT", "WT_PANE_PAINT", "BROWSE_POST_SITE", "UI_POST",
                "VALUE_TEXT_1", "VALUE_TEXT_2", "VALUE_TEXT_3", "ENC_POS_SET", "WT_PANE_FRAMES_DIRTY",
-               # BE4.45 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (fmenv_connect)
+               # BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (fmenv_connect)
                "FMENV_IDX_TBH", "FMENV_IDX_PAD", "FMENV_IDX_NEXT", "FMENV_SUB_TBH", "FMENV_SUB_PAD", "FMENV_SUB_NEXT",
                "WT_VOICE_ALLOC"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
@@ -893,14 +893,14 @@ def synth_define(name):
     return int(m.group(1), 16)
 
 def fmenv_offsets():
-    """BE4.45 S1: the voice-tail layout of FM Env 1 / 2 (synth_shared.h FMENV_*, the DSP's): (src, val, on, slack end)."""
+    """BE4.46 S1: the voice-tail layout of FM Env 1 / 2 (synth_shared.h FMENV_*, the DSP's): (src, val, on, slack end)."""
     o = tuple(synth_define(n) for n in ("FMENV_SRC", "FMENV_VAL", "FMENV_ON", "FMENV_SLACK_END"))
     src, val, on, end = o
     if not (val == src + 4 and on >= val + 8 and on + 4 <= end and src % 4 == 0 and on < 0x1000):
         raise SystemExit(f"synth_shared.h FMENV_*: layout {[hex(x) for x in o]} is not src, src + 4 (two values), flag")
     return o
 
-# BE4.45 S1 (docs/feasibility-fm-env-sources.md, "Recommended route", M7): stock's Wavetable routing connect (WT_ROUTE,
+# BE4.46 S1 (docs/feasibility-fm-env-sources.md, "Recommended route", M7): stock's Wavetable routing connect (WT_ROUTE,
 # message 0x3F) picks the source object by id in two tbh tables, the oscillator / envelope / LFO / filter path (instances
 # 0 / 1, indexed by id - 1, the voice in r5) and the sub path (instances 2.., indexed by id - 2, the voice in r3); ids 3 and
 # 6 (Env 3 / LFO 3, which a Wavetable voice does not have) go to "no source" (movs r1, #0) in both. Their four entries are
@@ -924,11 +924,11 @@ def fmenv_stub(at, voice, tmp, nxt, src, val, on):
     return code, 0, 6
 
 def fmenv_connect(img_base, S, patch):
-    """BE4.45 S1: patch the two tables and place the two stubs (see FMENV_STUB_BYTES). Refuses a base where the entries do
+    """BE4.46 S1: patch the two tables and place the two stubs (see FMENV_STUB_BYTES). Refuses a base where the entries do
     not go to stock's "no source" path, the join is not right after its movs r1, #0, the padding is not all nops, or the
     voice is not allocated as 0xB88 B (the slack: synth_shared.h)."""
     src, val, on, end = fmenv_offsets()
-    def fail(what): raise SystemExit(f"FM Env sources (BE4.45 S1, {S.label}): {what}")
+    def fail(what): raise SystemExit(f"FM Env sources (BE4.46 S1, {S.label}): {what}")
     if img_base[S.WT_VOICE_ALLOC - BASE:S.WT_VOICE_ALLOC - BASE + 4] != asm("movw r2, #0xb88", S.WT_VOICE_ALLOC) or end != 0xBA0:
         fail("the Wavetable voice is not allocated as 0xB88 B (its slack 0xB88..0xBA0 is FM Env's)")
     for tbh, n, pad, padn, nxt, voice, tmp, first, name in (
@@ -949,9 +949,9 @@ def fmenv_connect(img_base, S, patch):
             fail(f"the stub does not fit {pad}")
         ent[i3], ent[i6] = (p + o3 - t) // 2, (p + o6 - t) // 2
         patch(p, code + bytes(img_base[p + len(code) - BASE:p + padn - BASE]), S.orig(pad),
-              f"FM Env sources (BE4.45 S1): routing connect stub, {name} path (ids 3 / 6 -> voice + {src:#x} / {src + 4:#x})")
+              f"FM Env sources (BE4.46 S1): routing connect stub, {name} path (ids 3 / 6 -> voice + {src:#x} / {src + 4:#x})")
         patch(t, struct.pack(f"<{n}H", *ent), S.orig(tbh),
-              f"FM Env sources (BE4.45 S1): routing connect {name} table, ids 3 / 6 -> the stub")
+              f"FM Env sources (BE4.46 S1): routing connect {name} table, ids 3 / 6 -> the stub")
 
 def check_region_assumptions(img, S, synth=False):
     """Refuse a base whose ext pool no longer has room for the Region where we put it. S6a (synth): the same
@@ -1847,7 +1847,7 @@ def m7_dsp(base_img, patch, sources, out, inc):
               "Analog: Wavetable oscillator slot 8 (set property, N3) -> an_prop, else stock's")
         patch(S.WT_OSC_NOTE_SLOT, struct.pack("<I", sd["tramp_note"] | 1), S.orig("WT_OSC_NOTE_SLOT"),
               "Analog: Wavetable oscillator slot 2 (note start, S1) -> an_note, then stock's")
-        fmenv_connect(base_img, S, patch)                    # BE4.45 S1: FM Env 1 / 2 as routing sources 3 / 6
+        fmenv_connect(base_img, S, patch)                    # BE4.46 S1: FM Env 1 / 2 as routing sources 3 / 6
     if inc("drums"):
         with S.group("drums"):
             patch(S.DRUM_RENDER, asm(f"b.w {sd['tramp_render']:#x}", S.DRUM_RENDER), S.orig("DRUM_RENDER"),
