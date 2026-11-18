@@ -1946,8 +1946,16 @@ def fmenv_matrix(base_img, patch, code, ss):
         raise SystemExit(f"S2: m4_synth.c's mx_wt_sources is not {ours} (stock's list with 3 / 6 after Env 2, then 0)")
     if S.orig("MX_WT_ROWS_SITE") != asm(f"bl {S.MX_WT_ROWS_FILL:#x}", S.MX_WT_ROWS_SITE):
         raise SystemExit("S2: MX_WT_ROWS_SITE is not stock's bl MX_WT_ROWS_FILL")
-    replays("MX_SRC_VALID", "mov ip, r1; ldrh r1, [r1, #4]")
-    replays("MX_SRC_NAME", "push {lr}; mov lr, r0")
+    # the C stubs (stock_valid / stock_src_name) replay stock's first instructions and resume at site + 5 (Thumb): their
+    # bytes must be exactly stock's entry, then movw / movt r3 = site + 5, bx r3 (S2 review: one check ties the C to stock)
+    for site, displaced, stub in (("MX_SRC_VALID", "mov ip, r1; ldrh r1, [r1, #4]", "stock_valid"),
+                                  ("MX_SRC_NAME", "push {lr}; mov lr, r0", "stock_src_name")):
+        replays(site, displaced)
+        at, back = ss[stub] & ~1, getattr(S, site) + 5
+        want = asm(f"{displaced}; movw r3, #{back & 0xFFFF:#x}; movt r3, #{back >> 16:#x}; bx r3", at)
+        got = code[at - SYNTH_CODE:at - SYNTH_CODE + len(want)]
+        if got != want or got[:4] != S.orig(site):
+            raise SystemExit(f"S2: {stub} at {at:#x} is {got.hex()}, not stock's {site} entry replayed, resuming at {back:#x}")
     patch(S.MX_WT_ROWS_SITE, asm(f"bl {ss['mx_wt_rows']:#x}", S.MX_WT_ROWS_SITE), S.orig("MX_WT_ROWS_SITE"),
           "FM Env sources (BE4.46 S2): a Wavetable Mod Matrix page lists FM Env 1 / 2 after Env 2 (mx_wt_rows)")
     for site, fn, why in (("MX_SRC_VALID", "mx_src_valid", "sources 3 / 6 valid on a Wavetable track"),

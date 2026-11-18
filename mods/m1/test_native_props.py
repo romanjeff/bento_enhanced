@@ -817,16 +817,20 @@ class FmEnvMatrix(unittest.TestCase):
                     r.u.mem_write(rec, struct.pack("<IHH", 0x12345678, src, 0xBEEF))
                     r.call(S.MX_SRC_VALID, view, rec)
                     after = struct.unpack("<IHH", bytes(r.u.mem_read(rec, 8)))
-                    out[kind, src] = (after, r.e.text(r.call(S.MX_SRC_NAME, view, src), 32))
+                    # (the copy, the name of the id (MX_ROWS_BUILD's one-row refresh), the name of the copy's id (its full
+                    # rebuild: the validator, then the name; S2 review: what a stock rollback shows for an FM Env slot))
+                    out[kind, src] = (after, r.e.text(r.call(S.MX_SRC_NAME, view, src), 32),
+                                      r.e.text(r.call(S.MX_SRC_NAME, view, after[1]), 32))
             res.append(out)
         ours, stock = res
         self.assertEqual({k for k in stock if ours[k] != stock[k]}, {(S.TYPE_WAVETABLE, FE1), (S.TYPE_WAVETABLE, FE2)})
         for src, nm in ((FE1, "FM Env 1"), (FE2, "FM Env 2")):
-            self.assertEqual(stock[S.TYPE_WAVETABLE, src], ((0x12345678, 0, 0xBEEF), FE_NAMES[src]), "stock erases the copy")
-            self.assertEqual(ours[S.TYPE_WAVETABLE, src], ((0x12345678, src, 0xBEEF), nm))
+            self.assertEqual(stock[S.TYPE_WAVETABLE, src], ((0x12345678, 0, 0xBEEF), FE_NAMES[src], "[None]"),
+                             "stock erases the copy: a full rebuild shows [None], a one-row refresh Envelope 3 / LFO 3")
+            self.assertEqual(ours[S.TYPE_WAVETABLE, src], ((0x12345678, src, 0xBEEF), nm, nm))
             for kind in (0x0F, 0x13):
                 self.assertEqual(ours[kind, src][0][1], 0, f"type {kind:#x} erases {src}")
-        self.assertEqual(stock[S.TYPE_WAVETABLE, 4], ((0x12345678, 4, 0xBEEF), "LFO 1"), "a listed source is kept (control)")
+        self.assertEqual(stock[S.TYPE_WAVETABLE, 4], ((0x12345678, 4, 0xBEEF), "LFO 1", "LFO 1"), "a listed source is kept (control)")
 
     def test_the_source_encoder_picks_them(self):
         """Stock's MX_EDIT on the first row (OSC1 Pitch): the Source encoder's index i posts list[i] as the source (index 18,

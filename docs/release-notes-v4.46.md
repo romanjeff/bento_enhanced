@@ -31,7 +31,8 @@ Nothing else changes. Granular and the other track types keep stock's source lis
 - A routing from FM Env is a stock routing: `src="env3"` (FM Env 1) or `src="lfo3"` (FM Env 2). These are stock's
   Envelope 3 / LFO 3 ids, which a Wavetable voice does not have on stock. No new project keys.
 - **Stock 1.6.8 and BE4.44** (the rollbacks) open such a project and keep the routing, but play nothing from it: their
-  Wavetable voice has no source for those ids. Their Mod Matrix page shows the slot as [None]. Saving there keeps it.
+  Wavetable voice has no source for those ids. Their Mod Matrix page shows the slot as [None] (a row stock refreshes on its own may show
+  "Envelope 3" / "LFO 3" instead; either is expected). Saving there keeps it.
   **Editing that slot there removes it**: stock's page sends the slot back with source None on an amount edit (and a new
   source replaces it). Back on BE4.46, an untouched routing works again.
 - BE4.46 opens every BE4.44 project unchanged.

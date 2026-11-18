@@ -35,7 +35,7 @@ PARAM_VALUE then reads `[src+4]`, which is voice+0xB88 for FM Env 1 and voice+0x
 - In `an_note` (slot 2, called per oscillator), write the start value, so the first block's env2/LFO/seq readers never see uninitialised pool memory.
 
 **M4 (about 0.15-0.2 KB).**
-- An 18-entry WT list: stock's 16 entries, with FM Env 1/2 placed after Env 2. Install it with investigation 2's wrapper on the row filler 0x0814DA70, which rewrites view+0x8ACC8 and the count at +0x8AC4E. Repointing the shared literal 0x0814EDF8 would also change types 15 and 19.
+- An 18-entry WT list: stock's 16 entries, with FM Env 1/2 placed after Env 2. Install it with investigation 2's wrapper on the row filler 0x0814DA70, which rewrites view+0x8ACC8 and the count at +0x8AC4E. Repointing the shared literal 0x0814EDF8 would also change types 15 and 19. (Superseded: see "S2 as built", plan items found wrong 2 / 3. The filler writes neither; S2 patches MX_BUILD's bl to it, and the literal is shared with Granular only.)
 - A replacement validator that accepts 3 and 6 when the type is 18 (WT) and is otherwise stock.
 - A name hook in 0x0814D8F0, WT only: 3 shows as "FM Env 1" and 6 as "FM Env 2".
 - The save format does not change.
@@ -173,7 +173,9 @@ WT_VOICE_ALLOC). The destinations patch oscillator slots 9 / 10 (0x08081B60) on 
 list) and m7_dsp, stock_168.py SYMS / CHECKS (adjacent new entries), analog.cpp an_enter, and the DSP window (both add
 code: 9,620 B free here before theirs). S2 will touch the same M4 page: the source list rides on the row filler
 0x0814DA70 that the destinations lane also patches (its `#0x17` / `#0x228`), so S2 must wrap that function after the
-destinations' patch lands (merge destinations first), keeping the source-list change in its own wrapper.
+destinations' patch lands (merge destinations first), keeping the source-list change in its own wrapper. (Superseded:
+see "S2 as built", plan item found wrong 2 and the overlap section. S2 patches MX_BUILD's call to the filler, not the
+filler, so no byte is shared with X1 and the merge order does not matter for these bytes.)
 
 **Suites (M, ~/bento/out/be446-s1, built from 37f49f2, sha256 1dca5f27...f170; from the worktree's mods/m1; skips in
 brackets).** All OK: diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24
@@ -434,3 +436,40 @@ bento1.bin sha256 ae671b35a3cc183542568c8d3f20509786372f492738902e5000ebe19d5ec9
 2cc8bb81...c514).
 
 **Next:** the device check (checklist-v4.46.txt), then the merge with be445x (destinations first).
+
+## S2 review dispositions (BE4.46, 2026-11-17)
+
+Two reviews (rebuilds be446-S2r1 / S2r2 byte-identical to the kit image; suites green; their own mutant sets). Five
+low-severity issues; all accepted after checking:
+1. **Stock's one-row refresh skips the validator (accepted, docs; S).** Checked in stock's disassembly: MX_ROWS_BUILD's
+   message path (r1 non-null, 0x0814E440..0x0814E53C) bounds the id (<= 0x21) and calls MX_SRC_NAME (0x0814E53C) with
+   no MX_SRC_VALID; only the full rebuild runs the validator (0x0814E696) before the name (0x0814E6AC). So on a
+   stock / BE4.44 rollback an FM Env slot shows [None] after a full rebuild but may show "Envelope 3" / "LFO 3" after a
+   routing echo. Checklist section 6 and the release notes now say either is expected. On BE4.46 both paths name it
+   FM Env 1 / 2. No code change.
+2. **The C replay stubs were not tied to build.py's replay text (accepted, code; M).** fmenv_matrix() now checks the built
+   bytes of stock_valid / stock_src_name: exactly `<displaced>; movw r3, #site+5 lo; movt r3, #site+5 hi; bx r3`
+   assembled at the stub's address, and its first 4 bytes are stock's entry. The replay text exists once in build.py and
+   is checked against both stock and the C. Mutants on a scratch copy (scratch be446/s2fix/mut.sh), each refused by
+   the build: the validator replay `ldrh r1, [r1, #6]` (the reviewer's R2, which used to build), the name replay
+   `mov lr, r1`, and the name's resume at +7. The release image is unchanged (sha256 ae671b35...c985).
+3. **The plan text still said what S2 proved wrong (accepted, docs).** "Superseded: see S2 as built" markers at the M4
+   costs bullet (the filler and the shared literal) and at the S1 merge note (wrap the filler after the destinations);
+   the history stays.
+4. **One step past Auto D (accepted, docs).** Checklist section 2: MX_EDIT accepts index == count, so one step past
+   Auto D may show [None], as stock's page does; not a bug.
+5. **No test asserted the rollback's displayed name (accepted, test; M).** FmEnvMatrix.test_every_other_page_type_and_id
+   now records, per (type, id), both names MX_ROWS_BUILD can show: the id's (its one-row refresh) and the validated
+   copy's (its full rebuild). Stock Wavetable 3 / 6: "Envelope 3" / "LFO 3" and "[None]"; ours: FM Env 1 / 2 on both.
+   Every other (type, id) is still stock's on all three fields. Calling MX_ROWS_BUILD itself on stock would need its
+   widget rows; the two calls are the ones it makes (issue 1), so this tests the same composition.
+
+Rebuilt into ~/bento/out/be446-s2f-rel (release, sha256 ae671b35...c985, the same image as be446-s2-rel: the change is
+the build guard and the tests) and the tagged ~/bento/out/be446-s2f (BE_TAG=s2f). Suites, sizes and CPU: see the next
+paragraph. Sizes are S2's (DSP 31,084 B, 9,620 B free; synth UI 16,054 B; image 0x189520). CPU is unchanged from S2 as
+built (no M7, DSP or M4 byte changed): P3Identity worst 1.0170, heaviest routed steady voice 34,826 vs the 35,309
+ceiling; no ceiling raised.
+
+**Kit.** flash\bento_enhanced-v4.46-envsrc (git-ignored, never committed), packaged with package_m1.sh from
+be446-s2f-rel, plus DEVICE_CHECKLIST.txt (= docs/checklist-v4.46.txt) and SHA256SUMS.txt regenerated over all files.
+It replaces the earlier flash\bento_enhanced-v4.46 kit (same image; that folder had the old checklist).

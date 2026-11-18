@@ -41,7 +41,8 @@ What to expect that is not a bug:
 
 2. The list (FMENV_A, a new Wavetable track; load a factory WAV on both oscillators)
 [ ] Open its Mod Matrix page, pick a row (OSC1: Pitch), turn the Source encoder through the whole list: the order is the
-    one above (18 entries, FM Env 1 / FM Env 2 right after Envelope 2), and the last one is Auto D. Photo of the page with
+    one above (18 entries, FM Env 1 / FM Env 2 right after Envelope 2), and the last one is Auto D. One step past Auto D
+    may show [None] (MX_EDIT reads one past the list, as on stock / BE4.44): not a bug. Photo of the page with
     FM Env 1 selected.
 [ ] Do the same on slot 2 and slot 3 of a row: the same list.
 [ ] A Granular track's Mod Matrix page: stock's list (no FM Env). Any other track type's page: as before.
@@ -74,7 +75,9 @@ What to expect that is not a bug:
 
 6. Rollback (on COPIES: FMENV_B = a copy of FMENV_A made on the computer)
 [ ] Flash 03_RESTORE_STOCK (stock 1.6.8). Open FMENV_B: it loads, the FM Env routings play nothing (stock has no source
-    for them on a Wavetable voice). On the Mod Matrix page those slots show [None].
+    for them on a Wavetable voice). On the Mod Matrix page those slots show [None]
+    (a row stock refreshes on its own after a routing echo may show "Envelope 3" / "LFO 3" instead: its one-row path
+    skips the validator; either is expected, note which).
 [ ] Without touching those slots, save FMENV_B; back on the computer its project file still has src="env3" / "lfo3".
 [ ] On stock, change the AMOUNT of one of those slots: that routing is removed (expected: stock's page sends it back with
     source None). The others stay.
