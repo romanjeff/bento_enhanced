@@ -19,24 +19,27 @@
 </header>
 
 <section class="notice" aria-label="Before you start">
-  <p><strong>Not affiliated with 1010music.</strong> Installing modified firmware is at your own risk.
-  The mod never touches the Bento's bootloader, so the official way back to stock always works.
+  <p><strong>Not affiliated with 1010music.</strong> Installing modified firmware is at your own risk and may
+  affect your warranty; bento_enhanced is free software and comes with no warranty. The mod never touches the
+  Bento's bootloader, which is what keeps the official way back to stock working.
   Please don't ask 1010music support about it.</p>
   <p><strong>Keep the kit private.</strong> It contains 1010music's firmware: it is for your own Bento only.
-  Never share, upload or post it. This site holds only the mod's own bytes, never 1010music's.</p>
+  Never share, upload or post it. This site contains none of 1010music's firmware: no run of 8 or more bytes
+  from it, only short sequences any ARM code shares.</p>
 </section>
 
 <section>
   <h2><span class="num">1</span> Your stock firmware</h2>
-  <p>Download firmware <strong><span id="base-version">1.6.8</span></strong> from 1010music's downloads page
-  (Bento section). Then drop the downloaded zip here, or its two files <code>bento1.bin</code> and
-  <code>bento2.bin</code>. File names don't matter: each file is recognised by its SHA-256, and anything
-  but the exact official files is refused.</p>
+  <p>Download firmware <strong><span id="base-version">1.6.8</span></strong>, exactly that version, from
+  <a href="https://1010music.com/downloads" rel="noreferrer">1010music's downloads page</a> (Bento section).
+  Then drop the downloaded zip here, or its two files <code>bento1.bin</code> and <code>bento2.bin</code>.
+  File names don't matter: each file is recognised by its contents (its SHA-256 checksum), and anything but
+  the exact official files is refused.</p>
   <div id="drop" class="drop" role="button" tabindex="0" aria-describedby="drop-hint">
     <span>Drop files here, or tap to choose</span>
     <small id="drop-hint">bento1.bin and bento2.bin, or the 1010music zip</small>
   </div>
-  <input id="pick" type="file" multiple accept=".bin,.zip,application/zip,application/octet-stream" hidden>
+  <input id="pick" type="file" multiple hidden>
   <ul id="files" class="files" aria-live="polite"></ul>
   <p class="have"><span id="have-1">bento1.bin: not yet</span> <span id="have-2">bento2.bin: not yet</span></p>
 </section>
@@ -60,12 +63,12 @@
     <ul class="dl">
       <li><a id="dl-zip" href="#">Download the kit</a> <span id="dl-zip-name"></span>:
         everything below, with a README and checksums.</li>
-      <li><a id="dl-bin" href="#">Download only bento1.bin</a> <span id="dl-bin-name"></span>:
-        the patched file alone (install it with your stock <code>bento2.bin</code>).</li>
     </ul>
     <p>The kit holds <code>01_TEST_FIRMWARE/</code> (the mod's <code>bento1.bin</code> and your stock
     <code>bento2.bin</code>), <code>03_RESTORE_STOCK/</code> (your stock pair), <code>README.txt</code>,
-    <code>DEVICE_CHECKLIST.txt</code> and <code>SHA256SUMS.txt</code>.</p>
+    <code>DEVICE_CHECKLIST.txt</code> (the author's hardware test list: what changed and how to try it) and
+    <code>SHA256SUMS.txt</code>. The folders keep the mod's <code>bento1.bin</code> apart from the stock one
+    with the same name: copy from the right folder.</p>
   </div>
 </section>
 
@@ -77,9 +80,10 @@
     (<code>bento1.bin</code> and <code>bento2.bin</code>) to the <strong>root</strong> of the SD card,
     not into a folder, replacing any there. Eject the card properly.</li>
     <li>Put the card in the Bento. <strong>Long-press power</strong> to start the bootloader, then press
-    <strong>REC</strong> to install.</li>
+    <strong>REC</strong> to install. Don't switch the Bento off while it installs.</li>
     <li>The boot screen shows the version (for example <code>BE4.46</code>).</li>
   </ol>
+  <p>On a phone or tablet you also need a way to copy files to the SD card (a card reader).</p>
   <h3>Back to stock</h3>
   <p>Do the same with the two files from <code>03_RESTORE_STOCK</code>: that is the official firmware,
   installed the official way. <strong>Projects that use the mod's features are not supported on stock
@@ -87,9 +91,9 @@
 </section>
 
 <footer>
-  <p>How this works: the site holds, per release, only the bytes the mod authored plus instructions to copy
-  the rest from your own stock file; the result is checked against the published SHA-256 of the release
-  before anything can be downloaded. Source, and the same kit built from source:
+  <p>How this works: the site holds, per release, the mod's own bytes plus instructions to copy everything
+  else from your own stock files; the result is checked against the release's published SHA-256 before
+  anything can be downloaded. Source, and the same kit built from source:
   <a href="https://github.com/romanjeff/bento_enhanced">github.com/romanjeff/bento_enhanced</a>
   (BUILDING.md, docs/web-patcher.md). bento_enhanced is free software (GPL-3.0-or-later); the firmware it
   patches is 1010music's.</p>
