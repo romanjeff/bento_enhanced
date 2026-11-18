@@ -481,5 +481,6 @@ SHA256SUMS.txt verified (sha256sum -c).
 ## Merged into BE4.46 (branch be446)
 
 Merged with the destinations lane (be445x, X1..X3). Conflicts, resolutions, the re-measured test_cost bounds, CPU,
-sizes and suites: `docs/plan-fm-targets.md`, "BE4.46 merge". The kit `flash\bento_enhanced-v4.46-envsrc` is superseded
+sizes and suites: `docs/plan-fm-targets.md`, "BE4.46 merge" (and "BE4.46 merge review": CPU worst cases, Jeff's
+rulings of 2026-11-17). The kit `flash\bento_enhanced-v4.46-envsrc` is superseded
 by `flash\bento_enhanced-v4.46` (the combined image).

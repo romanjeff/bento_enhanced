@@ -9164,22 +9164,31 @@ class FmEnvToFmDepth(unittest.TestCase):
     ENVS = {(1, 1): {0: (2, 5), 1: (1, 4)}, (0, 0): {0: (2, 4), 1: (1, 6)}}   # (FM Atk, FM Dec) per oscillator
     N = 14
 
-    def run_route(self, types, inst, key, src, how, base=200, amount=600):
+    def run_route(self, types, inst, key, src, how, base=200, amount=600, remove=None):
         """One voice, FM envelopes on both oscillators, the other FM knob at 300; how: 'fmenv' (the depth routed from source
-        src, matrix slot 0) or 'knob' (nothing routed; the knob turned to x2_law(base, amount x e0) before each block).
-        (outputs, the depth after each block, FM Env 1 / 2 after each block, the store, e0 of both oscillators)."""
+        src, matrix slot 0), 'knob' (nothing routed; the knob turned to x2_law(base, amount x e0) before each block) or 'vel'
+        (routed from velocity, slot 0, its float written to f32 e0 before each block: a per-voice source carrying FM Env's
+        values; the reference for OSC2 Sub FM, which has no knob). remove: the block at which the routing is removed (source 0)
+        and, for 'knob', the knob turned back to base. (outputs, the depth after each block, FM Env 1 / 2 after each block,
+        the store, e0 of both oscillators)."""
         env = self.ENVS[types]
         e0 = [G.fm_env(*env[i], self.N, notes=(0,), law="f32")[0] for i in (0, 1)]
         w = WtVoice(self, types=types, env=env, capture=False, frames=G.wt_saw_frames(200))
         other = (1, K_FM12) if (inst, key) == (0, K_SUBFM) else (0, K_SUBFM)
         w.prop(other[1], 300, other[0])
         w.prop(key, base, inst)
-        if how == "fmenv":
-            wt_route(w.r, w.root, inst, key, 0, src, amount)
+        if how in ("fmenv", "vel"):
+            wt_route(w.r, w.root, inst, key, 0, src if how == "fmenv" else SRC_VEL, amount)
         depth, pub = [], []
         for b in range(self.N):
+            gone = remove is not None and b >= remove
+            if b == remove and how != "knob":
+                wt_route(w.r, w.root, inst, key, 0, 0, 0)
+                self.assertEqual(x2_store(w.r), [], "removed")
             if how == "knob":
-                w.prop(key, x2_law(base, [(amount, e0[0 if src == 3 else 1][b])]), inst)
+                w.prop(key, base if gone else x2_law(base, [(amount, e0[0 if src == 3 else 1][b])]), inst)
+            elif how == "vel":
+                w.r.wf(w.v + 0x38, float(f32(e0[0 if src == 3 else 1][b])))
             w.block()
             msub, m12 = struct.unpack("<HH", w.r.u.mem_read(w.o[inst] + S.OSC_KERNEL + MSUB_AT, 4))
             depth.append(m12 if key == K_FM12 else msub)
@@ -9215,41 +9224,79 @@ class FmEnvToFmDepth(unittest.TestCase):
                         self.assertEqual(k_st, [], "control: nothing routed")
                         self.assertEqual(depth, k_depth)
                         same(self, outs, k_outs, "FM Env routed = the knob turned to v every block")
+                    else:                                    # (review: no knob plays OSC2's Sub FM: a routed reference)
+                        v_outs, v_depth, _, v_st, _, _ = self.run_route(types, inst, key, src, "vel")
+                        self.assertEqual(v_st[0][2][j], 0x34, "control: routed from velocity")
+                        self.assertEqual(depth, v_depth)
+                        same(self, outs, v_outs, "FM Env routed = velocity carrying the same values, bit for bit")
 
     def test_removal_ramps_out_and_keeps_fm_env_published(self):
-        """Source 0 on the routed slot (the Mod Matrix's removal) at block 6: the store empties and the depth goes to the
-        knob's base as the knob would (X2's ramp); FE_ON stays set (S1: sticky per voice), so FM Env keeps publishing."""
+        """Source 0 on the routed slot (the Mod Matrix's removal) at block 6: the store empties and every block is the knob's
+        run turned to x2_law(base, 600 x e0) before block 6 and back to base from it (X2's ramp out included), bit for bit;
+        OSC2 Sub FM (no knob plays it; unrouted it ramps to 0, X2): the same against velocity carrying e0, removed at the
+        same block. FE_ON stays set
+        (S1: sticky per voice), so FM Env keeps publishing."""
+        cases = [(0, K_SUBFM, 3), (1, K_FM12, 6), (1, K_SUBFM, 6)]
         for types in ((1, 1), (0, 0)):
-            with self.subTest(types=types):
-                w = WtVoice(self, types=types, env=self.ENVS[types], capture=False, frames=G.wt_saw_frames(200))
-                w.prop(K_SUBFM, 200, 0)
-                wt_route(w.r, w.root, 0, K_SUBFM, 0, 3, 600)
-                for b in range(self.N):
-                    if b == 6:
-                        wt_route(w.r, w.root, 0, K_SUBFM, 0, 0, 0)
-                        self.assertEqual(x2_store(w.r), [], "removed")
-                    w.block()
-                msub = struct.unpack("<H", w.r.u.mem_read(w.o[0] + S.OSC_KERNEL + MSUB_AT, 2))[0]
-                self.assertEqual(msub, 200, "the depth back at the knob")
-                self.assertNotEqual(w.r.r32(w.v + FE_ON), 0, "FE_ON sticky")
-                want = G.fm_env(*self.ENVS[types][0], self.N, notes=(0,), law="f32")[0]
-                self.assertEqual(w.r.rf(w.v + FE_VAL), f32(want[self.N - 1]), "still published")
+            for inst, key, src in cases:
+                with self.subTest(types=types, inst=inst, key=hex(key), src=src):
+                    outs, depth, pub, st, e0, w = self.run_route(types, inst, key, src, "fmenv", remove=6)
+                    ref = "vel" if (inst, key) == (1, K_SUBFM) else "knob"
+                    k_outs, k_depth, _, k_st, _, _ = self.run_route(types, inst, key, src, ref, remove=6)
+                    self.assertEqual(st, [], "the store is empty")
+                    base = 200 if (inst, key) != (1, K_SUBFM) else 0        # (unrouted, OSC2's Sub FM plays 0: X2)
+                    self.assertNotEqual(depth[5], base, "control: routed before the removal")
+                    self.assertEqual(depth[-1], base, "the depth back at the knob (OSC2 Sub FM: at 0)")
+                    self.assertEqual(depth, k_depth)
+                    same(self, outs, k_outs, f"routed then removed = the {ref} run, every block")
+                    self.assertNotEqual(w.r.r32(w.v + FE_ON), 0, "FE_ON sticky")
+                    want = e0[0 if src == 3 else 1]
+                    self.assertEqual([p[0 if src == 3 else 1] for p in pub], [f32(x) for x in want], "still published")
+
+    FE_WORST_MAX = 35440        # BE4.46 merge review (R1): X2's worst two-key case (8 slots, 7 routed roots ahead) with an
+                                # FM Env source in slot 0 and / or both FM envelopes running: M 35,312..35,392 steady, the
+                                # second-largest block 35,425 (one FM Env, both running: 35,393). Over HEAVIEST_VOICE (by
+                                # up to 116: velocity with the envelopes running is already 35,350 there, as on BE4.45):
+                                # a known miss, Jeff's (plan-fm-targets "BE4.46 merge review", Open 1), gated at its level
 
     def test_cost_heaviest_voice_fm_env_routes(self):
         """The heaviest existing voice (Wavetable both, Position every block, notes 24 / 36: X2's) with FM Env 1 on OSC1 Sub
         FM and FM Env 2 on OSC2 FM 1>2 at 1000 (envelopes unset: e0 is 1, so the same sound as both knobs at 1000,
         asserted); the same with OSC2 Sub FM from FM Env 2 too; and with FM envelopes on both (Atk 3, Dec Inf: the FM Env
-        itself running). Instructions per voice-block (an_enter and both renders), steady median / max. Two keys: every
-        block within HEAVIEST_VOICE; with the envelopes running, every block but one (the level change) within it and that
-        one within W4_ATK_MAX; + OSC2 Sub FM within X2's SUB2_HEAVY_MAX (X2 open 5, Jeff's)."""
+        itself running). Two keys: every block within HEAVIEST_VOICE; with the envelopes running, every block but one (the
+        level change) within it and that one within W4_ATK_MAX; + OSC2 Sub FM within X2's SUB2_HEAVY_MAX (X2 open 5,
+        Jeff's), with the envelopes running every block but two (the level change and a second peak, both within
+        W4_ATK_MAX), and so is the worst of all three keys (12 slots, FM Env in slot 0, 7 routed roots ahead). Merge review:
+        X2's worst two-key case (all 8 slots, 7 routed roots ahead in the store) with FM Env in slot 0 (one source, and
+        both), unset and running, and velocity there with the envelopes running: within FE_WORST_MAX (a known miss, over
+        HEAVIEST_VOICE). Instructions per
+        voice-block (an_enter and both renders), steady median / max."""
         lfo = lambda b: (b * 7 % 200) / 255
-        two = [(0, K_SUBFM, 0, 3, 1000), (1, K_FM12, 0, 6, 1000)]
-        def cost(note, knobs, routes=(), env=None):
+        SUB1, FM12 = (0, K_SUBFM), (1, K_FM12)
+        two = [(*SUB1, 0, 3, 1000), (*FM12, 0, 6, 1000)]
+        seq = [(*d, 0, SRC_SEQ1, 300) for d in (SUB1, FM12)]          # (slot 3: SRC_SEQ1 is root-relative)
+        full = {"velocity": [(*d, sl, src, 1000) for d in (SUB1, FM12) for sl, src in ((0, SRC_VEL), (1, 0x1), (2, 0x2))],
+                "FM Env": [(*SUB1, 0, 3, 1000), (*SUB1, 1, 0x1, 1000), (*SUB1, 2, 0x2, 1000),
+                           (*FM12, 0, 6, 1000), (*FM12, 1, 0x1, 1000), (*FM12, 2, 0x2, 1000)],
+                "FM Env 1 + 2": [(*SUB1, 0, 3, 1000), (*SUB1, 1, 6, 1000), (*SUB1, 2, SRC_VEL, 1000),
+                                 (*FM12, 0, 6, 1000), (*FM12, 1, 3, 1000), (*FM12, 2, SRC_VEL, 1000)]}
+        def cost(note, knobs, routes=(), env=None, fill=0):
             w = WtVoice(self, types=(0, 0), frames=G.wt_saw_frames(200), capture=False, note=note, env=env)
             if knobs:
                 w.prop(K_SUBFM, 1000, 0); w.prop(K_FM12, 1000, 1)
             for rt in routes:
                 wt_route(w.r, w.root, *rt)
+            if fill:                                                  # routed roots ahead of ours (X2's test's layout)
+                n = w.r.r32(SA + SA_RUN + RUN_X2N)
+                ents = [bytes(w.r.u.mem_read(SA + SA_X2 + X2_ENTRY * i, X2_ENTRY)) for i in range(n)]
+                fake = []
+                for i in range(fill):
+                    ro = w.r.alloc(0x2F0); w.r.w32(ro + S.ROOT_HANDLE, 0x5000 + i)
+                    fake.append(struct.pack("<II12H12h", ro, 0x5000 + i, 0x34, *[0] * 11, 100, *[0] * 11))
+                for i, e in enumerate((fake + ents)[:SA_X2_N]):
+                    w.r.u.mem_write(SA + SA_X2 + X2_ENTRY * i, e)
+                w.r.w32(SA + SA_RUN + RUN_X2N, min(SA_X2_N, fill + n))
+                w.r.wf(w.v + 0x38, 1.0)
             sp = [Span(w.r, DSP["an_enter"])] + [Span(w.r, a) for a in {w.r.r32(w.r.r32(o)) & ~1 for o in w.o}]
             xs = []
             for b in range(16):
@@ -9258,25 +9305,40 @@ class FmEnvToFmDepth(unittest.TestCase):
                 t0 = sum(s.total for s in sp); w.block(); xs.append(sum(s.total for s in sp) - t0)
             return sorted(xs[4:])[len(xs[4:]) // 2], max(xs), w.outs, xs
         env = {0: (3, FM_DEC_INF), 1: (3, FM_DEC_INF)}
+        sub2 = [(1, K_SUBFM, 0, 6, 1000)]
         rows = {}
         for note in (24, 36):
             k = cost(note, True)
             rows[f"note {note}: knobs"] = k
             rows[f"note {note}: FM Env 1 / 2 on 2 depths"] = r2 = cost(note, False, two)
             same(self, r2[2], k[2], f"note {note}: FM Env (unset: 1) at 1000 = the knobs at 1000")
-            rows[f"note {note}: + OSC2 Sub FM from FM Env 2"] = cost(note, False, two + [(1, K_SUBFM, 0, 6, 1000)])
+            rows[f"note {note}: + OSC2 Sub FM from FM Env 2"] = cost(note, False, two + sub2)
             rows[f"note {note}: knobs, envelopes on"] = cost(note, True, (), env)
             rows[f"note {note}: FM Env on 2 depths, envelopes on"] = cost(note, False, two, env)
+            rows[f"note {note}: + OSC2 Sub FM from FM Env 2, envelopes on"] = cost(note, False, two + sub2, env)
+            sub2w = [(1, K_SUBFM, sl, src, 1000) for sl, src in ((0, 6), (1, 0x1), (2, 0x2))] + [(1, K_SUBFM, 0, SRC_SEQ1, 300)]
+            for e in (None, env):
+                rows[f"note {note}: + OSC2 Sub FM worst, 12 slots (FM Env), 7 roots ahead" +
+                     (", envelopes on" if e else "")] = cost(note, False, full["FM Env"] + seq + sub2w, e, fill=7)
+            for name, rts in full.items():
+                for e in ((None, env) if name != "velocity" else (env,)):
+                    rows[f"note {note}: worst, 8 slots ({name}), 7 roots ahead" + (", envelopes on" if e else "")] = \
+                        cost(note, False, rts + seq, e, fill=7)
         print("\n  FM Env -> FM depth, heaviest voice (instructions per voice-block, Position every block; steady median / "
-              "max): " + "; ".join(f"{k} {a} / {b}" for k, (a, b, _, _) in rows.items()), file=sys.stderr)
+              "2nd-largest / max): " + "; ".join(f"{k} {a} / {sorted(xs)[-2]} / {b}" for k, (a, b, _, xs) in rows.items()),
+              file=sys.stderr)
         for k, (a, b, _, xs) in rows.items():
-            if "OSC2 Sub FM" in k:
-                self.assertLessEqual(b, FmTargetsX2.SUB2_HEAVY_MAX, k)
-            elif "envelopes on" in k:
-                self.assertLessEqual(sorted(xs)[-2], HEAVIEST_VOICE, f"{k}: every block but one")
-                self.assertLessEqual(b, WtFmW4.W4_ATK_MAX, f"{k}: the level change block")
+            top = FmTargetsX2.SUB2_HEAVY_MAX if "OSC2 Sub FM" in k else self.FE_WORST_MAX if "worst" in k else HEAVIEST_VOICE
+            if "envelopes on" in k:
+                # the level change block; with OSC2 Sub FM routed also a second one, 2 blocks later (M ~40.0k: velocity
+                # as the source too), both within W4_ATK_MAX
+                peaks = 2 if "OSC2 Sub FM" in k else 1
+                self.assertLessEqual(sorted(xs)[-1 - peaks], top, f"{k}: every block but {peaks}")
+                self.assertLessEqual(b, WtFmW4.W4_ATK_MAX, f"{k}: the peak blocks")
             else:
-                self.assertLessEqual(b, HEAVIEST_VOICE, k)
+                self.assertLessEqual(b, top, k)
+            if "worst" in k and "OSC2 Sub FM" not in k:
+                self.assertGreater(b, HEAVIEST_VOICE - 100, f"{k}: control (the worst case measures as one)")
 
 
 def r_settings(r, osc):

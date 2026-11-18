@@ -48,7 +48,8 @@ SUITES = [("test_diag.py", ""), ("test_polyat.py", "poly_cap"), ("test_condition
           ("test_s3_m7.py", "poly_cap retrig cond_engine nmod"), ("test_step_xml.py", "step"), ("test_keys.py", ""), ("test_native_props.py", "analog"),
           ("test_analog.py", "analog"), ("test_inst_xml.py", "analog"), ("test_synth_ui.py", "analog"),
           ("test_handles.py", "analog"), ("test_note0.py", "poly_cap retrig cond_engine nmod"),
-          ("test_drums.py", "drums"), ("test_drum_ui.py", "drums")]
+          ("test_drums.py", "drums"), ("test_drum_ui.py", "drums"),
+          ("p3_golden.py", "analog")]   # (its selftest: the two paths are ignored)
 
 
 def fail(msg):
@@ -231,7 +232,11 @@ def main():
             print(f"  no published reference hash for v{version} in tools/release_hashes.json.")
         else:
             print(f"  reference      sha256 {ref['bento1.bin']}")
-            print("  MATCH: byte for byte the image the author tested on hardware.")
+            if ref.get("device_tested") is True:
+                print("  MATCH: byte for byte the image the author tested on hardware.")
+            else:   # (BE4.46 merge review: an entry may precede its device check, so the kit reproduces meanwhile)
+                print("  MATCH: byte for byte the published reference image (NOT yet tested on hardware: "
+                      "DEVICE_CHECKLIST.txt is that test).")
     report()
 
     # 5. Optional: the emulated suites.

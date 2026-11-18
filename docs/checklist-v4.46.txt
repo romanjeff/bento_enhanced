@@ -50,6 +50,12 @@ What to expect that is not a bug:
     the new source until the project is reloaded, even after that routing is set to None. Offline, stock does the same
     on OSC1: Position (section 7 checks it on the device).
   - A Wavetable OSC2's Sub FM starts from 0 even if an old project stored a value for it (an Analog OSC2 starts from it).
+    Accepted (Jeff, 2026-11-17): no control on the page sets that value.
+  - A voice's first FM Env routing, made mid-note, reads 1 (the unset value) for one block. Kept on purpose.
+  - CPU: OSC2: Sub FM routed on the heaviest voice is 5.6..6.4 % over BE4.44's heaviest voice. Accepted as a known
+    limit (Jeff, 2026-11-17): it needs all 8 voices of the heaviest Wavetable voice, where voice stealing and glitches
+    are normal. With every matrix slot used on 8 tracks and the FM envelopes running, the other two FM rows are up to
+    0.24 % over too (the same 8-voice case; recorded for Jeff). Section 8 records both.
   - One step past Auto D in the Source list may show [None] (stock's page reads one past its list too).
   - In the file an FM Env routing is stock's: src="env3" (FM Env 1) or src="lfo3" (FM Env 2); an FM row's routing is
     dest="bento_subfm" / "bento_fm12". Section 9 says what older firmware does with them.
@@ -155,13 +161,20 @@ What to expect that is not a bug:
 [ ] The same depths from pressure (knobs 0, Pressure 100 % on OSC1: Sub FM and OSC2: FM 1>2, press hard): offline
     35.15k a voice-block on one track; the worst case (every matrix slot used, routings on 8 tracks) is 35.26k.
 [ ] The same depths from FM Env 1 / FM Env 2 at 100 % (envelopes unset: the same sound as the knobs): offline 35.21k;
-    with both FM envelopes running (FM Atk 3 %, Dec Inf) 35.28k steady.
-[ ] OSC2 SUB FM, 8 VOICES. Then add Pressure 100 % (or FM Env 2 100 %) on OSC2: Sub FM too: a second FM term OSC2 never
-    had on BE4.44. Hold the 8-voice chord for 10 s, then play it repeatedly. Write down the DSP %, every OVER, any
-    dropout or "!!!" in the log, and avg_cyc / peak_cyc. Offline 37.3k (pressure) / 37.35k (FM Env) a voice-block,
-    about 5.6 % over the 35,309 ceiling: this figure decides X2 open 5 (accept, restrict OSC2's routed Sub FM to an
-    Analog OSC2, or leave it out of the piano roll). The same with lane D on OSC2: Sub FM instead.
+    with both FM envelopes running (OSC1 and OSC2 FM Atk 3 %, Dec Inf) 35.28k steady. With every slot used and routings
+    on 8 tracks, envelopes running: 35.39k, 0.24 % over the 35,309 ceiling (a known limit, as below).
+[ ] OSC2 SUB FM, 8 VOICES. Then add Pressure 100 % (or FM Env 2 100 %, with OSC2's FM Atk 3 % / FM Dec Inf set so FM
+    Env 2 moves) on OSC2: Sub FM too: a second FM term OSC2 never had on BE4.44. Hold the 8-voice chord for 10 s, then
+    play it repeatedly. Write down the DSP %, every OVER, any dropout or "!!!" in the log, and avg_cyc / peak_cyc.
+    Offline 37.3k (pressure) / 37.42k (FM Env 2, envelopes running) a voice-block, 37.57k at worst: 5.6..6.4 % over the
+    35,309 ceiling. ACCEPTED as a known limit (Jeff, 2026-11-17: 8 voices of the heaviest Wavetable voice is rare, and
+    voice stealing / glitches there are normal): this is a record, not a gate, unless it resets, freezes or stays OVER.
+    The same with lane D on OSC2: Sub FM instead.
 [ ] The same chord on Analog oscillators, and lanes A / B instead of pressure (the same DSP % as pressure).
+[ ] BE4.44's worst case (checklist-v4.44 section 8, the C0 / C1 light-FM Position chord) without any FM Env routing:
+    as on BE4.44 (offline 34.81k steady, heaviest block 39.44k).
+[ ] The same chord with FM Env 1 -> Filter 1 cutoff and FM Env 2 -> OSC2 Pitch (set both oscillators' FM Atk / FM Dec):
+    offline about 34.87k steady, 39.5k heaviest block.
     No reset, no freeze, no OVER that stays on; x2lost=0.
 
 9. Rollback (on COPIES: BE46_C = a copy of BE46_A made on the computer, with FM-row routings and FM Env routings)

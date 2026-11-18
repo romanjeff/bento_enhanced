@@ -880,7 +880,8 @@ stock is the control. Mutant ALLCHILD now fails it.
 
 ### Open (for Jeff)
 
-1. **Release blocker: rule on X2 open 5.** OSC2 Sub FM from a lane (or any routing) on the heaviest voice is 37.3k,
+1. **Release blocker: rule on X2 open 5.** (Ruled 2026-11-17: accepted as a known limit; see "BE4.46 merge
+   review" below.) OSC2 Sub FM from a lane (or any routing) on the heaviest voice is 37.3k,
    5.6 % over the ceiling, and a lane is one tap. The choices are X2's: accept it as a known miss; restrict OSC2's
    routed Sub FM to an Analog OSC2; build a cheaper two-term kernel; or (lanes only) leave OSC2 Sub FM out of the
    piano-roll list, which is one condition in pr_dest_skip. The device's 8-voice figure (checklist sections 5 and 6)
@@ -1017,7 +1018,7 @@ Branch be446 from be445x (7d72495), merging be445 (2d7e263: S1 / S2, `docs/feasi
   FmEnvToFmDepth (mutant ORDER: every routed case fails).
 - **X2's source bound and FM Env's pseudo-sources.** WT_ROUTE gives slot 10 r1 = voice + 0xB84 (id 3) / + 0xB88 (id 6)
   on a Wavetable voice; x2_connect keeps a source whose float (src + 4) lies in the voice's 0xBA0 bytes
-  (offset 1..0xB97). Voice + 0xB84 / 0xB88 are inside. 0xBA0 is S: WT_ROOT_CTOR `movw r2, #0xb88; movs r1, #2;
+  (offset 1..0xB98, i.e. 1 .. X2_VOICE_BYTES - 8: `src - v - 1 < 0xB98`). Voice + 0xB84 / 0xB88 are inside. 0xBA0 is S: WT_ROOT_CTOR `movw r2, #0xb88; movs r1, #2;
   bl 0x080A05C0` (0x0809CB40) and the pool's `lsls r2, r2, #0x1b; ...; bic r2, r5, #0x1f; adds r2, #0x20`
   (0x080A05E6..F4): 0xB88 -> 0xBA0. No change to the bound was needed; dsp/analog.cpp now static_asserts
   X2_VOICE_BYTES == FMENV_SLACK_END and both pseudo-sources inside the bound. X2 writes nothing in the voice (it reads
@@ -1037,7 +1038,7 @@ Branch be446 from be445x (7d72495), merging be445 (2d7e263: S1 / S2, `docs/feasi
   the amount; x2_lost 0; the published value after block b is p3_golden fm_env's f32 e0[b]; the depth after block b is
   x2_law(base, 600 x e0[b]) and moves; for OSC1 Sub FM / OSC2 FM 1>2 the output is the knob turned to v, bit for bit.
 - `test_removal_ramps_out_and_keeps_fm_env_published`: source 0 at block 6 empties the store, the depth returns to the
-  knob, FE_ON stays (sticky), FM Env keeps publishing.
+  knob, FE_ON stays (sticky), FM Env keeps publishing. (Strengthened by the merge review, below.)
 - `test_cost_heaviest_voice_fm_env_routes` (below).
 - Nothing routed: X2Identity (BE4.44 byte for byte, 8 cases) and P3Identity run unchanged and pass.
 - Mutants (scratch b446/mut.sh, a build each from a copy): ORDER (fm_env_publish after x2_enter) fails 10 subtests and
@@ -1056,10 +1057,12 @@ Branch be446 from be445x (7d72495), merging be445 (2d7e263: S1 / S2, `docs/feasi
 | + OSC2 Sub FM routed (velocity / lane / FM Env 2) | 37,291 / 37,291 / 37,352 | 37,291 / 37,291 / 37,352 | 37,700 |
 
 - Each X2 / X3 row is BE4.45's figure + 3 (S1's FMENV_ON load and branch in an_enter). FM Env as the source adds the
-  publish (+61 over velocity). The worst two-key case is 48 under the ceiling.
+  publish (+61 over velocity). The worst two-key case is 48 under the ceiling from velocity with the envelopes unset;
+  with FM Env as its source, or the FM envelopes running, it is over (merge review below).
 - Nothing routed: X2Identity worst 1.00224 (BE4.45: 1.00209); P3Identity worst **1.0179** (111,868 / 109,899; BE4.45
   1.0177), total 1.0099, under the 1.95 % stop line; WtFmW4's heaviest steady voice 34,809 (BE4.45 34,806).
-- X2 open 5 (OSC2 Sub FM routed, 5.6 % over) is unchanged and still Jeff's; FM Env 2 as its source costs 61 more.
+- X2 open 5 (OSC2 Sub FM routed, 5.6 % over): FM Env 2 as its source costs 61 more. Ruled by Jeff after the merge
+  review (below): accepted.
 
 ### Sizes (M)
 
@@ -1081,5 +1084,93 @@ Branch be446 from be445x (7d72495), merging be445 (2d7e263: S1 / S2, `docs/feasi
 ### Open (for Jeff)
 
 1. X2 open 5 / X3 open 1 (release blocker): OSC2 Sub FM routed on the heaviest voice, 37.3k (37.35k from FM Env 2).
+   Ruled 2026-11-17 (accepted); corrected figures in the merge review below.
 2. The X2 / X3 / S1 / S2 open items stand as written; the merge adds none of its own beyond the device checks in
    checklist-v4.46.txt (other screens' source names, track copy, type change, OSC2 Sub FM at 8 voices, cold boot).
+
+## BE4.46 merge review (two reviewers, 2026-11-17) and Jeff's decisions
+
+### Jeff's decisions (2026-11-17)
+
+- **X2 open 5 / X3 open 1 (OSC2 Sub FM routed, over the CPU ceiling on the heaviest 8-voice Wavetable case): accepted
+  as a known limit.** Maxing out 8 voices of that voice is rare, and voice stealing / glitches there are normal. No
+  longer a release blocker. Checklist section 8 still records the device figure.
+- **A Wavetable OSC2's routed Sub FM starts from 0** rather than a stored value (X2 open 1): fine, no exposed control
+  sets it.
+- **FM Env first-connect value 1.0** (S1, feasibility-fm-env-sources decision 3): kept.
+- **Matrix rows read OSC1: / OSC2:** (X1): kept.
+
+### Dispositions
+
+- **R1-1 / R2-1 (CPU, both medium): held.** M, ~/bento/out/be446b (the image is unchanged), test_analog
+  FmEnvToFmDepth.test_cost_heaviest_voice_fm_env_routes, which now measures and gates every row below. Note 24; note 36
+  is 10 lower on the 8-slot rows and the same on the OSC2 Sub FM rows:
+
+  | Heaviest voice (Wavetable both, Position every block) | steady | 2nd largest | max | gate |
+  |---|---|---|---|---|
+  | X2's worst: 8 slots (velocity), 7 routed roots ahead, envelopes unset (X2's own figure) | 35,261 | | 35,263 | 35,309 |
+  | the same, both FM envelopes running (Atk 3, Dec Inf) | 35,319 | 35,350 | 44,594 | 35,440 but one block; 46,000 |
+  | 8 slots, FM Env 1 in slot 0, 7 roots ahead, unset | 35,322 | 35,323 | 35,324 | 35,440 |
+  | the same, envelopes running | 35,392 | 35,393 | 44,665 | 35,440 but one; 46,000 |
+  | 8 slots, FM Env 1 and 2 (slots 0 / 1), envelopes running | 35,392 | 35,425 | 44,669 | 35,440 but one; 46,000 |
+  | + OSC2 Sub FM from FM Env 2 (one track), unset | 37,352 | | 37,354 | 37,700 |
+  | the same, envelopes running (R2-1's case) | 37,422 | 40,002 | 44,633 | 37,700 but two; 46,000 |
+  | + OSC2 Sub FM worst: 12 slots (FM Env), 7 roots ahead, unset | 37,496 | | 37,498 | 37,700 |
+  | the same, envelopes running | 37,566 | 40,146 | 44,777 | 37,700 but two; 46,000 |
+
+  35,440 is the new FE_WORST_MAX (the measured worst plus margin); 37,700 is X2's SUB2_HEAVY_MAX; 46,000 W4_ATK_MAX.
+  - X2's "worst two-key case is 48 under" held only with velocity and the envelopes unset. With FM Env as the source it
+    is +13 steady; with the envelopes running +83 (0.24 %). Velocity in that layout with the envelopes running is +10,
+    so the layout itself is over once the envelopes run, not FM Env alone. X2's test never ran the FM envelopes.
+  - OSC2 Sub FM routed with FM Env 2 actually moving is 37.42k (6.0 % over), at worst 37.57k (6.4 %), not 5.6 %. With
+    OSC2 Sub FM routed and the envelopes running there is a second peak two blocks after the level change (40.0k..40.1k,
+    with velocity as the source too): gated at W4_ATK_MAX like the first.
+  - **Trim rejected.** Taking ~90 instructions out of x2_enter / fm_env_publish (fm_env_publish is 46..71 a call,
+    x2_enter's root scan a few per root ahead) is a change to the per-voice-block path at merge-review stage, for a
+    0.24 % miss that needs 8 routed tracks and 8 sounding heaviest voices. It would need the identity and mutant proofs
+    redone. Recorded as a known limit next to X2 open 5 instead (release notes, checklist). Jeff's reasoning for open 5
+    covers it, but he ruled on open 5 only, so it is listed for him (Open below).
+  - The release notes' Known limits and CPU table, and checklist section 8, now give these figures.
+- **R1-2 / R2-2 (make_kit's MATCH line): held, fixed.** tools/release_hashes.json gains `device_tested` (4.44 true,
+  4.46 false). make_kit says "the image the author tested on hardware" only for `device_tested: true`; otherwise "the
+  published reference image (NOT yet tested on hardware ...)". The 4.46 entry stays so the kit reproduces. Set it to
+  true (with the final image_commit) once DEVICE_CHECKLIST passes.
+- **R1-3 / R2-6 (test_m1.sh): held, fixed.** It runs test_native_props and p3_golden (make_kit's list has p3_golden too
+  now), and it changes into its own checkout's mods/m1 instead of bento_enhanced's.
+- **R1-4 / R2-7 (docs): held, fixed.** The bound above reads 1..0xB98. dsp.ld's header says M7_DSP + DSP_TRAMP_BYTES.
+  The stale S2 merge note is gone and S2's duplicate helpers are folded into X1's (MX_SET_ROUTE_FN, fe_routes, fe_set,
+  REF444_S2 became S.MX_SET_ROUTE, routes, set_route, REF444). The release notes have the "a Pitch routing from FM Env
+  steps at block rate" sentence back. Suite line: native_props now 47, no skip here. The BE4.22-kit test skips
+  where flash\bento_enhanced-v4.22 is not beside the checkout, as in the reviewer's export.
+- **R2-3 (two S-lane CPU checks dropped from the checklist): held, fixed.** Section 8 has BE4.44's worst chord without
+  FM Env (34.81k, heaviest block 39.44k) and with an FM Env routing (34.87k, 39.50k; FmEnvSrc.test_cost). The release
+  notes' CPU table has both.
+- **R2-4 (CPU table labels): held, fixed.** Velocity, lanes, every-slot and each OSC2 Sub FM source are separate rows.
+- **R2-5 (weak tests): held, fixed.** test_removal_ramps_out_and_keeps_fm_env_published now covers OSC1 Sub FM from FM
+  Env 1, OSC2 FM 1>2 from FM Env 2 and OSC2 Sub FM from FM Env 2, on both type pairs. Every block is compared bit for bit
+  against the knob turned back to base at block 6 (OSC2 Sub FM, which has no knob: against velocity carrying e0, removed
+  at the same block), the depth sequences are equal, and FM Env is still published every block.
+  test_fm_env_moves_each_fm_depth_per_block now compares OSC2 Sub FM's audio and depth against the same route from
+  velocity, written to e0 each block.
+- **R1-5 (merge-only combinations untested): held, fixed.** test_native_props FmEnvMatrix has two new tests.
+  - MX_EDIT posts FM Env 1 / 2 on OSC1 Sub FM (0x18B, WT1), OSC2 FM 1>2 and OSC2 Sub FM, and the model keeps each on
+    the right oscillator.
+  - FM Env on the three depths saves as `dest="bento_subfm" src="env3"` / `dest="bento_fm12" src="lfo3"` and reads back
+    here. Stock 1.6.8 reads them as key 0 with the source kept and saves them without a dest. BE4.44 keeps them and
+    saves them again.
+
+### Suites (M, ~/bento/out/be446b; image sha256 d09bcff5...30b5, 031edf1's)
+
+All OK. diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20),
+notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10, **native_props 47** (+2),
+inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32, **analog 252** (the three FmEnvToFmDepth tests widened, no
+new ones), p3_golden 52. X2Identity worst 1.00224, P3Identity worst 1.0179 / total 1.0099 (unchanged). The 1.6.1 build
+(0x182500) and BE_DISABLE=analog (0x187514) still build; fingerprints.py --check agrees for stock_168 and stock_161.
+
+### Open (for Jeff)
+
+1. The worst FM-depth layout (8 routed tracks, 8 voices, FM envelopes running) is up to 0.24 % over the ceiling on the
+   two original FM rows. Not ruled separately; the reasoning behind accepting open 5 would cover it.
+2. release_hashes 4.46 `device_tested` goes true only after the device checklist passes.
+3. Unchanged: drums never built with the 0x140 trampoline block; the device-only checks; the superseded kits
+   flash\bento_enhanced-v4.46-envsrc and flash\bento_enhanced-v4.45 are still in place.

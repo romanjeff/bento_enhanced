@@ -1,5 +1,5 @@
 {
-  "_comment": "Hashes only, never firmware. stock: the official 1010music files a version builds on. releases: the bento1.bin a default build of that version must produce (tools/make_kit.py compares). image_commit: the commit that image was built and tested from; the release tag may sit on a later commit that changes only docs and scripts (same image).",
+  "_comment": "Hashes only, never firmware. stock: the official 1010music files a version builds on. releases: the bento1.bin a default build of that version must produce (tools/make_kit.py compares). image_commit: the commit that image was built and tested from; device_tested: true once that image passed its DEVICE_CHECKLIST on hardware (make_kit says MATCH against a hardware-tested image only then); the release tag may sit on a later commit that changes only docs and scripts (same image).",
   "base": "1.6.8",
   "stock": {
     "1.6.1": {
@@ -15,11 +15,13 @@
     "4.44": {
       "base": "1.6.8",
       "image_commit": "c541f3b",
+      "device_tested": true,
       "bento1.bin": "fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff"
     },
     "4.46": {
       "base": "1.6.8",
       "image_commit": "031edf1",
+      "device_tested": false,
       "bento1.bin": "d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5"
     }
   }

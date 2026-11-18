@@ -1091,8 +1091,6 @@ class FmTargets(unittest.TestCase):
 
 # ---- BE4.46 S2 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 (source ids 3 / 6) in a Wavetable track's Mod Matrix
 # Typed from stock (be446 s2 lists.py, independently of build.py): the Wavetable page's 16 sources and the registry's names.
-# (Merge note for be445x: its FmTargets helpers routes / set_route / mx_rows overlap the fe_* ones below.)
-REF444_S2 = Path(os.environ.get("BE_REF444", str(Path.home() / "bento" / "out" / "be444w4f")))   # BE4.44 (the rollback)
 FE1, FE2 = 3, 6                    # stock's env3 / lfo3: FM Env 1 / FM Env 2 on a Wavetable voice (S1)
 FE_STOCK_SRC = [0, 13, 32, 1, 2, 4, 5, 8, 14, 26, 30, 31, 9, 10, 11, 12]
 FE_OUR_SRC = [0, 13, 32, 1, 2, FE1, FE2, 4, 5, 8, 14, 26, 30, 31, 9, 10, 11, 12]
@@ -1103,7 +1101,6 @@ FE_TYPES = list(range(0x15)) + [0x20, 0xFF]   # every view type the validator / 
 MXV_VIEW = 0x8C000                 # the Mod Matrix view's size the harness gives (its fields up to +0x8AE04 + 60 x 16)
 MXV_SEL = 0x86B5C                  # MX_EDIT / MX_BAR: the selected row (-1 none) (MX_EDIT's first load)
 MXV_ROWS, MXV_KEYS, MXV_HANDLES = 0x8AC4D, 0x8AC50, 0x8ACCC
-MX_SET_ROUTE_FN = 0x081347E4       # the model's 0xD1 (be445x's MX_SET_ROUTE)  # addr-ok: S2 tests (a base entry on be445x)
 UI_POST_VIEW = 0x08171D94          # MX_EDIT's post of the 0xD1 (view, event)  # addr-ok: S2 tests (MX_EDIT's last call)
 INST_REPLACE = 0x0813F730          # stock's instrument replace (model, kind, position)  # addr-ok: S2 tests (plan-drum-synth-track)
 MX_EDIT_FN = 0x0814DBF8            # MX_EDIT (the mx group's entry is a 1.6.8 draft; hand-checked: be446 s2)  # addr-ok: S2 tests
@@ -1141,23 +1138,6 @@ def fe_rows(r, view, img):
     return lst, ids, rows
 
 
-def fe_routes(r, o):
-    """The routings on an object: its type-1 nodes {+0xC amount, +0x10 source, +0x12 key, +0x14 slot} (0x0812EE94's list)."""
-    out, c = [], r.r32(o + 0x14)
-    while c:
-        if r.u.mem_read(c + 8, 1)[0] == 1:
-            amt, src, key, slot = struct.unpack("<iHHh", bytes(r.u.mem_read(c + 0xC, 10)))
-            out.append((key, src, slot, amt))
-        c = r.r32(c + 4)
-    return sorted(out)
-
-
-def fe_set(r, h, key, src, slot, amount):
-    """The model's 0xD1 as MX_EDIT posts it: {0xD1, +4 handle, +8 key | 1 << 16, +0xC source | slot << 16, +0x10 amount}."""
-    r.u.mem_write(EV, struct.pack("<HHIIIi", 0xD1, 0, h, key | 1 << 16, src | slot << 16, amount))
-    r.call(MX_SET_ROUTE_FN, S.MODEL, EV)
-
-
 def fe_edit(r, view, row, key, value):
     """Stock's MX_EDIT (view, {+8 key, +0xC value}) on a selected row: the 0xD1 it posts (UI_POST_VIEW logged and returned)
     as (handle, key, source, slot, amount), or None."""
@@ -1184,7 +1164,7 @@ def fe_post(r, ev):
     """The 0xD1 fe_edit logged, to the model as MX_EDIT posted it."""
     hh, key, src, slot, amt, mode = ev
     r.u.mem_write(EV, struct.pack("<HHIIIi", 0xD1, 0, hh, key | mode << 16, src | slot << 16, amt))
-    r.call(MX_SET_ROUTE_FN, S.MODEL, EV)
+    r.call(S.MX_SET_ROUTE, S.MODEL, EV)
 
 
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
@@ -1279,12 +1259,12 @@ class FmEnvMatrix(unittest.TestCase):
         self.assertIsNone(srcs[19])
         self.assertEqual({(s[0], s[1], s[3]) for s in srcs[:19]}, {(r.handle(w1), 3, 0)}, "OSC1 Pitch, slot 0")
         fe_post(r, srcs[5])
-        self.assertEqual([(k, s, sl) for k, s, sl, _ in fe_routes(r, w1)], [(3, FE1, 0)])
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in routes(r, w1)], [(3, FE1, 0)])
         row = rows.index((0xC4, r.handle(w2)))                          # slot 2's source on OSC2's Level row
         e = fe_edit(r, view, row, S.KEY_MX_FIRST + 4, 6)
         self.assertEqual(e[:4], (r.handle(w2), 0xC4, FE2, 2))
         fe_post(r, e)
-        self.assertEqual([(k, s, sl) for k, s, sl, _ in fe_routes(r, w2)], [(0xC4, FE2, 2)])
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in routes(r, w2)], [(0xC4, FE2, 2)])
 
     def test_an_amount_edit_keeps_them_here_and_drops_them_on_stock(self):
         """With an FM Env routing in the model, an amount edit of its slot posts it back with its source here. On stock 1.6.8
@@ -1295,14 +1275,14 @@ class FmEnvMatrix(unittest.TestCase):
             t, w1, w2 = r.wavetable()
             view = fe_view(r, t)
             fe_rows(r, view, img)
-            fe_set(r, r.handle(w1), 3, FE1, 0, 400)
-            fe_set(r, r.handle(w1), 3, 4, 1, 200)
+            set_route(r, r.handle(w1), 3, FE1, 0, 400)
+            set_route(r, r.handle(w1), 3, 4, 1, 200)
             e = fe_edit(r, view, 0, S.KEY_MX_FIRST + 1, 700)             # slot 0's amount
             self.assertEqual(e, (r.handle(w1), 3, FE1 if keeps else 0, 0, 700, 2))
             fe_post(r, e)
             fe_post(r, fe_edit(r, view, 0, S.KEY_MX_FIRST + 3, -300))  # slot 1's amount (LFO 1)
             want = [(3, FE1, 0, 700)] if keeps else []
-            self.assertEqual(fe_routes(r, w1), sorted(want + [(3, 4, 1, -300)]), "ours" if keeps else "stock")
+            self.assertEqual(routes(r, w1), sorted(want + [(3, 4, 1, -300)]), "ours" if keeps else "stock")
 
     def make(self, r):
         """A Wavetable track: OSC1 Pitch <- FM Env 1 (slot 0, 400), OSC2 Position <- FM Env 2 (slot 1, -250), the first
@@ -1311,13 +1291,13 @@ class FmEnvMatrix(unittest.TestCase):
         filt = [c for c in r.children(t) if r.vtype(c) == 10][0]
         for o, key, src, slot, amt in ((w1, 3, FE1, 0, 400), (w2, 0xC9, FE2, 1, -250), (filt, 0xCE, FE1, 2, 1000),
                                        (w1, 0xC9, 4, 0, 300)):
-            fe_set(r, r.handle(o), key, src, slot, amt)
+            set_route(r, r.handle(o), key, src, slot, amt)
         return t
 
     def routed(self, r, t):
         c = r.children(t)
         filt = [o for o in c if r.vtype(o) == 10][0]
-        return fe_routes(r, c[0]), fe_routes(r, c[1]), fe_routes(r, filt)
+        return routes(r, c[0]), routes(r, c[1]), routes(r, filt)
 
     WANT = ([(3, FE1, 0, 400), (0xC9, 4, 0, 300)], [(0xC9, FE2, 1, -250)], [(0xCE, FE1, 2, 1000)])
 
@@ -1338,10 +1318,10 @@ class FmEnvMatrix(unittest.TestCase):
         edit of its slot (test_an_amount_edit_keeps_them_here_and_drops_them_on_stock) or a new source."""
         r = Rig(); self.make(r); text = r.save()
         imgs = [("stock 1.6.8", STOCK, None)]
-        if (REF444_S2 / "bento1.bin").exists():
-            imgs.append(("BE4.44", (REF444_S2 / "bento1.bin").read_bytes(), REF444_S2))
+        if (REF444 / "bento1.bin").exists():
+            imgs.append(("BE4.44", (REF444 / "bento1.bin").read_bytes(), REF444))
         else:
-            print(f"  (no BE4.44 build at {REF444_S2}: stock 1.6.8 only)")
+            print(f"  (no BE4.44 build at {REF444}: stock 1.6.8 only)")
         for what, img, ref in imgs:
             sym = None
             if ref is not None:
@@ -1354,6 +1334,67 @@ class FmEnvMatrix(unittest.TestCase):
             ms = re.findall(r"<modsource[^>]*>", again)
             self.assertEqual([sum(f'src="{x}"' in m for m in ms) for x in ("env3", "lfo3")], [2, 1], what)
             x = Rig(); self.assertEqual(self.routed(x, x.wt_tracks(x.load(again))[0]), self.WANT, f"{what}'s save, read here")
+
+    def test_the_source_encoder_puts_them_on_the_fm_depth_rows(self):
+        """BE4.46 merge (review): S2's sources on X1's rows, the combination only the merge makes. Stock's MX_EDIT on the
+        OSC1 Sub FM row (key 0x18B, WT1's handle) posts FM Env 1 at list index 5 (slot 0's Source); on OSC2 FM 1>2 (0x132)
+        and OSC2 Sub FM (0x18B, WT2's handle) it posts FM Env 2 at index 6 (slot 2's / slot 1's Source). Each post makes the
+        routing on its oscillator (MX_SET_ROUTE), with nothing on the other."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        view = fe_view(r, t)
+        _, ids, rows = fe_rows(r, view, IMG)
+        self.assertEqual(ids, FE_OUR_SRC)
+        cases = ((w1, SUBFM, 0, 5, FE1), (w2, FM12, 2, 6, FE2), (w2, SUBFM, 1, 6, FE2))
+        for o, key, slot, idx, src in cases:
+            row = rows.index((key, r.handle(o)))
+            e = fe_edit(r, view, row, S.KEY_MX_FIRST + 2 * slot, idx)
+            self.assertEqual(e[:4], (r.handle(o), key, src, slot), f"{key:#x} slot {slot}")
+            fe_post(r, e)
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in routes(r, w1)], [(SUBFM, FE1, 0)])
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in routes(r, w2)], sorted([(FM12, FE2, 2), (SUBFM, FE2, 1)]))
+
+    def test_on_the_fm_depths_they_save_and_load_here_on_stock_and_be444(self):
+        """BE4.46 merge (review): FM Env 1 / 2 routed to X1's three depths save as `<modsource dest="bento_subfm" src="env3">`
+        (and bento_fm12 / lfo3) and load back here. Stock 1.6.8 reads them as key 0 with the source kept (X1's rule for our
+        tokens) and saves them without a dest; BE4.44 has our tokens and the ids, so it keeps key and source and saves both
+        again."""
+        RT = ((0, SUBFM, FE1, 0, 400), (1, FM12, FE2, 1, -250), (1, SUBFM, FE1, 2, 1000))
+        def make(r):
+            t, w1, w2 = r.wavetable()
+            for o, key, src, slot, amt in RT:
+                set_route(r, r.handle((w1, w2)[o]), key, src, slot, amt)
+            return t
+        want = [sorted((k, s, sl, a) for o, k, s, sl, a in RT if o == i) for i in (0, 1)]
+        def got(x, t):
+            c = x.children(t)
+            return [routes(x, c[0]), routes(x, c[1])]
+        r = Rig(); t = make(r)
+        self.assertEqual(got(r, t), want)
+        text = r.save()
+        ms = re.findall(r"<modsource[^>]*>", text)
+        pairs = sorted((re.search(r'dest="([^"]*)"', m).group(1), re.search(r'src="([^"]*)"', m).group(1))
+                       for m in ms if "bento_" in m)
+        self.assertEqual(pairs, [("bento_fm12", "lfo3"), ("bento_subfm", "env3"), ("bento_subfm", "env3")], ms)
+        x = Rig(); self.assertEqual(got(x, x.wt_tracks(x.load(text))[0]), want, "this build reads them back")
+        s = Rig(img=STOCK, wrap=False); st = s.load(text)
+        self.assertEqual(got(s, s.wt_tracks(st)[0]),
+                         [sorted((0, s_, sl, a) for o, k, s_, sl, a in RT if o == i) for i in (0, 1)], "stock: key 0")
+        again = s.save(st)
+        self.assertNotIn("bento_", again)
+        ms = re.findall(r"<modsource[^>]*>", again)
+        self.assertEqual([sum(f'src="{v}"' in m and "dest=" not in m for m in ms) for v in ("env3", "lfo3")], [2, 1], ms)
+        if not (REF444 / "bento1.bin").exists():
+            print(f"  (no BE4.44 build at {REF444}: stock 1.6.8 only)")
+            return
+        man = json.loads((REF444 / "manifest.json").read_text())
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        b = Rig(img=(REF444 / "bento1.bin").read_bytes(), sym=sym); st = b.load(text)
+        self.assertEqual(got(b, b.wt_tracks(st)[0]), want, "BE4.44 keeps key and source")
+        again = b.save(st)
+        self.assertEqual((again.count('dest="bento_subfm" src="env3"') + again.count('src="env3" dest="bento_subfm"'),
+                          again.count('dest="bento_fm12" src="lfo3"') + again.count('src="lfo3" dest="bento_fm12"')),
+                         (2, 1), "BE4.44's save keeps them")
+        x = Rig(); self.assertEqual(got(x, x.wt_tracks(x.load(again))[0]), want, "BE4.44's save, read here")
 
     def test_an_instrument_replace_drops_them(self):
         """Risk 4: a track whose type changes (stock's instrument replace, the menu's kinds) is a new object with new children,
@@ -1373,7 +1414,7 @@ class FmEnvMatrix(unittest.TestCase):
             self.assertNotEqual(r.handle(now[0]), h, "a new object (the pool may reuse the memory)")
             self.assertEqual(r.vtype(now[0]), {1: 0x13, 6: S.TYPE_WAVETABLE}[kind])
             self.assertGreater(len(r.children(now[0])), 8, "with its new children")
-            left = [n for o in [now[0]] + r.children(now[0]) for n in fe_routes(r, o)]
+            left = [n for o in [now[0]] + r.children(now[0]) for n in routes(r, o)]
             self.assertEqual(left, [], f"kind {kind} (type {r.vtype(now[0]):#x}): no routing")
 
 
