@@ -29,16 +29,21 @@ measurements: `docs/plan-fm-targets.md`. Device checklist: `docs/checklist-v4.45
   Stock 1.6.8 loads them as routings to nothing (inert) and **drops them when it saves**: a project saved on stock comes
   back to BE4.45 without them.
 - Nothing else in the save format changed.
-- The piano roll's destination list (X3 sprint image): the lanes also offer OSC1: Sub FM, OSC2: FM 1>2 and OSC2: Sub FM,
+- The piano roll's destination list (X3, in this image): the lanes also offer OSC1: Sub FM, OSC2: FM 1>2 and OSC2: Sub FM,
   each on its own oscillator. A lane is saved as a routing from seq1..seq4, like any lane; every other list is stock's.
 
 ## Known limits
 
 - seq1..seq4 routed to the same FM destination share one slot, as on every stock destination: the last one wins.
+  Removing one of two such routings silences the other until the project is reloaded (stock's rule too).
+- A piano-roll lane whose routing is edited on the Mod Matrix page to another source keeps playing next to it, even
+  after that routing is removed, until the project is reloaded. Stock does the same on its own destinations
+  (measured offline on OSC1: Position).
 - A Wavetable OSC2's Sub FM routing starts from 0 even if an old project stored a value for it.
 - **CPU:** routing OSC2: Sub FM adds a whole second FM term to OSC2. On the heaviest voice (both oscillators Wavetable,
   full FM, Position moving every block) that is about 37.3k instructions a voice-block, about 5.6 % over the heaviest
-  voice of BE4.44 (35.3k). The other two destinations stay within it.
+  voice of BE4.44 (35.3k). The other two destinations stay within it. A piano-roll lane on OSC2: Sub FM is the same
+  routing, so it costs the same (not yet ruled on: see the plan's X3 open items).
 - The routings are kept in the M7's own memory, set up when it starts. A project loaded before that point would play
   them as unrouted until it is loaded again (not seen offline; the device checklist has a cold-boot check).
 
@@ -50,4 +55,7 @@ measurements: `docs/plan-fm-targets.md`. Device checklist: `docs/checklist-v4.45
   on removal.
 - CPU: about 260 instructions per voice-block for two routed destinations on the heaviest voice (35.26k, within its
   35.31k ceiling, also with every slot used and the store full); with nothing routed, unchanged within about 0.2 %.
-- DSP code 32,860 B (7,844 B free); 15,408 B of M4 room left to the proven image maximum.
+- Piano-roll lanes: a lane is the same routing, from seq1..seq4, bit for bit (the same depth per block as velocity
+  routed there, and as the knob turned to that depth). It survives the M7's clear of a track's routings as a lane on a
+  stock destination does.
+- DSP code 32,868 B (7,836 B free); 15,184 B of M4 room left to the proven image maximum.

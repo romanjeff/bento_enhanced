@@ -9,7 +9,7 @@ Kit:
   manifest.json      what the image contains (groups, addresses, every write)
   DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.45.txt)
 
-Plan: docs\plan-fm-targets.md (X1 and X2 as built, the X2 review). Release notes: docs\release-notes-v4.45.md.
+Plan: docs\plan-fm-targets.md (X1, X2 and X3 as built, the X2 and X3 reviews). Release notes: docs\release-notes-v4.45.md.
 Everything below was measured in the emulator only. This is a delta on BE4.44: docs\checklist-v4.44.txt still applies
 in full (nothing unrouted changed: the emulator shows BE4.44's output byte for byte with nothing routed to the new rows).
 
@@ -25,12 +25,16 @@ What changed since BE4.44:
   - Works on Analog and Wavetable oscillators; with the knob at 0 a routing alone turns FM on.
   - The FM envelope (FM Atk / FM Dec) shapes the routed depth exactly as it shapes the knob's.
   - The ANALOG line has a new field x2lost= (routings the M7 could not keep; should stay 0).
-  - (X3 sprint image) The piano roll's lane destinations offer OSC1: Sub FM, OSC2: FM 1>2 and OSC2: Sub FM, each on its
+  - (X3, in the BE4.45 image itself: every be445x image since X3 has it) The piano roll's lane destinations offer OSC1: Sub FM, OSC2: FM 1>2 and OSC2: Sub FM, each on its
     own oscillator; a lane on one moves that depth step by step, as on any destination.
 What to expect that is not a bug:
   - The modulation is block rate: an LFO above about 100 Hz on an FM amount aliases (folds above 187 Hz). Use the FM
     rows' own audio-rate sources (Sub FM, FM 1>2) for audio-rate effects.
   - seq1..seq4 routed to the same FM row share one slot (stock's rule for every destination): the last one wins.
+    Removing either of two such routings silences the other too until the project is reloaded (stock's rule as well).
+  - A lane whose routing is edited on the Mod Matrix page to another source (seq1 -> Velocity) keeps playing next to
+    the new source until the project is reloaded, even after that routing is set to None. Offline, stock does the same
+    on OSC1: Position (section 6 checks it on the device).
   - A Wavetable OSC2's Sub FM starts from 0 even if an old project stored a value for it (an Analog OSC2 starts from it).
   - A project saved on stock 1.6.8 loses these routings (stock drops their destination when it saves).
 
@@ -83,12 +87,13 @@ What to expect that is not a bug:
 [ ] An 8-voice chord around C1..C2, both oscillators Wavetable, OSC1 Sub FM 100 % and OSC2 FM 1>2 100 % from knobs, an
     LFO on both Positions: note the DSP %. Offline this is the heaviest existing voice (34.9k instructions a voice-block).
 [ ] The same depths from pressure (knobs 0, Pressure 100 % on OSC1: Sub FM and OSC2: FM 1>2, press hard): note the
-    DSP %. Offline 35.3k a voice-block, within 50 of the 35,309 ceiling.
+    DSP %. Offline 35.15k a voice-block on one track; the worst case (every matrix slot used, routings on 8 tracks)
+    is 35.26k, within 50 of the 35,309 ceiling.
 [ ] Then add Pressure 100 % on OSC2: Sub FM too (a second FM term OSC2 never had on BE4.44): note the DSP % and any
     OVER. Offline 37.3k a voice-block, about 5.6 % over the ceiling (reported to Jeff).
 [ ] The same on Analog oscillators. No reset, no freeze, no "!!!" in the log, no OVER that stays on; x2lost=0.
 
-6. Piano-roll lanes (X3 sprint image, v4.45-X3)
+6. Piano-roll lanes (X3: the BE4.45 image)
 [ ] A Wavetable track, piano roll, lane A: open its destination list. OSC1 shows Pitch, Level, Position, Sub FM; OSC2
     shows Pitch, Level, Position, FM 1>2, Sub FM. There is no OSC1: FM 1>2. A Granular, a sampler and a one-shot track's
     lists look as on BE4.44.
@@ -97,8 +102,14 @@ What to expect that is not a bug:
 [ ] Lane B on OSC2: FM 1>2 and lane D on OSC2: Sub FM: each moves its own depth only; a lane C on OSC1: Position still
     moves Position.
 [ ] Save, reload: the three lanes play again. Turn lane A's destination off: the depth returns to the knob.
+[ ] Lane C on OSC1: Position and lane A on OSC1: Sub FM, both moving. On the Mod Matrix page change the Sub FM
+    routing's source from seq1 to Velocity, then set it to None. Does lane A still move the Sub FM depth? Do the same
+    with the Position routing (seq3 -> Velocity -> None). Offline both keep playing until the project is reloaded
+    (stock's own behaviour on Position). Write down what each does, and whether reloading stops it.
 [ ] CPU: the 8-voice chord of section 5 with lanes A / B at 100 % instead of pressure: the same DSP % as the pressure
-    case (offline 35.15k a voice-block); with lane D on OSC2: Sub FM too, as section 5's third line (37.3k).
+    case (offline 35.15k a voice-block on one track; lanes A / B on all 8 Wavetable tracks: see the plan's "X3 as
+    built after the review"); with lane D on OSC2: Sub FM too, as section 5's third line (37.3k, 5.6 % over).
 
 Bring back: BENTO_SAVES.log, BENTO_CRASHES.log if any, the row photo (section 2), notes on section 3 (how the clamp,
-pressure and the block-rate depth sound), section 4's cold boot result, section 5's figures.
+pressure and the block-rate depth sound), section 4's cold boot result, section 5's figures, section 6's lists (photo), its CPU figures and the source-edit
+result (does a lane keep playing after its routing is edited to another source and removed).

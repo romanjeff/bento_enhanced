@@ -698,7 +698,7 @@ __attribute__((used, retain)) void an_browse(void *view, void *ev, u32 h) {
 static u32 osc_instance(u32 trackh, u32 h) {
     void *t = resolve(trackh);
     u32 n = t ? W(t, S_NODE_CHILD_N) : 0u, k = 0;
-    for (u32 c = 0; c < n && c < 64u; c++) {
+    for (u32 c = 0; c < n && c < 0x244u; c++) {       /* X3 review: nth_osc's bound (S_NODE_CHILD_N's), not 64 */
         void *o = (void *)W(t, S_NODE_CHILDREN + 4u * c);
         if (!o) continue;
         if (W(o, 0x10) == h) return k;

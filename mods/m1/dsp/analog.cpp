@@ -463,8 +463,11 @@ extern "C" __attribute__((used, minsize)) void x2_connect(void *osc, u32 src, u3
     if (!c && was) x2_tidy(e);
 }
 /* Slot 9, ours first (osc): the root's clear of its routings (stock's slot 9 clears the matrix slots of Position, Pitch and
- * Level, slot 3 kept): this oscillator's keys of its root's entry (OSC1: Sub FM; OSC2: FM 1>2 and Sub FM). The caller's
- * registers are not relied on: the entry is the one whose root holds this voice. */
+ * Level, slot 3 kept): this oscillator's keys of its root's entry (OSC1: Sub FM; OSC2: FM 1>2 and Sub FM), slots 0..2 only.
+ * X3 review (R1-1): slot 3, the seq lanes' slot, is kept as stock keeps its PARAM slot 4 (0x080A0880 zeroes +8..+0x1C and
+ * keeps +0x20, S), so a piano-roll lane on our keys survives the clear exactly as a lane on Position does; the explicit
+ * removal (slot 3, source 0) and the per-type post's slot 3 clear still clear it. The caller's registers are not relied
+ * on: the entry is the one whose root holds this voice. */
 extern "C" __attribute__((used, minsize)) void x2_clear(void *osc) {
     if (!area_ok() || !RUN->x2n) return;
     u32 which = 2;
@@ -476,6 +479,7 @@ extern "C" __attribute__((used, minsize)) void x2_clear(void *osc) {
         if (e->handle != W(root, S_ROOT_HANDLE) || !x2_has_voice(root, v)) continue;
         u32 any = 0;
         for (u32 j = which ? X2_K_FM12 * X2_SLOTS : 0u; j < (which ? X2_N : X2_SLOTS); j++) {
+            if (j % X2_SLOTS == X2_SLOTS - 1u) continue;     /* slot 3: kept (above) */
             any |= e->src[j];
             e->src[j] = 0; e->amt[j] = 0;
         }

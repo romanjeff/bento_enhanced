@@ -368,7 +368,9 @@ GROUP_NAMES = {
                # BE4.45 X3: the piano roll's destination list (its type match, the enumerator and its index rule), the lane
                # toggle and the Wavetable root's lane read (tests)
                "PR_DEST_LIST", "PR_DEST_MATCH", "PR_DEST_ENUM", "PR_DEST_ENUM_LEN", "PR_DEST_ENUM_SHA", "MX_GRAN_DEST_COUNT",
-               "PR_LANE_TOGGLE", "WT_ROOT_BLOCK", "WT_ROOT_LANES_END"),
+               "PR_LANE_TOGGLE", "WT_ROOT_BLOCK", "WT_ROOT_LANES_END",
+               # X3 review: the builder's bytes (its frame), the root's clear-all (message 0x48) and the loop's next message (tests)
+               "PR_DEST_LIST_LEN", "PR_DEST_LIST_SHA", "WT_ROOT_CLEAR_ALL", "WT_ROOT_MSG_NEXT"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -1921,7 +1923,12 @@ def pr_dest_patch(base_img, patch, wrap):
     """X3: PR_DEST_LIST's type match (ldrb.w r3, [sp, #0x26]; cmp r3, r8; then stock's bne to the next row) -> bl wrap;
     cmp r0, #0 (wrap: pr_dest_skip(frame, r4 the enumerator index, r8 the child's type, sb the track handle's address)).
     Refused unless the site is stock's, the bne after it is the one to the next row, and the enumerator is the code whose
-    index rule (30 global rows, then Granular's count, then the Wavetable table) pr_dest_skip relies on (PR_DEST_ENUM_SHA)."""
+    index rule (30 global rows, then Granular's count, then the Wavetable table) pr_dest_skip relies on (PR_DEST_ENUM_SHA),
+    and (X3 review) the builder is the code whose frame pr_dest_skip reads ([sp + 0x26] type, [sp + 0x28] key, [sp + 0x2C]
+    the child's handle, r4 the index, r8 the child's type, sb the track handle's address: PR_DEST_LIST_SHA)."""
+    lst = bytes(base_img[S.PR_DEST_LIST - BASE:S.PR_DEST_LIST - BASE + S.PR_DEST_LIST_LEN])
+    if hashlib.sha256(lst).hexdigest() != S.PR_DEST_LIST_SHA:
+        raise SystemExit("X3: PR_DEST_LIST is not the builder whose frame was read (PR_DEST_LIST_SHA)")
     site = S.PR_DEST_MATCH
     if asm("ldrb.w r3, [sp, #0x26]; cmp r3, r8", site) != S.orig("PR_DEST_MATCH"):
         raise SystemExit("X3: PR_DEST_MATCH is not stock's type match")

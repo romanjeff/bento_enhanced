@@ -8464,7 +8464,8 @@ class FmLanesX3(unittest.TestCase):
     matrix slot 0 (test_native_props FmTargets: the toggle, its 0xD1 and the model's 0x3F); the M7 takes it through stock's
     WT_ROUTE into connect slot 3, X2's store and sum. Played here per block through stock's own lane read (Lanes): the FM
     depth follows the lane, bit for bit as the same routing from velocity (X2) and as the knob turned to v; the other
-    lanes, a stock destination's lane (Position) and the other FM knob are untouched. No M7 code of X3's: the DSP is X2's."""
+    lanes, a stock destination's lane (Position) and the other FM knob are untouched. No M7 code of X3's: the DSP is X2's,
+    but for the review's x2_clear keeping slot 3 (R1-1: test_the_roots_clear_keeps_a_lane_as_it_keeps_positions)."""
     VALS = FmTargetsX2.VALS
 
     def test_stock_reads_the_four_lanes_into_seq1_to_seq4(self):
@@ -8557,6 +8558,99 @@ class FmLanesX3(unittest.TestCase):
         wt_route(r, root, 0, K_SUBFM, 3, 0, 0)
         self.assertEqual(x2_store(r), [])
 
+    @staticmethod
+    def clear_all(r, root):
+        """Stock's message 0x48 (the root's clear-all) through the root's message loop: its case (WT_ROOT_CLEAR_ALL, jump
+        table entry 0x48) up to the loop's next message (WT_ROOT_MSG_NEXT), with the loop's frame ([sp + 0x20] = root +
+        0x10, the voice list before its first) and r4 = the root: per voice, slot 9 of oscillators 0..2 (WT_OSC_CLEAR, X2's
+        x2_clear first) among stock's other resets."""
+        u, sp = r.u, STACK - 0x200
+        r.w32(sp + 0x20, root + 0x10); r.w32(sp + 0x50, 0x48)
+        u.reg_write(UC_ARM_REG_R4, root); u.reg_write(UC_ARM_REG_SP, sp); u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        u.emu_start(S.WT_ROOT_CLEAR_ALL | 1, S.WT_ROOT_MSG_NEXT, count=2_000_000)
+
+    def test_the_roots_clear_keeps_a_lane_as_it_keeps_positions(self):
+        """X3 review (R1-1): stock's clear-all (0x48) zeroes the matrix slots 0..2 of Pitch, Level and Position and keeps
+        connect slot 3, the seq lanes' (PARAM slot 4: 0x080A0880 keeps + 0x20). X2's clear now does the same for ours: a lane
+        on each FM depth, a Position lane on OSC1 and a velocity routing in matrix slot 1 of the same depth; after the clear
+        at block 4 the velocity term is gone, the lane still drives the depth per block (x2_law with the lane alone) and
+        Position's lane is still connected, on Analog and Wavetable oscillators."""
+        VALS = FmTargetsX2.VALS
+        for types in ((1, 1), (0, 0)):
+            for lane, inst, key in ((0, 0, K_SUBFM), (1, 1, K_FM12), (3, 1, K_SUBFM)):
+                with self.subTest(types=types, lane=lane, inst=inst, key=hex(key)):
+                    w = WtVoice(self, types=types, capture=False, frames=G.wt_saw_frames(200))
+                    base = 200 if (inst, key) != (1, K_SUBFM) or types[1] else 0     # a Wavetable OSC2's Sub FM base: 0 (X2)
+                    w.prop(key, base, inst)
+                    pos_lane = (lane + 1) % 4
+                    wt_route(w.r, w.root, 0, 0xC9, 1, SRC_SEQ[pos_lane], 400)
+                    wt_route(w.r, w.root, inst, key, 0, SRC_SEQ[lane], 600)
+                    wt_route(w.r, w.root, inst, key, 1, SRC_VEL, 300)
+                    pos_at = w.root + ROOT_LANE_SRC + 8 * pos_lane
+                    params = lambda: [w.r.r32(w.o[0] + p + 0x20) for p in (0x30, 0x70, 0xB0)]
+                    self.assertIn(pos_at, params(), "Position's lane in its PARAM slot 4 (control)")
+                    j = X2_K[(inst, key)] * X2_SLOTS
+                    ln = Lanes(w.r, w.root)
+                    depth, want = [], []
+                    for b in range(10):
+                        if b == 4:
+                            self.clear_all(w.r, w.root)
+                            (e,) = x2_store(w.r)
+                            self.assertEqual(e[2][j:j + 4], [0, 0, 0, X2_ROOT_REL | (ROOT_LANE_SRC + 8 * lane)],
+                                             "slots 0..2 cleared, the lane's slot 3 kept")
+                            self.assertEqual([c for i, c in enumerate(e[2]) if c and i != j + 3], [], "nothing else")
+                            self.assertIn(pos_at, params(), "Position's lane kept (stock's)")
+                        vals = [0.9, 0.3, 0.6, 0.15]
+                        vals[lane] = VALS[b]; vals[pos_lane] = (b % 4) / 4
+                        ln.read(vals)
+                        w.r.wf(w.v + 0x38, 0.5)
+                        w.block()
+                        msub, m12 = struct.unpack("<HH", w.r.u.mem_read(w.o[inst] + S.OSC_KERNEL + MSUB_AT, 4))
+                        depth.append(m12 if key == K_FM12 else msub)
+                        want.append(x2_law(base, ([(300, 0.5)] if b < 4 else []) + [(600, VALS[b])]))
+                    self.assertEqual(depth, want, "velocity's term until the clear, the lane before and after it")
+                    self.assertGreater(len(set(depth[5:])), 3, "the lane still moves the depth")
+
+    def test_a_lane_beside_a_matrix_routing(self):
+        """X3 review (R1-2): velocity in matrix slot 0 and a lane the toggle put in matrix slot 1 (test_native_props
+        FmTargets.test_a_lane_beside_a_matrix_routing_takes_the_next_slot): stock's WT_ROUTE stores the lane in connect slot
+        3; the toggle's removal (slot 3, source 0) clears it and leaves velocity's slot 0."""
+        r = Rig(); root, vs = x2_root(r)
+        for inst, key in X2_DESTS:
+            wt_route(r, root, inst, key, 0, SRC_VEL, 500)
+            wt_route(r, root, inst, key, 1, SRC_SEQ[0], 1000)
+            (e,) = x2_store(r)
+            j = X2_K[(inst, key)] * X2_SLOTS
+            self.assertEqual((e[2][j:j + 4], e[3][j:j + 4]), ([0x34, 0, 0, X2_ROOT_REL | ROOT_LANE_SRC], [500, 0, 0, 1000]))
+            wt_route(r, root, inst, key, 3, 0, 0)
+            (e,) = x2_store(r)
+            self.assertEqual((e[2][j:j + 4], e[3][j:j + 4]), ([0x34, 0, 0, 0], [500, 0, 0, 0]), "velocity's slot 0 kept")
+            wt_route(r, root, inst, key, 0, 0, 0)
+        self.assertEqual(x2_store(r), [])
+
+    def test_a_lane_edited_to_another_source_stays_until_reload(self):
+        """X3 review (R2-2), a known limit pinned (stock's, now on our keys as on Position): the Mod Matrix's source edit of a
+        lane's routing (seq1 -> velocity in matrix slot 0) posts only {slot 0, velocity} (test_native_props, M), so the lane
+        stays in connect slot 3 and the depth sums both; the routing's removal posts {slot 0, source 0}, so the lane still
+        plays. Stock's Position keeps its PARAM slot 4 the same way. Only the per-type post's slot 3 clear (a project's
+        reload) ends it."""
+        r = Rig(); root, vs = x2_root(r)
+        o1 = vs[0] + S.VOICE_WT1
+        pos = lambda: [r.r32(o1 + p + 0x20) for p in (0x30, 0x70, 0xB0)]
+        for inst, key in X2_DESTS + ((0, 0xC9),):
+            wt_route(r, root, inst, key, 0, SRC_SEQ[0], 1000)          # the toggle's lane: matrix slot 0
+            wt_route(r, root, inst, key, 0, SRC_VEL, 700)              # the Mod Matrix's source edit
+            wt_route(r, root, inst, key, 0, 0, 0)                      # and its removal
+            if key == 0xC9:
+                self.assertIn(root + ROOT_LANE_SRC, pos(), "stock's Position: the lane stays in PARAM slot 4")
+            else:
+                (e,) = x2_store(r)
+                j = X2_K[(inst, key)] * X2_SLOTS
+                self.assertEqual(e[2][j:j + 4], [0, 0, 0, X2_ROOT_REL | ROOT_LANE_SRC], "the lane stays in slot 3")
+            wt_route(r, root, inst, key, 3, 0, 0)                      # the reload's per-type slot 3 clear
+        self.assertEqual(x2_store(r), [])
+        self.assertNotIn(root + ROOT_LANE_SRC, pos())
+
     def test_cost_heaviest_voice_lanes(self):
         """X2's heaviest voice (Wavetable both, Position every block, notes 24 / 36) with the depths from lanes at 1.0, amount
         1000 (the same sound as the knobs at 1000): seq1 on OSC1 Sub FM and seq2 on OSC2 FM 1>2 within HEAVIEST_VOICE; with
@@ -8564,12 +8658,23 @@ class FmLanesX3(unittest.TestCase):
         (an_enter and both renders); the lane read is stock's, once per root per block, with or without lanes."""
         lfo = lambda b: (b * 7 % 200) / 255
         two = [(0, K_SUBFM, 0, SRC_SEQ[0], 1000), (1, K_FM12, 0, SRC_SEQ[1], 1000)]
-        def cost(note, knobs, routes=()):
+        def cost(note, knobs, routes=(), fill=0):
             w = WtVoice(self, types=(0, 0), frames=G.wt_saw_frames(200), capture=False, note=note)
             if knobs:
                 w.prop(K_SUBFM, 1000, 0); w.prop(K_FM12, 1000, 1)
             for rt in routes:
                 wt_route(w.r, w.root, *rt)
+            if fill:                                  # X3 review (R2-5f): lanes on 8 tracks, ours the last entry scanned
+                n = w.r.r32(SA + SA_RUN + RUN_X2N)
+                ents = [bytes(w.r.u.mem_read(SA + SA_X2 + X2_ENTRY * i, X2_ENTRY)) for i in range(n)]
+                fake = []
+                for i in range(fill):
+                    ro = w.r.alloc(0x2F0); w.r.w32(ro + S.ROOT_HANDLE, 0x5000 + i)
+                    fake.append(struct.pack("<II12H12h", ro, 0x5000 + i, *[0] * 3, X2_ROOT_REL | ROOT_LANE_SRC, *[0] * 8,
+                                            *[0] * 3, 1000, *[0] * 8))
+                for i, e in enumerate((fake + ents)[:SA_X2_N]):
+                    w.r.u.mem_write(SA + SA_X2 + X2_ENTRY * i, e)
+                w.r.w32(SA + SA_RUN + RUN_X2N, min(SA_X2_N, fill + n))
             ln = Lanes(w.r, w.root)
             sp = [Span(w.r, DSP["an_enter"])] + [Span(w.r, a) for a in {w.r.r32(w.r.r32(o)) & ~1 for o in w.o}]
             xs = []
@@ -8585,6 +8690,8 @@ class FmLanesX3(unittest.TestCase):
             rows[f"note {note}: knobs"] = k
             rows[f"note {note}: 2 lanes"] = l2 = cost(note, False, two)
             same(self, l2[2], k[2], f"note {note}: the same sound from lanes")
+            rows[f"note {note}: 2 lanes, 7 laned roots ahead"] = l7 = cost(note, False, two, fill=7)
+            same(self, l7[2], k[2], f"note {note}: the same sound, ours the last entry")
             rows[f"note {note}: + OSC2 Sub FM lane"] = cost(note, False, two + [(1, K_SUBFM, 0, SRC_SEQ[3], 1000)])
         print("\n  X3 heaviest voice with lanes (instructions per voice-block, Position every block; steady median / max): " +
               "; ".join(f"{k} {a} / {b}" for k, (a, b, _) in rows.items()), file=sys.stderr)

@@ -925,6 +925,64 @@ class FmTargets(unittest.TestCase):
             self.assertEqual(posts, [(r.handle(t), key, 3, 0, 0, inst)], f"lane {lane} off: slot 3, source 0")
         self.assertEqual(routes(r, w1) + routes(r, w2), [])
 
+    def test_a_lane_beside_a_matrix_routing_takes_the_next_slot(self):
+        """X3 review (R1-2): with matrix slot 0 of OSC1 Sub FM already routed from velocity, stock's toggle takes slot 1: the
+        0xD1 and the model's 0x3F carry slot 1, source seq1 (the M7 still puts it in connect slot 3: test_analog
+        FmLanesX3.test_a_lane_beside_a_matrix_routing). Off: the lane's node goes, the 0x3F is {slot 3, source 0}, and
+        velocity's routing in slot 0 is untouched."""
+        VEL = 0xD
+        r = Rig(); t, w1, w2 = r.wavetable()
+        set_route(r, r.handle(w1), SUBFM, VEL, 0, 500)
+        p = Piano(r, t, self.roles(r, t, w1, w2))
+        evs, posts = p.toggle(0, "osc1", SUBFM, 1000)
+        self.assertEqual([struct.unpack("<H2xIHHHHi", e) for e in evs], [(0xD1, r.handle(w1), SUBFM, 0, SEQ1, 1, 1000)])
+        self.assertEqual(posts, [(r.handle(t), SUBFM, 1, SEQ1, 1000, 0)], "the 0x3F: matrix slot 1")
+        self.assertEqual(routes(r, w1), sorted([(SUBFM, VEL, 0, 500), (SUBFM, SEQ1, 1, 1000)]))
+        l = p.dests(0)
+        self.assertEqual(p.state[[(x[0], x[1]) for x in l].index(("osc1", SUBFM))], (SUBFM, 1, 1000, 1), "on lane A, slot 1")
+        evs, posts = p.toggle(0, "osc1", SUBFM, 0)
+        self.assertEqual([struct.unpack("<H2xIHHHHi", e)[1:] for e in evs], [(r.handle(w1), SUBFM, 0, 0, 1, 0)], "off: slot 1")
+        self.assertEqual(posts, [(r.handle(t), SUBFM, 3, 0, 0, 0)], "off: the M7's slot 3, source 0")
+        self.assertEqual(routes(r, w1), [(SUBFM, VEL, 0, 500)], "velocity's routing stays")
+
+    def test_the_toggle_refuses_a_second_lane_and_a_full_key(self):
+        """X3 review (R2-3a, open 3): an entry already laned from another lane is in state 2, and one with matrix slots 0..2
+        all routed (no seq source) in state 3; stock's toggle does nothing on either (0x0815A1FC): no 0xD1, no 0x3F, the
+        routings as they were."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        p = Piano(r, t, self.roles(r, t, w1, w2))
+        p.toggle(0, "osc1", SUBFM, 1000)
+        for slot, src in enumerate((LFO1, 5, 0xD)):
+            set_route(r, r.handle(w2), FM12, src, slot, 100 + slot)
+        before = (routes(r, w1), routes(r, w2))
+        for lane, role, key, state in ((1, "osc1", SUBFM, 2), (2, "osc2", FM12, 3)):
+            l = p.dests(lane)
+            self.assertEqual(p.state[[(x[0], x[1]) for x in l].index((role, key))][3], state, f"{role} {key:#x}: state {state}")
+            evs, posts = p.toggle(lane, role, key, 1000)
+            self.assertEqual((evs, posts), ([], []), f"state {state}: the toggle posts nothing")
+            self.assertEqual((routes(r, w1), routes(r, w2)), before)
+
+    def test_the_instance_counts_oscillators_only(self):
+        """X3 review (R2-4): a track whose second oscillator is not its second child (the sub between them): pr_dest_skip
+        counts type-6 children, as DEST_NAME does, so OSC1 still gets Sub FM and OSC2 FM 1>2 and Sub FM, and the names agree
+        (DEST_NAME's instance); on stock the same layout lists stock's entries for both oscillators (control)."""
+        lists = []
+        for img in (IMG, STOCK):
+            r = Rig(img=img, wrap=img is IMG)
+            t = r.create(r.live, S.TYPE_WAVETABLE)
+            for k in bytes.fromhex("0608060a0a09090b0b0c0d"):
+                assert r.child(r.live, k, t)
+            c = r.children(t)
+            self.assertEqual([r.vtype(o) for o in c[:3]], [6, 8, 6], "OSC1, the sub, OSC2")
+            l = Piano(r, t, {r.handle(c[0]): "osc1", r.handle(c[2]): "osc2"}).dests()
+            lists.append([(h, k, n) for h, k, n in l if h in ("osc1", "osc2")])
+        got, old = lists
+        self.assertEqual([(h, k) for h, k, _ in old], [("osc1", 3), ("osc1", 0xC4), ("osc1", 0xC9),
+                                                       ("osc2", 3), ("osc2", 0xC4), ("osc2", 0xC9)], "stock's (control)")
+        self.assertEqual(got, [("osc1", 3, "OSC1: Pitch"), ("osc1", 0xC4, "OSC1: Level"), ("osc1", 0xC9, "OSC1: Position"),
+                               ("osc1", SUBFM, "OSC1: Sub FM"), ("osc2", 3, "OSC2: Pitch"), ("osc2", 0xC4, "OSC2: Level"),
+                               ("osc2", 0xC9, "OSC2: Position"), ("osc2", FM12, "OSC2: FM 1>2"), ("osc2", SUBFM, "OSC2: Sub FM")])
+
     def test_lanes_save_and_load(self):
         """X3: the lanes are ordinary routings: stock's writer writes <modsource dest="bento_subfm|bento_fm12" src="seqN">,
         stock's reader restores them on their oscillators, and the loaded project's list shows each on its lane."""

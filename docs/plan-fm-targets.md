@@ -23,11 +23,16 @@ The W4 DSP layout this builds on is `docs/plan-wt-fm.md`, "W4 as built". FM Env 
 - **FM gate.** The gate sees "has routes".
 - **Stock.** Stock loads such a route as an inert key 0.
 - **Budgets.** Synth first. The default build keeps >= 1 KB free in the DSP window. The P3Identity stop line is 1.95 %. The heaviest steady voice must stay under 35,309.
+- **X3 (lanes).** Jeff approved piano-roll lanes on the three destinations (OSC1 Sub FM, OSC2 FM 1>2, OSC2 Sub FM),
+  reversing X1's "the piano roll's list stays stock's". This approval is **not** a ruling on X2 open 5: a routed OSC2
+  Sub FM on the heaviest voice is 37.3k, 5.6 % over the budget above, and lanes make it one tap away. That ruling is
+  still Jeff's to make before release (X3 open 1; X3 review R2-1).
 
 ## Sprint X1 (M4) as built: the table, rows, names; routings stored, inert in sound
 
 As built after the X1 review (its dispositions are at the end of this section). The one review change to the design:
-the piano roll's destination list keeps stock's table (section "The piano roll's list stays stock's").
+the piano roll's destination list keeps stock's table (section "The piano roll's list stays stock's"). **Superseded by
+X3:** the list now offers our three, each on its own oscillator ("Sprint X3 (M4) as built").
 
 ### Q8 first: the row-id byte (+0x14) is the page's CC column, display only (S, M)
 
@@ -123,6 +128,10 @@ The row filler does not read the count word. It hard-codes the count twice:
 - The longest name is "OSC1: Position" (14 + NUL), within the 16 B field.
 
 ### The piano roll's list stays stock's (X1 review; S, M)
+
+**Superseded by X3** ("Sprint X3 (M4) as built"): the enumerator's literals now point at our table, the builder's type
+match is pr_dest_skip, and `test_the_piano_roll_list_is_stocks` was replaced by X3's list tests. This section is kept as
+X1's record (the trace below still holds; the "Built" paragraph does not).
 
 **What the list is (S).** The destination list builder 0x08159CA8 is called only from the piano roll: 0x08159EFC (in
 0x08159E80) and 0x0815C40E (in `PIANO_EVENT`). It is the piano roll's destination picker. It walks the enumerator
@@ -577,7 +586,8 @@ that also exists unrouted. Today the value only comes from a pre-BE4.43 project.
 
 Jeff approved lanes on OSC1 Sub FM, OSC2 FM 1>2 and OSC2 Sub FM (reversing X1's "the piano roll's list stays stock's").
 The trace comes first, because it decides the design: **a lane is a Mod Matrix routing from seq1..seq4**. X2 already
-plays that on the M7, so X3 is an M4 change only: the list, and nothing in the M7 or the DSP.
+plays that on the M7, so X3 is an M4 change only: the list, and nothing in the M7 or the DSP (the X3 review then
+added one M7 fix, x2_clear keeping slot 3: "X3 review: dispositions", R1-1).
 
 ### Trace: what a lane is (S; M where a test runs it)
 
@@ -662,13 +672,16 @@ plays that on the M7, so X3 is an M4 change only: the list, and nothing in the M
   our keys were filtered, so stock's rows still go through stock's exact test.
 - A BE_DISABLE=analog bisect keeps X1's literals (it did since X1), so pr_dest_skip filters there too.
 
-**The M7: nothing new.**
+**The M7: nothing new in X3 itself (one review fix since: "X3 review: dispositions", R1-1).**
 - A lane on one of the three is X2's routing in slot 3: X2's store, its sum (Q4: `v = clamp(knob + 1000 x amount x lane)`)
   and its gates.
-- The M7 and the DSP of X3's image are X2's, byte for byte. The untagged image differs from be445x2rrel only at
-  0x0812EA44 and up (M4): the synth UI block, the moved table's literals and the bl displacements into the block.
+- As built at 5678d56, the M7 and the DSP of X3's image were X2's, byte for byte. The untagged image differed from
+  be445x2rrel only at 0x0812EA44 and up (M4): the synth UI block, and 10 ranges outside it (X3 review R2-5a, M):
+  PROP_TEMPLATE_LIT_A / B (N1's property template, which moved with the block), the seven table and count literals
+  (N_LIT_1, LIT_1, LIT_2, N_LIT_3, LIT_3, N_LIT_4, LIT_4) and the PR_DEST_MATCH site. No bl in stock code changed.
+- After the review, x2_clear keeps connect slot 3 as stock's clear does (R1-1): an M7 / DSP change of 8 B.
 
-### Tests (M, ~/bento/out/be445x3)
+### Tests (M, ~/bento/out/be445x3; the review's additions: "X3 review: dispositions")
 
 **test_native_props `FmTargets` (X3, +4; X1's `test_the_piano_roll_list_is_stocks` replaced):**
 - `test_the_piano_roll_list_offers_ours_on_their_own_oscillator`: PR_DEST_LIST run on this build and on stock. The list is
@@ -715,7 +728,9 @@ sound as the knobs, asserted). Instructions per voice-block, steady median / max
 | + seq4 on OSC2 Sub FM | 37,288 / 37,290 | 37,288 / 37,290 | 37,700 (X2's SUB2_HEAVY_MAX) |
 
 - These are X2's routed figures exactly: a lane is a routing, and the source kind does not change x2_enter.
-- **Two lanes: 159 under the 35,309 ceiling.** X2's worst two-key case (all slots and a full store) is 35,260.
+- **Two lanes: 159 under the 35,309 ceiling** on one routed root. With lanes on all 8 Wavetable tracks the last root's
+  entry is found after 7 others: see "X3 as built after the review" for that figure (X3 review R2-5f). X2's worst two-key
+  case (all slots and a full store) is 35,260.
 - **OSC2 Sub FM from a lane is 5.6 % over**, the same known miss as X2 open 5. Lanes make it easier to reach (a lane is
   one tap), which is a reason to settle open 5.
 - The lane read itself is stock's: once per root per block, with or without lanes.
@@ -750,19 +765,142 @@ Mutants of pr_dest_skip (scratch x3/mut.sh, a build each): the instance test dro
 pre-review X1 list), and only "OSC1: FM 1>2" dropped (the Sub FM-first order on OSC2). Each fails
 `test_the_piano_roll_list_offers_ours_on_their_own_oscillator`.
 
+### X3 review: dispositions (two reviews of 5678d56; M on ~/bento/out/be445x3r unless named)
+
+**R1-1, the root's clear-all (0x48) dropped a lane on our keys but kept one on stock's: holds; fixed (M7, 8 B).**
+- Verified (S): WT_OSC_CLEAR (0x08081C20) runs 0x080A0880 on Pitch, Level and Position's PARAMs, which zeroes slots
+  +8..+0x1C and keeps +0x20 (PARAM slot 4, connect slot 3), even re-adding it to the active list. The 0x48 case is
+  0x0807B182 (jump table 0x0807AD0C, entry 0x48 - 2 = 0x0807B183), and its per-voice loop calls slot 9 at 0x0807B254.
+  x2_clear zeroed all four slots, against its own comment ("slot 3 kept").
+- Measured: the new test, run on the X3 image (be445x3), empties the store at the clear while Position's lane stays
+  connected: the reviewer's failure scenario, reproduced.
+- Fix, option (a): x2_clear skips slot 3. On every 0x48 path, traced or not, our keys now behave exactly as stock's
+  Position. The explicit removal (slot 3, source 0) and MX_TYPE_KEYS_POST still clear it. Option (b), tracing all nine
+  0x48 callers, was not needed once (a) matches stock. This is an M7 change, so "M7: nothing new" no longer holds (open 6).
+- Test: `FmLanesX3.test_the_roots_clear_keeps_a_lane_as_it_keeps_positions` runs stock's 0x48 case (WT_ROOT_CLEAR_ALL
+  to WT_ROOT_MSG_NEXT, with the loop's frame) at block 4 of a voice that has a lane on each FM depth, a velocity routing
+  in matrix slot 1 of that depth, and a Position lane. On 3 destinations x Analog / Wavetable it checks: slots 0..2 are
+  cleared, slot 3 is kept, Position's PARAM slot 4 is kept, and the depth per block is x2_law with velocity's term before
+  the clear and the lane alone after it. Mutant CLR3 (the old loop): 6 errors.
+
+**R1-2, the lane test covered matrix slot 0 only: holds; tests added.**
+- `FmTargets.test_a_lane_beside_a_matrix_routing_takes_the_next_slot` (M4): velocity in slot 0. The toggle's 0xD1 and
+  the 0x3F carry slot 1, source seq1, and the list shows state 1 on slot 1. Off: 0xD1 slot 1, source 0; the 0x3F is
+  {slot 3, source 0}; velocity's node is untouched.
+- `FmLanesX3.test_a_lane_beside_a_matrix_routing` (M7): WT_ROUTE stores the slot-1 lane in connect slot 3 next to
+  velocity's slot 0. The removal's {slot 3, source 0} leaves slot 0.
+
+**R1-3, removing one seq routing on a depth silences the other: holds, by design (stock's rule).** Added to open 3, the
+checklist's "not a bug" list and the release notes' known limits. No code change.
+
+**R1-4, stale notes on the moved literals: holds; fixed.** The MX_WT_DEST_LIT_3 / N_LIT_3 notes in stock_168.py and
+stock_161.py (they generate stock_syms.h) now say X3 points them at our table and count word. facts.py's evidence had no
+stale text.
+
+**R1-5, osc_instance gave up after 64 children: holds; fixed.** Its bound is now 0x244, nth_osc's (S_NODE_CHILD_N's
+limit). Mutant CAP2 (bound 2) fails the new instance test.
+
+**R1-6, no hash of PR_DEST_LIST's frame: taken.** pr_dest_patch now also refuses a builder whose bytes
+(0x08159CA8..0x08159E70, code and its one literal word) do not hash to PR_DEST_LIST_SHA (ef96f3d7...e8db, S).
+
+**R2-1, a documented budget miss made reachable in one tap before Jeff ruled on it: holds as a decision gap; recorded,
+not changed.** Jeff approved lanes on all three, OSC2 Sub FM included, so the lane is kept. The approval is now recorded
+under "Decisions (Jeff)", stated as not settling X2 open 5. Open 1 makes the ruling a release blocker. If Jeff does not
+accept the miss, dropping OSC2 Sub FM from the list is one condition in pr_dest_skip (keep only (0, 0x18B) and (1, 0x132)).
+
+**R2-2, the Mod Matrix's source edit leaves a lane live on the M7: holds; stock's, documented and pinned.**
+- Measured on the M4 (scratch x3r/p_edit.py), lane A on OSC1 Sub FM and, as a control, on OSC1 Position, on be445x3 and
+  on stock. The edit to velocity posts only {slot 0, source 13, 700}; the removal posts {slot 0, source 0}. No slot 3 is
+  cleared. Position's posts are identical on stock.
+- On the M7 the lane stays in connect slot 3 (and in Position's PARAM slot 4): the depth sums both until the reload's
+  per-type slot 3 clear. With R1-1's fix this also survives a 0x48, exactly as on Position.
+- Pinned by `FmLanesX3.test_a_lane_edited_to_another_source_stays_until_reload`. Added to the known limits, the
+  checklist's "not a bug" list and a section 6 device item (Sub FM and Position).
+- Not fixed in M4. The fix (post {key, slot 3, source 0} when a node's source leaves 9..12) would change stock's model
+  code for every destination, or make our keys differ from Position. That is Jeff's call (open 5).
+
+**R2-3, test gaps: (a) holds, tests added; (b) holds as stated (I).**
+- (a) `FmTargets.test_the_toggle_refuses_a_second_lane_and_a_full_key`: a second lane on an entry in state 2, and an
+  entry with three non-seq routings in state 3. The toggle posts neither a 0xD1 nor a 0x3F, and the routings are
+  unchanged.
+- (b) The engine's 0xA8 -> value step stays I (open 4). It goes through the same fma as stock's Position lane.
+
+**R2-4, osc_instance's type-6 filter was unpinned (ALLCHILD survived): holds; test added.**
+`FmTargets.test_the_instance_counts_oscillators_only` builds a track whose children are OSC1, the sub, then OSC2.
+OSC1 gets Sub FM, OSC2 gets FM 1>2 and Sub FM, and the names agree with DEST_NAME's ("OSC2: ..."). The same layout on
+stock is the control. Mutant ALLCHILD now fails it.
+
+**R2-5, doc accuracy: all hold; fixed.**
+- (a) The diff description in "M7: nothing new": corrected (no bl changed; PROP_TEMPLATE_LIT_A / B and the
+  PR_DEST_MATCH site named).
+- (b) X1's stale text is marked superseded: line 30, the section "The piano roll's list stays stock's", and "Tests added
+  in X1".
+- (c) The release notes' M4 room now reads 15,184 B.
+- (d) "(X3 sprint image)" removed from the release notes and the checklist: X3 is in the BE4.45 image.
+- (e) The checklist header now reads "X1, X2 and X3 as built, the X2 and X3 reviews"; "Bring back" includes section 6.
+  Section 5's pressure line now gives 35.15k on one track and 35.26k for the worst case, which is what section 6 refers
+  to.
+- (f) Lanes on 8 tracks: measured, not just argued. `test_cost_heaviest_voice_lanes` has a new row, two lanes with 7
+  laned roots ahead in the store: **35,190 / 35,192 (117 under)**.
+
+**R2-6 (no M7 / DSP issue found): noted.**
+
+### X3 as built after the review (M, ~/bento/out/be445x3r)
+
+- **CPU** (`FmLanesX3.test_cost_heaviest_voice_lanes`, steady median / max). Unchanged by the fix: x2_clear runs only in
+  the message loop.
+
+| Heaviest voice | note 24 | note 36 | gate |
+|---|---|---|---|
+| knobs (today's path) | 34,889 / 34,891 | 34,879 / 34,881 | |
+| 2 lanes (seq1 on OSC1 Sub FM, seq2 on OSC2 FM 1>2) | 35,148 / 35,150 | 35,138 / 35,140 | 35,309 |
+| 2 lanes, 7 laned roots ahead in the store (8 tracks) | 35,190 / 35,192 | 35,180 / 35,182 | 35,309 |
+| + seq4 on OSC2 Sub FM | 37,288 / 37,290 | 37,288 / 37,290 | 37,700 |
+
+  X2's routed table re-ran with the same figures (worst two-key 35,260). With nothing routed: X2Identity is BE4.44
+  byte for byte, worst 1.00209; P3Identity worst 1.0177 (111,848 / 109,899), total 1.0098. Both are as before.
+- **Sizes.**
+  - DSP 32,868 B, **7,836 B free** (+8 B: x2_clear's slot test).
+  - Synth UI block 16,766 B (+4: the bound).
+  - Image 0x1897E4: **15,184 B to PROVEN_MAX** (unchanged).
+  - M4 code 24,424 B and M7 C slice 15,368 B: unchanged.
+- **Suites** (from the worktree's mods/m1; skips in brackets). All OK:
+  - diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20);
+  - notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10;
+  - **native_props 37** (+3), **analog 240** (+3), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32;
+  - p3_golden 52. Drums: not run (the default build leaves them out).
+  - The 1.6.1 build and a BE_DISABLE=analog build (be445x3r-noan) still build.
+- **Mutants** (scratch x3r/mut.sh, a build each): ALLCHILD (count every child) fails the instance test; CAP2 (bound 2)
+  fails it; CLR3 (x2_clear clears slot 3) fails the clear test (6 errors).
+- **Images.**
+  - Untagged `~/bento/out/be445x3r` (label BE4.45, the one every suite ran on): sha256
+    e2d669bf33e871e97b050cca9ba7f600417184d226390e1cef244f29d6b15b4a.
+  - Sprint image `BE_TAG=X3R` (`~/bento/out/be445x3rt`): a4b4a13bdd73fc8a1cbe9447cf95d4c7ee30c07d3ca5d24c4e69f9f8c934e21c.
+  - The X3 images above (f255663a..., 54d0d1a2...) are superseded. No kit was packaged.
+
 ### Open (for Jeff)
 
-1. **OSC2 Sub FM from a lane on the heaviest voice is 37.3k, 5.6 % over the ceiling** (X2 open 5). It is offered
-   because it was approved. If the device's 8-voice figure (checklist section 6) shows OVER, the choices are X2's: accept
-   it, restrict OSC2's routed Sub FM to an Analog OSC2, or a cheaper two-term kernel.
+1. **Release blocker: rule on X2 open 5.** OSC2 Sub FM from a lane (or any routing) on the heaviest voice is 37.3k,
+   5.6 % over the ceiling, and a lane is one tap. The choices are X2's: accept it as a known miss; restrict OSC2's
+   routed Sub FM to an Analog OSC2; build a cheaper two-term kernel; or (lanes only) leave OSC2 Sub FM out of the
+   piano-roll list, which is one condition in pr_dest_skip. The device's 8-voice figure (checklist sections 5 and 6)
+   should inform it.
 2. **OSC2's list order is FM 1>2, then Sub FM**, as on the Mod Matrix page.
-3. **Two lanes on the same FM depth:** the piano roll does not make the second. An entry already routed from another lane
-   is in state 2, and stock's toggle does nothing on state 2 (0x0815A1FC). Two seq lanes routed to one depth from the
-   Mod Matrix keep only the last (stock's slot 3 rule, X2 open 2; `test_two_lanes_on_one_destination_keep_the_last`).
+3. **Two seq lanes on the same FM depth.** The piano roll does not make the second: an entry already routed from
+   another lane is in state 2, and stock's toggle does nothing on state 2 (0x0815A1FC;
+   `test_the_toggle_refuses_a_second_lane_and_a_full_key`). Two seq lanes routed to one depth from the Mod Matrix keep
+   only the last (stock's slot 3 rule, X2 open 2). Removing either one posts slot 3, source 0, and silences the other
+   until a reload; it is still shown (R1-3, stock's rule on Position too).
 4. **Not traced (I): the engine's 0xA8 -> lane value step** (held or slid). It is stock's and destination-independent.
    The device checklist (section 6) covers how it sounds.
-5. **Device check:** checklist-v4.45.txt section 6 (the list on each oscillator, a lane per depth, save / reload, CPU
-   with lanes).
+5. **A lane edited on the Mod Matrix page to another source stays live on the M7** until a reload, next to the new
+   source, even after that routing is removed (R2-2). This is stock's behaviour (Position does the same) and is now
+   documented. An M4 fix that posts the slot 3 clear when a node's source leaves 9..12 is possible, but it changes stock
+   for every destination. Say if you want it.
+6. **The R1-1 fix is an M7 change** (x2_clear keeps slot 3, as stock's clear keeps PARAM slot 4). It reverses X3's
+   "M4 only". It is one line to undo, but undoing it brings back the drop of our lanes on a 0x48.
+7. **Device check:** checklist-v4.45.txt section 6: the list on each oscillator, a lane per depth, save and reload, the
+   source-edit item, and CPU with lanes.
 
 ## Tests added in X1
 
@@ -773,7 +911,8 @@ pre-review X1 list), and only "OSC1: FM 1>2" dropped (the Sub FM-first order on 
   - DEST_NAME names ours and reads our table (a memory-read hook: the name alone cannot tell the tables apart, since
     with stock's table DEST_NAME falls back to the registry title, the same words);
   - the piano roll's list (0x08159CA8, run on this build and on stock): stock's entries exactly, none of ours, the
-    enumerator's bytes stock's (X1 review);
+    enumerator's bytes stock's (X1 review). Replaced in X3 by `test_the_piano_roll_list_offers_ours_on_their_own_oscillator`
+    and `test_every_other_tracks_list_is_stocks`;
   - the per-type key post;
   - create and read back, and remove;
   - save and load;
@@ -802,6 +941,15 @@ pre-review X1 list), and only "OSC1: FM 1>2" dropped (the Sub FM-first order on 
   clear, three type pairs); the connect guards; the heaviest voice routed (`test_cost_heaviest_voice_routed`). `pair()`
   takes OSC2's Sync and extra knobs. test_analog takes test names after its two paths.
 - **X2 review, test_synth_ui `BlackBox`:** the ANALOG line's `x2lost=` (+24), +28 still not printed.
+
+## Tests added in X3 and its review
+
+- **X3, test_native_props `FmTargets`:** the four list and lane tests ("Sprint X3 (M4) as built", Tests).
+- **X3 review, test_native_props `FmTargets` (+3, now 15):** `test_a_lane_beside_a_matrix_routing_takes_the_next_slot`,
+  `test_the_toggle_refuses_a_second_lane_and_a_full_key`, `test_the_instance_counts_oscillators_only`.
+- **X3, test_analog `FmLanesX3` (4); X3 review (+3, now 7):** `test_the_roots_clear_keeps_a_lane_as_it_keeps_positions`
+  (stock's 0x48 case run), `test_a_lane_beside_a_matrix_routing`, `test_a_lane_edited_to_another_source_stays_until_reload`;
+  `test_cost_heaviest_voice_lanes` has the 8-track row.
 
 ## Plan items found wrong (feasibility-wt-fm-matrix.md, part b)
 
