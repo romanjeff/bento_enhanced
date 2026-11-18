@@ -364,7 +364,11 @@ GROUP_NAMES = {
                "VALUE_TEXT_1", "VALUE_TEXT_2", "VALUE_TEXT_3", "ENC_POS_SET", "WT_PANE_FRAMES_DIRTY",
                # BE4.45 X1 (docs/plan-fm-targets.md): the Wavetable Mod Matrix destination table, its users, the row filler's bounds
                "MX_WT_DEST_TAB", "MX_WT_DEST_COUNT", "MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4",
-               "MX_WT_DEST_N_LIT_1", "MX_WT_DEST_N_LIT_3", "MX_WT_DEST_N_LIT_4", "MX_WT_ROWS_N", "MX_WT_ROWS_END"),
+               "MX_WT_DEST_N_LIT_1", "MX_WT_DEST_N_LIT_3", "MX_WT_DEST_N_LIT_4", "MX_WT_ROWS_N", "MX_WT_ROWS_END",
+               # BE4.45 X3: the piano roll's destination list (its type match, the enumerator and its index rule), the lane
+               # toggle and the Wavetable root's lane read (tests)
+               "PR_DEST_LIST", "PR_DEST_MATCH", "PR_DEST_ENUM", "PR_DEST_ENUM_LEN", "PR_DEST_ENUM_SHA", "MX_GRAN_DEST_COUNT",
+               "PR_LANE_TOGGLE", "WT_ROOT_BLOCK", "WT_ROOT_LANES_END"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -1858,10 +1862,11 @@ def np_template(base_img, stock_n):
 # (whose title would be null if N2 ever left our keys out). CC column (+0x14): 0, which the page shows blank (MX_ROWS_BUILD
 # 0x0814E798: ids are read only there, for display; the column names the CC stock maps to a row, and none maps to ours).
 # Users: the row filler (the Mod Matrix page), DEST_NAME and 0x08134700 (the per-type 0x3F posts) read our copy, which has
-# its own count word (after the strings). The destination enumerator 0x08159358 keeps stock's table and count word: it is
-# the piano roll's destination list (0x08159CA8, called from the piano roll), which matches rows by type only and takes
-# no instance, so our rows there would offer every type-6 key on both oscillators ('OSC1: FM 1>2' too, and the knobless
-# OSC2 Sub FM): X1 review; Jeff's three destinations are the Mod Matrix's only.
+# its own count word (after the strings). The destination enumerator 0x08159358 (PR_DEST_ENUM) is the piano roll's
+# destination list (PR_DEST_LIST, called from the piano roll), which matches rows by type only and takes no instance: X1
+# kept it on stock's table (X1 review: 'OSC1: FM 1>2' and the knobless OSC2 Sub FM). BE4.45 X3 (Jeff: piano-roll lanes on
+# the three) puts it on our copy too and replaces its type match with pr_dest_skip (m4_synth.c), which keeps our rows only on
+# their own oscillator (pr_dest_patch below).
 MX_DEST_NEW = ((0, "KEY_OSC_SUBFM", "Sub FM"), (1, "KEY_OSC_FM12", "FM 1>2"), (1, "KEY_OSC_SUBFM", "Sub FM"))
 MX_DEST_STOCK_N = 23
 MX_DEST_STOCK_T6 = [(0, 3), (0, 0xC4), (0, 0xC9), (1, 3), (1, 0xC4), (1, 0xC9)]   # (instance, key): Pitch, Level, Position
@@ -1905,10 +1910,35 @@ def mx_dest_table(base_img, at):
     return b"".join(bytes(x) for x in out) + bytes(strs) + struct.pack("<I", total), total
 
 
-# (table literal, its count literal) per user; the enumerator's pair (LIT_3 / N_LIT_3) is kept stock's (see above)
+# (table literal, its count literal) per user; X1 kept the enumerator's pair (LIT_3 / N_LIT_3) stock's, X3 moves it too
 MX_DEST_USERS = (("MX_WT_DEST_LIT_1", "MX_WT_DEST_N_LIT_1"), ("MX_WT_DEST_LIT_2", None),
                  ("MX_WT_DEST_LIT_3", "MX_WT_DEST_N_LIT_3"), ("MX_WT_DEST_LIT_4", "MX_WT_DEST_N_LIT_4"))
-MX_DEST_KEEP = ("MX_WT_DEST_LIT_3", "MX_WT_DEST_N_LIT_3")
+MX_DEST_KEEP = ()
+PR_GLOBAL_ROWS = 30          # PR_DEST_ENUM: 3 groups of 10 global keys before Granular's rows (m4_synth.c PR_GLOBAL_ROWS)
+
+
+def pr_dest_patch(base_img, patch, wrap):
+    """X3: PR_DEST_LIST's type match (ldrb.w r3, [sp, #0x26]; cmp r3, r8; then stock's bne to the next row) -> bl wrap;
+    cmp r0, #0 (wrap: pr_dest_skip(frame, r4 the enumerator index, r8 the child's type, sb the track handle's address)).
+    Refused unless the site is stock's, the bne after it is the one to the next row, and the enumerator is the code whose
+    index rule (30 global rows, then Granular's count, then the Wavetable table) pr_dest_skip relies on (PR_DEST_ENUM_SHA)."""
+    site = S.PR_DEST_MATCH
+    if asm("ldrb.w r3, [sp, #0x26]; cmp r3, r8", site) != S.orig("PR_DEST_MATCH"):
+        raise SystemExit("X3: PR_DEST_MATCH is not stock's type match")
+    if base_img[site + 6 - BASE:site + 8 - BASE] != asm(f"bne {site - 0x10:#x}", site + 6):
+        raise SystemExit("X3: PR_DEST_MATCH is not followed by the bne to the next row (16 B back)")
+    enum = bytes(base_img[S.PR_DEST_ENUM - BASE:S.PR_DEST_ENUM - BASE + S.PR_DEST_ENUM_LEN])
+    if hashlib.sha256(enum).hexdigest() != S.PR_DEST_ENUM_SHA:
+        raise SystemExit("X3: PR_DEST_ENUM is not the enumerator whose index rule was read (PR_DEST_ENUM_SHA)")
+    lits = ((S.PR_DEST_ENUM + 0xB0, S.MX_GRAN_DEST_COUNT), (S.PR_DEST_ENUM + 0xBC, S.MX_WT_DEST_COUNT),
+            (S.PR_DEST_ENUM + 0xC4, S.MX_WT_DEST_TAB))
+    for a, want in lits:
+        if struct.unpack_from("<I", base_img, a - BASE)[0] != want:
+            raise SystemExit(f"X3: the enumerator's literal at {a:#x} is not {want:#x}")
+    c = asm(f"bl {wrap:#x}; cmp r0, #0", site)
+    if len(c) != 6:
+        raise SystemExit("X3: the type match's replacement is not 6 bytes")
+    patch(site, c, S.orig("PR_DEST_MATCH"), "FM targets (BE4.45 X3): piano-roll destination list, our rows on their own oscillator")
 
 
 def mx_dest_patches(base_img, patch, at, data, n):
@@ -2022,7 +2052,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
         check_branches(c, a, exits, what)
         wrap.extend(c)
         return a
-    n2 = t1 = b1 = None
+    n2 = t1 = b1 = pr = None
     if an:
         with S.group("analog"):
             # N2: model init's bl REG_BUILD (its only call) -> stock's builder, then np_keys (our four descriptors), r0 kept
@@ -2033,6 +2063,11 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
             # T1 / B1' (BE4.40 identity): reached by stock's bl, so sp is still the caller's: the row's handle from its frame
             t1 = block(f"ldr.w r2, [sp, #0x32c]; b.w {ss['an_pane_title']:#x}", {ss["an_pane_title"]}, "Analog pane title")
             b1 = block(f"ldr r2, [sp, #0x20]; b.w {ss['an_browse']:#x}", {ss["an_browse"]}, "Analog double-tap 0x3F")
+            # X3: PR_DEST_LIST's type match (reached by bl, so the builder's frame is at sp + 24 after the push): r0 the frame,
+            # r1 = r4 the enumerator index, r2 = r8 the child's type, r3 = sb the track handle's address; r1-r3, ip kept
+            pr = block(f"push.w {{r1, r2, r3, r12, lr}}; sub sp, #4; add r0, sp, #24; mov r1, r4; mov r2, r8; mov r3, sb; "
+                       f"bl {ss['pr_dest_skip']:#x}; add sp, #4; pop.w {{r1, r2, r3, r12, pc}}", {ss["pr_dest_skip"]},
+                       "FM targets X3: piano-roll row test")
     x1 = x2 = x3 = h1 = None
     if inc("drums"):
         with S.group("drums"):
@@ -2078,6 +2113,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                     raise SystemExit(f"N1: '{src}' is not one 4-byte instruction")
                 patch(getattr(S, site), c, S.orig(site), f"Analog: N1 template bound ({site}: {src})")
             mx_dest_patches(base_img, patch, mx_at, mx_data, mx_n)
+            pr_dest_patch(base_img, patch, pr)
             patch(S.REG_BUILD_SITE, asm(f"bl {n2:#x}", S.REG_BUILD_SITE), S.orig("REG_BUILD_SITE"),
                   "Analog: N2 registry build -> stock's, then our oscillator keys' descriptors")
             # A10: the synth view's tick slot (vtable word); A6 / A7: bl sites
@@ -2150,7 +2186,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
     s4.update({"synth.mx_dest": mx_at, "synth.mx_dest_n": mx_n,
                "synth.mx_dest_count": mx_at + len(mx_data) - 4 if mx_at else 0})
     if n2 is not None:
-        s4.update({"synth.wrap_reg_build": n2, "synth.wrap_pane_title": t1, "synth.wrap_browse": b1})
+        s4.update({"synth.wrap_reg_build": n2, "synth.wrap_pane_title": t1, "synth.wrap_browse": b1, "synth.wrap_pr_dest": pr})
     if inc("drums"):
         s4.update({"synth.wrap_save": x1, "synth.wrap_load": x2, "synth.wrap_context": x3, "synth.wrap_ctor": h1})
     return len(code) + len(tpl_data) + (len(mx_data) if an else 0)   # X1: the destination table counts too

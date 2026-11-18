@@ -684,6 +684,39 @@ __attribute__((used, retain)) void an_browse(void *view, void *ev, u32 h) {
     FN(S_UI_POST, void (*)(void *, void *))(view, ev);
 }
 
+/* ---- BE4.45 X3: piano-roll lanes on the FM depths (docs/plan-fm-targets.md "X3") ---------------------------------------
+ * The piano roll's destination list (PR_DEST_LIST) walks the destination enumerator (PR_DEST_ENUM, now on our Mod Matrix
+ * table, X1) for every child of the track and keeps a row when its type is the child's: by type only, so every oscillator
+ * would get every oscillator row (OSC1 an "FM 1>2", which is not one of the three). Its type match (PR_DEST_MATCH) calls
+ * this instead: f = the builder's frame ([f + 0x26] the row's type, [f + 0x28] its key, [f + 0x2C] the child's handle), idx
+ * = the enumerator index of the row, ctype = the child's type, trackh = the track's handle. Returns 0 to keep the row.
+ * Every row but our three keys on an oscillator is stock's test (type == ctype). Ours are kept only on their own
+ * oscillator: the table row (enumerator index - 30 global rows - Granular's count, PR_DEST_ENUM's own rule; build.py checks
+ * its bytes) must carry the child's instance, which is counted as DEST_NAME counts it (the oscillators of the track before
+ * it). So OSC1 gets Sub FM, OSC2 FM 1>2 and Sub FM, each after its Position: the Mod Matrix's rows. */
+#define PR_GLOBAL_ROWS 30u                             /* PR_DEST_ENUM: three groups of ten global keys first */
+static u32 osc_instance(u32 trackh, u32 h) {
+    void *t = resolve(trackh);
+    u32 n = t ? W(t, S_NODE_CHILD_N) : 0u, k = 0;
+    for (u32 c = 0; c < n && c < 64u; c++) {
+        void *o = (void *)W(t, S_NODE_CHILDREN + 4u * c);
+        if (!o) continue;
+        if (W(o, 0x10) == h) return k;
+        if (obj_type(o) == TYPE_WT_OSC) k++;
+    }
+    return 0xFFu;
+}
+__attribute__((used, retain)) u32 pr_dest_skip(const u8 *f, u32 idx, u32 ctype, const u32 *trackh) {
+    u32 type = f[0x26], key = H(f, 0x28);
+    if (type != ctype) return 1;
+    if (type != TYPE_WT_OSC || (key != S_KEY_OSC_SUBFM && key != S_KEY_OSC_FM12)) return 0;   /* (a BE_DISABLE=analog
+                                                     bisect keeps X1's literals, so the table is ours there too) */
+    const u8 *tab = (const u8 *)W(S_MX_WT_DEST_LIT_3, 0);
+    u32 n = W(W(S_MX_WT_DEST_N_LIT_3, 0), 0), j = idx - PR_GLOBAL_ROWS - W(S_MX_GRAN_DEST_COUNT, 0);
+    if (idx < PR_GLOBAL_ROWS || j >= n || tab[24u * j] != type || H(tab, 24u * j + 8u) != key) return 1;
+    return W(tab, 24u * j + 4u) != osc_instance(*trackh, W(f, 0x2C));
+}
+
 /* ---- D1 / D2: the Shape dial in an Analog pane (after Bento Playground's pane hook, GPL-3.0-or-later: the paint slot
  * 0x081B3A18 + 4 on 1.6.1; this one is drawn with stock's rect fill only) -------------------------------------------------
  * J3: only what the kernel plays (dsp/analog.cpp an_shape; P3 Q3, docs/plan-p3-fm-bits.md 4.6: the sine at 0, a sine >

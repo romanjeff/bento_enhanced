@@ -142,7 +142,7 @@ The row filler does not read the count word. It hard-codes the count twice:
 **Still on our table:** DEST_NAME (its other caller is 0x0815A002, in 0x08159F6C) names our keys if asked, and
 0x08134700 posts our keys (below).
 
-**Open (for Jeff):** piano-roll lanes on Sub FM / FM 1>2. They would need an M4 hook in the builder's type match that
+**Open (for Jeff), settled in X3** (Jeff approved the lanes; see "Sprint X3"): piano-roll lanes on Sub FM / FM 1>2. They would need an M4 hook in the builder's type match that
 skips (6, 0x132) on instance 0 and (6, 0x18B) on instance 1, plus knowing what a lane stores and how it reaches the M7
 (not traced). Not in X1 or X2's scope as decided.
 
@@ -572,6 +572,197 @@ that also exists unrouted. Today the value only comes from a pre-BE4.43 project.
     f87e3d0c95a2b0e9150890e3d1ae0b96093b4381d0158748bee4b1950c240245. It is the kit's 01_TEST_FIRMWARE.
   - Sprint image `BE_TAG=X2R` (`~/bento/out/be445x2rt`): 8dbcd1fe04a77db79389e46e55b2b977639c0e36c979afce536a68272b30cacc.
   - The X2 images and kit above (dd78cd75..., 0f3fd528...) are superseded.
+
+## Sprint X3 (M4) as built: piano-roll lanes on the three FM depths
+
+Jeff approved lanes on OSC1 Sub FM, OSC2 FM 1>2 and OSC2 Sub FM (reversing X1's "the piano roll's list stays stock's").
+The trace comes first, because it decides the design: **a lane is a Mod Matrix routing from seq1..seq4**. X2 already
+plays that on the M7, so X3 is an M4 change only: the list, and nothing in the M7 or the DSP.
+
+### Trace: what a lane is (S; M where a test runs it)
+
+**The list is the lane's destination picker (S).**
+- PR_DEST_LIST (0x08159CA8) is called only from the piano roll.
+- The lane is a byte of the piano view at view + 0x125D34 (0..3, lanes A..D). The list's entries are numbered from it:
+  `lane + 9` is the source id, seq1..seq4. These ids are the same as in stock's Wavetable source list (X2's table: ids
+  0x09..0x0C).
+- Each entry carries a state from 0x0815973C: 1 = this (handle, key) is already routed from this lane (with its amount
+  and slot); 2 = routed from another lane; 3 = full. 0x0815973C walks the object's routings (0x081321F8) for the key.
+
+**The toggle stores a routing (S, M: `FmTargets.test_a_lane_on_each_destination`).**
+- PR_LANE_TOGGLE (0x0815A1BC, PIANO_EVENT case 0x118, (view, amount)) acts on the selected entry (list + 0x10EF04).
+- **On:** it takes the first matrix slot 0..2 that has no routing for this (handle, key). Through UI_POST it posts the
+  model's 0xD1 `{handle, key, seq id | slot << 16, amount}`: the same event MX_EDIT posts (only the key's high half, an
+  unread flag, differs).
+- **Off** (amount 0, on an entry in state 1): it posts the same event with source 0 on the entry's slot.
+- So **a lane is stored exactly as a Mod Matrix routing:** a type-1 node in the oscillator's routing list
+  `{key, source 9..12, slot 0..2, amount}`. There is no separate lane store. M: the toggle on OSC1 Sub FM gives the node
+  `(0x18B, 9, 0, 1000)`.
+
+**What reaches the M7 (S, M).**
+- MX_SET_ROUTE calls MX_KEY_POST, which posts 0x3F `{+2 instance, +8 track handle, +0xC key, +0x10 slot, +0x14 source,
+  +0x16 amount}`.
+- M: for a lane, `(track, 0x18B, slot 0, source 9, 1000, instance 0)`. The removal posts **slot 3**, source 0
+  (MX_SET_ROUTE sets r5 = 3 when the removed node's source is 9..12, 0x08134890).
+- On the M7, WT_ROUTE puts a seq source in connect slot 3 whatever the matrix slot (X2, S).
+- So a lane is X2's path exactly: **the same route message X2's slot-10 hook handles**, in slot 3, with the root source
+  root + 0x140 + 8 lane. It is not a direct parameter set. X2's x2_connect already keeps slot 3, and the removal's slot 3,
+  source 0 clears it.
+
+**The project format (S, M: `test_lanes_save_and_load`).**
+- Stock's writer writes `<modsource dest="bento_subfm|bento_fm12" src="seq1..seq4" slot="0" amount=".."/>` in the
+  oscillator's cell, as for any routing. Stock's reader restores it. The list after a load shows each lane (state 1, the
+  amount).
+- The lane's **values** are not in the routing. They are the clip's `seqevent type="auto"` records (kind 2: value = lane,
+  value2 = the level; `logs/v322_HUBauto_project.xml` has some, test_step_xml keeps their value2). Nothing about them
+  changed.
+- On stock 1.6.8 and BE4.44 a lane loads as X1 says for any of these routings: stock gives key 0 (inert) and drops it
+  when it saves; BE4.44 keeps it, inert.
+
+**How the values move on the M7 (S, M).**
+- Stock's sequence player posts a lane event as 0xA8 `{+8 lane, +0xC value}` to the track's bus (M: the player run with
+  one kind-2 record, scratch x3/probe_auto.py: `a8 .. lane .. f4010000` for value2 500).
+- The Wavetable root's message loop does not handle 0xA8: it ignores types above 0x4F except 0x84 (S). It reads the lanes
+  instead. **WT_ROOT_BLOCK** (the root's slot 2, 0x0807F2A0) asks the object at root + 0x13C for each lane 0..3:
+  `vt[0](object, [root + 0x284], lane)`. It keeps s0 at **root + 0x144 + 8 lane**, the seq1..seq4 value that WT_ROUTE
+  points the connect at. Then it runs the root's block (0x0807AC60).
+- The object at root + 0x13C is the engine, stored at 0x08058BE0 right after WT_ENGINE_INIT (S).
+- So the value is read **once per root per block, before any voice renders**, and x2_enter reads it in the same block
+  (M: `FmLanesX3.test_stock_reads_the_four_lanes_into_seq1_to_seq4` runs stock's lane read).
+- **Not traced (I):** how the engine turns the 0xA8 events into the value it returns (held, or slid by "Mod Seq Slide").
+  It is stock's and the same for every destination. The rig stands in for the engine with an object that answers the
+  lane's value.
+
+### Design
+
+**The list.**
+- The enumerator's two literals (MX_WT_DEST_LIT_3 / N_LIT_3) now point at our table and count word, as the other users
+  did since X1 (MX_DEST_KEEP is empty).
+- The builder's type match (PR_DEST_MATCH, 0x08159DA4: `ldrb.w r3, [sp, #0x26]; cmp r3, r8`, then stock's bne) becomes
+  `bl wrap; cmp r0, #0`. The wrapper (synth UI block) calls **`pr_dest_skip(frame, r4, r8, sb)`** (m4_synth.c).
+- Any row other than our three keys on a type-6 child gets stock's test (type == the child's type).
+- Our keys are kept only when the table row's instance is the child's:
+  - the table row is `enumerator index - 30 - Granular's count`, the enumerator's own rule;
+  - the child's instance is the number of type-6 siblings before it, DEST_NAME's rule.
+- Result: OSC1 gets Sub FM, and OSC2 gets FM 1>2 then Sub FM, each right after its Position. That is the Mod Matrix's
+  order. There is no OSC1: FM 1>2.
+- Every other entry, and every other track type's list, is stock's.
+
+**Refusals (build.py `pr_dest_patch`).** The build refuses:
+- a site that is not stock's type match;
+- a type match not followed by the bne to the next row;
+- an enumerator whose bytes (code and literal pool) do not hash to PR_DEST_ENUM_SHA, the code whose index rule was read;
+- enumerator literals that do not hold Granular's count word, stock's count word and stock's table.
+
+**Why this way and not another.**
+- *Index arithmetic vs. a second, piano-only table.* A table ordered for type-only matching (OSC2's FM 1>2 before a single
+  Sub FM row) would avoid the index rule. It costs about 600 B of M4 and a fourth copy of the rows. The arithmetic is
+  guarded by the enumerator's hash, so it was preferred.
+- *Filtering only our keys vs. every type-6 row by instance.* The two give the same stock entries in the same order. Only
+  our keys were filtered, so stock's rows still go through stock's exact test.
+- A BE_DISABLE=analog bisect keeps X1's literals (it did since X1), so pr_dest_skip filters there too.
+
+**The M7: nothing new.**
+- A lane on one of the three is X2's routing in slot 3: X2's store, its sum (Q4: `v = clamp(knob + 1000 x amount x lane)`)
+  and its gates.
+- The M7 and the DSP of X3's image are X2's, byte for byte. The untagged image differs from be445x2rrel only at
+  0x0812EA44 and up (M4): the synth UI block, the moved table's literals and the bl displacements into the block.
+
+### Tests (M, ~/bento/out/be445x3)
+
+**test_native_props `FmTargets` (X3, +4; X1's `test_the_piano_roll_list_is_stocks` replaced):**
+- `test_the_piano_roll_list_offers_ours_on_their_own_oscillator`: PR_DEST_LIST run on this build and on stock. The list is
+  stock's 23 entries with T0's rename, plus ours at their places; no OSC1: FM 1>2. The enumerator's code is stock's, and
+  the site is bl, cmp, then stock's bne.
+- `test_every_other_tracks_list_is_stocks`:
+  - three device projects (logs/) read by stock's reader on both images and made live; every track's list is equal,
+    entry for entry, on this build and on stock;
+  - Granular, multisample and one-shot tracks have lists; loop and type 0x16 tracks have none, here as on stock;
+  - a Wavetable track's 17 other entries (the sub, filters, envelopes, LFOs) are stock's.
+- `test_a_lane_on_each_destination`, for lanes A, B and D on OSC1 Sub FM, OSC2 FM 1>2 and OSC2 Sub FM:
+  - stock's toggle gives the 0xD1, the routing node and the 0x3F to the M7 (track, key, slot 0, seq id, amount,
+    instance);
+  - the list shows each entry on its lane;
+  - off removes the node and posts slot 3, source 0.
+- `test_lanes_save_and_load`: the three `<modsource src="seqN">` elements are written; reading them back restores the
+  nodes, and the loaded list shows each lane.
+
+**test_analog `FmLanesX3` (4):**
+- `test_stock_reads_the_four_lanes_into_seq1_to_seq4`:
+  - stock's WT_ROOT_BLOCK, up to its bl, asks the engine object for lanes 0..3 with [root + 0x284] and keeps the values at
+    root + 0x144 + 8 lane;
+  - with no engine it reads nothing;
+  - WT_ROUTE stores seq1..seq4 as root + 0x140 + 8 lane in slot 3.
+- `test_a_lane_plays_its_destination_per_block`, for 3 destinations x Analog / Wavetable:
+  - per block, stock's lane read drives the lane, the other lanes are busy, a Position lane on OSC1 plays, and the other
+    FM knob is at 300;
+  - the voice is bit for bit the same routing from velocity (X2's path), and for OSC1 Sub FM / OSC2 FM 1>2 the knob
+    turned to v;
+  - msub / m12 after each block is x2_law(base, amount x lane) and moves;
+  - the store holds the lane in slot 3 and nothing else; the Position lane alone stores nothing of ours.
+- `test_two_lanes_on_one_destination_keep_the_last`: stock's shared slot 3 (X2 open 2).
+- `test_cost_heaviest_voice_lanes` (below).
+
+### CPU (M, `FmLanesX3.test_cost_heaviest_voice_lanes`)
+
+The voice is X2's heaviest: Wavetable both, Position every block, depths at 1000 (lanes at 1.0, amount 1000: the same
+sound as the knobs, asserted). Instructions per voice-block, steady median / max:
+
+| Heaviest voice | note 24 | note 36 | gate |
+|---|---|---|---|
+| knobs (today's path) | 34,889 / 34,891 | 34,879 / 34,881 | |
+| 2 lanes (seq1 on OSC1 Sub FM, seq2 on OSC2 FM 1>2) | 35,148 / 35,150 | 35,138 / 35,140 | 35,309 |
+| + seq4 on OSC2 Sub FM | 37,288 / 37,290 | 37,288 / 37,290 | 37,700 (X2's SUB2_HEAVY_MAX) |
+
+- These are X2's routed figures exactly: a lane is a routing, and the source kind does not change x2_enter.
+- **Two lanes: 159 under the 35,309 ceiling.** X2's worst two-key case (all slots and a full store) is 35,260.
+- **OSC2 Sub FM from a lane is 5.6 % over**, the same known miss as X2 open 5. Lanes make it easier to reach (a lane is
+  one tap), which is a reason to settle open 5.
+- The lane read itself is stock's: once per root per block, with or without lanes.
+- Nothing routed: unchanged (no M7 byte changed). P3Identity, X2Identity and WtFmW4 run in the suite.
+
+### Sizes (M, ~/bento/out/be445x3)
+
+- **Synth UI block: 16,762 B** (X2 16,542: +220 B). That is pr_dest_skip and osc_instance, the 24 B wrapper, and the
+  block's layout.
+- **Image 0x1897E4: 15,184 B to PROVEN_MAX** (X2: 15,408). This is the M4 room left.
+- M4 code 24,424 B, M7 C slice 15,368 B, DSP 32,860 B (7,844 B free): unchanged.
+
+### Images
+
+- Untagged `~/bento/out/be445x3` (label BE4.45, the one every suite ran on): sha256
+  f255663aa831bdbe1143476e4c5f1339ed5a1101481d947681792c8f342ea6e9.
+- Sprint image `BE_TAG=X3` (`~/bento/out/be445x3t`, marker "v4.45-X3"): sha256
+  54d0d1a2bcd1fb4f1fff0e21434389081586ec68ed8d0276c66f8f26b078d734. No kit was packaged.
+- The 1.6.1 build and a BE_DISABLE=analog bisect build still build.
+
+### Suites
+
+From the worktree's mods/m1 on ~/bento/out/be445x3 (skips in brackets). All OK:
+- diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20);
+- notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10;
+- **native_props 34** (X2's 31 - 1 replaced + 4), **analog 237** (X2's 233 + FmLanesX3 4), inst_xml 5 (5),
+  synth_ui 64 (2), handles 16 (16), note0 32;
+- p3_golden 52.
+- Drums: not run (the default build leaves them out).
+
+Mutants of pr_dest_skip (scratch x3/mut.sh, a build each): the instance test dropped (every type-6 row kept, the
+pre-review X1 list), and only "OSC1: FM 1>2" dropped (the Sub FM-first order on OSC2). Each fails
+`test_the_piano_roll_list_offers_ours_on_their_own_oscillator`.
+
+### Open (for Jeff)
+
+1. **OSC2 Sub FM from a lane on the heaviest voice is 37.3k, 5.6 % over the ceiling** (X2 open 5). It is offered
+   because it was approved. If the device's 8-voice figure (checklist section 6) shows OVER, the choices are X2's: accept
+   it, restrict OSC2's routed Sub FM to an Analog OSC2, or a cheaper two-term kernel.
+2. **OSC2's list order is FM 1>2, then Sub FM**, as on the Mod Matrix page.
+3. **Two lanes on the same FM depth:** the piano roll does not make the second. An entry already routed from another lane
+   is in state 2, and stock's toggle does nothing on state 2 (0x0815A1FC). Two seq lanes routed to one depth from the
+   Mod Matrix keep only the last (stock's slot 3 rule, X2 open 2; `test_two_lanes_on_one_destination_keep_the_last`).
+4. **Not traced (I): the engine's 0xA8 -> lane value step** (held or slid). It is stock's and destination-independent.
+   The device checklist (section 6) covers how it sounds.
+5. **Device check:** checklist-v4.45.txt section 6 (the list on each oscillator, a lane per depth, save / reload, CPU
+   with lanes).
 
 ## Tests added in X1
 

@@ -29,7 +29,8 @@ measurements: `docs/plan-fm-targets.md`. Device checklist: `docs/checklist-v4.45
   Stock 1.6.8 loads them as routings to nothing (inert) and **drops them when it saves**: a project saved on stock comes
   back to BE4.45 without them.
 - Nothing else in the save format changed.
-- The piano roll's destination list is stock's (no lanes on these destinations).
+- The piano roll's destination list (X3 sprint image): the lanes also offer OSC1: Sub FM, OSC2: FM 1>2 and OSC2: Sub FM,
+  each on its own oscillator. A lane is saved as a routing from seq1..seq4, like any lane; every other list is stock's.
 
 ## Known limits
 

@@ -8424,6 +8424,174 @@ class FmTargetsX2(unittest.TestCase):
             self.assertLessEqual(b, self.SUB2_HEAVY_MAX if "OSC2 Sub FM" in k else HEAVIEST_VOICE, k)
 
 
+# ---- BE4.45 X3 (docs/plan-fm-targets.md "X3"): piano-roll lanes on the three FM depths, the M7 side
+SRC_SEQ = (0x9, 0xA, 0xB, 0xC)               # the piano roll's lanes 0..3 are the sources seq1..seq4 (lane + 9)
+ROOT_LANE_SRC, ROOT_LANE_ENGINE, ROOT_LANE_TRACK = 0x140, 0x13C, 0x284   # root + 0x140 + 8 lane: seq1..seq4 (value at + 4)
+
+
+class Lanes:
+    """The engine's side of a track's four lanes, as stock's root reads them: WT_ROOT_BLOCK (the root's slot 2) runs up to
+    WT_ROOT_LANES_END, where it calls the root's block. Its lane read asks the object at root + 0x13C (the engine, stored by
+    stock's engine init) vt[0](object, [root + 0x284], lane) for each lane and keeps s0 at root + 0x144 + 8 lane. That object
+    is ours here: it answers vals[lane] (the device's comes from the sequencer's 0xA8 lane events: not run here)."""
+    def __init__(self, r, root):
+        self.r, self.root, self.vals, self.asked = r, root, [0.0] * 4, []
+        obj = r.alloc(0x40); stub = obj + 0x20
+        r.u.mem_write(stub, b"\x70\x47")                                          # bx lr; the hook sets s0
+        r.u.mem_write(obj, struct.pack("<II", obj + 4, stub | 1))                 # object -> its vtable at +4: vt[0]
+        def answer(uc, a, sz, _):
+            lane = uc.reg_read(UC_ARM_REG_R2)
+            self.asked.append((uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1), lane))
+            uc.reg_write(UC_ARM_REG_S0, struct.unpack("<I", struct.pack("<f", self.vals[lane]))[0])
+        r.u.hook_add(UC_HOOK_CODE, answer, begin=stub, end=stub)
+        r.w32(root + ROOT_LANE_ENGINE, obj)
+        self.obj = obj
+
+    def read(self, vals):
+        """Stock's lane read with these four values."""
+        self.vals = [f32(v) for v in vals]
+        u = self.r.u
+        u.reg_write(UC_ARM_REG_R0, self.root); u.reg_write(UC_ARM_REG_R1, 0)
+        u.reg_write(UC_ARM_REG_SP, STACK - 0x40); u.reg_write(UC_ARM_REG_LR, SENT | 1)
+        u.emu_start(S.WT_ROOT_BLOCK | 1, S.WT_ROOT_LANES_END, count=100_000)
+
+    def value(self, lane): return self.r.rf(self.root + ROOT_LANE_SRC + 8 * lane + 4)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (1.6.1, or left out)")
+class FmLanesX3(unittest.TestCase):
+    """BE4.45 X3: a piano-roll lane on OSC1 Sub FM, OSC2 FM 1>2 or OSC2 Sub FM is a routing from seq1..seq4 (the lane + 9) in
+    matrix slot 0 (test_native_props FmTargets: the toggle, its 0xD1 and the model's 0x3F); the M7 takes it through stock's
+    WT_ROUTE into connect slot 3, X2's store and sum. Played here per block through stock's own lane read (Lanes): the FM
+    depth follows the lane, bit for bit as the same routing from velocity (X2) and as the knob turned to v; the other
+    lanes, a stock destination's lane (Position) and the other FM knob are untouched. No M7 code of X3's: the DSP is X2's."""
+    VALS = FmTargetsX2.VALS
+
+    def test_stock_reads_the_four_lanes_into_seq1_to_seq4(self):
+        """The trace (S) measured: WT_ROOT_BLOCK asks root + 0x13C's vt[0] for lanes 0..3 with [root + 0x284] and keeps each
+        at root + 0x144 + 8 lane, where WT_ROUTE points seq1..seq4 (X2: root + 0x140 + 8 lane, value at + 4); with no engine
+        at root + 0x13C it reads nothing."""
+        r = Rig(); root, vs = x2_root(r)
+        self.assertEqual(r.r32(r.r32(root) + 8), S.WT_ROOT_BLOCK | 1, "the root's slot 2")
+        for i in range(4):
+            r.wf(root + ROOT_LANE_SRC + 8 * i + 4, 9.0)
+        u = r.u
+        u.reg_write(UC_ARM_REG_R0, root); u.reg_write(UC_ARM_REG_SP, STACK - 0x40)
+        u.emu_start(S.WT_ROOT_BLOCK | 1, S.WT_ROOT_LANES_END, count=100_000)
+        self.assertEqual([r.rf(root + ROOT_LANE_SRC + 8 * i + 4) for i in range(4)], [9.0] * 4, "no engine: nothing read")
+        ln = Lanes(r, root)
+        ln.read([0.25, -0.5, 1.0, 0.125])
+        self.assertEqual([ln.value(i) for i in range(4)], [0.25, -0.5, 1.0, 0.125])
+        self.assertEqual(ln.asked, [(ln.obj, r.r32(root + ROOT_LANE_TRACK), i) for i in range(4)])
+        for lane, sid in enumerate(SRC_SEQ):                              # WT_ROUTE's pointer for seq1..seq4
+            wt_route(r, root, 0, K_SUBFM, 0, sid, 500)
+            (e,) = x2_store(r)
+            self.assertEqual(e[2][3], X2_ROOT_REL | (ROOT_LANE_SRC + 8 * lane), f"seq{lane + 1}: slot 3, root + 0x140 + 8 lane")
+            wt_route(r, root, 0, K_SUBFM, 3, 0, 0)
+        self.assertEqual(x2_store(r), [])
+
+    def lane_run(self, types, inst, key, lane, how, base=200, amount=600, blocks=10):
+        """One WtVoice with the lane engine, other lanes busy (0.9, 0.3, 0.6), a Position lane on OSC1 (the lane after ours,
+        amount 400: stock's destination), the other FM knob at 300; how: 'lane' (our routing from the lane, slot 0 as the
+        toggle puts it), 'vel' (the same routing from velocity, X2), 'knob' (the knob turned to v, nothing routed).
+        Returns (outputs, msub / m12 of (inst, key) after each block, the store)."""
+        w = WtVoice(self, types=types, capture=False, frames=G.wt_saw_frames(200))
+        other = (1, K_FM12) if (inst, key) == (0, K_SUBFM) else (0, K_SUBFM)
+        w.prop(other[1], 300, other[0])
+        w.prop(key, base, inst)
+        pos_lane = (lane + 1) % 4
+        wt_route(w.r, w.root, 0, 0xC9, 1, SRC_SEQ[pos_lane], 400)
+        if how == "lane":
+            wt_route(w.r, w.root, inst, key, 0, SRC_SEQ[lane], amount)
+        elif how == "vel":
+            wt_route(w.r, w.root, inst, key, 0, SRC_VEL, amount)
+        ln = Lanes(w.r, w.root)
+        depth = []
+        for b in range(blocks):
+            vals = [0.9, 0.3, 0.6, 0.15]
+            vals[lane] = self.VALS[b]
+            vals[pos_lane] = (b % 4) / 4
+            ln.read(vals)
+            if how == "vel":
+                w.r.wf(w.v + 0x38, self.VALS[b])
+            elif how == "knob":
+                w.prop(key, x2_law(base, [(amount, self.VALS[b])]), inst)
+            w.block()
+            msub, m12 = struct.unpack("<HH", w.r.u.mem_read(w.o[inst] + S.OSC_KERNEL + MSUB_AT, 4))
+            depth.append(m12 if key == K_FM12 else msub)
+        return w.outs, depth, x2_store(w.r)
+
+    def test_a_lane_plays_its_destination_per_block(self):
+        """Each destination, Analog and Wavetable oscillators: per block the lane's value moves the depth to
+        v = clamp(knob + amount x lane, 0, 1000) (msub / m12 after the block, x2_law); the voice is bit for bit the same
+        routing from velocity (X2's path), and for OSC1 Sub FM / OSC2 FM 1>2 the knob turned to v. The store holds the lane
+        in connect slot 3 at root + 0x140 + 8 lane; the Position lane and the other knob play alike in every run."""
+        for types in ((1, 1), (0, 0)):
+            for lane, inst, key in ((0, 0, K_SUBFM), (1, 1, K_FM12), (3, 1, K_SUBFM)):
+                with self.subTest(types=types, lane=lane, inst=inst, key=hex(key)):
+                    a, da, st = self.lane_run(types, inst, key, lane, "lane")
+                    b, db, _ = self.lane_run(types, inst, key, lane, "vel")
+                    same(self, a, b, "the lane = the same routing from velocity")
+                    self.assertEqual(da, db)
+                    (e,) = st
+                    j = X2_K[(inst, key)] * X2_SLOTS + 3
+                    self.assertEqual((e[2][j], e[3][j]), (X2_ROOT_REL | (ROOT_LANE_SRC + 8 * lane), 600), "slot 3, the lane")
+                    self.assertEqual([c for i, c in enumerate(e[2]) if c and i != j], [], "nothing else of ours stored")
+                    base = 200 if (inst, key) != (1, K_SUBFM) or types[1] else 0     # a Wavetable OSC2's Sub FM base: 0 (X2)
+                    self.assertEqual(da, [x2_law(base, [(600, x)]) for x in self.VALS], "the depth per block")
+                    self.assertGreater(len(set(da)), 5, "it moves")
+                    if (inst, key) != (1, K_SUBFM):
+                        c, dc, stc = self.lane_run(types, inst, key, lane, "knob")
+                        same(self, a, c, "the lane = the knob turned to v")
+                        self.assertEqual(da, dc)
+                        self.assertEqual(stc, [], "the Position lane alone stores nothing of ours")
+
+    def test_two_lanes_on_one_destination_keep_the_last(self):
+        """Stock's rule for every destination (X2 open 2): seq lanes share connect slot 3, so a second lane on the same FM
+        depth replaces the first, and its removal (the toggle's slot 3, source 0) leaves none."""
+        r = Rig(); root, vs = x2_root(r)
+        wt_route(r, root, 0, K_SUBFM, 0, SRC_SEQ[0], 500)
+        wt_route(r, root, 0, K_SUBFM, 1, SRC_SEQ[2], 300)
+        (e,) = x2_store(r)
+        self.assertEqual((e[2][3], e[3][3]), (X2_ROOT_REL | (ROOT_LANE_SRC + 16), 300))
+        wt_route(r, root, 0, K_SUBFM, 3, 0, 0)
+        self.assertEqual(x2_store(r), [])
+
+    def test_cost_heaviest_voice_lanes(self):
+        """X2's heaviest voice (Wavetable both, Position every block, notes 24 / 36) with the depths from lanes at 1.0, amount
+        1000 (the same sound as the knobs at 1000): seq1 on OSC1 Sub FM and seq2 on OSC2 FM 1>2 within HEAVIEST_VOICE; with
+        seq4 on OSC2 Sub FM as well (a second FM term on OSC2) within X2's SUB2_HEAVY_MAX. Instructions per voice-block
+        (an_enter and both renders); the lane read is stock's, once per root per block, with or without lanes."""
+        lfo = lambda b: (b * 7 % 200) / 255
+        two = [(0, K_SUBFM, 0, SRC_SEQ[0], 1000), (1, K_FM12, 0, SRC_SEQ[1], 1000)]
+        def cost(note, knobs, routes=()):
+            w = WtVoice(self, types=(0, 0), frames=G.wt_saw_frames(200), capture=False, note=note)
+            if knobs:
+                w.prop(K_SUBFM, 1000, 0); w.prop(K_FM12, 1000, 1)
+            for rt in routes:
+                wt_route(w.r, w.root, *rt)
+            ln = Lanes(w.r, w.root)
+            sp = [Span(w.r, DSP["an_enter"])] + [Span(w.r, a) for a in {w.r.r32(w.r.r32(o)) & ~1 for o in w.o}]
+            xs = []
+            for b in range(16):
+                ln.read([1.0, 1.0, 0.0, 1.0])
+                for o in w.o:
+                    w.r.wf(o + OSC_POS_SRC, lfo(b))
+                t0 = sum(s.total for s in sp); w.block(); xs.append(sum(s.total for s in sp) - t0)
+            return sorted(xs[4:])[len(xs[4:]) // 2], max(xs), w.outs
+        rows = {}
+        for note in (24, 36):
+            k = cost(note, True)
+            rows[f"note {note}: knobs"] = k
+            rows[f"note {note}: 2 lanes"] = l2 = cost(note, False, two)
+            same(self, l2[2], k[2], f"note {note}: the same sound from lanes")
+            rows[f"note {note}: + OSC2 Sub FM lane"] = cost(note, False, two + [(1, K_SUBFM, 0, SRC_SEQ[3], 1000)])
+        print("\n  X3 heaviest voice with lanes (instructions per voice-block, Position every block; steady median / max): " +
+              "; ".join(f"{k} {a} / {b}" for k, (a, b, _) in rows.items()), file=sys.stderr)
+        for k, (a, b, _) in rows.items():
+            self.assertLessEqual(b, FmTargetsX2.SUB2_HEAVY_MAX if "OSC2 Sub FM" in k else HEAVIEST_VOICE, k)
+
+
 REF444 = Path(os.environ.get("BE_REF444", str(Path.home() / "bento" / "out" / "be444w4f")))
 REF444_OK = (REF444 / "bento1.bin").exists() and (REF444 / "manifest.json").exists()
 

@@ -683,28 +683,68 @@ def mx_rows(r, track):
              r.u.mem_read(view + MXV_CC + i, 1)[0], r.e.text(view + MXV_NAMES + 16 * i, 16)) for i in range(n)]
 
 
-PIANO_DEST_LIST = 0x08159CA8   # the piano roll's destination list (callers 0x08159EFC, PIANO_EVENT 0x0815C40E)  # addr-ok: X1 review
-PIANO_DEST_ENUM = 0x08159358   # its enumerator (type, key) of the global, Granular and Wavetable rows  # addr-ok: X1 review
+PR_VIEW_TRACK, PR_VIEW_LANE = 0x11CD08, 0x125D34      # the piano view: its track's handle, its lane (0..3: seq1..seq4)  # addr-ok: X3
+PR_LIST, PR_LIST_N, PR_LIST_ENT, PR_LIST_SEL = 0x7E38, 0x113BB4, 0x112FB4, 0x10EF04   # its list: count, entries (0x30), sel
+PR_UI_STUBS = (0x0817D494, 0x0817CCFE, 0x0817C8EC, 0x0813CCF8, 0x0815A048)   # the list's finish / redraws (UI)  # addr-ok: X3
+SEQ1 = 9                           # stock's source ids 9..12: seq1..seq4, the piano roll's lanes (lane + 9)
+
+
+class Piano:
+    """Stock's piano-roll destination list (PR_DEST_LIST) and lane toggle (PR_LANE_TOGGLE) on a fresh piano view of a track.
+    Stubbed: the list's finish and redraws (PR_UI_STUBS, UI only); UI_POST (the toggle's 0xD1) and MX_KEY_POST (the model's
+    0x3F to the M7) are logged and return. The entry's lane state (0x0815973C, a read of the routes) runs."""
+    def __init__(self, r, track, roles):
+        self.r, self.roles, self.posts, self.keyposts = r, roles, [], []
+        self.view = r.buf(0x126000)
+        r.w32(self.view + PR_VIEW_TRACK, r.handle(track))
+        def ret0(uc, a, sz, _):
+            uc.reg_write(UC_ARM_REG_R0, 0); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        def uipost(uc, a, sz, _):
+            self.posts.append(bytes(uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 0x14))); ret0(uc, a, sz, _)
+        def keypost(uc, a, sz, _):           # MX_KEY_POST (model, obj, key, slot, [sp] source, [sp+4] amount, [sp+8] instance)
+            sp = uc.reg_read(UC_ARM_REG_SP)
+            src, amt, inst = struct.unpack("<IiI", bytes(uc.mem_read(sp, 12)))
+            self.keyposts.append((uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2), uc.reg_read(UC_ARM_REG_R3), src & 0xFFFF,
+                                  amt, inst))
+            ret0(uc, a, sz, _)
+        for a in PR_UI_STUBS:
+            r.u.hook_add(UC_HOOK_CODE, ret0, begin=a, end=a)
+        r.u.hook_add(UC_HOOK_CODE, uipost, begin=S.UI_POST, end=S.UI_POST)
+        r.u.hook_add(UC_HOOK_CODE, keypost, begin=S.MX_KEY_POST, end=S.MX_KEY_POST)
+        r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+
+    def dests(self, lane=0):
+        """[(role of the entry's handle, key, name)]; self.state: (key, slot, amount, lane state) per entry."""
+        r = self.r
+        r.w32(self.view + PR_VIEW_LANE, lane)
+        r.call(S.PR_DEST_LIST, self.view)
+        lst = self.view + PR_LIST
+        out, self.state = [], []
+        for i in range(r.r32(lst + PR_LIST_N)):
+            e = lst + PR_LIST_ENT + 0x30 * i
+            out.append((self.roles.get(r.r32(e), hex(r.r32(e))), struct.unpack("<H", bytes(r.u.mem_read(e + 4, 2)))[0],
+                        r.e.text(e + 0xE, 32)))
+            self.state.append(struct.unpack("<HhiB", bytes(r.u.mem_read(e + 4, 9))))
+        return out
+
+    def toggle(self, lane, role, key, amount):
+        """Select the entry (role, key) on lane `lane`, stock's toggle with `amount` (0: off); its 0xD1 into the model's handler
+        (MX_SET_ROUTE, as the app hands it on). Returns (the 0xD1 events, the 0x3F posts it made)."""
+        r = self.r
+        i = [(x[0], x[1]) for x in self.dests(lane)].index((role, key))
+        r.w32(self.view + PR_LIST + PR_LIST_SEL, i)
+        self.posts.clear(); self.keyposts.clear()
+        r.call(S.PR_LANE_TOGGLE, self.view, amount & 0xFFFFFFFF)
+        evs = list(self.posts)
+        for ev in evs:
+            r.u.mem_write(EV, ev)
+            r.call(S.MX_SET_ROUTE, S.MODEL, EV)
+        return evs, list(self.keyposts)
 
 
 def piano_dests(r, track, roles):
-    """Stock's piano-roll destination list builder on a fresh view of this track: [(role of the entry's handle, key, name)].
-    Stubbed: the entry's value read 0x0815973C (live classes) and the list's finish 0x0817D494 (UI)."""
-    view = r.buf(0x126000)
-    r.w32(view + 0x11CD08, r.handle(track))
-    def ret0(uc, a, sz, _):
-        uc.reg_write(UC_ARM_REG_R0, 0); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
-    for a in (0x0815973C, 0x0817D494):  # addr-ok: X1 review
-        r.u.hook_add(UC_HOOK_CODE, ret0, begin=a, end=a)
-    r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
-    r.call(PIANO_DEST_LIST, view)
-    lst = view + 0x7E38
-    out = []
-    for i in range(r.r32(lst + 0x113BB4)):
-        e = lst + 0x112FB4 + 0x30 * i
-        out.append((roles.get(r.r32(e), hex(r.r32(e))), struct.unpack("<H", bytes(r.u.mem_read(e + 4, 2)))[0],
-                    r.e.text(e + 0xE, 32)))
-    return out
+    """The piano roll's destination list on a fresh view of this track: [(role of the entry's handle, key, name)]."""
+    return Piano(r, track, roles).dests()
 
 
 def routes(r, o):
@@ -733,7 +773,9 @@ class FmTargets(unittest.TestCase):
     """X1: OSC1 Sub FM (0x18B, instance 0), OSC2 FM 1>2 (0x132, instance 1), OSC2 Sub FM (0x18B, instance 1) as Wavetable-track
     Mod Matrix destinations: stock's table copied with the three rows (MX_WT_DEST_TAB -> ours), stock's row filler, DEST_NAME,
     the model's routing set (0xD1), the project writer and reader, and the reader of stock 1.6.8 and BE4.44 (the rollbacks).
-    Until X2 the M7 ignores these keys (the class's connect slot 10 0x08081B60 routes only 0xC4 / 0xC9 / 3: test_analog)."""
+    Until X2 the M7 ignores these keys (the class's connect slot 10 0x08081B60 routes only 0xC4 / 0xC9 / 3: test_analog).
+    X3: the piano roll's destination list (PR_DEST_LIST) offers them on their own oscillator; a lane on one is stock's lane
+    toggle's routing from seq1..seq4 (Piano), saved and loaded as any routing; every other list stays stock's."""
 
     def test_the_table_is_stocks_with_our_rows(self):
         at, n = SYM["mx_dest"], SYM["mx_dest_n"]
@@ -750,16 +792,14 @@ class FmTargets(unittest.TestCase):
                          [None] * 3 + ["Sub FM"] + [None] * 3 + ["FM 1>2", "Sub FM"])
         self.assertEqual([e[5] for e in got if e[2] in (SUBFM, FM12)], [0, 0, 0], "CC column blank")
         word = lambda img, a: struct.unpack_from("<I", img, a - BASE)[0]
-        for lit in ("MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_4"):
+        for lit in ("MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4"):   # X3: LIT_3 too
             self.assertEqual(word(IMG, getattr(S, lit)), at, lit)
         cnt = SYM["mx_dest_count"]
         self.assertEqual(cnt, at + 26 * 24 + len(b"OSC1: %s\0\0\0\0OSC2: %s\0\0\0\0FM 1>2\0\0Sub FM\0\0"), "after the strings")
         self.assertEqual(word(IMG, cnt), 26, "our count word")
-        for lit in ("MX_WT_DEST_N_LIT_1", "MX_WT_DEST_N_LIT_4"):
+        for lit in ("MX_WT_DEST_N_LIT_1", "MX_WT_DEST_N_LIT_3", "MX_WT_DEST_N_LIT_4"):
             self.assertEqual(word(IMG, getattr(S, lit)), cnt, lit)
-        # the enumerator (the piano roll's list) keeps stock's table and count word, which stay 23
-        self.assertEqual(word(IMG, S.MX_WT_DEST_LIT_3), S.MX_WT_DEST_TAB)
-        self.assertEqual(word(IMG, S.MX_WT_DEST_N_LIT_3), S.MX_WT_DEST_COUNT)
+        # X3: the enumerator (the piano roll's list) is on our table and count word too; stock's count word is left, 23
         self.assertEqual(word(IMG, S.MX_WT_DEST_COUNT), 23)
         self.assertEqual(IMG[S.MX_WT_ROWS_N - BASE:S.MX_WT_ROWS_N - BASE + 2], bytes(KS.asm("movs r2, #26", S.MX_WT_ROWS_N)[0]))
         self.assertEqual(IMG[S.MX_WT_ROWS_END - BASE:S.MX_WT_ROWS_END - BASE + 4],
@@ -805,22 +845,106 @@ class FmTargets(unittest.TestCase):
             self.assertTrue(seen, f"DEST_NAME read our table for {key:#x}")
         self.assertEqual(got, ["OSC1: Sub FM", "OSC2: FM 1>2", "OSC2: Sub FM"])
 
-    def test_the_piano_roll_list_is_stocks(self):
-        """X1 review: the piano roll's destination list (0x08159CA8, through the enumerator 0x08159358) matches table rows by
-        type only and takes no instance, so our rows there would offer 'OSC1: FM 1>2' and the knobless OSC2 Sub FM. It keeps
-        stock's table: the same entries as stock's, none of ours; the enumerator's bytes are stock's."""
+    # ---- X3: piano-roll lanes on the three (docs/plan-fm-targets.md "X3")
+    def roles(self, r, t, w1, w2): return {r.handle(w1): "osc1", r.handle(w2): "osc2", r.handle(t): "track"}
+
+    def test_the_piano_roll_list_offers_ours_on_their_own_oscillator(self):
+        """X3: PR_DEST_LIST on our table, its type match replaced by pr_dest_skip: stock's entries (T0's 'OSC1: / OSC2:' rename
+        of DEST_NAME's format), plus OSC1: Sub FM after OSC1's Position and OSC2: FM 1>2, OSC2: Sub FM after OSC2's (the Mod
+        Matrix's order); no 'OSC1: FM 1>2'. The enumerator's code is stock's; the site is the bl and cmp, then stock's bne."""
         lists = []
         for img in (IMG, STOCK):
             r = Rig(img=img, wrap=img is IMG)
             t, w1, w2 = r.wavetable()
-            lists.append(piano_dests(r, t, {r.handle(w1): "osc1", r.handle(w2): "osc2", r.handle(t): "track"}))
+            lists.append(Piano(r, t, self.roles(r, t, w1, w2)).dests())
         got, old = lists
         self.assertEqual(len(old), 23, "stock's list (control)")
         self.assertIn(("osc1", 0xC9, "WT1: Position"), old, "the control names the oscillator entries")
-        # the same entries; BE's names are stock's with T0's oscillator rename (DEST_NAME's format: 'OSC%d: %s')
-        self.assertEqual(got, [(h, k, re.sub(r"^WT([12]):", r"OSC\1:", n)) for h, k, n in old])
-        self.assertFalse([e for e in got if e[1] in (SUBFM, FM12)])
-        self.assertEqual(IMG[PIANO_DEST_ENUM - BASE:0x08159420 - BASE], STOCK[PIANO_DEST_ENUM - BASE:0x08159420 - BASE])  # addr-ok
+        want = [(h, k, re.sub(r"^WT([12]):", r"OSC\1:", n)) for h, k, n in old]
+        want.insert(want.index(("osc1", 0xC9, "OSC1: Position")) + 1, ("osc1", SUBFM, "OSC1: Sub FM"))
+        at = want.index(("osc2", 0xC9, "OSC2: Position")) + 1
+        want[at:at] = [("osc2", FM12, "OSC2: FM 1>2"), ("osc2", SUBFM, "OSC2: Sub FM")]
+        self.assertEqual(got, want)
+        self.assertNotIn(("osc1", FM12), [(h, k) for h, k, _ in got])
+        code = S.PR_DEST_ENUM_LEN - 0x18                                  # its six literal words after the code
+        self.assertEqual(IMG[S.PR_DEST_ENUM - BASE:S.PR_DEST_ENUM - BASE + code],
+                         STOCK[S.PR_DEST_ENUM - BASE:S.PR_DEST_ENUM - BASE + code], "the enumerator's code")
+        self.assertEqual(IMG[S.PR_DEST_MATCH - BASE:S.PR_DEST_MATCH - BASE + 8],
+                         bytes(KS.asm(f"bl {SYM['wrap_pr_dest']:#x}; cmp r0, #0", S.PR_DEST_MATCH)[0]) +
+                         STOCK[S.PR_DEST_MATCH + 6 - BASE:S.PR_DEST_MATCH + 8 - BASE], "bl, cmp, stock's bne")
+
+    def test_every_other_tracks_list_is_stocks(self):
+        """X3: every other track type keeps stock's list, entry for entry: the tracks of three device projects (logs/: Granular,
+        multisample and one-shot tracks with a list; loop and type 0x16 tracks with none), read by stock's reader on this build and on stock and made live
+        (STORE_COPY_ALL); and a Wavetable track's other children (the sub, filters, envelopes, LFOs)."""
+        seen, types = set(), set()
+        for f in ("v322_HUBauto_project.xml", "be422dev_SPACED_COPY_project.xml", "v322_HUB_project.xml"):
+            text = (HERE / "logs" / f).read_text(encoding="latin1")
+            lists = []
+            for img in (IMG, STOCK):
+                r = Rig(img=img, wrap=img is IMG)
+                r.call(S.STORE_COPY_ALL, r.live, r.load(text))
+                lists.append([(r.vtype(t), Piano(r, t, {}).dests()) for t in r.tracks(r.live)])
+            self.assertEqual(lists[0], lists[1], f)
+            seen |= {ty for ty, l in lists[0] if l}
+            types |= {ty for ty, l in lists[0]}
+        self.assertTrue({0x13, 0xE, 0xF} <= seen, f"the projects' track types with a list: {sorted(map(hex, seen))}")
+        self.assertTrue({0x11, 0x16} <= types - seen, "the loop and type 0x16 tracks have none, here as on stock")
+        r = Rig(); t, w1, w2 = r.wavetable()
+        s = Rig(img=STOCK, wrap=False); ts, s1, s2 = s.wavetable()
+        others = lambda l: [(h, k, n) for h, k, n in l if h not in ("osc1", "osc2")]
+        mine = others(Piano(r, t, self.roles(r, t, w1, w2)).dests())
+        self.assertEqual(mine, others(Piano(s, ts, self.roles(s, ts, s1, s2)).dests()))
+        self.assertEqual(len(mine), 17, "the sub, two filters, two envelopes, two LFOs (control)")
+
+    LANES = ((0, "osc1", SUBFM, 0), (1, "osc2", FM12, 1), (3, "osc2", SUBFM, 1))   # (lane, oscillator, key, instance)
+
+    def test_a_lane_on_each_destination(self):
+        """X3: stock's lane toggle (PR_LANE_TOGGLE) on each of our entries: the 0xD1 {handle, key, seq id (9 + lane) | matrix
+        slot 0 << 16, amount} into the model's handler stores a routing on that oscillator (source seq1..seq4, slot 0); the
+        model posts the M7 its 0x3F {track, key, slot 0, source 9 + lane, amount, instance} (X2's WT_ROUTE puts a seq source
+        in connect slot 3); the list then shows the entry on that lane (state 1, the amount). Off: the routing is removed and
+        the 0x3F is {key, slot 3, source 0} (stock's rule for a seq source), which X2 takes as the removal."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        p = Piano(r, t, self.roles(r, t, w1, w2))
+        osc = {"osc1": w1, "osc2": w2}
+        for lane, role, key, inst in self.LANES:
+            evs, posts = p.toggle(lane, role, key, 1000)
+            self.assertEqual([struct.unpack("<H2xIHHHHi", e) for e in evs],
+                             [(0xD1, r.handle(osc[role]), key, 0, SEQ1 + lane, 0, 1000)], f"lane {lane}: the 0xD1")
+            self.assertIn((key, SEQ1 + lane, 0, 1000), routes(r, osc[role]))
+            self.assertEqual(posts, [(r.handle(t), key, 0, SEQ1 + lane, 1000, inst)], f"lane {lane}: the 0x3F")
+            l = p.dests(lane)
+            i = [(x[0], x[1]) for x in l].index((role, key))
+            self.assertEqual(p.state[i], (key, 0, 1000, 1), "the list shows it on this lane")
+        self.assertEqual(routes(r, w1), [(SUBFM, SEQ1, 0, 1000)])
+        self.assertEqual(routes(r, w2), sorted([(FM12, SEQ1 + 1, 0, 1000), (SUBFM, SEQ1 + 3, 0, 1000)]))
+        for lane, role, key, inst in self.LANES:
+            evs, posts = p.toggle(lane, role, key, 0)
+            self.assertEqual([struct.unpack("<H2xIHHHHi", e)[1:] for e in evs], [(r.handle(osc[role]), key, 0, 0, 0, 0)])
+            self.assertEqual(posts, [(r.handle(t), key, 3, 0, 0, inst)], f"lane {lane} off: slot 3, source 0")
+        self.assertEqual(routes(r, w1) + routes(r, w2), [])
+
+    def test_lanes_save_and_load(self):
+        """X3: the lanes are ordinary routings: stock's writer writes <modsource dest="bento_subfm|bento_fm12" src="seqN">,
+        stock's reader restores them on their oscillators, and the loaded project's list shows each on its lane."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        p = Piano(r, t, self.roles(r, t, w1, w2))
+        for lane, role, key, inst in self.LANES:
+            p.toggle(lane, role, key, 700)
+        text = r.save()
+        ms = re.findall(r"<modsource[^>]*>", text)
+        self.assertEqual(sorted(ms), sorted(['<modsource dest="bento_subfm" src="seq1" slot="0" amount="700"/>',
+                                             '<modsource dest="bento_fm12" src="seq2" slot="0" amount="700"/>',
+                                             '<modsource dest="bento_subfm" src="seq4" slot="0" amount="700"/>']))
+        x = Rig(); x.call(S.STORE_COPY_ALL, x.live, x.load(text))
+        xt = x.wt_tracks(x.live)[0]; c = x.children(xt)
+        self.assertEqual(routes(x, c[0]), routes(r, w1)); self.assertEqual(routes(x, c[1]), routes(r, w2))
+        q = Piano(x, xt, self.roles(x, xt, c[0], c[1]))
+        for lane, role, key, inst in self.LANES:
+            l = q.dests(lane)
+            i = [(e[0], e[1]) for e in l].index((role, key))
+            self.assertEqual(q.state[i], (key, 0, 700, 1), f"lane {lane} after the load")
 
     def test_the_per_type_key_post_carries_our_keys(self):
         """MX_TYPE_KEYS_POST (model, obj, type, r3): one 0x3F {obj, key, slot 3} per table row of the type (MX_KEY_POST). For type 6 it
