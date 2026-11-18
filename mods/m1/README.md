@@ -29,8 +29,10 @@ Verified on hardware unless marked otherwise.
 | **Hold shortcuts** (TRACKS / LAUNCH / MIXER / INST + pads) | everywhere | v2.6 |
 | **Black box**: crash and stall records on the SD card | `BENTO_DIAG.log`, `BENTO_CRASHES.log` | v2.1+ |
 
-**Stock compatibility.** Projects saved with these features still open on stock 1.6.8 (and, for
-the v3.x builds, on stock 1.6.1; checked on hardware). Stock plays recorded-aftertouch notes as plain notes and ignores
+**Stock compatibility.** Projects saved with these features still open on stock. On stock 1.6.1
+this was checked on hardware for the v3.x builds; on stock 1.6.8 a dev suite (test_native_props, needs the
+author's reference builds) loads them in stock's own reader, and each release's device checklist has the hardware check. Stock plays mod-only
+features its own way (Analog oscillators as plain Wavetable, Wavetable FM ignored), plays recorded-aftertouch notes as plain notes and ignores
 `curves.bnt`; it ignores trigger conditions and retriggers, and keeps velocities.
 
 ## Using aftertouch sequencing
@@ -82,7 +84,7 @@ checks the stock pair, runs build.py, packages the kit, compares the image with
 [`tools/release_hashes.json`](../../tools/release_hashes.json) and, with `--test`, runs the suites.
 
 ```
-python tools/make_kit.py <stock 1.6.8 zip / folder / bento1.bin> <out dir> [--test] [--set BE_DISABLE=...]
+python tools/make_kit.py <stock 1.6.8 zip / folder / bento1.bin> <out dir> [--test] [--force] [--keep-build] [--set BE_DISABLE=...]
 python build.py --base <stock bento1.bin> --out <new dir>          # mods/m1: the build alone
 python test_<suite>.py <stock bento1.bin> <out dir>                # one suite
 ```
