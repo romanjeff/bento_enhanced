@@ -361,7 +361,10 @@ GROUP_NAMES = {
                "VALUE_TEXT_1", "VALUE_TEXT_2", "VALUE_TEXT_3", "ENC_POS_SET", "WT_PANE_FRAMES_DIRTY",
                # BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (fmenv_connect)
                "FMENV_IDX_TBH", "FMENV_IDX_PAD", "FMENV_IDX_NEXT", "FMENV_SUB_TBH", "FMENV_SUB_PAD", "FMENV_SUB_NEXT",
-               "WT_VOICE_ALLOC", "WT_VOICE_OSC1"),   # (S1 fix: the connect's Wavetable-voice gate)
+               "WT_VOICE_ALLOC", "WT_VOICE_OSC1",   # (S1 fix: the connect's Wavetable-voice gate)
+               # BE4.46 S2: the Wavetable Mod Matrix page lists them (the source list, the validator, the names)
+               "MX_WT_SRC_LIST", "MX_WT_SRC_LIT", "MX_SRC_VALID_LIT", "MX_WT_ROWS_SITE", "MX_WT_ROWS_FILL", "MX_SRC_VALID",
+               "MX_SRC_NAME", "MXV_TYPE", "MXV_SRC_LIST", "MXV_SRC_N", "TYPE_WAVETABLE"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -1917,6 +1920,44 @@ def np_template(base_img, stock_n):
     return b"".join(new), n
 
 
+# BE4.46 S2 (docs/feasibility-fm-env-sources.md): FM Env 1 / FM Env 2 (stock's source ids 3 / 6, which S1's M7 connect
+# gives to the oscillators' FM envelopes) in a Wavetable track's Mod Matrix: the page's source list, the routing validator and
+# the source names (m4_synth.c mx_wt_rows, mx_src_valid, mx_src_name). The list is our copy (stock's stays, with its two
+# literals, for Granular and the validator's other types); MX_BUILD's bl of the Wavetable row filler is the one site that
+# installs it, so the filler's own bytes (which BE4.45 X1 patches for the destinations) stay stock's here.
+FMENV_SOURCES = (3, 6)          # FM Env 1, FM Env 2, in that order
+FMENV_AFTER = 2                 # right after Env 2 (source id 2)
+FMENV_STOCK_N = 16              # stock's Wavetable list (MX_WT_SRC_LIST)
+
+
+def fmenv_matrix(base_img, patch, code, ss):
+    """S2: refused unless stock's list, its literals, the filler's call and both entries are what m4_synth.c assumes."""
+    lst = S.MX_WT_SRC_LIST
+    stock = list(struct.unpack_from(f"<{FMENV_STOCK_N}H", base_img, lst - BASE))
+    if stock[0] != 0 or FMENV_AFTER not in stock or any(s in stock for s in FMENV_SOURCES):
+        raise SystemExit(f"S2: stock's Wavetable source list {stock} is not None first, with Env 2 and without ids 3 / 6")
+    refs = one_reference(base_img, {lst})[lst]
+    if sorted(refs) != sorted([S.MX_WT_SRC_LIT, S.MX_SRC_VALID_LIT]):
+        raise SystemExit(f"S2: the source list is referenced at {[hex(a) for a in refs]}, not only by its two literals")
+    i = stock.index(FMENV_AFTER) + 1
+    ours = stock[:i] + list(FMENV_SOURCES) + stock[i:] + [0]          # + the None MX_EDIT reads at index == count
+    blob = struct.pack(f"<{len(ours)}H", *ours)
+    if code.count(blob) != 1:
+        raise SystemExit(f"S2: m4_synth.c's mx_wt_sources is not {ours} (stock's list with 3 / 6 after Env 2, then 0)")
+    if S.orig("MX_WT_ROWS_SITE") != asm(f"bl {S.MX_WT_ROWS_FILL:#x}", S.MX_WT_ROWS_SITE):
+        raise SystemExit("S2: MX_WT_ROWS_SITE is not stock's bl MX_WT_ROWS_FILL")
+    replays("MX_SRC_VALID", "mov ip, r1; ldrh r1, [r1, #4]")
+    replays("MX_SRC_NAME", "push {lr}; mov lr, r0")
+    patch(S.MX_WT_ROWS_SITE, asm(f"bl {ss['mx_wt_rows']:#x}", S.MX_WT_ROWS_SITE), S.orig("MX_WT_ROWS_SITE"),
+          "FM Env sources (BE4.46 S2): a Wavetable Mod Matrix page lists FM Env 1 / 2 after Env 2 (mx_wt_rows)")
+    for site, fn, why in (("MX_SRC_VALID", "mx_src_valid", "sources 3 / 6 valid on a Wavetable track"),
+                          ("MX_SRC_NAME", "mx_src_name", "3 / 6 named FM Env 1 / FM Env 2 on a Wavetable track")):
+        c = asm(f"b.w {ss[fn]:#x}", getattr(S, site))
+        if len(c) != 4:
+            raise SystemExit(f"S2: {site}'s branch is not 4 bytes")
+        patch(getattr(S, site), c, S.orig(site), f"FM Env sources (BE4.46 S2): {why} ({fn})")
+
+
 def one_reference(img, addrs):
     """{addr: the aligned words of img holding addr}; fails if a movw / movt pair (movt within 4 instructions of the movw,
     same register) builds one of the addresses (T0's 'one literal reference')."""
@@ -2072,6 +2113,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                 was = orig.split(b"\0")[0].decode()
                 patch(getattr(S, site), text.ljust(len(orig), b"\0"), orig, f"Analog (identity T0): {was!r} -> {text.decode()!r}",
                       site=True)                         # (12 bytes: a site all the same, stock's under BE_DISABLE=analog)
+            fmenv_matrix(base_img, patch, code, ss)
             # D1: the Wavetable pane class's paint slot -> an_wave_paint (the Shape dial on an Analog pane, else stock's paint)
             if S.orig("WT_PANE_PAINT_SLOT") != struct.pack("<I", S.WT_PANE_PAINT | 1):
                 raise SystemExit("WT_PANE_PAINT_SLOT does not hold stock's WT_PANE_PAINT")

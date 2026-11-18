@@ -654,5 +654,285 @@ class Hazard(unittest.TestCase):
         self.assertEqual([r.ours(c[0]), r.ours(c[1])], [V1, V2], "the real cells still load")
 
 
+# ---- BE4.46 S2 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 (source ids 3 / 6) in a Wavetable track's Mod Matrix
+# Typed from stock (be446 s2 lists.py, independently of build.py): the Wavetable page's 16 sources and the registry's names.
+# (Merge note for be445x: its FmTargets helpers routes / set_route / mx_rows overlap the fe_* ones below.)
+REF444_S2 = Path(os.environ.get("BE_REF444", str(Path.home() / "bento" / "out" / "be444w4f")))   # BE4.44 (the rollback)
+FE1, FE2 = 3, 6                    # stock's env3 / lfo3: FM Env 1 / FM Env 2 on a Wavetable voice (S1)
+FE_STOCK_SRC = [0, 13, 32, 1, 2, 4, 5, 8, 14, 26, 30, 31, 9, 10, 11, 12]
+FE_OUR_SRC = [0, 13, 32, 1, 2, FE1, FE2, 4, 5, 8, 14, 26, 30, 31, 9, 10, 11, 12]
+FE_NAMES = {0: "[None]", 1: "Envelope 1", 2: "Envelope 2", 3: "Envelope 3", 4: "LFO 1", 5: "LFO 2", 6: "LFO 3", 8: "Mod Seq",
+            9: "Auto A", 10: "Auto B", 11: "Auto C", 12: "Auto D", 13: "Velocity", 14: "Key", 26: "Mod Wheel",
+            30: "Macro X", 31: "Macro Y", 32: "Pressure"}
+FE_TYPES = list(range(0x15)) + [0x20, 0xFF]   # every view type the validator / name test (<= 0x13), and past them
+MXV_VIEW = 0x8C000                 # the Mod Matrix view's size the harness gives (its fields up to +0x8AE04 + 60 x 16)
+MXV_SEL = 0x86B5C                  # MX_EDIT / MX_BAR: the selected row (-1 none) (MX_EDIT's first load)
+MXV_ROWS, MXV_KEYS, MXV_HANDLES = 0x8AC4D, 0x8AC50, 0x8ACCC
+MX_SET_ROUTE_FN = 0x081347E4       # the model's 0xD1 (be445x's MX_SET_ROUTE)  # addr-ok: S2 tests (a base entry on be445x)
+UI_POST_VIEW = 0x08171D94          # MX_EDIT's post of the 0xD1 (view, event)  # addr-ok: S2 tests (MX_EDIT's last call)
+INST_REPLACE = 0x0813F730          # stock's instrument replace (model, kind, position)  # addr-ok: S2 tests (plan-drum-synth-track)
+MX_EDIT_FN = 0x0814DBF8            # MX_EDIT (the mx group's entry is a 1.6.8 draft; hand-checked: be446 s2)  # addr-ok: S2 tests
+KEY_POSITION = 0x73                # a track's position (instrument replace's key)
+# instrument replace's calls the rig cannot run (each stops the emulation: voices / UI), stubbed: before the old track's
+# destroy, the stop of its handle (0x0813F796); after the new track's children, its two set-ups (0x0813F858, 0x0813F860)
+INST_REPLACE_STUBS = (0x08133C08, 0x0813E4B8, 0x0813D430)  # addr-ok: S2 tests (called by INST_REPLACE)
+
+
+def fe_view(r, track, kind=None):
+    view = r.buf(MXV_VIEW)
+    r.w32(view + 0x8AC44, r.handle(track) if track else 0)
+    r.u.mem_write(view + S.MXV_TYPE, bytes([S.TYPE_WAVETABLE if kind is None else kind]))
+    return view
+
+
+def bl_target(img, at):
+    h1, h2 = struct.unpack_from("<HH", img, at - BASE)
+    assert h1 & 0xF800 == 0xF000 and h2 & 0xD000 == 0xD000, f"bl at {at:#x}"
+    s, j1, j2 = h1 >> 10 & 1, h2 >> 13 & 1, h2 >> 11 & 1
+    off = s << 24 | (1 - (j1 ^ s)) << 23 | (1 - (j2 ^ s)) << 22 | (h1 & 0x3FF) << 12 | (h2 & 0x7FF) << 1
+    return at + 4 + off - ((1 << 25) if s else 0)
+
+
+def fe_rows(r, view, img):
+    """MX_BUILD's Wavetable case from its list store on: stock's list and 16 into the view, then the call at MX_WT_ROWS_SITE
+    (ours: mx_wt_rows; stock: the filler). (list address, its ids, [(key, handle)] of the rows)"""
+    r.w32(view + S.MXV_SRC_LIST, S.MX_WT_SRC_LIST)
+    r.u.mem_write(view + S.MXV_SRC_N, bytes([16]))
+    r.call(bl_target(img, S.MX_WT_ROWS_SITE), view)
+    lst, n = r.r32(view + S.MXV_SRC_LIST), r.u.mem_read(view + S.MXV_SRC_N, 1)[0]
+    ids = list(struct.unpack(f"<{n}H", bytes(r.u.mem_read(lst, 2 * n))))
+    rows = [(struct.unpack("<H", bytes(r.u.mem_read(view + MXV_KEYS + 2 * i, 2)))[0], r.r32(view + MXV_HANDLES + 4 * i))
+            for i in range(r.u.mem_read(view + MXV_ROWS, 1)[0])]
+    return lst, ids, rows
+
+
+def fe_routes(r, o):
+    """The routings on an object: its type-1 nodes {+0xC amount, +0x10 source, +0x12 key, +0x14 slot} (0x0812EE94's list)."""
+    out, c = [], r.r32(o + 0x14)
+    while c:
+        if r.u.mem_read(c + 8, 1)[0] == 1:
+            amt, src, key, slot = struct.unpack("<iHHh", bytes(r.u.mem_read(c + 0xC, 10)))
+            out.append((key, src, slot, amt))
+        c = r.r32(c + 4)
+    return sorted(out)
+
+
+def fe_set(r, h, key, src, slot, amount):
+    """The model's 0xD1 as MX_EDIT posts it: {0xD1, +4 handle, +8 key | 1 << 16, +0xC source | slot << 16, +0x10 amount}."""
+    r.u.mem_write(EV, struct.pack("<HHIIIi", 0xD1, 0, h, key | 1 << 16, src | slot << 16, amount))
+    r.call(MX_SET_ROUTE_FN, S.MODEL, EV)
+
+
+def fe_edit(r, view, row, key, value):
+    """Stock's MX_EDIT (view, {+8 key, +0xC value}) on a selected row: the 0xD1 it posts (UI_POST_VIEW logged and returned)
+    as (handle, key, source, slot, amount), or None."""
+    posted = []
+    def log(uc, a, sz, _):
+        posted.append(bytes(uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 0x14)))
+        uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+    h = r.u.hook_add(UC_HOOK_CODE, log, begin=UI_POST_VIEW, end=UI_POST_VIEW)
+    r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+    r.w32(view + MXV_SEL, row)
+    ev = r.buf(0x20)
+    r.u.mem_write(ev, struct.pack("<IIIi", 0, 0, key, value))
+    r.call(MX_EDIT_FN, view, ev)
+    r.u.hook_del(h)
+    if not posted:
+        return None
+    assert len(posted) == 1
+    code, _, hh, k, src, amt = struct.unpack("<HHIIIi", posted[0])
+    assert code == 0xD1 and k >> 16 in (1, 2), posted[0].hex()   # 1 a new routing, 2 an existing one's edit
+    return hh, k & 0xFFFF, src & 0xFFFF, src >> 16, amt, k >> 16
+
+
+def fe_post(r, ev):
+    """The 0xD1 fe_edit logged, to the model as MX_EDIT posted it."""
+    hh, key, src, slot, amt, mode = ev
+    r.u.mem_write(EV, struct.pack("<HHIIIi", 0xD1, 0, hh, key | mode << 16, src | slot << 16, amt))
+    r.call(MX_SET_ROUTE_FN, S.MODEL, EV)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
+class FmEnvMatrix(unittest.TestCase):
+    """S2: on a Wavetable track's Mod Matrix page the source list is stock's with FM Env 1 / FM Env 2 (ids 3 / 6) right after
+    Env 2, the validator keeps them and the names say "FM Env 1" / "FM Env 2"; everything else (Granular, the validator's
+    other types, every other id) is stock's. Stock's MX_EDIT, row filler and model routing set run with the image's three
+    sites; the project writer and reader of this build, stock 1.6.8 and BE4.44 read the routings back."""
+
+    def test_the_sites_and_stocks_list(self):
+        self.assertEqual(bl_target(IMG, S.MX_WT_ROWS_SITE), SYM["mx_wt_rows"])
+        self.assertEqual(bl_target(STOCK, S.MX_WT_ROWS_SITE), S.MX_WT_ROWS_FILL, "stock's call (control)")
+        for site, fn in (("MX_SRC_VALID", "mx_src_valid"), ("MX_SRC_NAME", "mx_src_name")):
+            a = getattr(S, site)
+            self.assertEqual(IMG[a - BASE:a - BASE + 4], bytes(KS.asm(f"b.w {SYM[fn]:#x}", a)[0]), site)
+        lst = S.MX_WT_SRC_LIST
+        self.assertEqual(list(struct.unpack_from("<16H", STOCK, lst - BASE)), FE_STOCK_SRC, "stock's list as typed")
+        self.assertEqual(IMG[lst - BASE:lst - BASE + 32], STOCK[lst - BASE:lst - BASE + 32], "stock's list stays")
+        for lit in ("MX_WT_SRC_LIT", "MX_SRC_VALID_LIT"):
+            self.assertEqual(struct.unpack_from("<I", IMG, getattr(S, lit) - BASE)[0], lst, f"{lit}: Granular / types 15, 19")
+        # the validator's and the name's bodies (past the replayed entry) and the filler are stock's bytes
+        for lo, hi in ((S.MX_SRC_VALID + 4, S.MX_SRC_VALID + 0x60), (S.MX_SRC_NAME + 4, S.MX_SRC_NAME + 0x48),
+                       (S.MX_WT_ROWS_FILL, S.MX_WT_ROWS_FILL + 0x124)):
+            self.assertEqual(IMG[lo - BASE:hi - BASE], STOCK[lo - BASE:hi - BASE], f"{lo:#x}..{hi:#x}")
+
+    def test_the_wavetable_page_lists_them_after_env_2(self):
+        got = []
+        for img in (IMG, STOCK):
+            r = Rig(img=img, wrap=img is IMG)
+            t, w1, w2 = r.wavetable()
+            view = fe_view(r, t)
+            lst, ids, rows = fe_rows(r, view, img)
+            names = [r.e.text(r.call(S.MX_SRC_NAME, view, i), 32) for i in ids]
+            end = struct.unpack("<H", bytes(r.u.mem_read(lst + 2 * len(ids), 2)))[0]
+            got.append((lst, ids, names, end, rows, {r.handle(w1): "osc1", r.handle(w2): "osc2"}))
+        (lst, ids, names, end, rows, h), (slst, sids, snames, _, srows, sh) = got
+        self.assertEqual((slst, sids), (S.MX_WT_SRC_LIST, FE_STOCK_SRC), "stock (control)")
+        self.assertEqual(snames, [FE_NAMES[i] for i in FE_STOCK_SRC])
+        self.assertNotEqual(lst, S.MX_WT_SRC_LIST, "our own copy")
+        self.assertEqual(ids, FE_OUR_SRC)
+        self.assertEqual(end, 0, "then a 0 (None): what MX_EDIT reads at index == count")
+        self.assertEqual(names, [FE_NAMES[i] for i in FE_OUR_SRC[:5]] + ["FM Env 1", "FM Env 2"] +
+                         [FE_NAMES[i] for i in FE_OUR_SRC[7:]])
+        role = lambda rr, hh: [(k, hh.get(x, "other")) for k, x in rr]
+        self.assertEqual(role(rows, h), role(srows, sh), "the rows are stock's filler's")
+        self.assertGreater(len(rows), 20)
+
+    def test_every_other_page_type_and_id_is_stocks(self):
+        """The validator and the names of every view type but Wavetable are stock's for every id 0..35, and a Wavetable
+        page's other ids too: only (Wavetable, 3) and (Wavetable, 6) differ. Granular (0x13) and type 0x0F still erase them
+        (stock's list, which Granular's page also shows: MX_BUILD's 0x13 case is not our site)."""
+        res = []
+        for img in (IMG, STOCK):
+            r = Rig(img=img, wrap=img is IMG)
+            out = {}
+            view = fe_view(r, None)
+            rec = r.buf(8)
+            for kind in FE_TYPES:
+                r.u.mem_write(view + S.MXV_TYPE, bytes([kind]))
+                for src in range(36):
+                    r.u.mem_write(rec, struct.pack("<IHH", 0x12345678, src, 0xBEEF))
+                    r.call(S.MX_SRC_VALID, view, rec)
+                    after = struct.unpack("<IHH", bytes(r.u.mem_read(rec, 8)))
+                    out[kind, src] = (after, r.e.text(r.call(S.MX_SRC_NAME, view, src), 32))
+            res.append(out)
+        ours, stock = res
+        self.assertEqual({k for k in stock if ours[k] != stock[k]}, {(S.TYPE_WAVETABLE, FE1), (S.TYPE_WAVETABLE, FE2)})
+        for src, nm in ((FE1, "FM Env 1"), (FE2, "FM Env 2")):
+            self.assertEqual(stock[S.TYPE_WAVETABLE, src], ((0x12345678, 0, 0xBEEF), FE_NAMES[src]), "stock erases the copy")
+            self.assertEqual(ours[S.TYPE_WAVETABLE, src], ((0x12345678, src, 0xBEEF), nm))
+            for kind in (0x0F, 0x13):
+                self.assertEqual(ours[kind, src][0][1], 0, f"type {kind:#x} erases {src}")
+        self.assertEqual(stock[S.TYPE_WAVETABLE, 4], ((0x12345678, 4, 0xBEEF), "LFO 1"), "a listed source is kept (control)")
+
+    def test_the_source_encoder_picks_them(self):
+        """Stock's MX_EDIT on the first row (OSC1 Pitch): the Source encoder's index i posts list[i] as the source (index 18,
+        the count, reads our 0: None; 19 posts nothing). The posted 0xD1 makes the routing (MX_SET_ROUTE)."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        view = fe_view(r, t)
+        _, ids, rows = fe_rows(r, view, IMG)
+        self.assertEqual(rows[0], (3, r.handle(w1)), "row 0 is OSC1 Pitch")
+        srcs = [fe_edit(r, view, 0, S.KEY_MX_FIRST, i) for i in range(20)]
+        self.assertEqual([s[2] for s in srcs[:19]], FE_OUR_SRC + [0])
+        self.assertIsNone(srcs[19])
+        self.assertEqual({(s[0], s[1], s[3]) for s in srcs[:19]}, {(r.handle(w1), 3, 0)}, "OSC1 Pitch, slot 0")
+        fe_post(r, srcs[5])
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in fe_routes(r, w1)], [(3, FE1, 0)])
+        row = rows.index((0xC4, r.handle(w2)))                          # slot 2's source on OSC2's Level row
+        e = fe_edit(r, view, row, S.KEY_MX_FIRST + 4, 6)
+        self.assertEqual(e[:4], (r.handle(w2), 0xC4, FE2, 2))
+        fe_post(r, e)
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in fe_routes(r, w2)], [(0xC4, FE2, 2)])
+
+    def test_an_amount_edit_keeps_them_here_and_drops_them_on_stock(self):
+        """With an FM Env routing in the model, an amount edit of its slot posts it back with its source here. On stock 1.6.8
+        (BE4.44 has the same validator) the validator has zeroed MX_EDIT's copy, so the post carries source 0, which
+        MX_SET_ROUTE takes as 'remove'. A LFO 1 routing (stock's list) is kept on both (control)."""
+        for img, keeps in ((IMG, True), (STOCK, False)):
+            r = Rig(img=img, wrap=img is IMG)
+            t, w1, w2 = r.wavetable()
+            view = fe_view(r, t)
+            fe_rows(r, view, img)
+            fe_set(r, r.handle(w1), 3, FE1, 0, 400)
+            fe_set(r, r.handle(w1), 3, 4, 1, 200)
+            e = fe_edit(r, view, 0, S.KEY_MX_FIRST + 1, 700)             # slot 0's amount
+            self.assertEqual(e, (r.handle(w1), 3, FE1 if keeps else 0, 0, 700, 2))
+            fe_post(r, e)
+            fe_post(r, fe_edit(r, view, 0, S.KEY_MX_FIRST + 3, -300))  # slot 1's amount (LFO 1)
+            want = [(3, FE1, 0, 700)] if keeps else []
+            self.assertEqual(fe_routes(r, w1), sorted(want + [(3, 4, 1, -300)]), "ours" if keeps else "stock")
+
+    def make(self, r):
+        """A Wavetable track: OSC1 Pitch <- FM Env 1 (slot 0, 400), OSC2 Position <- FM Env 2 (slot 1, -250), the first
+        filter's 0xCE <- FM Env 1 (slot 2, 1000), and OSC1 Position <- LFO 1 (slot 0, 300) as the control."""
+        t, w1, w2 = r.wavetable()
+        filt = [c for c in r.children(t) if r.vtype(c) == 10][0]
+        for o, key, src, slot, amt in ((w1, 3, FE1, 0, 400), (w2, 0xC9, FE2, 1, -250), (filt, 0xCE, FE1, 2, 1000),
+                                       (w1, 0xC9, 4, 0, 300)):
+            fe_set(r, r.handle(o), key, src, slot, amt)
+        return t
+
+    def routed(self, r, t):
+        c = r.children(t)
+        filt = [o for o in c if r.vtype(o) == 10][0]
+        return fe_routes(r, c[0]), fe_routes(r, c[1]), fe_routes(r, filt)
+
+    WANT = ([(3, FE1, 0, 400), (0xC9, 4, 0, 300)], [(0xC9, FE2, 1, -250)], [(0xCE, FE1, 2, 1000)])
+
+    def test_save_and_load(self):
+        """The save format is stock's: src="env3" / "lfo3" on the destination's element; this build reads it back."""
+        r = Rig(); t = self.make(r)
+        self.assertEqual(self.routed(r, t), self.WANT)
+        text = r.save()
+        ms = re.findall(r"<modsource[^>]*>", text)
+        self.assertEqual([sum(f'src="{s}"' in m for m in ms) for s in ("env3", "lfo3", "lfo1")], [2, 1, 1], ms)
+        self.assertNotIn("bento_", " ".join(ms), "no token of ours")
+        x = Rig(); st = x.load(text)
+        self.assertEqual(self.routed(x, x.wt_tracks(st)[0]), self.WANT)
+
+    def test_stock_168_and_be444_load_them_and_keep_them(self):
+        """Stock 1.6.8 (and BE4.44, the rollback) read env3 / lfo3 as ids 3 / 6 and keep them (their M7 gives a Wavetable voice
+        no source for either: S1's FmEnvSrc), and their next save writes them again: there the routing is lost only by an
+        edit of its slot (test_an_amount_edit_keeps_them_here_and_drops_them_on_stock) or a new source."""
+        r = Rig(); self.make(r); text = r.save()
+        imgs = [("stock 1.6.8", STOCK, None)]
+        if (REF444_S2 / "bento1.bin").exists():
+            imgs.append(("BE4.44", (REF444_S2 / "bento1.bin").read_bytes(), REF444_S2))
+        else:
+            print(f"  (no BE4.44 build at {REF444_S2}: stock 1.6.8 only)")
+        for what, img, ref in imgs:
+            sym = None
+            if ref is not None:
+                man = json.loads((ref / "manifest.json").read_text())
+                sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+            s = Rig(img=img, wrap=ref is not None, sym=sym)
+            st = s.load(text)
+            self.assertEqual(self.routed(s, s.wt_tracks(st)[0]), self.WANT, what)
+            again = s.save(st)
+            ms = re.findall(r"<modsource[^>]*>", again)
+            self.assertEqual([sum(f'src="{x}"' in m for m in ms) for x in ("env3", "lfo3")], [2, 1], what)
+            x = Rig(); self.assertEqual(self.routed(x, x.wt_tracks(x.load(again))[0]), self.WANT, f"{what}'s save, read here")
+
+    def test_an_instrument_replace_drops_them(self):
+        """Risk 4: a track whose type changes (stock's instrument replace, the menu's kinds) is a new object with new children,
+        so no routing (and no FM Env one) carries over into a type whose M7 has a real Env 3 / LFO 3; a replace by a
+        Wavetable track again (kind 6) gives a clean matrix too."""
+        for kind in (1, 6):
+            r = Rig(); t = self.make(r)
+            def ret0(uc, a, sz, _): uc.reg_write(UC_ARM_REG_R0, 0); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+            for a in INST_REPLACE_STUBS:
+                r.u.hook_add(UC_HOOK_CODE, ret0, begin=a, end=a)
+            r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+            pos, h = r.prop(t, KEY_POSITION), r.handle(t)
+            self.assertEqual(len(self.routed(r, t)[0]), 2, "routed (control)")
+            r.call(INST_REPLACE, S.MODEL, kind, pos, count=200_000_000)
+            now = [o for o in r.tracks(r.live) if r.prop(o, KEY_POSITION) == pos]
+            self.assertEqual(len(now), 1, f"kind {kind}: one track at the position")
+            self.assertNotEqual(r.handle(now[0]), h, "a new object (the pool may reuse the memory)")
+            self.assertEqual(r.vtype(now[0]), {1: 0x13, 6: S.TYPE_WAVETABLE}[kind])
+            self.assertGreater(len(r.children(now[0])), 8, "with its new children")
+            left = [n for o in [now[0]] + r.children(now[0]) for n in fe_routes(r, o)]
+            self.assertEqual(left, [], f"kind {kind} (type {r.vtype(now[0]):#x}): no routing")
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

@@ -72,6 +72,7 @@ STOCK_161 = dict(
     SLOT_STEP=None, SLOT_STEP_LAST=None, SLOT_CUR=None, SYNTH_VIEW_SHOWN=None, SYNTH_SHOWN_ROW=None,
     VOICE_DESC=None, VOICE_CURSOR=None, VOICE_RATIO=None, VOICE_PITCH_PARAM=None, VOICE_LFO1=None,   # S6c drums: 1.6.8 only
     ROOT_FINE=None, ROOT_LOOP=None, ROOT_VOICES=None, ROOT_VOICE_N=None, VOICE_SERIAL=None, VOICE_FORWARD=None, BUF_CAPACITY=None,
+    MXV_TYPE=None, MXV_SRC_LIST=None, MXV_SRC_N=None,   # BE4.46 S2 (the Mod Matrix view's source list): 1.6.8 only
     INST_CELL=None, INST_FILE=None, INST_TRACK_TYPE=None, INST_KEYS=None, INST_NATIVE_KEYS=None, INST_ROW_STRIDE=None,   # S6c-2: 1.6.8 only
     INST_TITLE=None, NODE_CHILDREN=None, NODE_CHILD_N=None, STORE_COUNT=None, KEY_DR_FIRST=None, KEY_FILENAME=None, KEY_POLY_MODE=None,
     ACT_WAVETABLE=0x102A,          # menu table 0x081981F8 cell 5 {0x102A, 'Wavetable'}
@@ -258,6 +259,10 @@ STOCK_168 = {**dict.fromkeys(STOCK_161, None), **dict(
     SLOT_STEP_LAST=0x98,          # ENC_TURN: ldr [r4,#0x8c] vs [r4,#0x98], equal -> no post (0x08173FE0..EA)
     SLOT_CUR=0xA0,                # ENC_TURN: the entry's value vs ldr [r4,#0xa0], equal -> no post (0x08173FF4..FA)
     SYNTH_VIEW_SHOWN=0x2434, SYNTH_SHOWN_ROW=0x11D88,   # SYNTH_ROW_BIND: ldr.w [view+0x2434]; ldrb [+0x11c00+0x188] (0x08160A50..5E)
+    # BE4.46 S2 (docs/feasibility-fm-env-sources.md): the Mod Matrix view's page type and source list (be446 s2, by hand)
+    MXV_TYPE=0x8AC4C,             # MX_BUILD: strb.w r0,[r6,#0xc4c] (r6 = view + 0x8a000) after the context's type (0x0814E8D0)
+    MXV_SRC_LIST=0x8ACC8,         # MX_BUILD's Wavetable case: str.w r2,[r3,#0xcc8] (0x0814ECFC); MX_EDIT ldr.w [r3,#0xcc8] (0x0814DC56)
+    MXV_SRC_N=0x8AC4E,            # the same case: strb.w r2,[r3,#0xc4e] (0x0814ED02); MX_EDIT ldrb.w [r2,#0xc4e] (0x0814DC30)
 )}
 
 EXPECTED = {"stock_161": STOCK_161, "stock_168": STOCK_168}

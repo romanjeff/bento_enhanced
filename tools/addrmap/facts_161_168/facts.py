@@ -862,6 +862,20 @@ REVIEWED = {
                           "[voice + 0x178] == voice + 0x7A4 on a Wavetable voice; the class-0x5A root's is + 0x7A8 (S). BE4.46 S1 fix"),
     'ROOT_5A_CTOR': dict(value=0x809c9a0, evidence="class 0x5A root ctor (vtable 0x080ACF08, 6 voices of 0xFE8 B, OSC1 at + 0x7A8); "
                          "shares WT_ROUTE through vtable slot 2 0x0807F2A1 (S). Tests only (BE4.46 S1 fix)"),
+    # BE4.46 S2 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 in the Wavetable Mod Matrix source list (stock_168.py's
+    # notes carry the full evidence; added by hand, as S1's)
+    'MX_WT_SRC_LIST': dict(value=0x81a1304, orig='00000d00200001000200040005000800', evidence="16 u16: 0, 13, 32, 1, 2, 4, 5, 8, 14, 26, "
+                           "30, 31, 9, 10, 11, 12; held only by MX_WT_SRC_LIT and MX_SRC_VALID_LIT (S: be446 s2 lists.py, scan.py)"),
+    'MX_WT_SRC_LIT': dict(value=0x814edf8, orig='04131a08', evidence="ldr r2 at 0x0814ECFA (Wavetable) and 0x0814ECB8 (Granular) (S)"),
+    'MX_SRC_VALID_LIT': dict(value=0x814dbf0, orig='04131a08', evidence="ldr r0, [pc, #0x10] at 0x0814DBDC, types 0x0F / 0x12 / 0x13 (S)"),
+    'MX_WT_ROWS_SITE': dict(value=0x814ed08, orig='fef7b2fe', evidence="bl 0x0814DA70 in MX_BUILD's type-0x12 case (tbh 0x0814E94A) (S)"),
+    'MX_WT_ROWS_FILL': dict(value=0x814da70, orig='2de9f047', evidence="the Wavetable row filler; never reads +0x8ACC8 / +0x8AC4E (S)"),
+    'MX_SRC_VALID': dict(value=0x814db94, orig='8c468988', evidence="(view, routing copy): unlisted source -> 0; callers 0x0814DD3C, "
+                         "0x0814E2A0, 0x0814E696 (S)"),
+    'MX_SRC_NAME': dict(value=0x814d8f0, orig='00b58646', evidence="(view, id) -> the registry's name; callers 0x0814E53C, 0x0814E6AC (S)"),
+    'MXV_TYPE': dict(value=0x8ac4c, evidence="strb.w r0, [r6, #0xc4c] at 0x0814E8D0 (S)"),
+    'MXV_SRC_LIST': dict(value=0x8acc8, evidence="str.w r2, [r3, #0xcc8] at 0x0814ECFC; read 0x0814DC56 / 0x0814E2B2 (S)"),
+    'MXV_SRC_N': dict(value=0x8ac4e, evidence="strb.w r2, [r3, #0xc4e] at 0x0814ED02; read 0x0814DC30 / 0x0814E266 (S)"),
     'ENGINE_CTOR': dict(value=0x805b300, evidence="(engine r0): the M7 engine's constructor, called once at 0x0808E752 on a 0x15C20-byte "
                         "allocation; ends with memset(engine+0x8CB2, 0, 0x1F2) and the key flags 0x05 / 0x27 / 0x31 = 1 (strb at "
                         "0x0805B634..3C), the table H_INPUT_SITE's 0x3E case tests at 0x08059A40 (S; M: test_analog Props runs its "
