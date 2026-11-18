@@ -465,11 +465,15 @@ low-severity issues; all accepted after checking:
    widget rows; the two calls are the ones it makes (issue 1), so this tests the same composition.
 
 Rebuilt into ~/bento/out/be446-s2f-rel (release, sha256 ae671b35...c985, the same image as be446-s2-rel: the change is
-the build guard and the tests) and the tagged ~/bento/out/be446-s2f (BE_TAG=s2f). Suites, sizes and CPU: see the next
-paragraph. Sizes are S2's (DSP 31,084 B, 9,620 B free; synth UI 16,054 B; image 0x189520). CPU is unchanged from S2 as
+the build guard and the tests) and the tagged ~/bento/out/be446-s2f (BE_TAG=s2f). Suites on be446-s2f-rel, from the worktree's mods/m1 (M, skips in brackets), all OK: diag 92 (6), polyat 51 (2),
+conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20), notemod 16, notemod_route 8,
+notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10, native_props 30, analog 219, inst_xml 5 (5), synth_ui 64 (2),
+handles 16 (16), note0 32, p3_golden 52; drums / drum_ui not run (drums omitted). Sizes are S2's (DSP 31,084 B, 9,620 B free; synth UI 16,054 B; image 0x189520). CPU is unchanged from S2 as
 built (no M7, DSP or M4 byte changed): P3Identity worst 1.0170, heaviest routed steady voice 34,826 vs the 35,309
 ceiling; no ceiling raised.
 
 **Kit.** flash\bento_enhanced-v4.46-envsrc (git-ignored, never committed), packaged with package_m1.sh from
 be446-s2f-rel, plus DEVICE_CHECKLIST.txt (= docs/checklist-v4.46.txt) and SHA256SUMS.txt regenerated over all files.
-It replaces the earlier flash\bento_enhanced-v4.46 kit (same image; that folder had the old checklist).
+It replaces the earlier flash\bento_enhanced-v4.46 kit (same image; that folder had the old checklist). bento1.bin
+sha256 ae671b35a3cc183542568c8d3f20509786372f492738902e5000ebe19d5ec985; DEVICE_CHECKLIST.txt b8a8ff3c...ba0a;
+SHA256SUMS.txt verified (sha256sum -c).
