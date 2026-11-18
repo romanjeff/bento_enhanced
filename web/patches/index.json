@@ -1,0 +1,33 @@
+{
+ "format": "bento_enhanced-webpatch",
+ "format_version": 1,
+ "base": "1.6.8",
+ "stock_sha256": {
+  "bento1.bin": "cb8f830ec3ab45a92d120ae9688e380573b24ad88710a3ad3d21af6ffb3c8d0d",
+  "bento2.bin": "8100906327093463fb58f531ee28583423a9881ea3a7d5b77874a7700735e99d"
+ },
+ "known_sha256": {
+  "14475e9d5068f5659d0fe0b00fc1278c1479c43ed9fda3d40654d5f3a7a6bbb3": "stock 1.6.1 bento1.bin",
+  "8100906327093463fb58f531ee28583423a9881ea3a7d5b77874a7700735e99d": "stock 1.6.1 / 1.6.8 bento2.bin",
+  "cb8f830ec3ab45a92d120ae9688e380573b24ad88710a3ad3d21af6ffb3c8d0d": "stock 1.6.8 bento1.bin",
+  "fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff": "bento_enhanced v4.44 bento1.bin (already modded: use your stock 1.6.8 file)",
+  "d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5": "bento_enhanced v4.46 bento1.bin (already modded: use your stock 1.6.8 file)"
+ },
+ "default": "4.46",
+ "releases": [
+  {
+   "version": "4.46",
+   "label": "BE4.46 (bento_enhanced v4.46 on stock 1.6.8)",
+   "file": "v4.46.json",
+   "output_sha256": "d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5",
+   "device_tested": true
+  },
+  {
+   "version": "4.44",
+   "label": "BE4.44 (bento_enhanced v4.44 on stock 1.6.8)",
+   "file": "v4.44.json",
+   "output_sha256": "fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff",
+   "device_tested": true
+  }
+ ]
+}
