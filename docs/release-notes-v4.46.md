@@ -1,71 +1,111 @@
-# bento_enhanced v4.46 (stock 1.6.8): FM Env 1 / FM Env 2 as Mod Matrix sources
+# bento_enhanced v4.46 (stock 1.6.8): FM amounts in the Mod Matrix, FM Env 1 / 2 as sources
 
-BE4.46 lets each oscillator's FM envelope modulate anything in a Wavetable track's Mod Matrix. It builds on BE4.44 (FM on
-Wavetable oscillators). Plan and measurements: `docs/feasibility-fm-env-sources.md` (the decisions and "S1 / S2 as
-built"). Device checklist: `docs/checklist-v4.46.txt`.
+BE4.46 lets the Mod Matrix move the FM amounts, gives the piano roll lanes on them, and adds each oscillator's FM envelope
+as a modulation source. It builds on BE4.44 (FM on Wavetable and Analog oscillators) and combines two lanes that were
+built and checked apart:
 
-(BE4.45 is the label of a parallel lane, FM amounts as Mod Matrix destinations. It is not in this image; the two will be
-merged later.)
+- **FM amounts as destinations, and lanes on them** (built as BE4.45; its kit was never released). Plan and
+  measurements: `docs/plan-fm-targets.md` (X1, X2, X3 and their reviews).
+- **FM Env 1 / FM Env 2 as sources** (built as a separate 4.46 kit, `-envsrc`). Plan and measurements:
+  `docs/feasibility-fm-env-sources.md` (S1, S2 and their reviews).
+
+Device checklist: `docs/checklist-v4.46.txt`. Everything below was measured in the emulator; nothing in this release has
+been run on a device yet.
 
 ## What it does
 
-- **Two more sources on a Wavetable track's Mod Matrix page, right after Envelope 2:**
-  - **FM Env 1**: OSC1's FM envelope (its FM Atk / FM Dec);
-  - **FM Env 2**: OSC2's.
+### FM amounts as Mod Matrix destinations
 
-  The page's Source list is now: [None], Velocity, Pressure, Envelope 1, Envelope 2, **FM Env 1, FM Env 2**, LFO 1,
-  LFO 2, Mod Seq, Key, Mod Wheel, Macro X, Macro Y, Auto A..D.
-- **Per voice, one-shot, restarted at every note**, like two extra envelopes. Each voice of a chord has its own.
-- **Analog and Wavetable oscillators alike** (BE4.44 gave Wavetable oscillators their FM envelope).
-- **It runs without any FM.** The envelope runs whenever FM Atk / FM Dec is set, at any FM amount, so with Sub FM and
-  FM 1>2 at 0 it is simply a third / fourth envelope.
-- **The value is the FM envelope's own** (0..1, the same curve and times as the FM depth). It is the value at the start
-  of each audio block, which is also where the FM depth's ramp starts.
-- **An unset envelope** (FM Atk 0 and FM Dec Inf) gives a constant 1, as the FM depth does: a routing from it is a fixed
-  offset.
+- **Three new rows** on a Wavetable track's Mod Matrix page:
+  - **OSC1: Sub FM**, after OSC1: Position;
+  - **OSC2: FM 1>2** and **OSC2: Sub FM**, after OSC2: Position.
 
-Nothing else changes. Granular and the other track types keep stock's source list.
+  They work on Analog and on Wavetable oscillators, from any source of the list.
+- **A routing moves the knob's travel.** The depth played is `knob + amount x source`, in knob units, held to 0..100 %,
+  then the usual depth curve. Several routings on one row add up. With the knob at 0, a routing alone turns FM on.
+- **OSC2: Sub FM plays only routed.** It has had no knob since BE4.43. Routed, the sub modulates OSC2 next to FM 1>2.
+- **The FM envelope still applies.** FM Atk / FM Dec shape the routed depth as they shape the knob's.
+- **Smooth.** The depth follows its source once per audio block (2.7 ms) and ramps across each block. An LFO above
+  about 100 Hz on a depth aliases; the audio-rate FM sources are for that.
+- **The oscillator rows read "OSC1: ..." / "OSC2: ...".** Stock and BE4.44 showed "WT1: ..." / "WT2: ..." on this page.
+- **Piano-roll lanes.** The lanes' destination list offers OSC1: Sub FM, OSC2: FM 1>2 and OSC2: Sub FM, each on its own
+  oscillator. A lane is saved and played as a routing from seq1..seq4, like any lane.
+- **Black box:** the ANALOG line in BENTO_SAVES.log has `x2lost=`, the FM routings the M7 could not keep (more routed
+  Wavetable roots than it has room for: 8). It should read 0.
 
-## Projects
+### FM Env 1 / FM Env 2 as sources
 
-- A routing from FM Env is a stock routing: `src="env3"` (FM Env 1) or `src="lfo3"` (FM Env 2). These are stock's
-  Envelope 3 / LFO 3 ids, which a Wavetable voice does not have on stock. No new project keys.
-- **Stock 1.6.8 and BE4.44** (the rollbacks) open such a project and keep the routing, but play nothing from it: their
-  Wavetable voice has no source for those ids. Their Mod Matrix page shows the slot as [None] (a row stock refreshes on its own may show
-  "Envelope 3" / "LFO 3" instead; either is expected). Saving there keeps it.
-  **Editing that slot there removes it**: stock's page sends the slot back with source None on an amount edit (and a new
-  source replaces it). Back on BE4.46, an untouched routing works again.
+- **Two more sources, right after Envelope 2:** FM Env 1 (OSC1's FM envelope, its FM Atk / FM Dec) and FM Env 2 (OSC2's).
+  The Source list is now: [None], Velocity, Pressure, Envelope 1, Envelope 2, **FM Env 1, FM Env 2**, LFO 1, LFO 2,
+  Mod Seq, Key, Mod Wheel, Macro X, Macro Y, Auto A..D.
+- **Per voice, one-shot, restarted at every note**, like two extra envelopes, on Analog and Wavetable oscillators.
+- **It runs without any FM.** The envelope runs whenever FM Atk / FM Dec is set, at any FM amount.
+- **The value is the FM envelope's own** (0..1), at the start of each audio block. An unset envelope (FM Atk 0, FM Dec
+  Inf) gives a constant 1, as the FM depth does.
+- Granular and the other track types keep stock's source list.
+
+### The two together
+
+- **FM Env 1 / 2 routed to an FM row** move that FM amount with the FM envelope's value of the same block: offline, bit
+  for bit the knob turned to `knob + amount x FM Env` every block. The FM envelope then acts twice (it moves the depth
+  and still shapes it).
+
+With nothing routed to the new rows and no FM Env routing, every track sounds exactly as on BE4.44 (offline: output and
+voice state byte for byte).
+
+## Projects and compatibility
+
+- **Projects that use the mod's features are not supported on stock firmware: they usually open, but may not play
+  correctly.** In detail:
+- An FM-row routing is saved as stock saves any routing, with the destination `bento_subfm` / `bento_fm12`.
+  - BE4.44 loads it and keeps it (it does nothing there).
+  - Stock 1.6.8 loads it as a routing to nothing (inert) and **drops it when it saves**: a project saved on stock comes
+    back to BE4.46 without it.
+- An FM Env routing is a stock routing: `src="env3"` (FM Env 1) or `src="lfo3"` (FM Env 2), stock's Envelope 3 / LFO 3
+  ids, which a Wavetable voice does not have on stock.
+  - Stock 1.6.8 and BE4.44 open it and keep it, but play nothing from it. Their page shows the slot as [None] (or
+    "Envelope 3" / "LFO 3" after a one-row refresh). Saving there keeps it.
+  - **Editing that slot there removes it** (stock's page sends it back with source None on an amount edit). Back on
+    BE4.46, an untouched routing works again.
 - BE4.46 opens every BE4.44 project unchanged.
 - Changing a track's instrument type starts a new matrix (stock's instrument replace makes a new track), so an FM Env
   routing never turns into a real Envelope 3 / LFO 3 routing of another engine.
 
-## Timing
-
-- The value moves once per audio block (2.7 ms), as stock's envelopes do; a Pitch routing steps at that rate too.
-- Routed to an Envelope or LFO parameter, it acts one block late: those tick before the oscillators in stock's order.
-  Stock has the same lag between its own sources there.
-
-## CPU and size
-
-Offline instruction counts per voice and audio block (an_enter and both oscillator renders). The device's figure is the
-"DSP nn%" on OSC1's title.
-
-| Voice | No FM Env routing | With FM Env routed |
-|---|---|---|
-| Stock Wavetable voice | 14,160 (BE4.44 14,155) | 14,209 |
-| Analog full FM, FM Atk 3 / Dec 8 | 28,115 | 28,168 |
-| Full Wavetable voice, FM Atk 3 | 27,266 | 27,339 |
-| BE4.44's heaviest steady voice (note 24, light FM, Position every block) | 34,765 (BE4.44 34,760) | 34,826 (heaviest block 39,458) |
-
-- Without a routing on FM Env the cost is +5 a voice-block (one load and a branch); the first routing on a voice switches
-  its publish on for that voice. The heaviest steady routed voice is 483 under the existing ceiling (35,309).
-- The page's work (list, names, the validator) runs only when the Mod Matrix page builds or edits its rows.
-- Sizes: DSP 31,084 B (9,620 B free of the window); synth UI 16,054 B (+208); the image 0x189520, 15,892 B under the
-  size proven on the device.
-
 ## Known limits
 
-- The source list order and names are BE's on the Mod Matrix page; any other screen that shows a source name through
-  another path was not found offline (checklist section 2 asks).
-- FM amounts are not Mod Matrix destinations in this release (the BE4.45 lane).
-- On stock and BE4.44 an FM Env routing is kept but silent, and editing its slot removes it (above).
+- **CPU, OSC2: Sub FM routed** adds a whole second FM term to OSC2. On the heaviest voice (both oscillators Wavetable, full
+  FM, Position moving every block) that is about 37.3k instructions a voice-block (37.35k from FM Env), about 5.6 % over
+  BE4.44's heaviest voice (35.3k). The other two rows stay within it. A lane on OSC2: Sub FM costs the same. Not yet
+  ruled on (plan-fm-targets X2 open 5 / X3 open 1); checklist section 8 measures it on the device.
+- seq1..seq4 routed to the same FM row share one slot, as on every stock destination: the last one wins. Removing one of
+  two such routings silences the other until the project is reloaded (stock's rule too).
+- A lane whose routing is edited on the Mod Matrix page to another source keeps playing next to it, even after that
+  routing is removed, until the project is reloaded. Stock does the same on its own destinations.
+- A Wavetable OSC2's Sub FM routing starts from 0 even if an old project stored a value for it.
+- The FM-row routings are kept in the M7's own memory, set up when it starts. A project loaded before that point would
+  play them as unrouted until it is loaded again (not seen offline; the checklist has a cold-boot check).
+- FM Env routed to an Envelope or LFO parameter acts one block late (stock has the same lag between its own sources).
+- Source names: offline, only the Mod Matrix page's own name call was found; any other screen that names a source through
+  another path may show "Envelope 3" / "LFO 3" (checklist section 2 asks).
+
+## Measured (emulator)
+
+- Nothing routed: BE4.44's output, voice state and FM stats byte for byte (X2Identity, 8 cases, all type pairs);
+  P3Identity (against BE4.40, 48 cases) worst 1.0179 (BE4.45: 1.0177), under its 1.95 % stop line.
+- FM rows: routed = the knob turned to the same depth, bit for bit, including the clamps, several routings summed, root
+  sources, mixed sync, several voices each with its own source, the ramp out on removal, and lanes.
+- FM Env: the published value is the FM envelope's own e0 (against the reference model, block by block), and routed to
+  an FM row the depth of each block is that block's value.
+- CPU, instructions per voice-block (an_enter and both oscillator renders), steady median:
+
+| Voice | Instructions |
+|---|---|
+| Heaviest existing voice, knobs (Wavetable both, Sub FM / FM 1>2 1000, Position every block, note 24) | 34,892 |
+| the same depths routed from velocity / two lanes | 35,151 |
+| from FM Env 1 / 2 (envelopes unset: the same sound) | 35,212 |
+| from FM Env 1 / 2, both FM envelopes running (FM Atk 3, Dec Inf) | 35,282 (one level-change block 44,555) |
+| + OSC2: Sub FM routed | 37,352 |
+
+  The ceiling is 35,309 (BE4.44's heaviest voice). Without any FM Env routing the cost is BE4.45's + 2..3 a voice-block.
+- Sizes: DSP code 33,068 B, 7,572 B free of its window; synth UI 16,970 B; image 0x1898B4, 14,976 B under the size proven
+  on the device. The DSP trampoline block grew from 0x100 to 0x140 B (the two lanes' trampolines need 0x102 B).

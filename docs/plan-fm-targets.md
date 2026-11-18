@@ -990,3 +990,96 @@ stock is the control. Mutant ALLCHILD now fails it.
 15. **be445 S1's source listing** (scratch out_ids.txt, used by the FM Env sources feasibility) has ids 9..12 at
     voice + 0x79C. It read OSC1 Pitch's slot 1, which still held id 8's pointer: ids 9..12 go to slot 4, from the root
     (above). Only id 8 is voice + 0x79C.
+
+## BE4.46 merge (branch be446): X1..X3 + FM Env sources (S1 / S2) + BE4.44's build tools
+
+Branch be446 from be445x (7d72495), merging be445 (2d7e263: S1 / S2, `docs/feasibility-fm-env-sources.md`) and be444
+(543edc6 = v4.44: tools/make_kit.py, requirements, BUILDING.md, release_hashes.json). Label BE4.46, BASE_SETTINGS 4.46.
+
+### Conflicts and resolutions
+
+- **build.py BASE_SETTINGS:** version 4.46 (be445's). **GROUP_NAMES (analog):** both lanes' entries, in one tuple.
+- **m7_dsp's trampolines:** the four of BE4.40..44, then S1's two FM Env connect bodies (right after the note
+  trampoline, where S1 put them: 0x080D0060 / 0x080D0090), then X2's slot 9 / 10 (0x080D00C0 / 0x080D00D0). They need
+  0x102 B, 2 over the 0x100 block (M: the build refused). **DSP_TRAMP_BYTES is now 0x140**: the DSP ELF starts 0x40 B
+  later, and a drums image (D1, 0x1E B) still fits (0x110..0x12E). The alternative, packing the new trampolines at 4-B
+  alignment, fits 0x100 with 6 B to spare but leaves no room for D1 (drums are next on the roadmap), so it was not taken.
+- **build.py tables:** X1's mx_dest_table / mx_dest_patches / pr_dest_patch and S2's fmenv_matrix side by side.
+- **test_analog / test_native_props:** both lanes append classes at the same place; both kept, X's first.
+- **Not a text conflict, a duplicate:** both lanes added `WT_ROUTE` (the same address) to stock_168 / stock_161 / facts.py
+  and CHECKS. One entry, both lanes' reviewed evidence. S2's `MX_WT_ROWS_FILL` is X1's `MX_WT_ROWS`: folded (S2's
+  merge note), its S2 evidence appended to MX_WT_ROWS. CHECKS agree (fingerprints.py --check, both tables).
+- **The row filler 0x0814DA70:** no byte is shared (S2 as built, item 2): X1 patches its bounds (#0x1A, #0x270) and
+  literal; S2 patches MX_BUILD's bl of it (0x0814ED08 -> mx_wt_rows, which sets the 18-entry source list and calls the
+  filler). M: test_native_props FmEnvMatrix's page test runs the merged image's own filler (26 destination rows, 18
+  sources with FM Env 1 / 2 after Env 2); FmTargets' row tests check the 26 rows.
+- **an_enter order:** fm_env_publish (S1) comes before x2_enter (X2 open 3), as the auto-merge left it. Pinned by
+  FmEnvToFmDepth (mutant ORDER: every routed case fails).
+- **X2's source bound and FM Env's pseudo-sources.** WT_ROUTE gives slot 10 r1 = voice + 0xB84 (id 3) / + 0xB88 (id 6)
+  on a Wavetable voice; x2_connect keeps a source whose float (src + 4) lies in the voice's 0xBA0 bytes
+  (offset 1..0xB97). Voice + 0xB84 / 0xB88 are inside. 0xBA0 is S: WT_ROOT_CTOR `movw r2, #0xb88; movs r1, #2;
+  bl 0x080A05C0` (0x0809CB40) and the pool's `lsls r2, r2, #0x1b; ...; bic r2, r5, #0x1f; adds r2, #0x20`
+  (0x080A05E6..F4): 0xB88 -> 0xBA0. No change to the bound was needed; dsp/analog.cpp now static_asserts
+  X2_VOICE_BYTES == FMENV_SLACK_END and both pseudo-sources inside the bound. X2 writes nothing in the voice (it reads
+  src + 4 only), so it does not use voice + 0xB84..0xB90. Mutant BOUND (bound below 0xB84) fails FmEnvToFmDepth.
+- **test_cost bounds:** FmEnvSrc.test_cost's no-route bounds were BE4.44 + 8. On the merged base an_enter also carries
+  X2's xm store and x2n test (+8 over BE4.44), so the reference is now BE4.45 (be445x3r) re-measured with the same
+  harness (scratch b446/en.py; it reproduces the BE4.44 figures exactly on be444w4f): an_enter 67 / 164.62 / 107.56 /
+  107.56, medians 14,163 / 28,133 / 27,307 / 34,806. Merged: 70 / 166.62 / 110.56 / 110.56, 14,166 / 28,135 / 27,310 /
+  34,809 (BE4.45 + 2..3; TOL 8 kept). No other bound moved: every X2 / X3 / W4 gate passes as it was.
+- **tools/make_kit.py:** its `--test` suite list now includes test_native_props (it was missing).
+- **The first merge commit (8003d9b) does not build** (the duplicate WT_ROUTE); 031edf1 is the first that does.
+
+### Tests added (test_analog FmEnvToFmDepth, 3)
+
+- `test_fm_env_moves_each_fm_depth_per_block`: FM Env 1 on OSC1 Sub FM / OSC2 FM 1>2 / OSC2 Sub FM and FM Env 2 on the two
+  OSC2 depths, Analog and Wavetable, FM envelopes on both oscillators: the store holds voice + FE_SRC (+ 4) in slot 0 with
+  the amount; x2_lost 0; the published value after block b is p3_golden fm_env's f32 e0[b]; the depth after block b is
+  x2_law(base, 600 x e0[b]) and moves; for OSC1 Sub FM / OSC2 FM 1>2 the output is the knob turned to v, bit for bit.
+- `test_removal_ramps_out_and_keeps_fm_env_published`: source 0 at block 6 empties the store, the depth returns to the
+  knob, FE_ON stays (sticky), FM Env keeps publishing.
+- `test_cost_heaviest_voice_fm_env_routes` (below).
+- Nothing routed: X2Identity (BE4.44 byte for byte, 8 cases) and P3Identity run unchanged and pass.
+- Mutants (scratch b446/mut.sh, a build each from a copy): ORDER (fm_env_publish after x2_enter) fails 10 subtests and
+  the cost test; BOUND (x2_connect's voice bound 0xB80) fails all 10 and the cost test.
+
+### CPU (M, ~/bento/out/be446a, instructions per voice-block, steady median / max)
+
+| Heaviest voice (Wavetable both, Position every block) | note 24 | note 36 | gate |
+|---|---|---|---|
+| knobs | 34,892 / 34,894 | 34,882 / 34,884 | |
+| 2 routes from velocity (X2) | 35,151 / 35,153 | 35,141 / 35,143 | 35,309 |
+| 8 slots, 7 roots ahead (X2's worst two-key case) | 35,261 / 35,263 | 35,251 / 35,253 | 35,309 |
+| 2 lanes, 7 laned roots ahead (X3) | 35,193 / 35,195 | 35,183 / 35,185 | 35,309 |
+| FM Env 1 / 2 on the two depths (envelopes unset: the knobs' sound) | 35,212 / 35,214 | 35,202 / 35,204 | 35,309 |
+| that, both FM envelopes running (Atk 3, Dec Inf) | 35,282 / 44,555 | 35,272 / 44,555 | 35,309 but one block; 46,000 |
+| + OSC2 Sub FM routed (velocity / lane / FM Env 2) | 37,291 / 37,291 / 37,352 | 37,291 / 37,291 / 37,352 | 37,700 |
+
+- Each X2 / X3 row is BE4.45's figure + 3 (S1's FMENV_ON load and branch in an_enter). FM Env as the source adds the
+  publish (+61 over velocity). The worst two-key case is 48 under the ceiling.
+- Nothing routed: X2Identity worst 1.00224 (BE4.45: 1.00209); P3Identity worst **1.0179** (111,868 / 109,899; BE4.45
+  1.0177), total 1.0099, under the 1.95 % stop line; WtFmW4's heaviest steady voice 34,809 (BE4.45 34,806).
+- X2 open 5 (OSC2 Sub FM routed, 5.6 % over) is unchanged and still Jeff's; FM Env 2 as its source costs 61 more.
+
+### Sizes (M)
+
+- DSP 33,068 B, **7,572 B free** of 40,640 (the window now starts 0x40 later: 0x080D0140..0x080DA000). BE4.45 32,868 +
+  S1's 200.
+- Trampolines 0x102 of 0x140.
+- Synth UI block 16,970 B (BE4.45 16,766 + S2's functions, list and strings); M4 code 24,424 B, M7 C slice 15,368 B.
+- Image 0x1898B4: **14,976 B to PROVEN_MAX** (0x18D334).
+- The 1.6.1 build (BE3.72, 0x182500) and a BE_DISABLE=analog bisect (0x187514) still build.
+
+### Suites (M, ~/bento/out/be446a from the worktree's mods/m1; skips in brackets). All OK:
+
+- diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20);
+- notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10;
+- **native_props 45** (X3 37 + FmEnvMatrix 8), **analog 252** (X3 240 + FmEnvSrc 9 + FmEnvToFmDepth 3), inst_xml 5 (5),
+  synth_ui 64 (2), handles 16 (16), note0 32;
+- p3_golden 52. Drums / drum_ui: not run (the default build leaves drums out: not ported to 1.6.8).
+
+### Open (for Jeff)
+
+1. X2 open 5 / X3 open 1 (release blocker): OSC2 Sub FM routed on the heaviest voice, 37.3k (37.35k from FM Env 2).
+2. The X2 / X3 / S1 / S2 open items stand as written; the merge adds none of its own beyond the device checks in
+   checklist-v4.46.txt (other screens' source names, track copy, type change, OSC2 Sub FM at 8 voices, cold boot).

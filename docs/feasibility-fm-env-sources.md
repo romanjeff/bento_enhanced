@@ -477,3 +477,9 @@ be446-s2f-rel, plus DEVICE_CHECKLIST.txt (= docs/checklist-v4.46.txt) and SHA256
 It replaces the earlier flash\bento_enhanced-v4.46 kit (same image; that folder had the old checklist). bento1.bin
 sha256 ae671b35a3cc183542568c8d3f20509786372f492738902e5000ebe19d5ec985; DEVICE_CHECKLIST.txt b8a8ff3c...ba0a;
 SHA256SUMS.txt verified (sha256sum -c).
+
+## Merged into BE4.46 (branch be446)
+
+Merged with the destinations lane (be445x, X1..X3). Conflicts, resolutions, the re-measured test_cost bounds, CPU,
+sizes and suites: `docs/plan-fm-targets.md`, "BE4.46 merge". The kit `flash\bento_enhanced-v4.46-envsrc` is superseded
+by `flash\bento_enhanced-v4.46` (the combined image).
