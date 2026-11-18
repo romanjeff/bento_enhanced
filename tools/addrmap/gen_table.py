@@ -236,6 +236,9 @@ class Gen:
                 n, st, why = self.map_ram(s.value)
                 self.emit(name, s, n, st, why)
             elif k == "key":
+                if s.value is None:     # a key the old base doesn't have (ours, 1.6.8 only) and no fact gives: say so, don't crash
+                    self.emit(name, s, None, "unmatched", "no value in the old base and no fact (add one to facts.py)")
+                    continue
                 ns = self.keys.get(s.value)
                 rule = next((d for lo, hi, d in getattr(F, "KEY_RANGES", ()) if lo <= s.value <= hi), None)
                 if not ns and rule is not None:

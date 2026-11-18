@@ -814,9 +814,22 @@ REVIEWED = {
     'KEY_OSC_SUBFM': dict(value=0x18b, evidence="P3 Q1: Track FX's 0x18B (S6c-2 keyscan): empty after stock's builder, no movw / mov.w / "
                           "cmp.w immediate in either core, below claim()'s 0x1C1, not a MODEL_CHILD_EDIT special case, one below the M7 "
                           "range 0x18C..0x1B6 (test_keys since BE4.40 as FM_NEXT, since P3 in ALLOW['analog'])"),
-    'KEY_OSC_BITS': dict(value=0x1a4, evidence="P3 Q1: the third drum allow-list key S6c-2 left unclaimed (with 0x1A7 / 0x1AB): as "
-                         "KEY_OSC_SHAPE, its one range test M7 0x08059990 (0x18C..0x1B6) stores only for the object 0xFFFFFFF1 (the "
-                         "reverb) (test_keys)"),
+    # BE4.43 (e56f373): BE4.41's KEY_OSC_BITS (0x1A4) became FM Atk, and FM Dec took 0x1A0; the rename never reached this file,
+    # so gen_table.py met a 1.6.8-only key with no fact (the KEY_RANGES TypeError). Evidence and notes as stock_168.py's.
+    'KEY_OSC_FMATK': dict(value=0x1a4, note="Analog FM Atk 0..127 (BE4.43, per oscillator: the FM envelope's attack), our native key "
+                          "(1.6.8 only)",
+                          evidence="P3 Q1 (Bit Depth's in BE4.41; empty and unclaimed in BE4.42): the third drum allow-list key S6c-2 "
+                          "left unclaimed (with 0x1A7 / 0x1AB): as KEY_OSC_SHAPE, its one range test M7 0x08059990 (0x18C..0x1B6) stores "
+                          "only for the object 0xFFFFFFF1 (the reverb) (test_keys). BE4.43: a new XML token (bento_fmatk), so a BE4.41 "
+                          "file's bento_bits does not reach it (test_native_props)"),
+    'KEY_OSC_FMDEC': dict(value=0x1a0, note="Analog FM Dec 0..128, 128 = Inf (BE4.43, per oscillator: the FM envelope's decay), our "
+                          "native key (1.6.8 only)",
+                          evidence="BE4.43: one of Track FX's 19 clean keys (docs/plan-synths-168.md 5: 0x1A2, 0x1A0, 0x19F .. 0x18B, "
+                          "0x132, 0x12D; S6c-2 keyscan.py), the next after 0x1A2 (P4's drum track flag; 0x1A8 its engine: both left to "
+                          "P4); empty after stock's builder, not in stock's template (np_template refuses one), no movw / mov.w / cmp.w "
+                          "immediate in either core, below claim()'s 0x1C1, not a MODEL_CHILD_EDIT special case (0x36 / 0x37, 0x58, "
+                          "0x143, 0x14E, 0x150); its one range test is KEY_OSC_SHAPE's (M7 0x08059990, 0x18C..0x1B6: only for the reverb "
+                          "object 0xFFFFFFF1, whose model properties are its registry keys, and 0x1A0 has none) (test_keys)"),
     'KEY_OSC_FM12': dict(value=0x132, evidence="P3 Q1: Track FX's 0x132 (S6c-2 keyscan): as KEY_OSC_SUBFM; between the selected "
                          "track 0x131 and cell 0x133, which stock loads by number, but no instruction loads or compares 0x132 itself "
                          "(test_keys; device checklist item 3 watches both neighbours)"),
