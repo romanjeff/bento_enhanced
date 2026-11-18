@@ -67,9 +67,9 @@ For comparison, investigation 2's route (new ids, SA hash table, moving the step
 ## Risks
 
 1. **Budgets are tight** (DSP 248 B, CPU 0.16%). Measure them in S1, and raise the ceiling explicitly if needed.
-2. **The voice tail.** That the slack is unused is inferred. The be442 test rig allocates voices as 0xB88 (test_analog.py:250 and others), so the rig must allocate 0xBA0, or the new tests will write past the voice.
+2. **The voice tail.** That the slack is unused is inferred. (S1 fix: now S. The pool is a bump allocator inside the zeroed bss; see "S1 fix" below.) The be442 test rig allocates voices as 0xB88 (test_analog.py:250 and others), so the rig must allocate 0xBA0, or the new tests will write past the voice.
 3. **The validator erases unknown sources**, so a file opened on stock or BE4.43 loses the routing once the matrix page is visited (S). This applies to either id choice, so it is not a tie-breaker. Note it in the release notes.
-4. **Reused ids carry a meaning on other engines** (I). On engines that have an env3/lfo3, ids 3 and 6 are real sources. If a track's type can change while keeping its routings, an FM Env routing could become a real Env 3 / LFO 3 routing. Check whether a type change clears the matrix.
+4. **Reused ids carry a meaning on other engines** (I). On engines that have an env3/lfo3, ids 3 and 6 are real sources. If a track's type can change while keeping its routings, an FM Env routing could become a real Env 3 / LFO 3 routing. Check whether a type change clears the matrix. (S1 fix: the same connect also serves a second root class, 0x5A, which would have meant writes into a live oscillator. It is now gated; see "S1 fix" below. Whether a type change keeps routes is still open, for S2.)
 5. **Timing.** env2, LFO1/2 and mod seq tick before an_enter, so routing FM Env to their own parameters is one block late, the same lag stock already has. Pitch steps every 2.7 ms, as stock's envelopes do.
 6. **An unset envelope** (Atk 0 / Dec Inf) publishes a constant 1, so a routing from it is a fixed offset.
 7. **The publish depends on an_enter running.** If a block skips an_enter for a voice (area_ok false), the value holds at its last setting. That is benign once an_note has initialised it.
@@ -115,9 +115,8 @@ lane's; the write-trace test's harness pool literals marked addr-ok, which the b
 
 **What was built (S).**
 - M7 (build.py fmenv_connect): ids 3 / 6 of both tbh tables (idx 0x0807CA7E entries [2] / [5], sub 0x0807C926 entries
-  [1] / [4]) point at a 24 B stub in each table's padding (0x0807CAC4, 0x0807C966): `addw r1, voice, #0xB88` (id 6) /
-  `#0xB84` (id 3), then `str.w r1, [voice, #0xB90]` (FMENV_ON), `mov.w tmp, #1.0; str tmp, [r1, #4]`, `b.w` stock's join
-  after its `movs r1, #0`. FM Env 1 is the float at voice + 0xB88, FM Env 2 at + 0xB8C, FMENV_ON at + 0xB90
+  [1] / [4]) point at a stub in each table's padding (0x0807CAC4, 0x0807C966). (As first built, a 24 B stub that wrote
+  FMENV_ON and 1.0 unconditionally; the S1 fix below replaced it with a 14 B stub plus a gated body.) FM Env 1 is the float at voice + 0xB88, FM Env 2 at + 0xB8C, FMENV_ON at + 0xB90
   (synth_shared.h FMENV_*, which build.py reads). The movw at 0x0809CB40 is not patched (the slack is the pool's rounding;
   fmenv_connect refuses a base where it is not #0xB88). The build refuses a base whose tables, padding or joins are not
   stock's.
@@ -135,7 +134,7 @@ lane's; the write-trace test's harness pool literals marked addr-ok, which the b
 
 **Sizes (M).**
 - DSP 31,084 B, **9,620 B free** of 40,704 (BE4.44 30,884 / 9,820: +200 B: fm_env_e0 100, fm_env_publish 34, an_note
-  +40, an_enter +24, alignment). The doc's 60-100 B estimate was low: e0 covers the tagged-Wavetable case and the
+  +46 (first written as +40), an_enter +24, alignment). The doc's 60-100 B estimate was low: e0 covers the tagged-Wavetable case and the
   Analog / WT type test, and an_note's write. No ceiling raised: the >= 1 KB rule holds with 8.6 KB to spare.
 - M7 stubs 48 B in existing padding; image size unchanged, 0x189450, 16,100 B to PROVEN_MAX; M4 code 24,424 B, synth UI
   15,846 B, M7 C slice 15,368 B (unchanged: S1 has no M4 change).
@@ -181,5 +180,91 @@ brackets).** All OK: diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, con
 (20), notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10, native_props 22, **analog
 216** (210 + FmEnvSrc 6), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32, p3_golden self-test 52; drums /
 drum_ui not run (drums is left out of the default image).
+
+## S1 fix (BE4.46, 2026-11-17): review dispositions
+
+Two reviews of f5c5756. Commit 245b345 has the code and tests; this section is the doc. Image: ~/bento/out/be446-s1f (BE_TAG=s1f).
+
+**What changed (S: built-image disassembly).**
+- The pad stubs are now 14 B: `addw r1, voice, #0xB88` (id 6), `b.n`, `addw r1, voice, #0xB84` (id 3), then `b.w` to the body. The rest of each pad is `nop.n`.
+- Each body is 42 B among the DSP trampolines: 0x080D0060 for the idx path (voice r5, scratch r3), 0x080D0090 for the sub path (voice r3, scratch r2). It runs:
+  - `ldr tmp, [voice, #0x178]; subw tmp, #0x7A4; cmp tmp, voice; bne` to stock's own `movs r1, #0`. This is the gate: it only passes a Wavetable voice.
+  - `ldr tmp, [voice, #0xB90]; cbnz tmp, done`, then on the first connect only `str r1` to FMENV_ON and 1.0 into both values.
+  - `done: b.w` the join.
+- The trampoline block now uses 0x00..0xBA of its 0x100. A drums trampoline would take 0xC0..0xDE, so it still fits.
+- The DSP, the image size, M4 and M7 C sizes are all unchanged. The connect runs per message, not per block, so CPU is unchanged.
+- New base entries:
+  - WT_VOICE_OSC1 (0x0809CB52, `addw r7, r4, #0x7a4`, then `strd r7, r6, [r4, #0x178]`). fmenv_connect refuses a base where these differ.
+  - ROOT_5A_CTOR (0x0809C9A0, tests only).
+- The flags at the joins are set before they are read: on the idx path by `adds r0, r5, r0`, on the sub path by `cmp r6, #2`.
+
+**Dispositions.**
+1. **Shared connect, class-0x5A root (high): accepted and fixed.**
+   - Verified (S):
+     - The vtable slot 2 of 0x080ACF08 (class 0x5A), of 0x080ACF68 (WT) and of the abstract base 0x080ACB44 is 0x0807F2A1. These are the only three words with that value in the image.
+     - The 0x5A ctor allocates `movw r2, #0xfe8` and places OSC1 / OSC2 at +0x7A8 / +0xBC8 (`strd` at +0x178).
+     - The WT ctor places them at +0x7A4 / +0x994.
+     - an_enter and an_note hook only WT vtables, so the 0x5A voices never reach the DSP side.
+   - Gate as the previous fix agent proposed it: `[voice+0x178] == voice+0x7A4`. It is not a root-vtable check, because the voice is the register both paths already hold.
+   - The 0x5A ("very likely Granular", I) root still does Env 3 / LFO 3 stock's way, which there is no source at all.
+   - Test test_other_root_is_stock: every id 0..35 to 4 destinations gives root and voice bytes equal to stock's, the body ran, and the FMENV_ON store never ran.
+2. **1.0 on every connect (medium): accepted.**
+   - 1.0 is now written on a voice's first connect only, into both values. The first connect is when FMENV_ON is 0: boot-zero, see 4.
+   - Kept rather than dropped: the first block after a mid-note first connect then reads the unset value 1 (decision 3), not 0.
+   - Test test_a_reconnect_keeps_the_values: three later connects, on both ids and all three instance paths, leave FMENV_ON and the mid-attack values alone and do set the amount.
+3. **Mutants B / P4 (DEC j 0 rule) and D / P6 (envf test) (low, both reviews): accepted, test added.**
+   - Reviewer 2 called P4 equivalent. That holds only for fm_env_step's own writes. an_osc's unset hold writes fmk = DEC j 0 without touching fme. So after an END (fme 0), "unset, then set again" leaves a stale fme of 0 that only the DEC j 0 rule hides.
+   - Test test_unset_and_set_again_mid_note: Atk 1 / Dec 2 runs to END, then is unset mid-note, then Dec 2 is set again. Published:
+     - unset: 1 from the next block;
+     - held: 1, with control fmk DEC j 0, fme 0;
+     - set again: 1, then fm_env_step's value.
+   - Mutation check on scratch copies (s1fix2/mut.sh):
+     - G (gate removed): killed (test_other_root_is_stock, test_stubs_and_tables)
+     - O (1.0 on every connect): killed (test_a_reconnect_keeps_the_values, test_stubs_and_tables)
+     - B (DEC j 0 rule removed): killed (test_unset_and_set_again_mid_note)
+     - P6 (envf test removed): killed (test_unset_and_set_again_mid_note)
+4. **Slack zero at allocation (reviewer 2 low, "unverified"): rejected, now S.**
+   - Pool kind 2 (0x080A0720) bumps a counter at 0x24000448 from base 0x24001080, with a cap of 0x1A000, no header and no free.
+   - The M7 reset (0x08040492) byte-clears 0x240001D0..0x2401EDBC, which covers the counter and the whole pool (to 0x2401B080).
+   - So FMENV_ON is 0 at every voice's allocation, and the self-validating flag compare is not needed.
+   - The evidence is in synth_shared.h and in risk 2 above.
+5. **Unrouted cost not pinned (reviewer 2 low): accepted.**
+   - BE4.44 was measured with the same harness (s1fix2/en.py, on ~/bento/out/be446-base444). an_enter per call is 59 / 156.62 / 99.56 / 99.56, and the voice-block medians are 14,155 / 28,109 / 27,261 / 34,760.
+   - test_cost now asserts that, without a route, both stay within these + 8. Measured: an_enter 64 / 162.62 / 104.56 / 104.56, medians 14,160 / 28,115 / 27,266 / 34,765. That is the +5 load and branch.
+   - **Merge note:** a lane that adds to an_enter, such as the destinations lane, moves these bounds. Re-measure on the merged base rather than loosen them.
+6. **Doc (reviewer 1 low, reviewer 2 info): accepted.**
+   - Slack evidence is now S (4).
+   - The shared-connect risk is in risk 4 and in 1 above.
+   - an_note +46 is corrected above.
+   - Note for the destinations lane, below.
+
+**Note for the destinations lane (be445x).**
+- WT_ROUTE's instance 0 / 1 path calls each oscillator's slot 10 (0x0807CB38) with r1 = the source.
+- For ids 3 / 6 on a Wavetable voice, that source is the FM Env pseudo-source voice + 0xB84 / + 0xB88. It is not a stock envelope or LFO object.
+- Any FM-amount destination hook on slot 10 (0x08081B60) must therefore treat a source only as PARAM_VALUE does, {?, float at +4}, and never dereference it as an object.
+- On the class-0x5A root these ids still give no source (r1 0).
+- Merge points added by this fix:
+  - m7_dsp's trampoline block: the two bodies sit right after the note trampoline;
+  - GROUP_NAMES (WT_VOICE_OSC1);
+  - stock_168 SYMS / CHECKS (two entries);
+  - test_cost's BE4.44 bounds.
+
+**Sizes (M).**
+- DSP 31,084 B, 9,620 B free (unchanged).
+- Trampolines: 0xBA of 0x100.
+- Image 0x189450 (unchanged).
+- M4 24,424 B, synth UI 15,846 B, M7 C slice 15,368 B (all unchanged).
+
+**CPU (M).**
+- P3Identity: 48 cases, worst 1.0170 (mod dev=False, 111,768 / 109,899), total 1.0091 (the same as S1).
+- FmEnvSrc.test_cost: the same as S1 in every row, because the body runs only on connect messages:
+  - no route: 14,160 / 28,115 / 27,266 / 34,765;
+  - routed: heaviest steady 34,826, 483 under 35,309.
+
+**Suites (M, ~/bento/out/be446-s1f, BE_TAG=s1f, sha256 8fd8e1d5...49ce; from the worktree's mods/m1).** All OK: diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20), notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10, native_props 22, **analog 219** (216 + FmEnvSrc 3 new: 9), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32, p3_golden self-test 52. drums and drum_ui were not run, because the default image leaves drums out.
+
+**Still open for S2:**
+- does a WT -> other type change keep routes (risk 4)?
+- the M4 list, names and validator.
 
 **Next: S2 (M4: the 18-entry WT list with FM Env 1 / 2 after Env 2, names, the validator), then the device check.**
