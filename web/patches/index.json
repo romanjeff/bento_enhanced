@@ -21,13 +21,6 @@
    "file": "v4.46.json",
    "output_sha256": "d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5",
    "device_tested": true
-  },
-  {
-   "version": "4.44",
-   "label": "BE4.44 (bento_enhanced v4.44 on stock 1.6.8)",
-   "file": "v4.44.json",
-   "output_sha256": "fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff",
-   "device_tested": true
   }
  ]
 }

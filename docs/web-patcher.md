@@ -172,7 +172,7 @@ deploy guard in `pages.yml` refuses a patch with N below 8.
 4. Test, with every kit you have:
 
    ```
-   python tools/test_web_patch.py <stock> --kit <kit v4.44> --kit <kit v4.46> ...
+   python tools/test_web_patch.py <stock> --kit <kit v4.46> ...
    ```
 
 5. Commit `web/patches/` (only `.json`: never a `.bin`, a kit or a zip; `.gitignore` ignores `*.zip`,
