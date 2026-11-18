@@ -679,6 +679,8 @@ SYMS = dict(
     FMENV_SUB_PAD=code(None, note="the sub path's padding: the FM Env stub", status='absent'),
     FMENV_SUB_NEXT=code(None, note="the sub path's join after its no-source movs r1, #0", status='absent'),
     WT_VOICE_ALLOC=code(None, note="WT_ROOT_CTOR's voice size (movw r2, #0xb88; the pool rounds it to 0xBA0)", status='absent'),
+    WT_VOICE_OSC1=code(None, note="WT_ROOT_CTOR's OSC1 placement (addw r7, r4, #0x7a4; [voice + 0x178] == voice + 0x7A4)", status='absent'),
+    ROOT_5A_CTOR=code(None, note="the class-0x5A instrument root's ctor (shares WT_ROUTE); tests", status='absent'),
     ENGINE_CTOR=code(None, note="M7 engine constructor (engine): its key-flag table engine+0x8CB2 (one byte per key below 0x1F2); tests", status='absent'),
     CELL_TYPE_OF=code(None, note="M4 project reader: a type name (<cell type=...>, <track type=...>) -> object type, 0 unknown; tests", status='absent'),
     PATCH_READ=code(None, note="M4 preset (patch) file reader (path, buf, n, store) -> ok, as PROJECT_READ; tests", status='absent'),

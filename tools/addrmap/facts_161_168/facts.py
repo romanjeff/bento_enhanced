@@ -858,6 +858,10 @@ REVIEWED = {
     'FMENV_SUB_PAD': dict(value=0x807c966, orig='00bf' + 'aff30080' * 6, evidence="nop + nop.w x 6, no branch targets it (S)"),
     'FMENV_SUB_NEXT': dict(value=0x807c9a2, evidence="after movs r1, #0; r3 the voice kept, r2 written before read (S)"),
     'WT_VOICE_ALLOC': dict(value=0x809cb40, orig='40f68832', evidence="movw r2, #0xb88; NAMED_ALLOC rounds to 0xBA0 (0x080A05E6) (S)"),
+    'WT_VOICE_OSC1': dict(value=0x809cb52, orig='04f2a477', evidence="addw r7, r4, #0x7a4, then strd r7, r6, [r4, #0x178] at 0x0809CB6A: "
+                          "[voice + 0x178] == voice + 0x7A4 on a Wavetable voice; the class-0x5A root's is + 0x7A8 (S). BE4.46 S1 fix"),
+    'ROOT_5A_CTOR': dict(value=0x809c9a0, evidence="class 0x5A root ctor (vtable 0x080ACF08, 6 voices of 0xFE8 B, OSC1 at + 0x7A8); "
+                         "shares WT_ROUTE through vtable slot 2 0x0807F2A1 (S). Tests only (BE4.46 S1 fix)"),
     'ENGINE_CTOR': dict(value=0x805b300, evidence="(engine r0): the M7 engine's constructor, called once at 0x0808E752 on a 0x15C20-byte "
                         "allocation; ends with memset(engine+0x8CB2, 0, 0x1F2) and the key flags 0x05 / 0x27 / 0x31 = 1 (strb at "
                         "0x0805B634..3C), the table H_INPUT_SITE's 0x3E case tests at 0x08059A40 (S; M: test_analog Props runs its "
