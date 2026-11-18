@@ -193,6 +193,25 @@ __attribute__((noinline)) static int wt_tagged(void *osc) {
     return state(osc)->magic == t && W(state(osc), 4) == ~t;
 }
 static inline u32 wt_mip(const AnOsc *g) { u32 m = g->wt.mipcur; return m < WT_MIPS ? m : WT_HOME; }
+/* BE4.45 S1 (docs/feasibility-fm-env-sources.md; synth_shared.h FMENV_*): the oscillator's FM envelope as a mod-matrix
+ * source. e0, its value at the start of the block about to render: fm_env_step's own first line, read only (the step itself
+ * runs in the oscillator's render, after this, and returns this same value as env[0]): AN_FE_START (a note started) 0, or 1
+ * for FM Atk 0; DEC at j 0 1 (also the hold while unset); else fme (the last step's end). 1 while the envelope is unset
+ * (Atk 0 / Dec Inf: what FM depth sees) and for a Wavetable oscillator that is not tagged (its settings are the defaults:
+ * unset). Analog or tagged: the same AnOsc / AnProps offsets (analog.h). */
+__attribute__((noinline, minsize)) static float fm_env_e0(void *osc) {
+    const AnOsc *g = state(osc);
+    const AnProps *p = props(osc);
+    if (!((g->magic == AN_MAGIC && p->type == 1u) || wt_tagged(osc)) || !p->envf) return 1.f;
+    u32 st = (u32)g->fmk >> 13;
+    if (st == AN_FE_START) return p->fmatk ? 0.f : 1.f;
+    return st == AN_FE_DEC && !(g->fmk & 0x1FFFu) ? 1.f : g->fme;
+}
+/* the voice's two (an_enter, each block, only once a route to source 3 / 6 was connected on it: FMENV_ON) */
+__attribute__((noinline, minsize)) static void fm_env_publish(u8 *v) {
+    F(v, FMENV_VAL) = fm_env_e0(v + S_VOICE_WT1);
+    F(v, FMENV_VAL + 4u) = fm_env_e0(v + S_VOICE_WT2);
+}
 /* The voice an oscillator belongs to, and which of its two it is: stock's root ctor keeps WT1 / WT2's pointers in the
  * voice (+0x178 / +0x17C), so the oscillator finds its voice without any state of ours. 0 if neither matches. */
 static u8 *voice_of(void *osc, u32 *which) {
@@ -432,6 +451,10 @@ extern "C" __attribute__((used)) void an_enter(void *root, void *voice) {
         r->idx = idx;
     }
     u8 *v = (u8 *)voice;
+    /* BE4.45 S1: FM Env 1 / 2 published for the matrix (before the renders and the filters read them), only on a voice a
+     * route to source 3 / 6 was connected on; else one load and a branch. Here, before a1 / a2, nothing more is live across
+     * the call than across finish's (M: after them an_enter grew 64 B) */
+    if (__builtin_expect(W(v, FMENV_ON) != 0u, 0)) fm_env_publish(v);
     void *o1 = v + S_VOICE_WT1, *o2 = v + S_VOICE_WT2;
     int a1 = is_analog(o1), a2 = is_analog(o2);
     r->voice = (u32)voice; r->root = 0;
@@ -636,15 +659,19 @@ __attribute__((noinline)) static float *feeds(Run *r, u8 *v, u32 which, int a2, 
  * copy is seeded from stock's phase at the next block. The same call as stock's reset, so every caller of slot 2 (stock's
  * voice note start 0x0807C7F8, a retrigger, a legato note) is covered (I). Plan fix 2: nothing unless WT2's Sync is on. */
 extern "C" __attribute__((used)) void an_note(void *osc) {
-    if (is_analog(osc)) { state(osc)->fmk = AN_FE_START; return; }   /* BE4.43: the FM envelope retriggers, per voice */
-    if (wt_tagged(osc)) {                                     /* BE4.44 W1 (plan 3.1): the same retrigger, and the mip home, */
+    int an = is_analog(osc);
+    if (an) state(osc)->fmk = AN_FE_START;                    /* BE4.43: the FM envelope retriggers, per voice */
+    else if (wt_tagged(osc)) {                                /* BE4.44 W1 (plan 3.1): the same retrigger, and the mip home, */
         AnOsc *g = state(osc);                                /* so the note's first block sees stock's fresh D (tier 2) */
         g->fmk = AN_FE_START; g->wt.mipcur = (u8)WT_HOME;
         g->wxf = 0; g->wt.wflags &= (u8)~WT_PK_OK;             /* (W4: B's frame mean and peak taken again, wt_frame_dc) */
     }
     u32 which = 2;
     u8 *v = voice_of(osc, &which);
-    if (!v || which != 0 || is_analog(osc)) return;
+    /* BE4.45 S1: the note's start value (0, or 1 for FM Atk 0 or an unset envelope) at once, for the readers that run before
+     * the next an_enter (env 2, the LFOs and the mod sequencer tick before the voice render) */
+    if (v && W(v, FMENV_ON)) F(v, FMENV_VAL + 4u * which) = fm_env_e0(osc);
+    if (!v || which != 0 || an) return;
     void *o2 = v + S_VOICE_WT2;
     if (!is_analog(o2) || props(o2)->sync != 1u) return;
     AnOsc *s = state(o2);

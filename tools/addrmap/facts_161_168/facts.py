@@ -845,6 +845,19 @@ REVIEWED = {
     'WT_ENGINE_INIT': dict(value=0x807f180, evidence="(root): called once per root at 0x08058BD0 after WT_ROOT_CTOR's caller (S); "
                            "connects each voice's modulation (pitch gets a root source) and leaves osc+0x108 = 2.0 on WT1 / WT2 "
                            "(M: impl_SM pprobe.py; plan-analog-fm F0 verdict). Tests only (the device-shaped rig)"),
+    # BE4.45 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (stock_168.py's notes carry the
+    # full evidence; added to the table by hand, as BE4.44 W0's entries: gen_table.py does not run on the current tables)
+    'WT_ROUTE': dict(value=0x807c8a0, evidence="(root, msg 0x3F) routing connect; tbh by id - 1 (instances 0 / 1, voice r5) at "
+                     "0x0807CA7A and by id - 2 (instances 2.., voice r3) at 0x0807C922 (S; M: test_analog FmEnvSrc)"),
+    'FMENV_IDX_TBH': dict(value=0x807ca7e, orig='bb07240831008408e9083100', evidence="entries [2] / [5] (ids 3 / 6) -> 0x0807CAE0 "
+                          "movs r1, #0 (S)"),
+    'FMENV_IDX_PAD': dict(value=0x807cac4, orig='aff30080' * 7, evidence="nop.w x 7, no branch targets it (S: envsrc v2.py)"),
+    'FMENV_IDX_NEXT': dict(value=0x807cae2, evidence="after movs r1, #0; r0 / r2 / r3 written before read (S)"),
+    'FMENV_SUB_TBH': dict(value=0x807c926, orig='84033d00b90184013d00', evidence="entries [1] / [4] (ids 3 / 6) -> 0x0807C9A0 "
+                          "movs r1, #0 (S)"),
+    'FMENV_SUB_PAD': dict(value=0x807c966, orig='00bf' + 'aff30080' * 6, evidence="nop + nop.w x 6, no branch targets it (S)"),
+    'FMENV_SUB_NEXT': dict(value=0x807c9a2, evidence="after movs r1, #0; r3 the voice kept, r2 written before read (S)"),
+    'WT_VOICE_ALLOC': dict(value=0x809cb40, orig='40f68832', evidence="movw r2, #0xb88; NAMED_ALLOC rounds to 0xBA0 (0x080A05E6) (S)"),
     'ENGINE_CTOR': dict(value=0x805b300, evidence="(engine r0): the M7 engine's constructor, called once at 0x0808E752 on a 0x15C20-byte "
                         "allocation; ends with memset(engine+0x8CB2, 0, 0x1F2) and the key flags 0x05 / 0x27 / 0x31 = 1 (strb at "
                         "0x0805B634..3C), the table H_INPUT_SITE's 0x3E case tests at 0x08059A40 (S; M: test_analog Props runs its "
