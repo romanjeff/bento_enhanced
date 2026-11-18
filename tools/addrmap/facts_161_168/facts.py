@@ -1358,6 +1358,20 @@ REVIEWED = {
                               "as stock bound them); S: the view constructor's str.w r2,[r3,#0x468] steps (0x0815FE5A, 0x0816001E)"),
     'SLOT_KEY': dict(value=0x9c, evidence="ENC_TURN: the widget's key at +0x9C (0 = unbound), posted with 0xCF (0x0817400C..26)"),
     'SLOT_HANDLE': dict(value=0x34, evidence="ENC_TURN: UI_POST {0xCF, [+0x34], key, value} (0x0817400C..26)"),
+    # BE4.45 X1 (docs/plan-fm-targets.md): the Wavetable track's Mod Matrix destination table (stock_168.py's notes carry
+    # the full evidence; added by hand, as BE4.44 W0's entries)
+    'MX_WT_DEST_TAB': dict(value=0x81a0d1c, evidence="23 entries from 0x081A0D1C up to the Granular table 0x081A0F44 (37 entries; 0x081A0D1C + 23 x 24 = 0x081A0F44); type 6 (WT1 / WT2) keys 3, 0xC4, 0xC9; (S: be445x scan.py)"),
+    'MX_WT_DEST_COUNT': dict(value=0x81a0d14, orig='17000000', evidence="u32 23; its users are the three literal words 0x081347DC, 0x08159414, 0x08159C84 (each paired with a table literal 4..8 B after it: 0x08134700, the en (S: be445x scan.py)"),
+    'MX_WT_DEST_LIT_1': dict(value=0x81347e0, orig='1c0d1a08', evidence="0x08134700 (model, obj, type, r3): for each MX_WT_DEST_TAB entry of that type (count from 0x081347DC), 0x081346B8 posts {0x3F, obj, key, slot 3, sourc (S: be445x scan.py)"),
+    'MX_WT_DEST_LIT_2': dict(value=0x814db8c, orig='1c0d1a08', evidence="MX_WT_ROWSs literal pool: ldr r4, [pc, #0xf0] at 0x0814DA98 (S: be445x scan.py)"),
+    'MX_WT_DEST_LIT_3': dict(value=0x815941c, orig='1c0d1a08', evidence="0x08159358 (index, &type, &key): 30 global entries (0x081A12F0), then Granulars, then this tables (count 0x08159414); its callers 0x08159D1E / 0x081 (S: be445x scan.py)"),
+    'MX_WT_DEST_LIT_4': dict(value=0x8159c88, orig='1c0d1a08', evidence="DEST_NAMEs literal pool (ldr at 0x08159B38 / 0x08159B56; count 0x08159C84): the entrys name +0x10 by type and key (S: be445x scan.py)"),
+    'MX_WT_ROWS': dict(value=0x814da70, orig='2de9f047', evidence="(view r0): children of the context [view+0x8AC44] of types 6..11 by (type, instance 0 / 1); per table entry (instance <= 1, the object present): handl (S: be445x scan.py)"),
+    'MX_WT_ROWS_N': dict(value=0x814da92, orig='1722', evidence="movs r2, #0x17; strb.w r2, [r3, #0xc4d] (0x0814DA92..94): the count is not read from MX_WT_DEST_COUNT (S: be445x scan.py)"),
+    'MX_WT_ROWS_END': dict(value=0x814da9e, orig='04f50a77', evidence="r4 = MX_WT_DEST_TAB (0x0814DA98); r7 bounds the key loop (cmp r3, r7 at 0x0814DAAC) and the row loop (cmp r4, r7 at 0x0814DB50), and is not written in (S: be445x scan.py)"),
+    'MX_SET_ROUTE': dict(value=0x81347e4, orig='2de9f04f', evidence="the model handlers case 0xD1 (tbh at 0x08141ED4 -> 0x0814240E: bl 0x081347E4); MX_EDIT posts it (0x0814DCB4..EE); source 0 removes the slots node (0 (S: be445x scan.py)"),
+    'MX_TYPE_KEYS_POST': dict(value=0x8134700, orig='2de9f04f', evidence="the global keys 0x081A12F0 for types 1, 3, 4; Granular's rows (0x081347D4 / D8) and the Wavetable rows (0x081347DC / E0) whose type byte is r2: MX_KEY (S: be445x)"),
+    'MX_KEY_POST': dict(value=0x81346b8, orig='f0b587b0', evidence="builds the 0x18-byte message on its stack (0x081346C8..E8) and posts it through 0x0810BAA4 to the ring at [0x3000F65C] (S: be445x)"),
     'DEST_NAME': dict(value=0x8159a5c, evidence="(view r0, &handle r1, key r2, buf r3, size [sp], flag [sp+4]): the key's registry "
                       "title (0x081683D0); an object other than the view's track ([view+0x11CD08]) by its type: type 6 -> "
                       "snprintf(buf, size, STR_DEST_OSC_FMT, its index among the track's type-6 children + 1, title) (0x08159B6A..8A). "

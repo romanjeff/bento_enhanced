@@ -1550,6 +1550,48 @@ class ShapeMod(unittest.TestCase):
             out, _ = r.render(root, v, oscs=(0,)); xs += out; r.block()
         return xs, r
 
+    def test_x1_fm_destinations_are_inert_until_x2(self):
+        """BE4.45 X1 (docs/plan-fm-targets.md): the M4 now sends routings on Sub FM (0x18B) and FM 1>2 (0x132). Until X2 the
+        oscillator class's connect (slot 10) writes nothing for them, on an Analog and a Wavetable oscillator, any slot 0..3,
+        and the voice renders bit for bit as without them; a Position routing on the same oscillator still lands (control)."""
+        outs = []
+        for routed in (False, True):
+            r = Rig(dev=True); root, v = r.voice(0x73); r.table(0, 0x73, 1); r.note(v, 60)
+            o1, o2 = r.osc(v, 0), r.osc(v, 1)
+            r.prop(o1, K_SUBFM, 300); r.prop(o2, K_FM12, 200)
+            if routed:
+                calls = []
+                for o in (o1, o2):
+                    for key in (K_SUBFM, K_FM12):
+                        for slot in range(4):
+                            src = r.alloc(0x10); r.wf(src + 4, 1.0)
+                            calls.append((o, src, key, slot))
+                wrote = []
+                h = r.u.hook_add(UC_HOOK_MEM_WRITE, lambda uc, acc, a, sz, val, _: wrote.append(a)
+                                 if not STACK - 0x1000 <= a < STACK else None)
+                for o, src, key, slot in calls:                     # route()'s call: the class's slot 10
+                    r.call(r.r32(r.r32(o) + 0x28) & ~1, o, src, key, slot, fargs=(0.7,))
+                r.u.hook_del(h)
+                self.assertEqual(len(calls), 16)
+                self.assertEqual(wrote, [], "slot 10 wrote nothing")
+            xs = []
+            for b in range(8):
+                out, _ = r.render(root, v); xs += out; r.block()
+            outs.append(xs)
+        self.assertGreater(max(abs(x) for x in outs[0]), 0.01, "the voice plays (control)")
+        same(self, outs[1], outs[0], "routed Sub FM / FM 1>2: today's sound")
+        r = Rig(dev=True); _, v = r.voice(0x75); r.table(0, 0x75, 0)  # Wavetable oscillators: the same class slot
+        wrote = []
+        h = r.u.hook_add(UC_HOOK_MEM_WRITE, lambda uc, acc, a, sz, val, _: wrote.append(a) if not STACK - 0x1000 <= a < STACK else None)
+        for o in (r.osc(v, 0), r.osc(v, 1)):
+            for key in (K_SUBFM, K_FM12):
+                r.call(r.r32(r.r32(o) + 0x28) & ~1, o, 0x24001000, key, 0, fargs=(0.7,))   # addr-ok: harness (any source)
+        r.u.hook_del(h)
+        self.assertEqual(wrote, [], "slot 10 wrote nothing on a Wavetable oscillator")
+        r = Rig(dev=True); _, v = r.voice(0x74); o = r.osc(v, 0)
+        src = route(r, o, 1, 0.5)
+        self.assertEqual(r.r32(o + 0x30 + 16), src, "Position still routes (control)")
+
     def test_routing_reaches_the_position_parameter(self):
         r = Rig(dev=True); _, v = r.voice(0x72); o = r.osc(v, 0)
         src = route(r, o, 1, 0.5)

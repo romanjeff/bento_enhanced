@@ -74,7 +74,7 @@ GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_en
 BASE_SETTINGS = {
     "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0", "drums"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.44", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.45", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
                               "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx", "drums"), omit_off=("drums",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
@@ -358,7 +358,10 @@ GROUP_NAMES = {
                # step position, D2 the frames' redraw
                "STR_PREFIX_OSC1", "STR_PREFIX_OSC2", "STR_DEST_OSC_FMT", "PREFIX_LIT_OSC1", "PREFIX_LIT_OSC2", "DEST_FMT_LIT",
                "PANE_TITLE_SITE", "WT_PANE_PAINT_SLOT", "WT_PANE_PAINT", "BROWSE_POST_SITE", "UI_POST",
-               "VALUE_TEXT_1", "VALUE_TEXT_2", "VALUE_TEXT_3", "ENC_POS_SET", "WT_PANE_FRAMES_DIRTY"),
+               "VALUE_TEXT_1", "VALUE_TEXT_2", "VALUE_TEXT_3", "ENC_POS_SET", "WT_PANE_FRAMES_DIRTY",
+               # BE4.45 X1 (docs/plan-fm-targets.md): the Wavetable Mod Matrix destination table, its users, the row filler's bounds
+               "MX_WT_DEST_TAB", "MX_WT_DEST_COUNT", "MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4",
+               "MX_WT_ROWS_N", "MX_WT_ROWS_END"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -1820,6 +1823,88 @@ def np_template(base_img, stock_n):
     return b"".join(new), n
 
 
+# BE4.45 X1 (docs/plan-fm-targets.md): FM amounts as Mod Matrix destinations. Stock's Wavetable destination table
+# (MX_WT_DEST_TAB, 23 entries) is copied into the synth UI block with three rows more, each after its oscillator's last
+# stock row (Position): OSC1 Sub FM, OSC2 FM 1>2, OSC2 Sub FM. Names: the oscillator rows' format is ours, "OSC1: %s" /
+# "OSC2: %s" (stock's "WT1: %s" / "WT2: %s" at 0x0818EAB8, now unreferenced: the identity T0 / J2 rename, which T0 left out
+# because it was not DEST_NAME's), and our three rows carry their own name (+0x10) so the row filler never asks the registry
+# (whose title would be null if N2 ever left our keys out). CC column (+0x14): 0, which the page shows blank (MX_ROWS_BUILD
+# 0x0814E798: ids are read only there, for display; the column names the CC stock maps to a row, and none maps to ours).
+MX_DEST_NEW = ((0, "KEY_OSC_SUBFM", "Sub FM"), (1, "KEY_OSC_FM12", "FM 1>2"), (1, "KEY_OSC_SUBFM", "Sub FM"))
+MX_DEST_STOCK_N = 23
+MX_DEST_STOCK_T6 = [(0, 3), (0, 0xC4), (0, 0xC9), (1, 3), (1, 0xC4), (1, 0xC9)]   # (instance, key): Pitch, Level, Position
+MX_DEST_FMT = (b"OSC1: %s", b"OSC2: %s")
+MX_DEST_ENT = 24
+
+
+def mx_dest_table(base_img, at):
+    """X1: (bytes at `at`: the 26 entries, then our strings; the entry count)."""
+    t, n = S.MX_WT_DEST_TAB - BASE, struct.unpack_from("<I", base_img, S.MX_WT_DEST_COUNT - BASE)[0]
+    if n != MX_DEST_STOCK_N:
+        raise SystemExit(f"X1: stock's Wavetable destination count is {n}, not {MX_DEST_STOCK_N}")
+    ents = [bytearray(base_img[t + MX_DEST_ENT * i:t + MX_DEST_ENT * (i + 1)]) for i in range(n)]
+    for e in ents:   # {u8 type, 3 zero, u32 instance, u16 key, 2 zero, fmt, name, u8 id, 3 zero}
+        if e[1:4] != bytes(3) or e[10:12] != bytes(2) or e[0x15:0x18] != bytes(3) or struct.unpack_from("<I", e, 4)[0] > 1:
+            raise SystemExit(f"X1: stock's destination entry {bytes(e).hex()} is not the expected layout")
+    t6 = [i for i, e in enumerate(ents) if e[0] == NP_OSC_TYPE]
+    if t6 != list(range(t6[0], t6[0] + 6)) or [(struct.unpack_from("<I", ents[i], 4)[0], struct.unpack_from("<H", ents[i], 8)[0])
+                                               for i in t6] != MX_DEST_STOCK_T6:
+        raise SystemExit("X1: stock's oscillator destinations are not Pitch / Level / Position of WT1, then WT2")
+    keys = {getattr(S, k) for _, k, _ in MX_DEST_NEW}
+    if any(struct.unpack_from("<H", e, 8)[0] in keys for e in ents):
+        raise SystemExit("X1: one of our keys is already a stock destination")
+    total = n + len(MX_DEST_NEW)
+    strs, addr = bytearray(), {}
+    for s in list(MX_DEST_FMT) + sorted({x for _, _, x in MX_DEST_NEW}):
+        b = s if isinstance(s, bytes) else s.encode()
+        addr[b] = at + MX_DEST_ENT * total + len(strs)
+        strs += b + bytes(4 - len(b) % 4)
+    for i in t6:                                          # the oscillator rows read "OSC1: .." / "OSC2: .."
+        struct.pack_into("<I", ents[i], 0xC, addr[MX_DEST_FMT[struct.unpack_from("<I", ents[i], 4)[0]]])
+    out = list(ents)
+    # each after its oscillator's last stock row, in MX_DEST_NEW's order: inserted last first, instance 1 before 0, so
+    # every insert lands at a stock index (OSC1's after its Position at +3, OSC2's after its Position at +6)
+    for inst, k, name in reversed(MX_DEST_NEW):
+        e = bytearray(MX_DEST_ENT)
+        e[0] = NP_OSC_TYPE
+        struct.pack_into("<IHxxIIB", e, 4, inst, getattr(S, k), addr[MX_DEST_FMT[inst]], addr[name.encode()], 0)
+        out.insert(t6[0] + 3 * (inst + 1), e)
+    return b"".join(bytes(x) for x in out) + bytes(strs), total
+
+
+MX_DEST_LITS = ("MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4")
+
+
+def mx_dest_patches(base_img, patch, at, data, n):
+    """X1: the table's four literal words -> our copy, its count word -> n, the row filler's two bounds (it hard-codes 23).
+    Refused unless, on the base image, those literals are every reference to the table (no other aligned word holds it or
+    points inside it, no movw / movt pair builds it) and the count word's every reference is paired with one of them."""
+    tab, cnt = S.MX_WT_DEST_TAB, S.MX_WT_DEST_COUNT
+    refs = one_reference(base_img, {tab, cnt})
+    lits = sorted(getattr(S, x) for x in MX_DEST_LITS)
+    if sorted(refs[tab]) != lits:
+        raise SystemExit(f"X1: the table is referenced at {[hex(a) for a in refs[tab]]}, not only by {MX_DEST_LITS}")
+    for k in range(0, len(base_img) - 3, 4):
+        w = struct.unpack_from("<I", base_img, k)[0]
+        if tab < w < tab + MX_DEST_ENT * MX_DEST_STOCK_N:
+            raise SystemExit(f"X1: the word at {BASE + k:#x} points inside the table ({w:#x})")
+    if len(refs[cnt]) != 3 or any(not any(0 < l - c <= 8 for l in lits) for c in refs[cnt]):
+        raise SystemExit(f"X1: the count word's references {[hex(a) for a in refs[cnt]]} are not three, each before a table literal")
+    for site, src in (("MX_WT_ROWS_N", f"movs r2, #{MX_DEST_STOCK_N:#x}"),
+                      ("MX_WT_ROWS_END", f"add.w r7, r4, #{MX_DEST_ENT * MX_DEST_STOCK_N:#x}")):
+        if asm(src, getattr(S, site)) != S.orig(site):
+            raise SystemExit(f"X1: {site} is not stock's '{src}'")
+    patch(at, data, b"\xff" * len(data), f"FM targets (BE4.45 X1): Wavetable Mod Matrix destinations ({n} entries, names)")
+    for lit in MX_DEST_LITS:
+        patch(getattr(S, lit), struct.pack("<I", at), S.orig(lit), f"FM targets: destination table literal ({lit})")
+    patch(cnt, struct.pack("<I", n), S.orig("MX_WT_DEST_COUNT"), f"FM targets: destination count {n}")
+    for site, src in (("MX_WT_ROWS_N", f"movs r2, #{n:#x}"), ("MX_WT_ROWS_END", f"addw r7, r4, #{MX_DEST_ENT * n:#x}")):
+        c = asm(src, getattr(S, site))
+        if len(c) != len(S.orig(site)):
+            raise SystemExit(f"X1: '{src}' is not {len(S.orig(site))} bytes")
+        patch(getattr(S, site), c, S.orig(site), f"FM targets: row filler bound ({site}: {src})")
+
+
 def one_reference(img, addrs):
     """{addr: the aligned words of img holding addr}; fails if a movw / movt pair (movt within 4 instructions of the movw,
     same register) builds one of the addresses (T0's 'one literal reference')."""
@@ -1856,6 +1941,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
     marker = b"BENTO_MOD:synth-ui(Analog oscillators as native properties, drum page; after bento-playground A1, K7)\0"
     end = (SYNTH_CODE + len(code) + len(marker) + 7) & ~7
     tpl_data, tpl_n, tpl_at = b"", 0, end
+    mx_at = mx_n = 0                     # X1 (analog): the relocated Mod Matrix destination table
     an = inc("analog")
     if an:
         with S.group("analog"):
@@ -1869,6 +1955,9 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                     raise SystemExit(f"N1: {site} does not hold PROP_TEMPLATE")
             tpl_data, tpl_n = np_template(base_img, stock_n)
             end = tpl_at + len(tpl_data)
+            mx_at = (end + 3) & ~3                               # X1: the destination table after the template
+            mx_data, mx_n = mx_dest_table(base_img, mx_at)
+            end = mx_at + len(mx_data)
     if end > SYNTH_LIMIT:
         raise SystemExit(f"synth UI block ends at {end:#x}, past the proven image size ({SYNTH_LIMIT:#x})")
     extend(end, "Analog (S6a): extend image with erased (0xFF) flash for the synth UI block")
@@ -1939,6 +2028,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                 if len(c) != 4:
                     raise SystemExit(f"N1: '{src}' is not one 4-byte instruction")
                 patch(getattr(S, site), c, S.orig(site), f"Analog: N1 template bound ({site}: {src})")
+            mx_dest_patches(base_img, patch, mx_at, mx_data, mx_n)
             patch(S.REG_BUILD_SITE, asm(f"bl {n2:#x}", S.REG_BUILD_SITE), S.orig("REG_BUILD_SITE"),
                   "Analog: N2 registry build -> stock's, then our oscillator keys' descriptors")
             # A10: the synth view's tick slot (vtable word); A6 / A7: bl sites
@@ -2008,6 +2098,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                   "Drums: handles (H4): a pad's child copy carries its knobs")
     s4.update({f"synth.{k}": v for k, v in ss.items()})
     s4.update({"synth.np_template": tpl_at if an else 0, "synth.np_template_n": tpl_n})
+    s4.update({"synth.mx_dest": mx_at, "synth.mx_dest_n": mx_n})
     if n2 is not None:
         s4.update({"synth.wrap_reg_build": n2, "synth.wrap_pane_title": t1, "synth.wrap_browse": b1})
     if inc("drums"):

@@ -654,5 +654,198 @@ class Hazard(unittest.TestCase):
         self.assertEqual([r.ours(c[0]), r.ours(c[1])], [V1, V2], "the real cells still load")
 
 
+# ---- BE4.45 X1 (docs/plan-fm-targets.md): Sub FM / FM 1>2 as Mod Matrix destinations (M4: the table, rows, names, routings)
+REF444 = Path(os.environ.get("BE_REF444", str(Path.home() / "bento" / "out" / "be444w4f")))   # BE4.44 (the rollback)
+SUBFM, FM12 = 0x18B, 0x132
+LFO1 = 1                           # stock's source id 1 = LFO 1 (token "lfo1")
+# the Wavetable track's destinations, typed from stock's table (tab.py: (type, instance, key)), ours marked
+STOCK_DEST = [(6, 0, 3), (6, 0, 0xC4), (6, 0, 0xC9), (6, 1, 3), (6, 1, 0xC4), (6, 1, 0xC9), (8, 0, 3), (8, 0, 0xC4), (8, 0, 0xC5),
+              (10, 0, 0xCE), (10, 0, 0x33), (10, 1, 0xCE), (10, 1, 0x33), (9, 0, 0x1E), (9, 0, 0x1F), (9, 0, 0x21),
+              (9, 1, 0x1E), (9, 1, 0x1F), (9, 1, 0x21), (11, 0, 0x4C), (11, 0, 0x4B), (11, 1, 0x4C), (11, 1, 0x4B)]
+OUR_DEST = STOCK_DEST[:3] + [(6, 0, SUBFM)] + STOCK_DEST[3:6] + [(6, 1, FM12), (6, 1, SUBFM)] + STOCK_DEST[6:]
+STOCK_NAMES_T6 = ["WT1: Pitch", "WT1: Level", "WT1: Position", "WT2: Pitch", "WT2: Level", "WT2: Position"]
+OUR_NAMES_T6 = ["OSC1: Pitch", "OSC1: Level", "OSC1: Position", "OSC1: Sub FM",
+                "OSC2: Pitch", "OSC2: Level", "OSC2: Position", "OSC2: FM 1>2", "OSC2: Sub FM"]
+MXV_ROWS, MXV_KEYS, MXV_HANDLES, MXV_CC, MXV_NAMES = 0x8AC4D, 0x8AC50, 0x8ACCC, 0x8ADBC, 0x8AE04   # the Mod Matrix view's rows
+
+
+def dest_entries(img, at, n):
+    return [struct.unpack_from("<BxxxIHxxIIB", img, at - BASE + 24 * i) for i in range(n)]
+
+
+def mx_rows(r, track):
+    """Stock's row filler MX_WT_ROWS on a fresh view for this track: [(key, handle, CC byte, name)]."""
+    view = r.buf(0x8C000)
+    r.w32(view + 0x8AC44, r.handle(track))
+    r.call(S.MX_WT_ROWS, view)
+    n = r.u.mem_read(view + MXV_ROWS, 1)[0]
+    return [(struct.unpack("<H", r.u.mem_read(view + MXV_KEYS + 2 * i, 2))[0], r.r32(view + MXV_HANDLES + 4 * i),
+             r.u.mem_read(view + MXV_CC + i, 1)[0], r.e.text(view + MXV_NAMES + 16 * i, 16)) for i in range(n)]
+
+
+def routes(r, o):
+    """The routings stored on an object: the type-1 nodes of its list (first at +0x14, next at +4: 0x0812EE94)
+    {+8 type, +0xC amount, +0x10 source, +0x12 key, +0x14 slot}."""
+    out, c = [], r.r32(o + 0x14)
+    while c:
+        if r.u.mem_read(c + 8, 1)[0] == 1:
+            amt, src, key, slot = struct.unpack("<iHHh", bytes(r.u.mem_read(c + 0xC, 10)))
+            out.append((key, src, slot, amt))
+        c = r.r32(c + 4)
+    return sorted(out)
+
+
+def set_route(r, h, key, src, slot, amount):
+    """The model's 0xD1, as MX_EDIT posts it (0x0814DCB4..EE): {0xD1, handle, key | 1 << 16, source | slot << 16, amount}."""
+    r.u.mem_write(EV, struct.pack("<HHIIIi", 0xD1, 0, h, key | 1 << 16, src | slot << 16, amount))
+    r.call(S.MX_SET_ROUTE, S.MODEL, EV)
+
+
+ROUTED = [(1, SUBFM, LFO1, 0, 500), (2, FM12, LFO1, 1, -250), (2, SUBFM, 5, 2, 1000)]   # (osc, key, source, slot, amount)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
+class FmTargets(unittest.TestCase):
+    """X1: OSC1 Sub FM (0x18B, instance 0), OSC2 FM 1>2 (0x132, instance 1), OSC2 Sub FM (0x18B, instance 1) as Wavetable-track
+    Mod Matrix destinations: stock's table copied with the three rows (MX_WT_DEST_TAB -> ours), stock's row filler, DEST_NAME,
+    the model's routing set (0xD1), the project writer and reader, and the reader of stock 1.6.8 and BE4.44 (the rollbacks).
+    Until X2 the M7 ignores these keys (the class's connect slot 10 0x08081B60 routes only 0xC4 / 0xC9 / 3: test_analog)."""
+
+    def test_the_table_is_stocks_with_our_rows(self):
+        at, n = SYM["mx_dest"], SYM["mx_dest_n"]
+        self.assertEqual(n, 26)
+        got, old = dest_entries(IMG, at, n), dest_entries(STOCK, S.MX_WT_DEST_TAB, 23)
+        self.assertEqual([(t, i, k) for t, i, k, _, _, _ in got], OUR_DEST)
+        self.assertEqual([(t, i, k) for t, i, k, _, _, _ in old], STOCK_DEST, "stock's table as typed (control)")
+        mine = [got[OUR_DEST.index(d)] for d in STOCK_DEST]
+        self.assertEqual([e[3:] for e in mine[6:]], [e[3:] for e in old[6:]], "the other rows: stock's format, name, CC byte")
+        self.assertEqual([e[4:] for e in mine[:6]], [e[4:] for e in old[:6]], "the oscillator rows: stock's name, CC byte")
+        text = lambda img, a: img[a - BASE:img.index(b"\0", a - BASE)].decode()
+        self.assertEqual([text(IMG, e[3]) for e in got[:9]], ["OSC1: %s"] * 4 + ["OSC2: %s"] * 5)
+        self.assertEqual([text(IMG, e[4]) if e[4] else None for e in got[:9]],
+                         [None] * 3 + ["Sub FM"] + [None] * 3 + ["FM 1>2", "Sub FM"])
+        self.assertEqual([e[5] for e in got if e[2] in (SUBFM, FM12)], [0, 0, 0], "CC column blank")
+        for lit in ("MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4"):
+            self.assertEqual(struct.unpack_from("<I", IMG, getattr(S, lit) - BASE)[0], at, lit)
+        self.assertEqual(struct.unpack_from("<I", IMG, S.MX_WT_DEST_COUNT - BASE)[0], 26)
+        self.assertEqual(IMG[S.MX_WT_ROWS_N - BASE:S.MX_WT_ROWS_N - BASE + 2], bytes(KS.asm("movs r2, #26", S.MX_WT_ROWS_N)[0]))
+        self.assertEqual(IMG[S.MX_WT_ROWS_END - BASE:S.MX_WT_ROWS_END - BASE + 4],
+                         bytes(KS.asm(f"addw r7, r4, #{26 * 24}", S.MX_WT_ROWS_END)[0]))
+        self.assertEqual(IMG[S.MX_WT_DEST_TAB - BASE:S.MX_WT_DEST_TAB - BASE + 23 * 24],
+                         STOCK[S.MX_WT_DEST_TAB - BASE:S.MX_WT_DEST_TAB - BASE + 23 * 24], "stock's table itself untouched")
+
+    def test_the_rows_on_the_page(self):
+        """Stock's row filler: 26 rows, ours after each oscillator's Position, named OSC1 / OSC2 (Q7: stock and BE4.44 show
+        'WT1: ..', run here on stock), the oscillators' handles, a blank CC column on ours; the other rows as stock's."""
+        a, b = Rig(), Rig(img=STOCK, wrap=False)
+        rows = []
+        for r in (a, b):
+            t, w1, w2 = r.wavetable()
+            rows.append((mx_rows(r, t), r.handle(w1), r.handle(w2)))
+        (got, h1, h2), (old, s1, s2) = rows
+        self.assertEqual(len(got), 26); self.assertEqual(len(old), 23)
+        self.assertEqual([n for _, _, _, n in old[:6]], STOCK_NAMES_T6, "Q7: stock's rows say WT1 / WT2")
+        self.assertEqual([n for _, _, _, n in got[:9]], OUR_NAMES_T6)
+        self.assertEqual([k for k, _, _, _ in got], [k for _, _, k in OUR_DEST])
+        self.assertEqual([h for _, h, _, _ in got[:9]], [h1] * 4 + [h2] * 5)
+        self.assertEqual([c for k, _, c, _ in got[:9]], [c for _, _, c, _ in old[:3]] + [0] + [c for _, _, c, _ in old[3:6]] + [0, 0])
+        self.assertEqual([(k, c, n) for k, _, c, n in got[9:]], [(k, c, n) for k, _, c, n in old[6:]], "the other rows: stock's")
+        self.assertEqual(len({h for _, h, _, _ in got[9:]}), len({h for _, h, _, _ in old[6:]}))
+
+    def test_dest_name_lists_them_too(self):
+        """DEST_NAME (the piano roll's destination list, 0x08159DCC: every table row of a child's type) names ours."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        view = r.buf(0x120000)
+        r.w32(view + 0x11CD08, r.handle(t))
+        got = []
+        for o, key in ((w1, SUBFM), (w2, FM12), (w2, SUBFM)):
+            hp = r.buf(4); r.w32(hp, r.handle(o)); out = r.buf(64)
+            r.call(S.DEST_NAME, view, hp, key, out, 0x40, 0)
+            got.append(r.e.text(out, 64))
+        self.assertEqual(got, ["OSC1: Sub FM", "OSC2: FM 1>2", "OSC2: Sub FM"])
+
+    def test_the_per_type_key_post_carries_our_keys(self):
+        """MX_TYPE_KEYS_POST (model, obj, type, r3): one 0x3F {obj, key, slot 3} per table row of the type (MX_KEY_POST). For type 6 it
+        now carries ours (stock's M7 slot 10 ignores any key it does not route until X2)."""
+        for img, base, want in ((IMG, S, [3, 0xC4, 0xC9, SUBFM, 3, 0xC4, 0xC9, FM12, SUBFM]), (STOCK, S, [3, 0xC4, 0xC9] * 2)):
+            r = Rig(img=img, wrap=img is IMG)
+            keys = []
+            def log(uc, a, sz, _):
+                keys.append(uc.reg_read(UC_ARM_REG_R2))
+                uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+            r.u.hook_add(UC_HOOK_CODE, log, begin=S.MX_KEY_POST, end=S.MX_KEY_POST)
+            r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+            r.call(S.MX_TYPE_KEYS_POST, S.MODEL, 0x1234, 6, 0)
+            self.assertEqual(keys, want)
+
+    def make(self, r):
+        t, w1, w2 = r.wavetable()
+        osc = {1: w1, 2: w2}
+        for o, key, src, slot, amt in ROUTED:
+            set_route(r, r.handle(osc[o]), key, src, slot, amt)
+        set_route(r, r.handle(w1), 0xC9, LFO1, 0, 300)                    # a stock routing (Position), the control
+        return t, w1, w2
+
+    def test_a_routing_is_created_and_read_back(self):
+        r = Rig(); t, w1, w2 = self.make(r)
+        self.assertEqual(routes(r, w1), sorted([(SUBFM, LFO1, 0, 500), (0xC9, LFO1, 0, 300)]))
+        self.assertEqual(routes(r, w2), sorted([(FM12, LFO1, 1, -250), (SUBFM, 5, 2, 1000)]))
+        for o, key, src, slot, amt in ROUTED:                           # the matrix reads it back through MX_ROUTE
+            h = r.buf(4); r.w32(h, r.handle({1: w1, 2: w2}[o])); out = r.buf(8)
+            sp = r.buf(4)
+            got = r.call(S.MX_ROUTE, S.MODEL, h, key, slot, out)
+            self.assertEqual(got, 1, f"found {key:#x} slot {slot}")
+            self.assertEqual(struct.unpack("<iH", bytes(r.u.mem_read(out, 6))), (amt, src))
+        set_route(r, r.handle(w2), SUBFM, 0, 2, 0)                       # source None: removed
+        self.assertEqual(routes(r, w2), [(FM12, LFO1, 1, -250)])
+
+    def test_save_and_load(self):
+        r = Rig(); t, w1, w2 = self.make(r)
+        text = r.save()
+        ms = re.findall(r"<modsource[^>]*>", text)
+        self.assertIn('dest="bento_subfm"', " ".join(ms))
+        self.assertEqual(sum('dest="bento_subfm"' in m for m in ms), 2)
+        self.assertEqual(sum('dest="bento_fm12"' in m for m in ms), 1)
+        x = Rig(); st = x.load(text)
+        c = x.children(x.wt_tracks(st)[0])
+        self.assertEqual(routes(x, c[0]), routes(r, w1))
+        self.assertEqual(routes(x, c[1]), routes(r, w2))
+        self.__class__.text = text
+
+    def test_stock_168_loads_them_as_key_0(self):
+        """Stock 1.6.8 has no bento_subfm / bento_fm12 token: the reader's lookup (0x08168580) gives 0, so each routing is a
+        node of key 0 (no destination routes key 0: inert); the stock one is kept as it was; stock's save writes no dest."""
+        r = Rig(); self.make(r); text = r.save()
+        s = Rig(img=STOCK, wrap=False); st = s.load(text)
+        c = s.children(s.wt_tracks(st)[0])
+        self.assertEqual(routes(s, c[0]), sorted([(0, LFO1, 0, 500), (0xC9, LFO1, 0, 300)]))
+        self.assertEqual(routes(s, c[1]), sorted([(0, LFO1, 1, -250), (0, 5, 2, 1000)]))
+        again = s.save(st)
+        self.assertNotIn("bento_", again)
+        ms = re.findall(r"<modsource[^>]*>", again)
+        self.assertEqual(sum("dest=" not in m for m in ms), 3, f"three dead routings written without a dest: {ms}")
+        x = Rig(); c = x.children(x.wt_tracks(x.load(again))[0])
+        self.assertEqual(routes(x, c[0]), sorted([(0, LFO1, 0, 500), (0xC9, LFO1, 0, 300)]), "and BE reads them back as key 0")
+
+    def test_be444_loads_them_and_keeps_them(self):
+        """BE4.44 (the rollback) has our tokens (N2), so the routings load with their keys; it has no row for them and its M7
+        ignores the keys: inert, and its next save keeps them."""
+        img = REF444 / "bento1.bin"
+        if not img.exists():
+            self.skipTest(f"no BE4.44 build at {REF444} (BE_REF444)")
+        man = json.loads((REF444 / "manifest.json").read_text())
+        self.assertEqual(man["version"], "4.44")
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        r = Rig(); self.make(r); text = r.save()
+        b = Rig(img=img.read_bytes(), sym=sym); st = b.load(text)
+        c = b.children(b.wt_tracks(st)[0])
+        self.assertEqual(routes(b, c[0]), sorted([(SUBFM, LFO1, 0, 500), (0xC9, LFO1, 0, 300)]))
+        self.assertEqual(routes(b, c[1]), sorted([(FM12, LFO1, 1, -250), (SUBFM, 5, 2, 1000)]))
+        t = b.wt_tracks(st)[0]
+        self.assertEqual(len(mx_rows(b, t)), 23, "no row for them on BE4.44")
+        again = b.save(st)
+        self.assertEqual(again.count('dest="bento_subfm"'), 2); self.assertEqual(again.count('dest="bento_fm12"'), 1)
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])
