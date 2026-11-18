@@ -361,7 +361,7 @@ GROUP_NAMES = {
                "VALUE_TEXT_1", "VALUE_TEXT_2", "VALUE_TEXT_3", "ENC_POS_SET", "WT_PANE_FRAMES_DIRTY",
                # BE4.45 X1 (docs/plan-fm-targets.md): the Wavetable Mod Matrix destination table, its users, the row filler's bounds
                "MX_WT_DEST_TAB", "MX_WT_DEST_COUNT", "MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4",
-               "MX_WT_ROWS_N", "MX_WT_ROWS_END"),
+               "MX_WT_DEST_N_LIT_1", "MX_WT_DEST_N_LIT_3", "MX_WT_DEST_N_LIT_4", "MX_WT_ROWS_N", "MX_WT_ROWS_END"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -1830,6 +1830,11 @@ def np_template(base_img, stock_n):
 # because it was not DEST_NAME's), and our three rows carry their own name (+0x10) so the row filler never asks the registry
 # (whose title would be null if N2 ever left our keys out). CC column (+0x14): 0, which the page shows blank (MX_ROWS_BUILD
 # 0x0814E798: ids are read only there, for display; the column names the CC stock maps to a row, and none maps to ours).
+# Users: the row filler (the Mod Matrix page), DEST_NAME and 0x08134700 (the per-type 0x3F posts) read our copy, which has
+# its own count word (after the strings). The destination enumerator 0x08159358 keeps stock's table and count word: it is
+# the piano roll's destination list (0x08159CA8, called from the piano roll), which matches rows by type only and takes
+# no instance, so our rows there would offer every type-6 key on both oscillators ('OSC1: FM 1>2' too, and the knobless
+# OSC2 Sub FM): X1 review; Jeff's three destinations are the Mod Matrix's only.
 MX_DEST_NEW = ((0, "KEY_OSC_SUBFM", "Sub FM"), (1, "KEY_OSC_FM12", "FM 1>2"), (1, "KEY_OSC_SUBFM", "Sub FM"))
 MX_DEST_STOCK_N = 23
 MX_DEST_STOCK_T6 = [(0, 3), (0, 0xC4), (0, 0xC9), (1, 3), (1, 0xC4), (1, 0xC9)]   # (instance, key): Pitch, Level, Position
@@ -1838,7 +1843,8 @@ MX_DEST_ENT = 24
 
 
 def mx_dest_table(base_img, at):
-    """X1: (bytes at `at`: the 26 entries, then our strings; the entry count)."""
+    """X1: (bytes at `at`: the 26 entries, our strings, then the u32 entry count (our count word, the last 4 bytes);
+    the entry count)."""
     t, n = S.MX_WT_DEST_TAB - BASE, struct.unpack_from("<I", base_img, S.MX_WT_DEST_COUNT - BASE)[0]
     if n != MX_DEST_STOCK_N:
         raise SystemExit(f"X1: stock's Wavetable destination count is {n}, not {MX_DEST_STOCK_N}")
@@ -1869,35 +1875,51 @@ def mx_dest_table(base_img, at):
         e[0] = NP_OSC_TYPE
         struct.pack_into("<IHxxIIB", e, 4, inst, getattr(S, k), addr[MX_DEST_FMT[inst]], addr[name.encode()], 0)
         out.insert(t6[0] + 3 * (inst + 1), e)
-    return b"".join(bytes(x) for x in out) + bytes(strs), total
+    return b"".join(bytes(x) for x in out) + bytes(strs) + struct.pack("<I", total), total
 
 
-MX_DEST_LITS = ("MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4")
+# (table literal, its count literal) per user; the enumerator's pair (LIT_3 / N_LIT_3) is kept stock's (see above)
+MX_DEST_USERS = (("MX_WT_DEST_LIT_1", "MX_WT_DEST_N_LIT_1"), ("MX_WT_DEST_LIT_2", None),
+                 ("MX_WT_DEST_LIT_3", "MX_WT_DEST_N_LIT_3"), ("MX_WT_DEST_LIT_4", "MX_WT_DEST_N_LIT_4"))
+MX_DEST_KEEP = ("MX_WT_DEST_LIT_3", "MX_WT_DEST_N_LIT_3")
 
 
 def mx_dest_patches(base_img, patch, at, data, n):
-    """X1: the table's four literal words -> our copy, its count word -> n, the row filler's two bounds (it hard-codes 23).
-    Refused unless, on the base image, those literals are every reference to the table (no other aligned word holds it or
-    points inside it, no movw / movt pair builds it) and the count word's every reference is paired with one of them."""
+    """X1: the table literals of the row filler, DEST_NAME and 0x08134700 -> our copy, their count literals -> our count
+    word, the row filler's two bounds (it hard-codes 23); the enumerator's two literals, stock's table and stock's count
+    word stay as they are. Refused unless, on the base image, the four table literals are every reference to the table
+    (no other aligned word holds it or points inside it, no movw / movt pair builds it) and the three count literals,
+    each 4..8 B before its table literal, are every reference to the count word."""
     tab, cnt = S.MX_WT_DEST_TAB, S.MX_WT_DEST_COUNT
     refs = one_reference(base_img, {tab, cnt})
-    lits = sorted(getattr(S, x) for x in MX_DEST_LITS)
+    lits = sorted(getattr(S, x) for x, _ in MX_DEST_USERS)
     if sorted(refs[tab]) != lits:
-        raise SystemExit(f"X1: the table is referenced at {[hex(a) for a in refs[tab]]}, not only by {MX_DEST_LITS}")
+        raise SystemExit(f"X1: the table is referenced at {[hex(a) for a in refs[tab]]}, not only by {MX_DEST_USERS}")
     for k in range(0, len(base_img) - 3, 4):
         w = struct.unpack_from("<I", base_img, k)[0]
         if tab < w < tab + MX_DEST_ENT * MX_DEST_STOCK_N:
             raise SystemExit(f"X1: the word at {BASE + k:#x} points inside the table ({w:#x})")
-    if len(refs[cnt]) != 3 or any(not any(0 < l - c <= 8 for l in lits) for c in refs[cnt]):
-        raise SystemExit(f"X1: the count word's references {[hex(a) for a in refs[cnt]]} are not three, each before a table literal")
+    nlits = [(getattr(S, l), getattr(S, c)) for l, c in MX_DEST_USERS if c]
+    if sorted(refs[cnt]) != sorted(c for _, c in nlits) or any(not 0 < l - c <= 8 for l, c in nlits):
+        raise SystemExit(f"X1: the count word's references {[hex(a) for a in refs[cnt]]} are not "
+                         f"{[x for _, x in MX_DEST_USERS if x]}, each before its table literal")
+    for x in [y for u in MX_DEST_USERS for y in u if y]:
+        if S.orig(x) != struct.pack("<I", tab if x in dict(MX_DEST_USERS) else cnt):
+            raise SystemExit(f"X1: {x} does not hold stock's {'table' if x in dict(MX_DEST_USERS) else 'count word'}")
+    if struct.unpack_from("<I", data, len(data) - 4)[0] != n:
+        raise SystemExit("X1: our table's count word is not its last word")
     for site, src in (("MX_WT_ROWS_N", f"movs r2, #{MX_DEST_STOCK_N:#x}"),
                       ("MX_WT_ROWS_END", f"add.w r7, r4, #{MX_DEST_ENT * MX_DEST_STOCK_N:#x}")):
         if asm(src, getattr(S, site)) != S.orig(site):
             raise SystemExit(f"X1: {site} is not stock's '{src}'")
     patch(at, data, b"\xff" * len(data), f"FM targets (BE4.45 X1): Wavetable Mod Matrix destinations ({n} entries, names)")
-    for lit in MX_DEST_LITS:
+    for lit, nlit in MX_DEST_USERS:
+        if lit in MX_DEST_KEEP:
+            continue
         patch(getattr(S, lit), struct.pack("<I", at), S.orig(lit), f"FM targets: destination table literal ({lit})")
-    patch(cnt, struct.pack("<I", n), S.orig("MX_WT_DEST_COUNT"), f"FM targets: destination count {n}")
+        if nlit:
+            patch(getattr(S, nlit), struct.pack("<I", at + len(data) - 4), S.orig(nlit),
+                  f"FM targets: destination count literal ({nlit}) -> our count word ({n})")
     for site, src in (("MX_WT_ROWS_N", f"movs r2, #{n:#x}"), ("MX_WT_ROWS_END", f"addw r7, r4, #{MX_DEST_ENT * n:#x}")):
         c = asm(src, getattr(S, site))
         if len(c) != len(S.orig(site)):
@@ -2098,7 +2120,8 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                   "Drums: handles (H4): a pad's child copy carries its knobs")
     s4.update({f"synth.{k}": v for k, v in ss.items()})
     s4.update({"synth.np_template": tpl_at if an else 0, "synth.np_template_n": tpl_n})
-    s4.update({"synth.mx_dest": mx_at, "synth.mx_dest_n": mx_n})
+    s4.update({"synth.mx_dest": mx_at, "synth.mx_dest_n": mx_n,
+               "synth.mx_dest_count": mx_at + len(mx_data) - 4 if mx_at else 0})
     if n2 is not None:
         s4.update({"synth.wrap_reg_build": n2, "synth.wrap_pane_title": t1, "synth.wrap_browse": b1})
     if inc("drums"):

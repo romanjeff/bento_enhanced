@@ -683,6 +683,30 @@ def mx_rows(r, track):
              r.u.mem_read(view + MXV_CC + i, 1)[0], r.e.text(view + MXV_NAMES + 16 * i, 16)) for i in range(n)]
 
 
+PIANO_DEST_LIST = 0x08159CA8   # the piano roll's destination list (callers 0x08159EFC, PIANO_EVENT 0x0815C40E)  # addr-ok: X1 review
+PIANO_DEST_ENUM = 0x08159358   # its enumerator (type, key) of the global, Granular and Wavetable rows  # addr-ok: X1 review
+
+
+def piano_dests(r, track, roles):
+    """Stock's piano-roll destination list builder on a fresh view of this track: [(role of the entry's handle, key, name)].
+    Stubbed: the entry's value read 0x0815973C (live classes) and the list's finish 0x0817D494 (UI)."""
+    view = r.buf(0x126000)
+    r.w32(view + 0x11CD08, r.handle(track))
+    def ret0(uc, a, sz, _):
+        uc.reg_write(UC_ARM_REG_R0, 0); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+    for a in (0x0815973C, 0x0817D494):  # addr-ok: X1 review
+        r.u.hook_add(UC_HOOK_CODE, ret0, begin=a, end=a)
+    r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+    r.call(PIANO_DEST_LIST, view)
+    lst = view + 0x7E38
+    out = []
+    for i in range(r.r32(lst + 0x113BB4)):
+        e = lst + 0x112FB4 + 0x30 * i
+        out.append((roles.get(r.r32(e), hex(r.r32(e))), struct.unpack("<H", bytes(r.u.mem_read(e + 4, 2)))[0],
+                    r.e.text(e + 0xE, 32)))
+    return out
+
+
 def routes(r, o):
     """The routings stored on an object: the type-1 nodes of its list (first at +0x14, next at +4: 0x0812EE94)
     {+8 type, +0xC amount, +0x10 source, +0x12 key, +0x14 slot}."""
@@ -725,9 +749,18 @@ class FmTargets(unittest.TestCase):
         self.assertEqual([text(IMG, e[4]) if e[4] else None for e in got[:9]],
                          [None] * 3 + ["Sub FM"] + [None] * 3 + ["FM 1>2", "Sub FM"])
         self.assertEqual([e[5] for e in got if e[2] in (SUBFM, FM12)], [0, 0, 0], "CC column blank")
-        for lit in ("MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4"):
-            self.assertEqual(struct.unpack_from("<I", IMG, getattr(S, lit) - BASE)[0], at, lit)
-        self.assertEqual(struct.unpack_from("<I", IMG, S.MX_WT_DEST_COUNT - BASE)[0], 26)
+        word = lambda img, a: struct.unpack_from("<I", img, a - BASE)[0]
+        for lit in ("MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_4"):
+            self.assertEqual(word(IMG, getattr(S, lit)), at, lit)
+        cnt = SYM["mx_dest_count"]
+        self.assertEqual(cnt, at + 26 * 24 + len(b"OSC1: %s\0\0\0\0OSC2: %s\0\0\0\0FM 1>2\0\0Sub FM\0\0"), "after the strings")
+        self.assertEqual(word(IMG, cnt), 26, "our count word")
+        for lit in ("MX_WT_DEST_N_LIT_1", "MX_WT_DEST_N_LIT_4"):
+            self.assertEqual(word(IMG, getattr(S, lit)), cnt, lit)
+        # the enumerator (the piano roll's list) keeps stock's table and count word, which stay 23
+        self.assertEqual(word(IMG, S.MX_WT_DEST_LIT_3), S.MX_WT_DEST_TAB)
+        self.assertEqual(word(IMG, S.MX_WT_DEST_N_LIT_3), S.MX_WT_DEST_COUNT)
+        self.assertEqual(word(IMG, S.MX_WT_DEST_COUNT), 23)
         self.assertEqual(IMG[S.MX_WT_ROWS_N - BASE:S.MX_WT_ROWS_N - BASE + 2], bytes(KS.asm("movs r2, #26", S.MX_WT_ROWS_N)[0]))
         self.assertEqual(IMG[S.MX_WT_ROWS_END - BASE:S.MX_WT_ROWS_END - BASE + 4],
                          bytes(KS.asm(f"addw r7, r4, #{26 * 24}", S.MX_WT_ROWS_END)[0]))
@@ -752,21 +785,48 @@ class FmTargets(unittest.TestCase):
         self.assertEqual([(k, c, n) for k, _, c, n in got[9:]], [(k, c, n) for k, _, c, n in old[6:]], "the other rows: stock's")
         self.assertEqual(len({h for _, h, _, _ in got[9:]}), len({h for _, h, _, _ in old[6:]}))
 
-    def test_dest_name_lists_them_too(self):
-        """DEST_NAME (the piano roll's destination list, 0x08159DCC: every table row of a child's type) names ours."""
+    def test_dest_name_names_them_from_our_table(self):
+        """DEST_NAME (callers: the piano roll's list 0x08159DCC and 0x0815A002) names ours, reading our table. The name alone
+        cannot tell the tables apart (with stock's, DEST_NAME falls back to the registry title, the same words), so the
+        test also requires DEST_NAME to read our table's rows."""
+        from unicorn import UC_HOOK_MEM_READ
         r = Rig(); t, w1, w2 = r.wavetable()
         view = r.buf(0x120000)
         r.w32(view + 0x11CD08, r.handle(t))
+        at = SYM["mx_dest"]
+        seen = []
+        r.u.hook_add(UC_HOOK_MEM_READ, lambda uc, acc, a, sz, v, _: seen.append(a), begin=at, end=at + 26 * 24 - 1)
         got = []
         for o, key in ((w1, SUBFM), (w2, FM12), (w2, SUBFM)):
             hp = r.buf(4); r.w32(hp, r.handle(o)); out = r.buf(64)
+            seen.clear()
             r.call(S.DEST_NAME, view, hp, key, out, 0x40, 0)
             got.append(r.e.text(out, 64))
+            self.assertTrue(seen, f"DEST_NAME read our table for {key:#x}")
         self.assertEqual(got, ["OSC1: Sub FM", "OSC2: FM 1>2", "OSC2: Sub FM"])
+
+    def test_the_piano_roll_list_is_stocks(self):
+        """X1 review: the piano roll's destination list (0x08159CA8, through the enumerator 0x08159358) matches table rows by
+        type only and takes no instance, so our rows there would offer 'OSC1: FM 1>2' and the knobless OSC2 Sub FM. It keeps
+        stock's table: the same entries as stock's, none of ours; the enumerator's bytes are stock's."""
+        lists = []
+        for img in (IMG, STOCK):
+            r = Rig(img=img, wrap=img is IMG)
+            t, w1, w2 = r.wavetable()
+            lists.append(piano_dests(r, t, {r.handle(w1): "osc1", r.handle(w2): "osc2", r.handle(t): "track"}))
+        got, old = lists
+        self.assertEqual(len(old), 23, "stock's list (control)")
+        self.assertIn(("osc1", 0xC9, "WT1: Position"), old, "the control names the oscillator entries")
+        # the same entries; BE's names are stock's with T0's oscillator rename (DEST_NAME's format: 'OSC%d: %s')
+        self.assertEqual(got, [(h, k, re.sub(r"^WT([12]):", r"OSC\1:", n)) for h, k, n in old])
+        self.assertFalse([e for e in got if e[1] in (SUBFM, FM12)])
+        self.assertEqual(IMG[PIANO_DEST_ENUM - BASE:0x08159420 - BASE], STOCK[PIANO_DEST_ENUM - BASE:0x08159420 - BASE])  # addr-ok
 
     def test_the_per_type_key_post_carries_our_keys(self):
         """MX_TYPE_KEYS_POST (model, obj, type, r3): one 0x3F {obj, key, slot 3} per table row of the type (MX_KEY_POST). For type 6 it
-        now carries ours (stock's M7 slot 10 ignores any key it does not route until X2)."""
+        now carries ours (stock's M7 slot 10 ignores any key it does not route until X2). It matches rows by type only, so
+        one object gets every type-6 key, the other oscillator's too (OSC1 gets a post for FM 1>2): X2's slot-10 hook must
+        ignore 0x132 on instance 0."""
         for img, base, want in ((IMG, S, [3, 0xC4, 0xC9, SUBFM, 3, 0xC4, 0xC9, FM12, SUBFM]), (STOCK, S, [3, 0xC4, 0xC9] * 2)):
             r = Rig(img=img, wrap=img is IMG)
             keys = []
