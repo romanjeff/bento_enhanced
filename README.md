@@ -1,19 +1,31 @@
 # bento_enhanced
 
-Community firmware research and (eventually) mods for the [1010music Bento](https://1010music.com/product/bento) — a portable sampling/synthesis groovebox.
+Community firmware mods and reverse-engineering research for the [1010music Bento](https://1010music.com/product/bento), a portable sampling/synthesis groovebox.
 
-**Not affiliated with, endorsed by, or supported by 1010music.** Bento is a trademark of its owner. This project contains no 1010music firmware and never will — bring your own official `.bin` files from [1010music's downloads page](https://1010music.com/downloads). Everything here is independent reverse-engineering research plus (eventually) patches that apply to a copy of the official firmware you supply yourself.
+**Not affiliated with, endorsed by, or supported by 1010music.** Bento is a trademark of its owner. This project contains no 1010music firmware and never will: you bring your own official `.bin` files from [1010music's downloads page](https://1010music.com/downloads), and the build patches that copy on your own computer.
 
 ## Status
 
-**Current release: [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40)**, a set of firmware mods for **stock Bento 1.6.1** that run on hardware. Highlights:
+**Current release: [v4.46](https://github.com/romanjeff/bento_enhanced/releases/tag/v4.46)** (`BE4.46` on the boot screen), built on **stock Bento 1.6.8** and tested on hardware. **To build it for your own Bento, follow [`BUILDING.md`](https://github.com/romanjeff/bento_enhanced/blob/v4.46/BUILDING.md)**: one page, no programming needed, starting from your own download of the official 1.6.8 firmware. The build checks that your result is byte for byte the image tested on hardware.
 
-- **Aftertouch sequencing**: record per-note pad pressure in the piano roll and play it back. It works on External tracks (MIDI poly aftertouch or channel pressure) and on Bento's own instruments. **AT Rec** and **AT Out** (Off / Poly / Channel) are set per track and saved with the project.
+The `main` branch is where development happens; always build a release from its tag, as BUILDING.md shows. (Up to [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40), the mods were built on stock 1.6.1.)
+
+### Highlights
+
+- **Synth engine, feature complete in v4.46** (Analog / Wavetable / FM):
+  - an **Analog** oscillator type next to stock's Wavetable;
+  - **FM** on Analog and Wavetable oscillators: **Sub FM** (the sub oscillator modulates its oscillator) and **FM 1>2** (OSC1 modulates OSC2). It is linear, through-zero FM, so a patch keeps its timbre across the keyboard;
+  - a per-oscillator **FM envelope** (FM Atk / FM Dec) on the FM amount;
+  - the FM amounts as **Mod Matrix destinations** (OSC1 Sub FM, OSC2 FM 1>2, OSC2 Sub FM), so pressure, LFOs, envelopes or velocity can drive them, plus **piano-roll automation lanes** on them;
+  - **FM Env 1 / FM Env 2** as Mod Matrix sources.
+- **Aftertouch sequencing**: record per-note pad pressure in the piano roll and play it back, on External tracks (MIDI poly aftertouch or channel pressure) and on Bento's own instruments. **AT Rec** and **AT Out** (Off / Poly / Channel) are set per track and saved with the project.
 - **Live poly aftertouch** out of External tracks, with a polyphony cap of 6.
 - **Sequencer extras**: trigger conditions (`A:B`, `1ST`, `PRE` and their inverses), per-step retriggers with velocity ramps, pad defaults with per-step locks, strike velocity, and hold-to-inspect steps.
 - **Hold shortcuts** for tracks, clip launch and mixer, and an on-card **black box** for crash and stall records.
 
-Projects saved with these mods still open on stock 1.6.1. Features, usage, installation and internals are in [`mods/m1/`](mods/m1/); [`ROADMAP.md`](ROADMAP.md) covers what's next. Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
+**Coming next:** a per-track compressor and clipper in the mixer, then a Drum Synth track with its own synthesized drum engines.
+
+**Projects that use the mods' features are not supported on stock firmware:** they usually open there, but may not play correctly. The mod never touches the bootloader, so going back to stock is the normal firmware install. Release notes, features, usage and internals: [release notes](https://github.com/romanjeff/bento_enhanced/blob/v4.46/docs/release-notes-v4.46.md), [`mods/m1/`](https://github.com/romanjeff/bento_enhanced/tree/v4.46/mods/m1). Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
 
 ## Why this exists
 
