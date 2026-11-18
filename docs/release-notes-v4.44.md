@@ -65,7 +65,8 @@ OSC2's knob 6 is now FM 1>2 for every OSC1 type (see the behaviour changes below
 
 ## Projects
 
-- No new project keys, so BE4.44 projects open everywhere:
+- **Projects that use the mod's features are not supported on stock firmware**: they usually open,
+  but may not play correctly. There are no new project keys:
   - stock 1.6.8 ignores the FM values;
   - BE4.43 keeps them, but plays Wavetable oscillators as stock.
 - BE4.44 opens BE4.43 projects. The only change is the Analog OSC2 next to a Wavetable OSC1 case above.

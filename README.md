@@ -14,7 +14,7 @@ Community firmware research and (eventually) mods for the [1010music Bento](http
 - **Synth extras**: an Analog oscillator type with FM and its own FM envelope, and FM on Wavetable oscillators (v4.44).
 - **Hold shortcuts** for tracks, clip launch and mixer, and an on-card **black box** for crash and stall records.
 
-Projects saved with these mods still open on stock 1.6.8. Features, usage, installation and internals are in [`mods/m1/`](mods/m1/); [`ROADMAP.md`](ROADMAP.md) covers what's next. Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
+Projects that use these mods' features are not supported on stock firmware: they usually open there but may not play correctly. Features, usage, installation and internals are in [`mods/m1/`](mods/m1/); [`ROADMAP.md`](ROADMAP.md) covers what's next. Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
 
 ## Why this exists
 

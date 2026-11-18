@@ -29,7 +29,8 @@ Verified on hardware unless marked otherwise.
 | **Hold shortcuts** (TRACKS / LAUNCH / MIXER / INST + pads) | everywhere | v2.6 |
 | **Black box**: crash and stall records on the SD card | `BENTO_DIAG.log`, `BENTO_CRASHES.log` | v2.1+ |
 
-**Stock compatibility.** Projects saved with these features still open on stock. On stock 1.6.1
+**Stock compatibility.** Projects that use these features are not supported on stock firmware: they
+usually open, but may not play correctly. On stock 1.6.1
 this was checked on hardware for the v3.x builds; on stock 1.6.8 a dev suite (test_native_props, needs the
 author's reference builds) loads them in stock's own reader, and each release's device checklist has the hardware check. Stock plays mod-only
 features its own way (Analog oscillators as plain Wavetable, Wavetable FM ignored), plays recorded-aftertouch notes as plain notes and ignores

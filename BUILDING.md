@@ -50,8 +50,9 @@ Check: `python3.12 --version` prints `Python 3.12.x`, and `git --version` prints
 ## 2. Download the stock firmware from 1010music
 
 Go to 1010music's downloads page (<https://1010music.com/downloads>, Bento section) and download
-**firmware 1.6.8**. It usually comes as a zip (for example `bento-1.6.8.zip`) that holds
-`bento1.bin` and `bento2.bin`. You can leave it zipped.
+**firmware 1.6.8**. The firmware is two files, `bento1.bin` and `bento2.bin`. Keep them together
+in one folder (its name doesn't matter), or leave them in the zip they came in: make_kit takes
+either. The examples below use a zip called `bento-1.6.8.zip`; use your own file or folder name.
 
 Note where it went. On Windows that is normally your Downloads folder, which Ubuntu sees as
 `/mnt/c/Users/<you>/Downloads/`, where **`<you>` is your Windows user name** (this page uses
@@ -158,21 +159,24 @@ the firmware).
 
 ## 7. Install it on the Bento
 
-1. **Back up your SD card** (copy the whole card to a folder on your computer). The mod saves
-   projects that stock still opens, but a backup costs nothing.
+1. **Back up your SD card** (copy the whole card to a folder on your computer). A backup costs
+   nothing, and it is your way back to projects exactly as they were (see step 8).
 2. Copy **both** files from `01_TEST_FIRMWARE/` (`bento1.bin` and `bento2.bin`) to the **root** of
    the SD card (not in a folder), replacing any there. On Windows, eject the card (right-click it in
    Explorer, *Eject*) before you take it out.
-3. Put the card in the Bento. Hold **power** to start the bootloader, then press **REC** to install.
+3. Put the card in the Bento. **Long-press power** to start the bootloader, then press **REC** to
+   install.
 4. The boot screen shows **BE4.44**. Then go through `DEVICE_CHECKLIST.txt` if you like.
 
 ## 8. Going back to stock
 
 Do step 7 with the two files from `03_RESTORE_STOCK/` instead. That is the official firmware,
 installed the official way; the boot screen no longer shows `BE`. You can switch back and forth.
-Projects saved with the mod open on stock. Stock plays the mod-only features its own way: for
-example it ignores FM on Wavetable oscillators, plays Analog oscillators as plain Wavetable, and
-plays recorded aftertouch as plain notes.
+**Projects that use the mod's features are not supported on stock firmware.** They usually open,
+but they may not play correctly: stock doesn't know the mod's features, so for example it ignores
+FM, plays Analog oscillators as plain Wavetable, and plays recorded aftertouch as plain notes. Keep
+a backup of any project you care about from before you used the mod. Projects that don't use the
+mod's features behave as they always did.
 
 ## What you may not do
 
