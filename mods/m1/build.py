@@ -2103,7 +2103,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
         s4.update({"synth.wrap_reg_build": n2, "synth.wrap_pane_title": t1, "synth.wrap_browse": b1})
     if inc("drums"):
         s4.update({"synth.wrap_save": x1, "synth.wrap_load": x2, "synth.wrap_context": x3, "synth.wrap_ctor": h1})
-    return len(code) + len(tpl_data)
+    return len(code) + len(tpl_data) + (len(mx_data) if an else 0)   # X1: the destination table counts too
 
 
 def note_on_case(status, two_data=True, native=False, guard=False):

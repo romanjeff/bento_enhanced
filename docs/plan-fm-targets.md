@@ -158,7 +158,7 @@ BE4.41 and later have the tokens too (I). BE4.40 does not, so it gives key 0 lik
 - `ShapeMod.test_x1_fm_destinations_are_inert_until_x2`: slot 10 called for both keys on both oscillators (Analog), slots 0..3, writes no byte outside the stack. The voice with Sub FM 300 and FM 1>2 200 renders bit for bit as without them. Position still routes (control).
 - `FmTargets.test_the_per_type_key_post_carries_our_keys`. 0x08134700 (model, obj, type) posts one 0x3F `{obj, key, slot 3, source 0}` per table row of a type (stock: 3, 0xC4, 0xC9 twice). For type 6 it now posts our keys too: 3, 0xC4, 0xC9, 0x18B, 3, 0xC4, 0xC9, 0x132, 0x18B. Stock's slot 10 ignores them.
 
-**X2 must handle this message.** It is slot 3, stock's fixed fourth slot (PARAM + 0x20), with source 0 or the caller's r3. The plan did not list it.
+**X2 must handle this message.** It is slot 3 (PARAM_CONNECT's r2 = 3, which the feasibility note reads as the PARAM's fixed slot at + 0x20: I), source 0, and the caller's r3 in the message's instance field (+2). The plan did not list it.
 
 **Firmware outside the M4 is byte-identical to BE4.44 (M, an image compare against be444w4f).** The only differences are:
 - the four literals, the count word and the two row-filler bounds;
@@ -170,15 +170,28 @@ The M7, the DSP window and every M4 code byte are unchanged.
 ### Sizes (M, ~/bento/out/be445x1)
 
 - **DSP:** 30,884 B, **9,820 B free** of 40,704 (unchanged).
-- **M4:** M4 code 24,424 B; synth UI 15,846 B (code); M7 C slice 15,368 B (all unchanged).
+- **M4:** M4 code 24,424 B and M7 C slice 15,368 B (unchanged). The manifest's synth UI figure is now 16,510 B, which is 15,846 (code and N1 template, unchanged) + 664.
 - **X1's table:** 664 B in the synth UI block.
-- **Image:** 0x1896E8, **15,436 B to PROVEN_MAX** (BE4.44: 16,100).
+- **Image:** 0x1896E8, **15,436 B to PROVEN_MAX** (BE4.44: 16,100). That is the M4 room left for X2's M4 part and for P4.
+- **Kit image:** `BE_TAG=X1`, sha256 e22fd49c992f4ed50e12447442a0b6ee8a651da217494431eb9a2495b6539e6f (not a release kit).
 
-### CPU
+### CPU (M, the suite on be445x1)
 
-There is no M7 or DSP change (byte-identical, above), so the P3Identity numbers are BE4.44's: worst 1.0165 against the 1.95 % stop line (re-run in the suite).
+There is no M7 or DSP change (byte-identical, above), and the measurements are BE4.44's:
+- P3Identity, 48 cases: worst **1.0165** (mod dev=False, 111,708 / 109,899), total 1.0087. The stop line is 1.95 %.
+- WtFmW4 voices: the heaviest steady voice is 34,760 (note 24, light FM, Position every block), against the 35,309 ceiling. Its one-block maximum is 39,392.
 
 The routed cost per voice-block belongs to X2: nothing runs for these keys yet.
+
+### Suites (M, ~/bento/out/be445x1, from the worktree's mods/m1; skips in brackets)
+
+All OK:
+- diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20);
+- notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10;
+- **native_props 30** (22 + 8), **analog 211** (210 + 1), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32;
+- p3_golden self-test 52.
+
+Drums suites: not run (the default build leaves drums out). The 1.6.1 build still builds (no analog group there, so no X1 patch).
 
 ## Sprint X2 (M7 / DSP), the plan carried forward (not built)
 
