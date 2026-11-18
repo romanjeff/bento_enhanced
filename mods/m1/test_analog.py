@@ -7851,6 +7851,29 @@ def x2_store(r):
     return out
 
 
+def x2_fma32(a, b, c):
+    """float32 fused multiply-add, one rounding (to nearest, ties to even), as VFMA.F32."""
+    x = Fraction(float(a)) * Fraction(float(b)) + Fraction(float(c))
+    y = np.float32(float(x))
+    best = None
+    for z in (y, np.nextafter(y, np.float32(np.inf)), np.nextafter(y, np.float32(-np.inf))):
+        k = (abs(Fraction(float(z)) - x), int(np.frombuffer(np.float32(z).tobytes(), "<u4")[0]) & 1)
+        if best is None or k < best[0]:
+            best = (k, z)
+    return np.float32(best[1])
+
+
+def x2_law(knob, terms):
+    """The plan's law (Q4) in float32, as x2_enter: m = fma(f32(amt) x f32(0.001), src, m) over the slots in order, then
+    f = fma(m, 1000, knob), v = 0 unless f > 0, 1000 from f >= 1000, else (u32)(f + 0.5)."""
+    f32 = np.float32
+    m = f32(0)
+    for amt, src in terms:
+        m = x2_fma32(f32(amt) * f32(0.001), f32(src), m)
+    f = x2_fma32(m, f32(1000), f32(knob))
+    return 0 if not f > 0 else 1000 if f >= 1000 else int(f + f32(0.5))
+
+
 def x2_root(r, handle=0x4646, types=(1, 1), alloc=True):
     """Stock's Wavetable root (ctor, engine init) with its 10 voices, Types through stock's root property."""
     if alloc:
@@ -7966,16 +7989,19 @@ class FmTargetsX2(unittest.TestCase):
     # ---- the sound: routed against the knob turned to v, bit for bit
     VALS = (0.0, 0.5, 1.0, -1.0, 2.0, 0.25, -0.25, 0.125, 0.75, 0.375)
 
-    def voice(self, types):
-        return WtVoice(self, types=types, capture=False, frames=G.wt_saw_frames(200))
+    def voice(self, types, sync=0):
+        return WtVoice(self, types=types, capture=False, frames=G.wt_saw_frames(200), sync=sync)
 
-    def pair(self, types, inst, key, base=200, amount=600, blocks=10):
+    def pair(self, types, inst, key, base=200, amount=600, blocks=10, sync=0, extra=()):
         """The same WtVoice twice: (a) the knob of (inst, key) at clamp(base + amount x VALS[b] / 1000 x 1000) before each
-        block b; (b) the knob at base and velocity routed with that amount, velocity VALS[b] before block b."""
+        block b; (b) the knob at base and velocity routed with that amount, velocity VALS[b] before block b. sync: OSC2's
+        Sync; extra: (key, value, instance) knobs set on both."""
         want = [max(0, min(1000, round(base + amount * x))) for x in self.VALS]
         runs = []
         for routed in (False, True):
-            w = self.voice(types)
+            w = self.voice(types, sync)
+            for k, x, i in extra:
+                w.prop(k, x, i)
             w.prop(key, base, inst)
             if routed:
                 wt_route(w.r, w.root, inst, key, 0, SRC_VEL, amount)
@@ -8111,6 +8137,208 @@ class FmTargetsX2(unittest.TestCase):
         self.assertEqual(r.r32(SA + SA_FMSTATS + FM_X2_LOST_AT), 1, "full: the freed root's entry made room")
         self.assertIn(rc, [e[0] for e in x2_store(r)]); self.assertNotIn(rb, [e[0] for e in x2_store(r)])
 
+    # ---- X2 review: the per-voice, root, slot-3, summed and mixed paths, played (not only decoded)
+    def voices(self, types, n=2, vels=None):
+        """A WtVoice (voice 0) and voices 1..n-1 of the same root sounding with it (their oscillators on the same tables and
+        sub settings, note 60), velocity vels[i] each; render(w) plays one voice-block of each, then the audio block."""
+        w = self.voice(types)
+        r, vs = w.r, [w.v]
+        for i in range(1, n):
+            vo = r.r32(w.root + 0x14 + 4 * i)
+            for j in (0, 1):
+                if not types[j]:
+                    r.tabled(vo + (S.VOICE_WT1, S.VOICE_WT2)[j])
+            for k, x in ((SUB_WAVE, 3), (SUB_LEVEL, 1000), (SUB_PW, 300), (SUB_RETRIG, 1), (SUB_FINE, 0)):
+                r.prop(vo + S.VOICE_SUB, k, x)
+            SubCopy.note(self, r, vo, vo + S.VOICE_SUB, 60)
+            vs.append(vo)
+        if getattr(r, "tab", None):
+            r.u.mem_write(r.tab, G.wt_build_levels(G.wt_saw_frames(200)).tobytes())
+        for vo, x in zip(vs, vels or ()):
+            r.wf(vo + 0x38, x)
+        w.vs, w.outs_v = vs, [[] for _ in vs]
+        return w
+
+    @staticmethod
+    def render(w):
+        r, (acc, ad), (scr, _), (o, od) = w.r, w.acc, w.scr, w.out
+        for i, vo in enumerate(w.vs):
+            r.w32(acc + 4, DEV_N * w.m); r.w32(scr + 4, DEV_N * w.m); r.u.mem_write(ad, bytes(4096)); r.w32(o + 4, DEV_N)
+            r.call(w.slot18 & ~1, w.root, vo, 0, scr, sargs=(acc, 0, o))
+            w.outs_v[i].append(bytes(r.u.mem_read(od, 4 * DEV_N)))
+        r.block()
+
+    @staticmethod
+    def ramps(w, vo, i):
+        return struct.unpack("<HH", w.r.u.mem_read(vo + (S.VOICE_WT1, S.VOICE_WT2)[i] + S.OSC_KERNEL + MSUB_AT, 4))
+
+    def test_each_voice_reads_its_own_sources(self):
+        """Review (R1): two voices of one root, velocity 0.2 and 0.7, routed at 1000 to OSC1 Sub FM and at 500 to OSC2 FM 1>2
+        (knobs 0): each voice's msub / m12 end at its own v (200 / 700, 100 / 350), not voice 0's, and the voices differ."""
+        for types in ((1, 1), (0, 0)):
+            with self.subTest(types=types):
+                w = self.voices(types, vels=(0.2, 0.7))
+                wt_route(w.r, w.root, 0, K_SUBFM, 0, SRC_VEL, 1000); wt_route(w.r, w.root, 1, K_FM12, 0, SRC_VEL, 500)
+                for _ in range(4):
+                    self.render(w)
+                self.assertEqual([self.ramps(w, vo, 0)[0] for vo in w.vs], [200, 700], "OSC1 Sub FM: each voice its own")
+                self.assertEqual([self.ramps(w, vo, 1)[1] for vo in w.vs], [100, 350], "OSC2 FM 1>2: each voice its own")
+                self.assertNotEqual(w.outs_v[0][-1], w.outs_v[1][-1])
+                self.assertEqual(w.fmstats()[3], 0, "no FM missed")
+
+    # (matrix slot, source id, amount, source value) against the law in float32 (x2_law): a root source (modwheel, root +
+    # 0x28C), velocity whose 0.7 of a unit pins the rounding to nearest, seq1 (root + 0x140: stock's slot 3, whatever the
+    # matrix slot); and one routing whose final fma(m, 1000, knob) rounds to 764 where m x 1000 + knob gives 765 (M: searched)
+    SUM_CASES = (("modwheel + velocity + seq1 (slot 3), summed", 100, ((0, 0x1A, 800, 0.5), (1, SRC_VEL, 7, 0.1),
+                                                                       (2, SRC_SEQ1, 600, 0.5)), 801),
+                 ("the final FMA's rounding", 630, ((0, SRC_VEL, 406, 0.3312807083129883),), 764))
+    WRITE_AT = {0x1A: ("root", 0x290), SRC_SEQ1: ("root", 0x144), SRC_VEL: ("voice", 0x38)}
+
+    def test_root_sources_seq_slot_and_the_sum_play_as_the_law(self):
+        """Review (R1, R2): root-relative sources and stock's slot 3 played, several slots summed in stock's order, and the
+        rounding: v = x2_law(knob, terms) (the plan's float32 law), the voice bit for bit the same voice with the knob at v.
+        The other key's knob is 300 on both (a routing on one key leaves the other key's knob alone)."""
+        for types in ((1, 1), (0, 0)):
+            for inst, key in X2_DESTS[:2]:
+                other = (1, K_FM12) if key == K_SUBFM else (0, K_SUBFM)
+                for name, knob, terms, want in self.SUM_CASES:
+                    with self.subTest(types=types, inst=inst, key=key, case=name):
+                        self.assertEqual(x2_law(knob, [(a, x) for _, _, a, x in terms]), want, "(the law in Python)")
+                        runs = []
+                        for routed in (False, True):
+                            w = self.voice(types)
+                            w.prop(other[1], 300, other[0])
+                            w.prop(key, knob if routed else want, inst)
+                            if routed:
+                                for slot, sid, amt, _ in terms:
+                                    wt_route(w.r, w.root, inst, key, slot, sid, amt)
+                            def each(w, b, routed=routed):
+                                if routed:
+                                    for _, sid, _, x in terms:
+                                        kind, off = self.WRITE_AT[sid]
+                                        w.r.wf((w.root if kind == "root" else w.v) + off, x)
+                            w.run(6, each)
+                            runs.append(w)
+                        same(self, runs[1].outs, runs[0].outs, f"{name}: routed = the knob at {want}")
+                        got = self.ramps(runs[1], runs[1].v, inst)
+                        self.assertEqual(got[1] if key == K_FM12 else got[0], want, "the ramp ends at v")
+                        if any(sid == SRC_SEQ1 for _, sid, _, _ in terms):
+                            (e,) = x2_store(runs[1].r)
+                            self.assertEqual(e[2][X2_K[(inst, key)] * X2_SLOTS + 3], X2_ROOT_REL | 0x140, "seq1 in slot 3")
+
+    def test_a_key_routed_only_in_its_upper_slots_plays(self):
+        """Review (mutation sweep): a key whose only routing sits in matrix slot 2, or is a seq lane (stock's slot 3), is
+        routed (knob 0): its ramp ends at v, on each destination and type."""
+        for types in ((1, 1), (0, 0)):
+            for inst, key in X2_DESTS:
+                for slot, sid, amt in ((2, SRC_VEL, 1000), (0, SRC_SEQ1, 800)):
+                    with self.subTest(types=types, inst=inst, key=key, source=sid):
+                        w = self.voice(types)
+                        wt_route(w.r, w.root, inst, key, slot, sid, amt)
+                        def each(w, b):
+                            w.r.wf(w.v + 0x38, 0.5); w.r.wf(w.root + 0x144, 0.5)
+                        w.run(4, each)
+                        got = self.ramps(w, w.v, inst)
+                        self.assertEqual(got[1] if key == K_FM12 else got[0], amt // 2, "the ramp ends at v")
+
+    def test_routed_osc1_sub_fm_follows_mixed_sync_as_the_knob(self):
+        """Review (D3): a Wavetable OSC1 feeding B to an Analog OSC2 synced to it (OSC2 FM 1>2 300, Sync on): OSC1's Sub FM
+        plays nothing under D3, routed as on the knob."""
+        a, b, _ = self.pair((0, 1), 0, K_SUBFM, sync=1, extra=((K_FM12, 300, 1),))
+        same(self, b, a, "routed OSC1 Sub FM under mixed sync = the knob's")
+
+    def test_amounts_keep_their_value_through_the_route_handler(self):
+        """Review (R2): every amount -1000..1000 through WT_ROUTE's f32(amount) x f32(0.001) is stored back as itself; past
+        the matrix's range it is held at +-1000 (the law's v is clamped anyway)."""
+        r = Rig()
+        root, vs = x2_root(r)
+        for amt in list(range(-1000, 1001)) + [1200, -1500, 32767, -32768]:
+            wt_route(r, root, 1, K_SUBFM, 1, SRC_VEL, amt)
+            (e,) = x2_store(r)
+            self.assertEqual(e[3][X2_K[(1, K_SUBFM)] * X2_SLOTS + 1], max(-1000, min(1000, amt)), f"amount {amt}")
+
+    def test_osc2_sub_fm_removal_ramps_out(self):
+        """Review (R2): OSC2 Sub FM (no knob twin) routed, then removed at block 4: its msub ramps to 0, the store empties,
+        nothing missed; FM 1>2 300 next to it plays on."""
+        for types in ((1, 1), (0, 0)):
+            with self.subTest(types=types):
+                w = self.voice(types)
+                w.prop(K_FM12, 300, 1)
+                wt_route(w.r, w.root, 1, K_SUBFM, 0, SRC_VEL, 1000)
+                w.r.wf(w.v + 0x38, 0.6)
+                def each(w, b):
+                    if b == 4:
+                        self.assertEqual(self.ramps(w, w.v, 1), (600, 300))
+                        wt_route(w.r, w.root, 1, K_SUBFM, 0, 0, 0)
+                w.run(10, each)
+                self.assertEqual(self.ramps(w, w.v, 1), (0, 300), "OSC2 Sub FM ramped out, FM 1>2 kept")
+                self.assertEqual(x2_store(w.r), [])
+                self.assertEqual(w.fmstats()[3], 0, "no FM missed")
+
+    def test_removal_tidies_every_voice_of_the_root(self):
+        """Review (R1): two voices of one root, OSC2 FM 1>2 routed (velocity 0.6 at 1000) and removed (or cleared) at block 4,
+        against the same two voices with the knob at 600 turned to 0 there: both voices' blocks, kernel areas and fm_missed
+        the same (voice 1's Wavetable OSC1 keeps feeding B through the ramp out)."""
+        for types in ((0, 0), (1, 0), (0, 1)):
+            for how in ("remove", "clear"):
+                with self.subTest(types=types, how=how):
+                    runs = []
+                    for routed in (False, True):
+                        w = self.voices(types, vels=(0.6, 0.6))
+                        if routed:
+                            wt_route(w.r, w.root, 1, K_FM12, 0, SRC_VEL, 1000)
+                        else:
+                            w.prop(K_FM12, 600, 1)
+                        for b in range(9):
+                            if b == 4:
+                                if not routed:
+                                    w.prop(K_FM12, 0, 1)
+                                elif how == "remove":
+                                    wt_route(w.r, w.root, 1, K_FM12, 0, 0, 0)
+                                else:
+                                    for vo in w.vs:
+                                        for o in (vo + S.VOICE_WT1, vo + S.VOICE_WT2):
+                                            w.r.call(w.r.r32(w.r.r32(o) + 0x24) & ~1, o)
+                            self.render(w)
+                        runs.append(w)
+                    a, b = runs
+                    for i in range(2):
+                        same(self, b.outs_v[i], a.outs_v[i], f"voice {i}: routed = the knob's")
+                        for j in (0, 1):
+                            o = (S.VOICE_WT1, S.VOICE_WT2)[j] + S.OSC_KERNEL
+                            same(self, b.r.u.mem_read(b.vs[i] + o, 0xC0 + 25), a.r.u.mem_read(a.vs[i] + o, 0xC0 + 25),
+                                 f"voice {i} WT{j + 1}'s kernel area")
+                    self.assertEqual(b.fmstats()[3], a.fmstats()[3], "fm_missed")
+                    self.assertEqual(x2_store(b.r), [])
+
+    def test_connect_guards(self):
+        """Review (R2): the connect trampoline keeps s0 / s1 for stock's slot 10 (vpush / vpop present) and passes a root only
+        to calls returning into WT_ROUTE (a direct call with the real root in r4 keeps nothing); x2_connect takes a root
+        only for its own voices; stock's Position keeps its amount next to our keys' connects."""
+        t = bytes(IMG[DSP["tramp_conn"] - BASE:DSP["tramp_conn"] - BASE + 0x40])
+        self.assertIn(bytes.fromhex("2ded020a"), t, "vpush {s0, s1}")
+        self.assertIn(bytes.fromhex("bdec020a"), t, "vpop {s0, s1}")
+        r = Rig()
+        root, vs = x2_root(r)
+        o1 = vs[0] + S.VOICE_WT1
+        for key in (K_SUBFM, K_FM12):
+            r.u.reg_write(UC_ARM_REG_R4, root)                            # the real root in r4, lr outside WT_ROUTE
+            r.call(r.r32(r.r32(o1) + 0x28) & ~1, o1, vs[0] + 0x34, key, 0, fargs=(0.5,))
+        self.assertEqual(x2_store(r), [], "a direct slot-10 call with r4 = the root: nothing kept (the lr check)")
+        r2 = Rig()
+        other, _ = x2_root(r2, handle=0x4747)
+        root2, vs2 = x2_root(r2, alloc=False)
+        r2.call(DSP["x2_connect"], vs2[0] + S.VOICE_WT1, vs2[0] + 0x34, K_SUBFM, other, fargs=(0.5,))
+        self.assertEqual(x2_store(r2), [], "a root that does not hold the voice: nothing kept")
+        r2.call(DSP["x2_connect"], vs2[0] + S.VOICE_WT1, vs2[0] + 0x34, K_SUBFM, root2, fargs=(0.5,))
+        self.assertEqual(len(x2_store(r2)), 1, "(its own root: kept)")
+        pos = float(np.float32(500) * np.float32(0.001))
+        wt_route(r, root, 0, K_SUBFM, 0, SRC_ENV1, 300)
+        wt_route(r, root, 0, 0xC9, 0, SRC_ENV1, 500)
+        self.assertEqual(r.rf(o1 + 0x30 + 8 + 4), pos, "Position's amount (s0 kept)")
+        wt_route(r, root, 0, K_SUBFM, 0, SRC_ENV1, 700)
+        self.assertEqual(r.rf(o1 + 0x30 + 8 + 4), pos, "and after our key again")
+
     ROUTED_MAX = 600            # the routing's own instructions per voice-block (two destinations; M below)
 
     def test_cost(self):
@@ -8141,6 +8369,59 @@ class FmTargetsX2(unittest.TestCase):
         for k, (a, b, c) in rows.items():
             self.assertLessEqual(b[0] - a[0], self.ROUTED_MAX, f"{k}: the routing's own cost per voice-block")
             self.assertLessEqual(max(b[1], c[1]), HEAVIEST_VOICE, f"{k}: routed, every block within the heaviest existing voice")
+
+    SUB2_HEAVY_MAX = 37700      # X2 review: the heaviest voice with OSC2 Sub FM routed too (a second FM term on OSC2 that
+                                # BE4.44 never plays; M 37.1k..37.5k): over HEAVIEST_VOICE, reported to Jeff, gated here
+
+    def test_cost_heaviest_voice_routed(self):
+        """X2 review (R2): the heaviest existing voice (Wavetable both, Sub FM and FM 1>2 at 1000, Position moving every
+        block, notes 24 / 36) with the same sound routed: two keys from velocity; the same two keys with all four slots
+        each (velocity, env 1, env 2, seq1 in slot 3); and that with 7 other routed roots ahead in the store. Every block
+        within HEAVIEST_VOICE. An unrouted voice with 8 routed roots in the store: within it too. OSC2 Sub FM routed as
+        well (a whole FM term today has not): within SUB2_HEAVY_MAX."""
+        lfo = lambda b: (b * 7 % 200) / 255
+        SUB1, FM12, SUB2 = (0, K_SUBFM), (1, K_FM12), (1, K_SUBFM)
+        two = [(*SUB1, 0, SRC_VEL, 1000), (*FM12, 0, SRC_VEL, 1000)]
+        full = [(*d, s, src, 1000) for d in (SUB1, FM12) for s, src in ((0, SRC_VEL), (1, 0x1), (2, 0x2))] + \
+               [(*d, 0, SRC_SEQ1, 300) for d in (SUB1, FM12)]
+        def cost(note, knobs, routes=(), fill=0):
+            w = WtVoice(self, types=(0, 0), frames=G.wt_saw_frames(200), capture=False, note=note)
+            if knobs:
+                w.prop(K_SUBFM, 1000, 0); w.prop(K_FM12, 1000, 1)
+            for rt in routes:
+                wt_route(w.r, w.root, *rt)
+            if fill:                                                  # routed roots ahead of ours (the scan passes them)
+                n = w.r.r32(SA + SA_RUN + RUN_X2N)
+                ents = [bytes(w.r.u.mem_read(SA + SA_X2 + X2_ENTRY * i, X2_ENTRY)) for i in range(n)]
+                fake = []
+                for i in range(fill):
+                    ro = w.r.alloc(0x2F0); w.r.w32(ro + S.ROOT_HANDLE, 0x5000 + i)
+                    fake.append(struct.pack("<II12H12h", ro, 0x5000 + i, 0x34, *[0] * 11, 100, *[0] * 11))
+                for i, e in enumerate((fake + ents)[:SA_X2_N]):
+                    w.r.u.mem_write(SA + SA_X2 + X2_ENTRY * i, e)
+                w.r.w32(SA + SA_RUN + RUN_X2N, min(SA_X2_N, fill + n))
+            w.r.wf(w.v + 0x38, 1.0)
+            sp = [Span(w.r, DSP["an_enter"])] + [Span(w.r, a) for a in {w.r.r32(w.r.r32(o)) & ~1 for o in w.o}]
+            xs = []
+            for b in range(16):
+                for o in w.o:
+                    w.r.wf(o + OSC_POS_SRC, lfo(b))
+                t0 = sum(s.total for s in sp); w.block(); xs.append(sum(s.total for s in sp) - t0)
+            return sorted(xs[4:])[len(xs[4:]) // 2], max(xs), w.outs
+        rows = {}
+        for note in (24, 36):
+            k = cost(note, True)
+            rows[f"note {note}: knobs"] = k
+            rows[f"note {note}: 2 routes"] = r2 = cost(note, False, two)
+            same(self, r2[2], k[2], f"note {note}: the same sound routed")
+            rows[f"note {note}: 8 slots"] = cost(note, False, full)
+            rows[f"note {note}: 8 slots, 7 roots ahead"] = cost(note, False, full, fill=7)
+            rows[f"note {note}: unrouted, 8 roots in the store"] = cost(note, True, (), fill=8)
+            rows[f"note {note}: + OSC2 Sub FM routed"] = cost(note, False, two + [(*SUB2, 0, SRC_VEL, 1000)])
+        print("\n  X2 heaviest voice (instructions per voice-block, Position every block; steady median / max): " +
+              "; ".join(f"{k} {a} / {b}" for k, (a, b, _) in rows.items()), file=sys.stderr)
+        for k, (a, b, _) in rows.items():
+            self.assertLessEqual(b, self.SUB2_HEAVY_MAX if "OSC2 Sub FM" in k else HEAVIEST_VOICE, k)
 
 
 REF444 = Path(os.environ.get("BE_REF444", str(Path.home() / "bento" / "out" / "be444w4f")))
@@ -8207,4 +8488,4 @@ def r_settings(r, osc):
 
 
 if __name__ == "__main__":
-    unittest.main(argv=[sys.argv[0], "-v"])
+    unittest.main(argv=[sys.argv[0], "-v", *sys.argv[1:]])

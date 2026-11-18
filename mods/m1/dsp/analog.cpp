@@ -164,7 +164,7 @@ static_assert(sizeof(SaFmStats) == 32 && SA_DSTATS + sizeof(SaDrumStats) <= SA_F
  * (WT_ROUTE, 0x0807C8A0) resolved them for its voices: key k (X2_K_*) slot s at [4 k + s], s the matrix's 0..2 or stock's
  * fixed slot 3 (PARAM slot 4: WT_ROUTE connects the mod seq lanes, seq1..seq4, ids 9..12, there whatever the matrix slot,
  * and 0x08134700's per-type post clears it: as stock's PARAMs keep it, so do we). src: 0 none;
- * else where the source's value sits, less 4 (PARAM_VALUE reads [src + 4]): in the voice (its offset, 1 .. X2_VOICE_BYTES - 1,
+ * else where the source's value sits, less 4 (PARAM_VALUE reads [src + 4]): in the voice (its offset, 1 .. X2_VOICE_BYTES - 8,
  * the same for every voice of the root: test_analog FmTargetsX2) or in the root (X2_ROOT_REL | its offset). amt: the
  * routing's amount as the message carried it (-1000 .. 1000; stock plays it as f32(amt) x f32(0.001), as we do). */
 struct X2Root {
@@ -438,8 +438,9 @@ extern "C" __attribute__((used, minsize)) void x2_connect(void *osc, u32 src, u3
     if (!v || (key == S_KEY_OSC_FM12 && which == 0) || !x2_has_voice(root, v)) return;
     u32 c = 0;
     if (src) {
-        if (src - (u32)v - 1u < X2_VOICE_BYTES - 1u) c = src - (u32)v;
-        else if (src - (u32)root < X2_ROOT_BYTES) c = X2_ROOT_REL | (src - (u32)root);
+        /* (X2 review: x2_enter reads the float at src + 4: that word inside the voice's / root's allocation) */
+        if (src - (u32)v - 1u < X2_VOICE_BYTES - 8u) c = src - (u32)v;
+        else if (src - (u32)root <= X2_ROOT_BYTES - 8u) c = X2_ROOT_REL | (src - (u32)root);
         else { x2_lose(root, v); return; }
     }
     float f = amt * 1000.f;
@@ -490,20 +491,29 @@ extern "C" __attribute__((used, minsize)) void x2_clear(void *osc) {
  * Wavetable oscillator a routing needs (its own key; OSC1 also for OSC2's FM 1>2, which it feeds) is tagged here, before
  * this voice-block's renders, so it plays FM with its knob at 0 (the gates read xm). */
 __attribute__((noinline)) static void x2_enter(Run *r, u8 *root, u8 *v) {
-    X2Root *e = x2_find(root);
-    if (!e) return;
+    /* X2 review (CPU): the per-voice-block path is kept lean (x2_find / x2_mask are the message loop's): the entry by a
+     * plain scan (an_enter calls this only while x2n != 0), a key's four slots tested as two words */
+    X2Root *e = X2, *end = X2 + r->x2n;
+    while (e->root != (u32)root)
+        if (++e == end) return;
+    if (e->handle != W(root, S_ROOT_HANDLE)) { x2_drop((u32)(e - X2)); return; }
+    const u32 *sw = (const u32 *)e->src;
+    u32 xm = (sw[0] | sw[1] ? X2_SUB1 : 0u) | (sw[2] | sw[3] ? X2_FM12 : 0u) | (sw[4] | sw[5] ? X2_SUB2 : 0u);
+    if (!xm) return;
     void *o1 = v + S_VOICE_WT1, *o2 = v + S_VOICE_WT2;
-    u32 xm = x2_mask(e);
     if (xm & (X2_SUB1 | X2_FM12) && state(o1)->magic != AN_MAGIC && !wt_tagged(o1)) wt_init(o1);
     if (xm & (X2_FM12 | X2_SUB2) && state(o2)->magic != AN_MAGIC && !wt_tagged(o2)) wt_init(o2);
     for (u32 k = 0; k < 3u; k++) {
         if (!(xm >> k & 1u)) continue;
+        const u16 *sp = &e->src[k * X2_SLOTS];
+        const short *ap = &e->amt[k * X2_SLOTS];
         float m = 0.f;
+#pragma unroll
         for (u32 s = 0; s < X2_SLOTS; s++) {
-            u32 c = e->src[k * X2_SLOTS + s];
+            u32 c = sp[s];
             if (!c) continue;
             const u8 *p = c & X2_ROOT_REL ? root + (c & ~X2_ROOT_REL) : v + c;
-            m = wtr::fma32((float)e->amt[k * X2_SLOTS + s] * .001f, F(p, 4), m);
+            m = wtr::fma32((float)ap[s] * .001f, F(p, 4), m);
         }
         const AnProps *p = props(k ? o2 : o1);
         float f = wtr::fma32(m, 1000.f, (float)(k == X2_K_FM12 ? p->fm12 : p->subfm));

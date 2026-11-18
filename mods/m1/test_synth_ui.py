@@ -1293,19 +1293,19 @@ class BlackBox(unittest.TestCase):
                      "over_with_analog=0", "| ui page_rows=1 heals=1 resends=0 dials=0 browse_blocked=0"):
             self.assertIn(part, line)
         self.assertTrue(line.endswith("\r\n"))
-        self.assertIn("shape_mods=0 fm=0 fmx=0/0 wt=0/0 |", line, "P3: the FM stats line, nothing counted (BE4.42: no bits=; "
-                      "BE4.44 W3: wt=)")
+        self.assertIn("shape_mods=0 fm=0 fmx=0/0 wt=0/0 x2lost=0 |", line, "P3: the FM stats line, nothing counted (BE4.42: no bits=; "
+                      "BE4.44 W3: wt=; BE4.45 X2 review: x2lost=)")
 
     def test_the_fm_stats_fields(self):
         """P3 3.3: fm= and fmx= (skipped / missed) from the M7's FM stats line at +0x100 (synth_shared.h SaFmStats); BE4.42:
         word +4 (BE4.41's bits=) is not printed. BE4.44 W3: wt= (+16, Wavetable reader blocks) / (+20, of those the mip
-        changes); +24 and +28 are spare, not printed."""
+        changes). BE4.45 X2 review: x2lost= (+24, the Mod Matrix FM routings not kept); +28 is spare, not printed."""
         r = Rig(types=(1, 1)); r.tick()
-        r.u.mem_write(SA + 0x100, struct.pack("<8I", 41, 17, 3, 2, 55, 6, 0xEE, 0xEE))
+        r.u.mem_write(SA + 0x100, struct.pack("<8I", 41, 17, 3, 2, 55, 6, 9, 0xEE))
         line = next(l for l in r.black_box().splitlines() if l.startswith("ANALOG"))
-        self.assertIn(" fm=41 fmx=3/2 wt=55/6 |", line)
+        self.assertIn(" fm=41 fmx=3/2 wt=55/6 x2lost=9 |", line)
         self.assertNotIn("bits=", line, "BE4.42: no bits= field")
-        self.assertNotIn("238", line, "the spare words are not printed")
+        self.assertNotIn("238", line, "the spare word is not printed")
 
     def test_drums_line(self):
         """S6c: the DRUMS line (before ANALOG's), from the M7's drum stats lines at +0x80 (synth_shared.h SaDrumStats)."""
