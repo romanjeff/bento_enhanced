@@ -1,76 +1,79 @@
 # Roadmap
 
-Status as of 2026-10-27, **release [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40)**.
-**Target firmware: stock Bento 1.6.1.** Since v2.3 our builds sit directly on stock;
-several features are ports of
+Status as of 2026-11-18, **release [v4.46](https://github.com/romanjeff/bento_enhanced/releases/tag/v4.46)**.
+**Target firmware: stock Bento 1.6.8** (since 2026-11-07; up to v3.40 the builds sat on stock 1.6.1).
+Our builds patch your own copy of the official firmware; nothing here ever touches the bootloader.
+Several features are ports of
 [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work.
-Details of everything below are in [`mods/m1/`](mods/m1/).
+Build it yourself with [`BUILDING.md`](https://github.com/romanjeff/bento_enhanced/blob/v4.46/BUILDING.md); details of
+everything below are in [`mods/m1/`](https://github.com/romanjeff/bento_enhanced/tree/v4.46/mods/m1).
 
 ## Done (on hardware)
 
-- **A — pad pressure out of External tracks.** Poly aftertouch (`0xA0`) since Milestone 1
-  (2026-10-25), with a polyphony cap of 6 (oldest stolen, same note retriggers its voice).
-- **M2 — aftertouch sequencing** (2026-10-27). Per-note pressure is recorded in the piano
-  roll at 16 points per step and saved in a `curves.bnt` sidecar, so projects stay
-  stock-readable. It plays back on External tracks (poly or channel pressure) and on
-  internal instruments (stock's per-voice pressure). **AT Rec** and **AT Out**
-  (Off / Poly / Channel) are set per track, and live pad pressure follows AT Out too.
-- **Sequencer:** trigger conditions; per-step retriggers (hits, division, ramp); pad
-  defaults with per-step locks; strike velocity; hold-to-inspect steps.
+- **Port to stock 1.6.8** (BE4.0x-4.1x, November 2026): every v3.x feature rebuilt on the new official firmware.
+- **Synth engine: feature complete in v4.46** (Analog / Wavetable / FM).
+  - An **Analog** (virtual-analog) oscillator type on Wavetable tracks.
+  - **FM** on Analog and Wavetable oscillators: **Sub FM** (the sub oscillator modulates its oscillator) and **FM 1>2**
+    (OSC1 modulates OSC2). Linear, through-zero FM: a patch keeps its timbre across the keyboard.
+  - A per-oscillator **FM envelope** (FM Atk / FM Dec) on the FM amount.
+  - The FM amounts as **Mod Matrix destinations** (OSC1 Sub FM, OSC2 FM 1>2, OSC2 Sub FM), with **piano-roll automation
+    lanes** on them, so pressure, LFOs, envelopes, velocity or a lane can drive FM.
+  - **FM Env 1 / FM Env 2** as Mod Matrix sources.
+- **Aftertouch:** live poly aftertouch out of External tracks (polyphony cap 6), and **aftertouch sequencing**: per-note
+  pressure recorded in the piano roll and played back on External tracks (poly or channel pressure) and on internal
+  instruments. **AT Rec** and **AT Out** (Off / Poly / Channel) per track.
+- **Sequencer:** trigger conditions; per-step retriggers (hits, division, ramp); pad defaults with per-step locks; strike
+  velocity; hold-to-inspect steps.
 - **UI:** hold shortcuts (TRACKS / LAUNCH / MIXER / INST).
 - **Diagnostics:** black box on the SD card (crash records, audio stall records).
+- **Build it yourself:** one command builds a kit from your own stock 1.6.8 and checks it is byte for byte the image
+  tested on hardware.
 
-## Now: stability
+## Now: per-track compressor and clipper
 
-- **S3 — soak test** of v3.40 in real use: long sessions, many simultaneous aftertouch
-  notes on internal and External tracks, repeated project loads.
-- **Verify on hardware:** MIDI retriggers with their own note-offs (v3.39), and the
-  curve pool clearing on each project load (v3.38).
+A **compressor** and a **clipper** (with Drive) on each of the 8 tracks, in the mixer: a button in each strip's free
+spot between the reverb send and solo/mute, lit when active, opening that track's settings (fallback: a second item in
+the hamburger menu next to stock's Compressor). Our own lean DSP code, saved per track with the project. The clipper's
+code is shared with the drums' soft limiter. A read-only feasibility study comes first (hook point, CPU for 8 tracks,
+room left for the drums), then about 3-4 sprints.
 
-## Next: generative sequencing
+## Next: Drum Synth track
 
-Euclidean patterns and other generative sequencer ideas built around Bento's
-touchscreen. They need far more new interface than anything so far, so they start with
-a full planning pass (requirements, UI, interaction with existing notes, risks) once
-v3.40 has proven stable. Generators should write ordinary notes, so their results save,
-load and stay stock-readable like anything else.
+A clean, separate **Drum Synth** track in the instrument menu: 16 pads, each a synthesized drum (Kick, Snare, HiHat,
+Tom, Clap) on the same sequencer as everything else, with mono re-strike per pad and no click. Our own lean engines, no
+third-party DSP. Partly built (native keys and the audio-core engine with the Kick); the track, grid, editing page and
+the other engines remain, about 6-9 sprints. The main risks are audio-core room and the CPU of a busy kit.
 
 ## Later
 
-- **Settings UI** for the polyphony cap, and pressure / MIDI-out velocity response
-  curves (linear / exp / log).
+- **Generative sequencing:** Euclidean patterns and other generators built around the touchscreen. They need far more
+  new interface than anything so far, so they start with a full planning pass. Generators should write ordinary notes,
+  so their results save and load like anything else.
+- **Settings UI** for the polyphony cap, and pressure / MIDI-out velocity response curves (linear / exp / log).
 - **Aftertouch on drum (one-shot) tracks** (recording is piano-roll only for now).
+- **A web patcher** (GitHub Pages) so friends can patch their stock firmware in the browser. Low priority:
+  `BUILDING.md` covers it today.
 
 ## Further plans
 
 **F — LFO + envelope + mod matrix with CC destinations for External tracks.**
 Channel-level (per-track) modulation: **2 LFOs and 2 envelopes**.
-- Each envelope can optionally retrigger per note, and optionally loop with a
-  repeat count (1–32 or infinite).
+- Each envelope can optionally retrigger per note, and optionally loop with a repeat count (1–32 or infinite).
 - Each LFO can optionally retrigger per note.
-- Routed through a mod matrix to outgoing MIDI CCs (later velocity, pitch bend,
-  aftertouch), sharing the same DIN output budget as A.
+- Routed through a mod matrix to outgoing MIDI CCs (later velocity, pitch bend, aftertouch), sharing the same DIN
+  output budget as the aftertouch output.
 - **The 4 native automation lanes (A–D) get CC targets** on External tracks.
-- Open approach question: reuse the native per-voice modulation engine (see [`docs/bento-os.md`](docs/bento-os.md)
-§7), or a small dedicated engine clocked by the native sequencer. External tracks
-have no voices, which may make the native route a poor fit.
-- **E — Mod Wheel amount** is planned as a CC1 destination inside F rather than
-  a separate control.
+- **Mod Wheel amount** as a CC1 destination inside F rather than a separate control.
+- Open approach question: reuse the native per-voice modulation engine, or a small dedicated engine clocked by the native
+  sequencer. External tracks have no voices, which may make the native route a poor fit.
 
-**D — Saturation.** Stock 1.6 added a native sidechain ducker
-(Source Track / ext input / pad / MIDI note / clock; attack/hold/release/
-depth/threshold), so the sidechain part of D is dropped. The remaining scope is
-a **master saturator next to the compressor**, with character-setting
-parameters (drive and tone/character controls, to be designed). Lab's per-track
-soft clipper doesn't cover this. Registry IDs must avoid Lab's
-`0x128–0x12D` (chord editor), which overlap the compressor-range gap we
-found in 1.5.32.
+**D — Master saturation.** Stock already has a sidechain ducker, and the per-track clipper (Now) covers per-track drive.
+What remains is a **master saturator next to the compressor**, with character-setting parameters (drive and
+tone/character controls, to be designed).
 
 **B — MIDI note (Key) as a mod source for Multisample.** Only if cheap.
-The native voice binding for Key is known (`source 14 → voice+0xBC`).
 
 ## Parked
 
-**C — Project Settings values on PROJ/SEQ pages.** Research is complete enough to
-build (the SEQ header is the same view Lab's Euclidean bank rewrites), but it's
-deprioritized. Its PROJ half conflicts with Lab's PROJ-as-Shift.
+**C — Project Settings values on PROJ/SEQ pages.** Research is complete enough to build, but it's deprioritized. Its
+PROJ half conflicts with Lab's PROJ-as-Shift.
