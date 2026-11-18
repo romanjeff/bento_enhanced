@@ -6,14 +6,15 @@ Community firmware research and (eventually) mods for the [1010music Bento](http
 
 ## Status
 
-**Current release: [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40)**, a set of firmware mods for **stock Bento 1.6.1** that run on hardware. Highlights:
+**Current version: v4.44** (`BE4.44` on the boot screen), a set of firmware mods for **stock Bento 1.6.8** that run on hardware ([release notes](docs/release-notes-v4.44.md)). **To build it for your own Bento, follow [`BUILDING.md`](BUILDING.md)**: one page, no programming needed, starting from your own download of the official 1.6.8 firmware. (Until v3.40, the last published 1.6.1 release, the mods were built on stock 1.6.1.) Highlights:
 
 - **Aftertouch sequencing**: record per-note pad pressure in the piano roll and play it back. It works on External tracks (MIDI poly aftertouch or channel pressure) and on Bento's own instruments. **AT Rec** and **AT Out** (Off / Poly / Channel) are set per track and saved with the project.
 - **Live poly aftertouch** out of External tracks, with a polyphony cap of 6.
 - **Sequencer extras**: trigger conditions (`A:B`, `1ST`, `PRE` and their inverses), per-step retriggers with velocity ramps, pad defaults with per-step locks, strike velocity, and hold-to-inspect steps.
+- **Synth extras**: an Analog oscillator type with FM and its own FM envelope, and FM on Wavetable oscillators (v4.44).
 - **Hold shortcuts** for tracks, clip launch and mixer, and an on-card **black box** for crash and stall records.
 
-Projects saved with these mods still open on stock 1.6.1. Features, usage, installation and internals are in [`mods/m1/`](mods/m1/); [`ROADMAP.md`](ROADMAP.md) covers what's next. Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
+Projects that use these mods' features are not supported on stock firmware: they usually open there but may not play correctly. Features, usage, installation and internals are in [`mods/m1/`](mods/m1/); [`ROADMAP.md`](ROADMAP.md) covers what's next. Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
 
 ## Why this exists
 

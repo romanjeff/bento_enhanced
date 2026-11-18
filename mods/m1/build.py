@@ -10,8 +10,8 @@ and so is a table with unreviewed (REVIEW) entries. Checks original bytes at
 every patch site, the table's fingerprints of every stock address it names, its
 offsets / keys / event ids against the independent record (expected_values.py),
 writes bento1.bin + manifest.json, and proves that undoing every write
-reproduces the base exactly. Run with Lab's venv (ziglang +
-keystone). Earlier versions (<= v2.2) were built on Lab's CH10; CH10 itself
+reproduces the base exactly. Needs the packages in requirements.txt at the repo root (ziglang +
+keystone + capstone; tools/make_kit.py runs this for you). Earlier versions (<= v2.2) were built on Lab's CH10; CH10 itself
 crashed on the device without any of this code, so M1 moved to stock.
 """
 import argparse, hashlib, json, os, re, struct, subprocess, sys
