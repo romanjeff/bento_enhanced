@@ -275,8 +275,8 @@ REVIEWED = {
     "M7_TRAMP": dict(value=0x080DA000, evidence="0x080D9000..0x080E0000 is all zero in both images; the kit's writes there are ours"),
     "M7_CODE": dict(value=0x080DA400, evidence="as M7_TRAMP"),
     "M7_LIMIT": dict(value=0x080DF000, evidence="as M7_TRAMP"),
-    "CTRL_INPUT": dict(value=0x080D9000, evidence="as M7_TRAMP (hold shortcuts only)"),
-    "CTRL_STARTUP": dict(value=0x080D9800, evidence="as M7_TRAMP (hold shortcuts only)"),
+    "CTRL_INPUT": dict(value=0x080DF000, note="hold shortcuts: M7 pad input hook (zero gap, above M7_LIMIT)", evidence="BE4.44 W0 (docs/plan-wt-fm.md 5, buy-back 1): moved up one page past M7_LIMIT, same relative layout, so the DSP window grows to 0x080DA000; 0x080DF000..0x080E0000 is all zero in stock 1.6.8 and ends at the disk-mode image 0x080E0000, inside the M7 image's 128 KB sector 0x080C0000..0x080DFFFF; the only aligned stock word valued in that page, 0x0808586C = 0x080DF04F, is an instruction (mov.w r8, #0xd in the function around 0x08085800, the same decode from both halfword alignments), not data (one unaligned instruction-stream word, 0x080684EE = 0x080DF028, is in range too: bic r8, r8, #0xd, also code): no PC-relative load (ldr / ldrd / vldr / adr, every halfword decoded), no image word and no movw / movt reaches it; build.py check_ctrl_placement keeps the stubs clear of the DSP window and our M7 slice"),
+    "CTRL_STARTUP": dict(value=0x080DF800, evidence="as CTRL_INPUT"),
     # ---- stock fields the black box reads (also in expected_values.py STOCK_168, with the instructions) ----
     "MIDI_RING_RD": dict(value=0x2340, evidence="M4 reader add.w r0,sl,#0x2340 at 0x081053D0; M7 ctor add.w r7,r4,#0x2340 "
                                                "at 0x08082FF6; 7 M4 / 1 M7 add.w #0x2340, as 1.6.1"),
@@ -782,7 +782,7 @@ REVIEWED = {
     # typ2.py, regdump.py; build.py replays / orig checks; test_analog.py and test_inst_xml.py run these sites' own code).
     'M7_DSP': dict(value=0x80d0000, evidence="stock's zero gap 0x080CFC5C..0x080E0000 (M7 .data end literal at 0x08040568 = "
                    "0x080CFC5C); check_dsp_assumptions: zero, no literal or movt into it"),
-    'M7_DSP_LIMIT': dict(value=0x80d9000, evidence="36 KB, up to CTRL_INPUT (BE4.10 layout)"),
+    'M7_DSP_LIMIT': dict(value=0x80da000, evidence='40 KB, up to M7_TRAMP (BE4.44 W0: the hold-shortcut stubs moved to 0x080DF000); 0x080D9000..0x080DA000 is zero in stock and no stock word is valued in it, so DSP_WINDOW_WORDS is unchanged (check_dsp_assumptions)'),
     'DSP_WINDOW_WORDS': dict(value=(0x80f6a94, 0x80f6ba4, 0x80f6f08, 0x81ab750, 0x81ab860, 0x81abbc4, 0x81adaa0),
                              evidence="every aligned word in [M7_DSP, M7_DSP_LIMIT): 3 in the SD-reader image, 4 in M4 rodata, "
                                       "the same words at the same places in 1.6.1 (rc20/s6a lit.py); no PC-relative ldr reads "
@@ -839,12 +839,48 @@ REVIEWED = {
     'WT_OSC_PROPERTY': dict(value=0x8081a80, evidence="(osc r0, msg r1): key = ldrh [msg+0xC], value [msg+0x10]; cases 0x03, 0xC4..0xCC; "
                             "every other key returns without a write (rc32 verif t4.py: zero writes for 7 new keys)"),
     # BE4.40 mixed sync (docs/plan-be440-sync-identity.md Track S; design wf/sync vt.py, verifiers wf/sync_v2 wfsv2_callers.py)
+    # BE4.45 X2 (docs/plan-fm-targets.md): added by hand, as X1's
+    'WT_OSC_CLEAR_SLOT': dict(value=0x80acbd8, orig='211c0808', evidence="the Wavetable oscillator class (WT_OSC_VT_SLOT's, 0x080ACBB4) slot 9 = WT_OSC_CLEAR | 1, the only aligned word of that value in the image (S: be445x x2b vt.py); called per voice for WT1 and WT2 by the root's clear-all of message 0x48 (ldr r3, [r3, #0x24]; blx r3 at 0x0807B254)"),
+    'WT_OSC_CLEAR': dict(value=0x8081c20, orig='10b50446', evidence='(osc r0): push {r4, lr}; PARAM clear (0x080A0880) of Position +0x30, Pitch +0x70, Level +0xB0: their routed slots 1..3 zeroed, slot 4 (+0x20) kept; no key (S)'),
+    'WT_OSC_CONNECT_SLOT': dict(value=0x80acbdc, orig='611b0808', evidence='the Wavetable oscillator class slot 10 = WT_OSC_CONNECT | 1, the only aligned word of that value in the image (S: be445x x2b vt.py); WT_ROUTE calls it per voice for oscillator[instance] (ldr.w fp, [ip, #0x28]; blx fp at 0x0807CB38..3C, and its per-source copies)'),
+    'WT_OSC_CONNECT': dict(value=0x8081b60, orig='c42a1dd0', evidence='(osc r0, source r1, key r2, slot r3, amount s0): key 0xC4 -> PARAM_CONNECT 0x080A0920 (osc + 0xB0, source, slot, amount), 0xC9 -> + 0x30, 3 -> + 0x70; any other key bx lr (0x08081B6C) (S)'),
+    'WT_ROUTE': dict(value=0x807c8a0, orig='2de9f04f', evidence="the Wavetable root's route handler (root r0, msg r1 {+2 instance, +0xC key, +0x10 slot, +0x14 source id, +0x16 amount}): mov r4, r0 at 0x0807C8B0 and no other write of r4 in 0x0807C8A0..0x0807E4C6 (S: be445x x2 r4b.py, every instruction's written registers); the amount is f32(amount) x f32(0.001) (0x0807C8D4, literal 0x0807CAC0); per voice root + 0x14 + 4 i (count: the root's vtable 0x50, 10) it resolves the source for that voice and calls slot 10 of WT1 / WT2 (instance 0 / 1) (S); BE4.46 S1: (root, msg 0x3F) routing connect; tbh by id - 1 (instances 0 / 1, voice r5) at 0x0807CA7A and by id - 2 (instances 2.., voice r3) at 0x0807C922 (S; M: test_analog FmEnvSrc)"),
+    'WT_ROUTE_LEN': dict(value=0x1c26, evidence="0x0807C8A0..0x0807E4C6: the route handler's last instruction is b.w 0x0807CBC0 at 0x0807E4C2, then nop and zero padding to 0x0807E4E0, the next function (push {r4-r7, lr}) (S)"),
+    'WT_ROUTE_SHA': dict(value='1b579e52d96abf13070fca662da6f713912da08525672e14858ac6ea575c9ec2', evidence='sha256 of 0x0807C8A0..0x0807E4C6 (WT_ROUTE_LEN bytes), the code whose r4 was read (S: be445x x2b sha.py)'),
     'WT_OSC_NOTE_SLOT': dict(value=0x80acbbc, orig='c11d0808', evidence="the Wavetable oscillator class (WT_OSC_VT_SLOT's) slot 2 = "
                              "WT_NOTE_START | 1, the only word of that value in the image (S, M: vt.py); stock's voice note start "
                              "0x0807C7F8..0x0807C80C calls slot 2 ([vt,#8]) of WT1, WT2 and the sub (S)"),
     'WT_ENGINE_INIT': dict(value=0x807f180, evidence="(root): called once per root at 0x08058BD0 after WT_ROOT_CTOR's caller (S); "
                            "connects each voice's modulation (pitch gets a root source) and leaves osc+0x108 = 2.0 on WT1 / WT2 "
                            "(M: impl_SM pprobe.py; plan-analog-fm F0 verdict). Tests only (the device-shaped rig)"),
+    # BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (stock_168.py's notes carry the
+    # full evidence; added to the table by hand, as BE4.44 W0's entries: gen_table.py does not run on the current tables)
+    'FMENV_IDX_TBH': dict(value=0x807ca7e, orig='bb07240831008408e9083100', evidence="entries [2] / [5] (ids 3 / 6) -> 0x0807CAE0 "
+                          "movs r1, #0 (S)"),
+    'FMENV_IDX_PAD': dict(value=0x807cac4, orig='aff30080' * 7, evidence="nop.w x 7, no branch targets it (S: envsrc v2.py)"),
+    'FMENV_IDX_NEXT': dict(value=0x807cae2, evidence="after movs r1, #0; r0 / r2 / r3 written before read (S)"),
+    'FMENV_SUB_TBH': dict(value=0x807c926, orig='84033d00b90184013d00', evidence="entries [1] / [4] (ids 3 / 6) -> 0x0807C9A0 "
+                          "movs r1, #0 (S)"),
+    'FMENV_SUB_PAD': dict(value=0x807c966, orig='00bf' + 'aff30080' * 6, evidence="nop + nop.w x 6, no branch targets it (S)"),
+    'FMENV_SUB_NEXT': dict(value=0x807c9a2, evidence="after movs r1, #0; r3 the voice kept, r2 written before read (S)"),
+    'WT_VOICE_ALLOC': dict(value=0x809cb40, orig='40f68832', evidence="movw r2, #0xb88; NAMED_ALLOC rounds to 0xBA0 (0x080A05E6) (S)"),
+    'WT_VOICE_OSC1': dict(value=0x809cb52, orig='04f2a477', evidence="addw r7, r4, #0x7a4, then strd r7, r6, [r4, #0x178] at 0x0809CB6A: "
+                          "[voice + 0x178] == voice + 0x7A4 on a Wavetable voice; the class-0x5A root's is + 0x7A8 (S). BE4.46 S1 fix"),
+    'ROOT_5A_CTOR': dict(value=0x809c9a0, evidence="class 0x5A root ctor (vtable 0x080ACF08, 6 voices of 0xFE8 B, OSC1 at + 0x7A8); "
+                         "shares WT_ROUTE through vtable slot 2 0x0807F2A1 (S). Tests only (BE4.46 S1 fix)"),
+    # BE4.46 S2 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 in the Wavetable Mod Matrix source list (stock_168.py's
+    # notes carry the full evidence; added by hand, as S1's)
+    'MX_WT_SRC_LIST': dict(value=0x81a1304, orig='00000d00200001000200040005000800', evidence="16 u16: 0, 13, 32, 1, 2, 4, 5, 8, 14, 26, "
+                           "30, 31, 9, 10, 11, 12; held only by MX_WT_SRC_LIT and MX_SRC_VALID_LIT (S: be446 s2 lists.py, scan.py)"),
+    'MX_WT_SRC_LIT': dict(value=0x814edf8, orig='04131a08', evidence="ldr r2 at 0x0814ECFA (Wavetable) and 0x0814ECB8 (Granular) (S)"),
+    'MX_SRC_VALID_LIT': dict(value=0x814dbf0, orig='04131a08', evidence="ldr r0, [pc, #0x10] at 0x0814DBDC, types 0x0F / 0x12 / 0x13 (S)"),
+    'MX_WT_ROWS_SITE': dict(value=0x814ed08, orig='fef7b2fe', evidence="bl 0x0814DA70 in MX_BUILD's type-0x12 case (tbh 0x0814E94A) (S)"),
+    'MX_SRC_VALID': dict(value=0x814db94, orig='8c468988', evidence="(view, routing copy): unlisted source -> 0; callers 0x0814DD3C, "
+                         "0x0814E2A0, 0x0814E696 (S)"),
+    'MX_SRC_NAME': dict(value=0x814d8f0, orig='00b58646', evidence="(view, id) -> the registry's name; callers 0x0814E53C, 0x0814E6AC (S)"),
+    'MXV_TYPE': dict(value=0x8ac4c, evidence="strb.w r0, [r6, #0xc4c] at 0x0814E8D0 (S)"),
+    'MXV_SRC_LIST': dict(value=0x8acc8, evidence="str.w r2, [r3, #0xcc8] at 0x0814ECFC; read 0x0814DC56 / 0x0814E2B2 (S)"),
+    'MXV_SRC_N': dict(value=0x8ac4e, evidence="strb.w r2, [r3, #0xc4e] at 0x0814ED02; read 0x0814DC30 / 0x0814E266 (S)"),
     'ENGINE_CTOR': dict(value=0x805b300, evidence="(engine r0): the M7 engine's constructor, called once at 0x0808E752 on a 0x15C20-byte "
                         "allocation; ends with memset(engine+0x8CB2, 0, 0x1F2) and the key flags 0x05 / 0x27 / 0x31 = 1 (strb at "
                         "0x0805B634..3C), the table H_INPUT_SITE's 0x3E case tests at 0x08059A40 (S; M: test_analog Props runs its "
@@ -922,6 +958,9 @@ REVIEWED = {
     'WT_OSC_VT_SLOT': dict(value=0x80acbb4, orig='411c0808', evidence="osc ctor 0x08081E00 stores 0x080ACBB4 at [osc]; slot 0 = "
                            "WT_OSC_RENDER | 1"),
     'WT_OSC_RENDER': dict(value=0x8081c40, evidence=_AF),
+    'WT_KERNEL': dict(value=0x80a2000, evidence="BE4.44 W4: WT_OSC_RENDER's one call (0x08081D5E bl 0x080A2000): "
+                      "(osc + 0x10C, table, frame, out, [sp] n, s0 rate); the kernel reads n at [sp, #0x80] (9 words, 6 "
+                      "doubles, 0x2C pushed); not in 1.6.1's table (1.6.8 only)"),
     'BUF_FRAMES': dict(value=0x80a2500, evidence=_AF + "; ldr r3,[r0,#4]; cbnz; ldr r3,[r0]"),
     'PARAM_VALUE': dict(value=0x80a09a0, evidence=_AF),
     'NOTE_OCT': dict(value=0x804f680, evidence=_AF),
@@ -1368,6 +1407,36 @@ REVIEWED = {
                               "as stock bound them); S: the view constructor's str.w r2,[r3,#0x468] steps (0x0815FE5A, 0x0816001E)"),
     'SLOT_KEY': dict(value=0x9c, evidence="ENC_TURN: the widget's key at +0x9C (0 = unbound), posted with 0xCF (0x0817400C..26)"),
     'SLOT_HANDLE': dict(value=0x34, evidence="ENC_TURN: UI_POST {0xCF, [+0x34], key, value} (0x0817400C..26)"),
+    # BE4.45 X1 (docs/plan-fm-targets.md): the Wavetable track's Mod Matrix destination table (stock_168.py's notes carry
+    # the full evidence; added by hand, as BE4.44 W0's entries)
+    'MX_WT_DEST_TAB': dict(value=0x81a0d1c, evidence="23 entries from 0x081A0D1C up to the Granular table 0x081A0F44 (37 entries; 0x081A0D1C + 23 x 24 = 0x081A0F44); type 6 (WT1 / WT2) keys 3, 0xC4, 0xC9; 8 (sub) 3, 0xC4, 0xC5; 10 (filters) 0xCE, 0x33; 9 (envelopes) 0x1E, 0x1F, 0x21; 11 (LFOs) 0x4C, 0x4B (S: be445x tab.py). Its users, every aligned word of the image that holds it, no movw / movt pair builds it, and no word points inside it (S: be445x scan.py): MX_WT_DEST_LIT_1..4. Read fields: the enumerator 0x08159358 and 0x08134700 type and key; DEST_NAME type, key, name; the row filler MX_WT_ROWS type, instance, key, fmt, name and +0x14"),
+    'MX_WT_DEST_COUNT': dict(value=0x81a0d14, orig='17000000', evidence="u32 23; its users are the three literal words 0x081347DC, 0x08159414, 0x08159C84 (each paired with a table literal 4..8 B after it: 0x08134700, the enumerator 0x08159358, DEST_NAME), no movw / movt pair (S: be445x scan.py); the row filler MX_WT_ROWS hard-codes the count instead (MX_WT_ROWS_N, MX_WT_ROWS_END)"),
+    'MX_WT_DEST_LIT_1': dict(value=0x81347e0, orig='1c0d1a08', evidence="0x08134700 (model, obj, type, r3): for each MX_WT_DEST_TAB entry of that type (count from 0x081347DC), 0x081346B8 posts {0x3F, obj, key, slot 3, source 0} to the engine ring (S)"),
+    'MX_WT_DEST_LIT_2': dict(value=0x814db8c, orig='1c0d1a08', evidence="MX_WT_ROWS's literal pool: ldr r4, [pc, #0xf0] at 0x0814DA98 (S)"),
+    'MX_WT_DEST_LIT_3': dict(value=0x815941c, orig='1c0d1a08', evidence="0x08159358 (index, &type, &key): 30 global entries (0x081A12F0), then Granular's, then this table's (count 0x08159414); its callers 0x08159D1E / 0x08159D9C step the index until it returns 0 (no bound of their own) (S)"),
+    'MX_WT_DEST_LIT_4': dict(value=0x8159c88, orig='1c0d1a08', evidence="DEST_NAME's literal pool (ldr at 0x08159B38 / 0x08159B56; count 0x08159C84): the entry's name +0x10 by type and key (S)"),
+    'MX_WT_DEST_N_LIT_1': dict(value=0x81347dc, orig='140d1a08', evidence="loaded only by ldr r3, [pc, #0x48] at 0x08134790 in MX_TYPE_KEYS_POST, paired with MX_WT_DEST_LIT_1 4 B after it (S: be445x x1f pcl.py, every pc-relative load of the image)"),
+    'MX_WT_DEST_N_LIT_3': dict(value=0x8159414, orig='140d1a08', evidence="loaded only by ldr r3, [pc, #0x5c] at 0x081593B4 in the enumerator 0x08159358, whose Wavetable part then reads MX_WT_DEST_LIT_3 (ldr r2, [pc, #0x30] at 0x081593E8) (S: be445x x1f pcl.py). The enumerator's only callers are 0x08159D1E / 0x08159D9C in the destination list builder 0x08159CA8, which the piano roll calls (0x08159EFC in 0x08159E80, 0x0815C40E in PIANO_EVENT) (S)"),
+    'MX_WT_DEST_N_LIT_4': dict(value=0x8159c84, orig='140d1a08', evidence="loaded only by ldr r3, [pc, #0x150] at 0x08159B32 in DEST_NAME, paired with MX_WT_DEST_LIT_4 4 B after it (S: be445x x1f pcl.py)"),
+    'MX_WT_ROWS': dict(value=0x814da70, orig='2de9f047', evidence="(view r0): children of the context [view+0x8AC44] of types 6..11 by (type, instance 0 / 1); per table entry (instance <= 1, the object present): handle, snprintf(+0x8AE04 + 16 i, 16, fmt, name or the registry title 0x081683D0(key)), CC byte = entry +0x14 (0x0814DA70..0x0814DB86). Called by MX_BUILD (0x0814ED08). The view's arrays hold 60 rows (MX_REFRESH's clears: keys 0x78 B, CC bytes 0x3C B at 0x0814E0FE..16; handles to +0x8ADBC 0x0814DF8C..9C) (S). BE4.46 S2: it clears +0x8ACCC..+0x8ADB8 (str r1, [r3, #4]! from +0x8ACC8: MXV_SRC_LIST itself is not written) and never reads MXV_SRC_LIST or MXV_SRC_N (S: 0x0814DA70..0x0814DB86) (S)"),
+    'MX_WT_ROWS_N': dict(value=0x814da92, orig='1722', evidence="movs r2, #0x17; strb.w r2, [r3, #0xc4d] (0x0814DA92..94): the count is not read from MX_WT_DEST_COUNT (S)"),
+    'MX_WT_ROWS_END': dict(value=0x814da9e, orig='04f50a77', evidence="r4 = MX_WT_DEST_TAB (0x0814DA98); r7 bounds the key loop (cmp r3, r7 at 0x0814DAAC) and the row loop (cmp r4, r7 at 0x0814DB50), and is not written in between (S)"),
+    'MX_SET_ROUTE': dict(value=0x81347e4, orig='2de9f04f', evidence="the model handler's case 0xD1 (tbh at 0x08141ED4 -> 0x0814240E: bl 0x081347E4); MX_EDIT posts it (0x0814DCB4..EE); source 0 removes the slot's node (0x08134858), else the node is found by slot and key or created (0x0812F6D0, type 1) and +4 source, +6 key, +8 slot, +0 amount stored (0x08134936..40); it never reads MX_WT_DEST_TAB (S)"),
+    'MX_TYPE_KEYS_POST': dict(value=0x8134700, orig='2de9f04f', evidence="the global keys 0x081A12F0 for types 1, 3, 4; Granular's rows (0x081347D4 / D8) and the Wavetable rows (0x081347DC / E0) whose type byte is r2: MX_KEY_POST(model, obj, key, 3, 0, 0, r3) (0x08134756..0x081347CA); four callers 0x0813C04A, 0x0813E66A, 0x0813EA62, 0x0813EEC6 (S)"),
+    'MX_KEY_POST': dict(value=0x81346b8, orig='f0b587b0', evidence="builds the 0x18-byte message on its stack (0x081346C8..E8) and posts it through 0x0810BAA4 to the ring at [0x3000F65C] (S); the M7's WT_ROUTE (0x0807C8A0) reads the same fields (be445 S1)"),
+    'PR_DEST_LIST': dict(value=0x8159ca8, orig='2de9f04f', evidence="called only from the piano roll: 0x08159EFC (in 0x08159E80) and 0x0815C40E (PIANO_EVENT case 0x119); per child of the track (0x08134D76 nth child, OBJ_TYPE) it walks PR_DEST_ENUM and keeps the rows of the child's type (PR_DEST_MATCH), named by DEST_NAME (0x08159DCC), deduplicated by name (0x0817CCB2), with the lane state of 0x0815973C, appended by 0x0817CAF4 to the list at view + 0x7E38 (S)"),
+    'PR_DEST_MATCH': dict(value=0x8159da4, orig='9df826304345', evidence="0x08159DA4..0x08159DAB in PR_DEST_LIST's per-child loop: [sp+0x26] type / [sp+0x28] key from PR_DEST_ENUM (bl at 0x08159D9C), r4 the enumerator index, r8 the child's type (OBJ_TYPE at 0x08159E3E), [sp+0x2C] the child's handle, [sp+0x18] the child's index + 1, sb the track handle's address (view + 0x11CD08); on a match r3 is next written at 0x08159DBC, on a skip at 0x08159D94 r0..r2 are reloaded: neither path reads r3 or the flags (S)"),
+    'PR_DEST_ENUM': dict(value=0x8159358, orig='30b50c46', evidence="3 groups of 10 global keys (types 0x081A16B0, keys 0x081A12F0: index - 10 g), then Granular's table 0x081A0F44 (count word 0x081A0D18 via 0x08159408), then the table at MX_WT_DEST_LIT_3 (count via MX_WT_DEST_N_LIT_3): entry index - 30 - Granular's count (0x08159358..0x0815941F) (S)"),
+    'PR_DEST_ENUM_LEN': dict(value=0xc8, evidence="0x08159358..0x08159420: the code (last instruction b 0x081593A0 at 0x08159406) and its six literal words 0x08159408..0x0815941C (S)"),
+    'PR_DEST_ENUM_SHA': dict(value='43868b0fdaa731445f3fbfd24a338f94b139af4b91aa99a302a6d7922e0fed50', evidence="sha256 of 0x08159358..0x08159420 on stock 1.6.8, the code whose index rule (30 + Granular's count) was read (S: be445x x3 bytes.py)"),
+    'MX_GRAN_DEST_COUNT': dict(value=0x81a0d18, orig='25000000', evidence="u32 37 read by PR_DEST_ENUM through the literal 0x08159408 (ldr r3, [pc, #0x84] at 0x08159382) (S)"),
+    'PR_LANE_TOGGLE': dict(value=0x815a1bc, orig='2de9f043', evidence="PIANO_EVENT case 0x118 (0x0815C5B6: r1 = ev + 8); reads the selected entry (0x0817CCA0: list + 0x10EF04); lane = view + 0x125D34, source 9 + lane; on: the first matrix slot 0..2 this (handle, key) has no node in (0x081321F8 over the routes), else nothing; off: source 0 on the entry's slot; posts through UI_POST (0x0815A2E4 / 0x0815A24A) (S)"),
+    'WT_ROOT_BLOCK': dict(value=0x807f2a0, orig='2de9f041', evidence="root vtable 0x080ACF68 word 2; for lane 0..3: s0 = provider->vt[0](provider, [root + 0x284], lane), provider = [root + 0x13C] (the engine, stored at 0x08058BE0 after WT_ENGINE_INIT), stored at root + 0x144 + 8 lane (vstr s0, [r5, #0x13c] at 0x0807F2C6), skipped while the provider is 0; then bl 0x0807AC60 at 0x0807F2E4 (S)"),
+    'WT_ROOT_LANES_END': dict(value=0x807f2e0, orig='30464146', evidence="0x0807F2E0: mov r0, r6; mov r1, r8; bl 0x0807AC60 (S)"),
+    'PR_DEST_LIST_LEN': dict(value=0x1c8, evidence="0x08159CA8..0x08159E70: the code (last instruction pop.w {r4-fp, pc} at 0x08159E66, nop at 0x08159E6A) and its one literal word 0x08159E6C (ldr r0, [pc, #0x40] at 0x08159E2A and ldr r0, [pc, #0x2C] at 0x08159E3C) (S)"),
+    'PR_DEST_LIST_SHA': dict(value='ef96f3d7d5bea127ab41cb9baacb0ee6d4ad58573604eabc5dcb7adaa5c2e8db', evidence="sha256 of 0x08159CA8..0x08159E70 on stock 1.6.8, the builder whose frame ([sp+0x26] type, [sp+0x28] key, [sp+0x2C] the child's handle, r4 the index, r8 the child's type, sb the track handle's address) was read (S: be445x x3r sha.py)"),
+    'WT_ROOT_CLEAR_ALL': dict(value=0x807b182, orig='ddf820a0', evidence="jump table 0x0807AD0C entry 0x48 - 2 = 0x0807B183; sl = sb = [sp + 0x20] (root + 0x10), per voice i < vt[0x50](root): 0x08087F60 on voice + 0x184 / + 0x280, 0x08088AC0 on + 0x380 / + 0x480, slot 9 (ldr r3, [r3, #0x24]; blx r3 at 0x0807B254) of voice + 0x178 + 4 k for k 0..2, 0x0805B960 on + 0x580 / + 0x658; then memset root + 0xEC (0x40) and strb root + 0x161; b 0x0807ACE0 (S)"),
+    'WT_ROOT_MSG_NEXT': dict(value=0x807ace0, orig='14aa3146', evidence="0x0807ACE0: add r2, sp, #0x50; mov r1, r6; ldr r0, [sp, #0x1C]; bl 0x08065AC0 (the queue read), beq.w 0x0807AF20 when empty; message type at [sp + 0x50] (S)"),
     'DEST_NAME': dict(value=0x8159a5c, evidence="(view r0, &handle r1, key r2, buf r3, size [sp], flag [sp+4]): the key's registry "
                       "title (0x081683D0); an object other than the view's track ([view+0x11CD08]) by its type: type 6 -> "
                       "snprintf(buf, size, STR_DEST_OSC_FMT, its index among the track's type-6 children + 1, title) (0x08159B6A..8A). "

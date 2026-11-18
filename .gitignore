@@ -2,6 +2,13 @@
 *.bin
 firmware/
 *.pdf
+# Kits and zips contain stock firmware (a kit's manifest.json lists stock bytes in writes[].original_hex):
+# the 1010music download, make_kit kits, the web patcher's kit zips
+*.zip
+flash/
+bento_enhanced-v*/
+build-*/
+manifest.json
 
 # Ghidra project artifacts
 *.gpr

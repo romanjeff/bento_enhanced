@@ -1,0 +1,100 @@
+bento_enhanced v4.42: Bit Depth removed, deeper FM (stock 1.6.8) - delta checklist on top of v4.41
+=================================================================================================
+
+Kit: flash\bento_enhanced-v4.42   boot label BE4.42
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.42.txt)
+
+Plan: docs\plan-p3-fm-bits.md, section "BE4.42". Everything below was measured in the emulator only. This is a delta on
+BE4.41 (which you have run): only what changed is listed. Everything else on docs\checklist-v4.41.txt still applies
+except its Bit Depth items (section 5, and Bit Depth in sections 2, 8, 9).
+
+What changed since BE4.41 (your device feedback, 2026-11-16):
+  - Bit Depth is gone: no Bit Depth knob on either oscillator row, no crush, no bits= in the black box. Slot 7 of an
+    Analog row (where Bit Depth was) is empty, so FM 1>2 stays on knob 8 where you learned it.
+  - FM is deeper. Sub FM and FM 1>2 follow a new curve: index = 16 x (knob)^1.5 (BE4.41: 8 x (knob)^2).
+        knob     25 %   50 %   63 %   75 %   100 %
+        BE4.41   0.5    2.0    3.2    4.5    8
+        BE4.42   2.0    5.7    8.0   10.4   16
+    So BE4.41's 100 % is now at about 63 %, BE4.41's 50 % is now at 25 %, and the top of the knob goes twice as deep.
+  - A BE4.41 project with Bit Depth set opens normally; its Bit Depth value is ignored (plays as Full) and is dropped
+    at the next save.
+What gets worse (measured offline, read before section 4):
+  - High notes at deep FM. The increment clamp (the oscillator cannot move more than 0.45 of a cycle per sample) now
+    engages lower: FM 1>2 with OSC1 = OSC2 at 100 % from note 100 (E7, 2.6 kHz; BE4.41 from note 111, D#8), Sub FM
+    (sub an octave down) at 100 % from note 111 (BE4.41 121). Above that the deepest swings are flattened.
+  - Aliasing at 100 %: a sine -> sine FM 1>2 at 100 % is clean (below -70 dB) up to about C6 (note 84) but at C7 (note
+    96) the inharmonic (aliased) energy is about -21 dB (BE4.41's 100 % there: -47 dB): expect audible inharmonic
+    tones at the top of the knob on high notes. With a saw carrier it is 3 to 7 dB worse than BE4.41's 100 % at every
+    note (for example -35 dB instead of -38 dB at C4).
+  - CPU at 100 %: a full-FM voice costs about 2 to 3.5 % more instructions than BE4.41's 100 % (more edges to correct
+    when the oscillator swings through zero further). At the same depth as before (63 %) it is slightly cheaper than
+    BE4.41 (Bit Depth's check is gone). Bit Depth's own cost (about 4.5k instructions per voice block at 8 bits) is gone.
+
+0. Gate
+[ ] Back up the SD card (folder copy), as for BE4.41.
+[ ] ON THE COMPUTER: copy FM_A (saved by BE4.41, with Bit Depth set on track 3 and on track 1 from section 9) to a NEW
+    folder FM_A41. Keep FM_A itself untouched as the BE4.41 reference. If you no longer have a BE4.41 project with a
+    Bit Depth other than Full: before flashing, on BE4.41, set OSC1 Bit Depth 8 and OSC2 Bit Depth 4 on one track of a
+    copy, save it as FM_A41, and note what that track's other values are.
+
+1. Boot and black box
+[ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.42.
+[ ] Make a new empty project FM_B, save. BENTO_SAVES.log: "firmware BE4.42"; the ANALOG line has keys=ok (no
+    "TAKEN") and ends "... fm=0 fmx=0/0" with NO "bits=" field. If keys= is not "ok": stop and bring the log.
+
+2. Bit Depth is gone from the rows (FM_B, track 1 = a new Wavetable track)
+[ ] OSC1 Type -> Analog. OSC1's row: Level, Pitch, Shape, Type, Glide, Sub FM, then knobs 7 and 8 EMPTY. Photo.
+[ ] OSC2 Type -> Analog. OSC2's row: Level, Pitch, Shape, Type, Sync 1>2, Sub FM, knob 7 EMPTY, FM 1>2 on knob 8. Photo.
+[ ] Turn the empty knob 7 on either row both ways: nothing on the page changes, nothing sounds different.
+[ ] OSC1 Type -> Wavetable: FM 1>2 disappears from OSC2's knob 8 (as BE4.41); back to Analog: it returns with its value.
+
+3. A BE4.41 project with Bit Depth set (FM_A41)
+[ ] Load FM_A41: no crash. Every track is there; the Bit Depth tracks play UNCRUSHED (expected: the value is ignored).
+    Sub FM / FM 1>2 / Shape / Glide / Sync knobs show the values they had on BE4.41 (they sound deeper: the new curve).
+[ ] Save FM_A41. On the computer, its project.xml: bento_subfm, bento_fm12, bento_shape, bento_osc_type, bento_sync,
+    bento_glide are there with BE4.41's numbers; bento_bits is GONE (expected). Bring this project.xml.
+[ ] Optional rollback check: flash BE4.41 again and load the saved FM_A41: it opens, Bit Depth reads Full. (Back to
+    BE4.42 after.)
+
+4. FM depth by ear (FM_B, track 2)
+[ ] Sub FM: OSC1 Analog Shape 0 (sine), OSC2 Analog Level 0. Sub row: wave Sine, an octave below, any Level. Hold a
+    note around C3. OSC1 Sub FM at 0, 25, 50, 63, 75, 100 %. Expected: 25 % about BE4.41's 50 % (a few sidebands), 63 %
+    about BE4.41's 100 %, 75..100 % clearly deeper and brighter than anything BE4.41 could do. Write down: is the
+    depth now "enough"? Is the top of the knob too much / noisy? Where on the knob does it stop being musical for you?
+[ ] FM 1>2: OSC1 Analog Shape 0 (sine), OSC2 Analog Shape 0 (sine), same Pitch, OSC2 Level up, OSC1 Level 0. OSC2 FM 1>2
+    0 -> 25 -> 50 -> 63 -> 100 %: the classic two-operator sweep, deeper at the top than BE4.41. Same questions.
+    No clicks or zipper while turning (the depth still ramps over each block).
+[ ] The same FM 1>2 test with OSC2 Pitch +12 st (ratio 1:2) and +19 st: the timbre moves with the ratio; still no
+    clicks.
+[ ] Save: the ANALOG line fm= above 0, fmx=0/0.
+
+5. FM at high notes: harshness and aliasing (FM_B, track 2 as in section 4, FM 1>2 on sines)
+[ ] FM 1>2 100 %: play C4, C5, C6, C7 (notes 60, 72, 84, 96). Expected offline: clean (harmonic, bell / brass) up to
+    C6; at C7 audible inharmonic "aliasing" tones (offline -21 dB, BE4.41 at its 100 %: -47 dB). Write down from which
+    note it turns ugly at 100 %, and at 63 % (BE4.41's 100 %: should be like BE4.41).
+[ ] Same with OSC2 Shape 48 (saw carrier) at 100 %: rough already, but listen for whistles / tones that do not follow
+    the note from C5 up. Compare with 63 %.
+[ ] Above about E7 (note 100) at 100 % the deepest part of the swing is clamped (it flattens rather than getting
+    deeper). Play C8 (note 108) at 100 % once: it should be harsh but not broken (no silence, no stuck tone, no crackle
+    bursts).
+[ ] Sub FM at the top: OSC1 Sub FM 100 % (sine sub an octave down), play C6, C7, C8: same judgement.
+    If high notes at 100 % are unusable for you, say so: options are a pitch-dependent depth limit or a gentler curve
+    (plan "BE4.42", open points).
+
+6. CPU (the BE4.41 checklist's section 8 setups, now at the new depths; write down the "DSP nn%" on OSC1's title, OVER
+   or not, and after a save the ANALOG line's avg_cyc / peak_cyc / voices_peak and load_pm / over_with_analog)
+[ ] Full FM, saws: Sub FM 100 % on both, FM 1>2 100 %, sine sub, 8-note chord around C3. Compare with your BE4.41 figure
+    for the same setting (offline: +2.1 %; synced +3.2 %).
+[ ] The same at 63 % on all three amounts (BE4.41's depth): should be at or just under BE4.41's figure.
+[ ] Shape 24 (triangle) on both with full FM at 100 %, 8-note chord: the heaviest measured voice (offline 38.7k
+    instructions a voice block, BE4.41 37.5k). Then copy the track until the first OVER or glitch, as in BE4.41's
+    section 8: how many tracks / voices?
+[ ] No reset, no freeze, no "!!!" in the log at any point.
+
+Bring back: BENTO_SAVES.log, BENTO_CRASHES.log if any, the two row photos (section 2), FM_A41's project.xml after the
+BE4.42 save (section 3), your depth notes (section 4: is it enough, where it gets too much), the note where 100 % turns
+ugly (section 5), section 6's figures.

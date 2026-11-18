@@ -13,6 +13,8 @@
 
 #define AN_MAGIC 0x4f4c4e41u          /* "ANLO" */
 #define AN_NO_EVENT 255u              /* events[]: 0..254 = where in the sample the master wrapped */
+#define AN_NO_NOTE 0xFFFFu            /* AnOsc.note: none yet */
+enum { AN_FE_START = 0, AN_FE_ATK = 1, AN_FE_DEC = 2, AN_FE_END = 3 };   /* BE4.43: AnOsc.fmk >> 13 */
 #define AN_EVENTS 128u                /* one event array: the frames of one sync chunk (an_osc renders longer blocks in chunks) */
 #define AN_SYNC_FRAMES 256u           /* both-Analog sync: two chunks (WT2's events, then WT1's own); mixed sync has no limit */
 #define AN_AREA 0xC0u                 /* the native kernel area: +0x10C .. +0x1CC */
@@ -33,11 +35,25 @@ struct AnOsc {
     /* hard sync, the master's wraps of the current chunk: in WT2's state frames 0..127 of the block; in WT1's state (both
      * Analog: WT1 is never a slave) frames 128..255 */
     unsigned char events[AN_EVENTS];
-    /* glide, kept in WT1's state for the voice: the note playing, the pitch offset still to slide
-     * (octaves), what of it was last added to the sub oscillator, and the sub's +0x04 as we left it (stock
-     * rewrites that field at every note start: then its new value is the base, review 2026-11-08) */
-    unsigned note;
-    float glide, sub_applied, sub_written;
+    /* glide, kept in WT1's state for the voice: the note playing (BE4.43: 16 bits, AN_NO_NOTE none; stock's note numbers
+     * are far below it), the pitch offset still to slide (octaves), what of it was last added to the sub oscillator, and
+     * the sub's +0x04 as we left it (stock rewrites that field at every note start: then its new value is the base, review
+     * 2026-11-08). BE4.44 (docs/plan-wt-fm.md 3.2): on a tagged Wavetable oscillator the note's two bytes are the WT state
+     * (mipcur: the mip the reader holds, 0..WT_MIPS - 1, else WT_HOME; wflags: WT_FEED_B, WT_MIP_WAIT, WT_PK_OK), and glide's
+     * word is wxf (W4: a feeding OSC1's frame mean for B and its key, analog.cpp wt_frame_dc): one saved run with fmk, +140 ..
+     * +147 */
+    union {
+        unsigned short note;
+        struct { unsigned char mipcur, wflags; } wt;
+    };
+    /* BE4.43 (docs/plan-p3-fm-bits.md BE4.43, p3_golden fm_env): the FM envelope's position, both oscillators: stage
+     * (AN_FE_*) << 13 | blocks into it (at most 3750). AN_FE_START (0, also after reset / forget): a note started (an_note,
+     * every caller of slot 2) and the next block starts the envelope at 0 (1 for FM Atk 0); while the envelope is
+     * unset (AnProps.envf 0) an_osc keeps it at AN_FE_DEC << 13 (held at 1: DEC at j 0 reads as 1 whatever fme is;
+     * review, an envelope set mid-note) */
+    unsigned short fmk;
+    union { float glide; unsigned wxf; };
+    float sub_applied, sub_written;
     /* BE4.40 mixed sync (WT1 Wavetable, WT2 Analog), in WT2's state: WT1's cycle phase as a 64-bit fraction (mphase the
      * high word: 2^32 = one cycle; mphase_lo below it), exact for any float rate (plan fix 3); mrestart: WT1's note start
      * restarted it (the slave restarts with it at frame 0 of the next block); mlive: 0 the copy is not WT1's (cleared while
@@ -53,21 +69,52 @@ struct AnOsc {
      * block with no FM: 0 is a real amount, so the first block heard after that ramps the index in from 0 (2.7 ms at 2N;
      * Q5: plan 4.4's "no ramp" was not what 0 does; OD16). P3 Q5: msub ramps Sub FM (an_osc); Q6: m12 FM 1>2 (0 on OSC1) */
     unsigned short msub, m12;
+    float fme;                        /* BE4.43: the envelope at the end of the last block stepped (env x the amount's index) */
 };
-static_assert(sizeof(AnOsc) == 176, "Analog state: 176 bytes at oscillator +0x10C (4 left below AnProps)");
+static_assert(sizeof(AnOsc) == 180, "Analog state: 180 bytes at oscillator +0x10C (none left below AnProps)");
 static_assert(sizeof(AnOsc) <= AN_PROPS_OFF, "Analog state must stay below the oscillator's settings (AnProps)");
 
+/* BE4.44 W1 (docs/plan-wt-fm.md 3.2, 3.3): a Wavetable oscillator given WT FM work keeps its FM state in the same area, at
+ * AnOsc / AnProps's own offsets (fm_setup, fm_env_step and an_feed then run on it unchanged), marked by a tag pair stock's
+ * table samples cannot form: magic = WT_TAG_HI | (osc >> 4 & 0xFFFF) (a NaN payload) and, in the next word (phase's), its
+ * complement. Stock's render rewrites the area (k + 0x00 .. 0x5F at every wrap, k + 0x60 .. 0xBF on a frame change, S/M):
+ * the saved runs below are put back after every stock call on a tagged oscillator; nothing WT-only lives outside them. */
+#define WT_TAG_HI 0x7FA50000u
+#define WT_MIPS 7u                    /* stock's mip levels D = 1 .. 64 */
+#define WT_HOME 0xFFu                 /* mipcur: the reader holds no private mip (any value >= WT_MIPS reads as HOME) */
+#define WT_FEED_B 1u                  /* wflags: this OSC1 feeds buffer B (OSC2 has FM 1>2), set by an_prop */
+#define WT_PK_OK 4u                   /* wflags (W4): a feeding OSC1's frame mean (wxf) and peak (AnProps.glide) are set */
+#define WT_MIP_WAIT 2u                /* wflags (W2 review): the last reader block deferred a mip change for a frame change, so
+                                       * this one changes the mip and defers the frame (each waits one block at most). Set only
+                                       * while the reader holds a mip (mipcur != HOME), so tier 2 never sees it set */
+/* the saved runs, as (offset, words) in the area: the tag pair; the WT state (mipcur, wflags), fmk and wxf; msub, m12, fme
+ * and AnProps (one run: they are contiguous) */
+#define WT_RUN0 0u
+#define WT_RUN1 140u
+#define WT_RUN2 172u
+#define WT_RUN0_W 2u
+#define WT_RUN1_W 2u
+#define WT_RUN2_W 5u
+static_assert(__builtin_offsetof(AnOsc, phase) == WT_RUN0 + 4 && __builtin_offsetof(AnOsc, note) == WT_RUN1 &&
+              __builtin_offsetof(AnOsc, fmk) == WT_RUN1 + 2 && __builtin_offsetof(AnOsc, wxf) == WT_RUN1 + 4 &&
+              __builtin_offsetof(AnOsc, msub) == WT_RUN2 && __builtin_offsetof(AnOsc, fme) == WT_RUN2 + 4 &&
+              WT_RUN2 + 8 == AN_PROPS_OFF && WT_RUN2 + 4 * WT_RUN2_W == AN_AREA, "the WT runs: tag pair, state, FM + settings");
+
 /* An oscillator's settings, as stock's set_property delivered them (N3: dsp/analog.cpp an_prop), each clamped when stored.
- * P3 Q1: bits, subfm and fm12 are stored (and so reach the M7 with every push, edit and resend). P3 Q2: bits plays (an_crush);
- * P3 Q5: subfm plays (Sub FM, an_render_fm); Q6: fm12 plays (OSC2's FM 1>2, from an Analog OSC1). */
+ * P3 Q1: subfm and fm12 are stored (and so reach the M7 with every push, edit and resend). P3 Q5: subfm plays (Sub FM,
+ * an_render_fm); Q6: fm12 plays (OSC2's FM 1>2, from an Analog OSC1). BE4.42: Bit Depth is gone. BE4.43: byte +3 (BE4.41's
+ * Bit Depth) is FM Atk and +10 FM Dec, the oscillator's FM envelope (key 0x1A4 is FM Atk's now; a BE4.41 project's
+ * bento_bits is still not read: FM Atk's token is bento_fmatk). Sub FM is OSC1's FM, and OSC2's only while OSC1 is not
+ * Analog (then OSC2's is FM 1>2): the envelope scales the oscillator's own. */
 struct AnProps {
     unsigned char type;               /* 1 = Analog (a value of exactly 1; anything else is Wavetable) */
     unsigned char shape;              /* 0..AN_SHAPE_MAX */
     unsigned char sync;               /* 0 / 1 (WT2's: the slave) */
-    unsigned char bits;               /* Bit Depth 0..AN_BITS_MAX: Full, 12, 8, 4 */
+    unsigned char fmatk;              /* BE4.43: FM Atk 0..AN_FM_ATK_MAX (0 instant) */
     unsigned short glide;             /* 0..AN_GLIDE_MAX (WT1's: the voice's) */
     unsigned short subfm, fm12;       /* Sub FM, FM 1>2 0..AN_FM_MAX (fm12 is OSC2's; WT1's copy is kept but never read) */
-    unsigned short spare;
+    unsigned char fmdec;              /* BE4.43: FM Dec 0..AN_FM_DEC_INF (Inf: hold, the default) */
+    unsigned char envf;               /* BE4.43: 1 while FM Atk != 0 or FM Dec != Inf (the envelope runs), set by an_prop */
 };
 static_assert(sizeof(AnProps) == 12, "settings: 12 bytes");
 static_assert(AN_PROPS_OFF + sizeof(AnProps) == AN_AREA, "the settings end where stock's own fields start (+0x1CC)");
@@ -104,12 +151,9 @@ extern "C" void an_render_fm(AnOsc *o, float inc, float shape, float *out, unsig
 extern "C" void an_track(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_master(AnOsc *o, float inc, unsigned char *events, unsigned n);
 extern "C" void an_reshape(AnOsc *o, float from, float to);
-extern "C" void an_crush(float *s, unsigned n, unsigned bits, float dc);   /* P3 Q2 Bit Depth: AnProps.bits 1..3, in
-                                                                           * place; Q2b (OD12): on x + dc, dc taken off */
-extern "C" float an_dc(float shape);  /* P3 Q2b: the kernel's DC term at shape (the pulse's 2 width - 1), the part's dc */
 extern "C" void an_sub_copy(const void *core, float *a, unsigned n, unsigned inc, unsigned pend);   /* P3 Q4: the sub's
                                                                            * block in increment units, DC-free (OD10) */
-extern "C" void an_feed(const float *s, float *b, unsigned n, unsigned bits, float dc, float inc);   /* P3 Q6: buffer B
-                                                                           * from a part (BD1; OD15: the grid's top at S) */
+extern "C" void an_feed(const float *s, float *b, unsigned n, float inc);   /* P3 Q6: buffer B from a part (BD1),
+                                                                           * b = s inc (BE4.42: no Bit Depth grid) */
 
 #endif

@@ -77,25 +77,53 @@ typedef struct {
 } SaStats;                    /* 64 bytes: blocks +0, sum16 +4, peak +8, osc_peak +12, n_max +20, sync_skipped +24,
                                  hist +28, voices_peak +44, renders +48, misses +52, synced +56, shape_mods +60 */
 /* +0x0100 M7 FM stats, one line (P3, docs/plan-p3-fm-bits.md 3.3: SaStats has no free word; M7 writes and cleans after each
- * block, as SA_STATS, M4 reads: an_print's fm= / bits= / fmx=). +0x0100..+0x0200 was undefined; the M7 zeroes +0x40..+0x200
- * when it takes the area (m7_polyat.c synth_take), so a build whose DSP does not count yet reads 0 (P3 Q2: bits counts; Q4:
- * fm_skipped for Sub FM's buffer A; Q5: fm, the renders with Sub FM; Q6: fm_missed, FM 1>2 without B) */
+ * block, as SA_STATS, M4 reads: an_print's fm= / fmx=). +0x0100..+0x0200 was undefined; the M7 zeroes +0x40..+0x200
+ * when it takes the area (m7_polyat.c synth_take), so a build whose DSP does not count yet reads 0 (Q4: fm_skipped for Sub
+ * FM's buffer A; Q5: fm, the renders with Sub FM; Q6: fm_missed, FM 1>2 without B; BE4.42: +4, Bit Depth's bits= count
+ * through BE4.41, is unused and stays 0) */
 #define SA_FMSTATS 0x0100u
 typedef struct {
-    unsigned fm;              /* Analog renders with FM (Sub FM or FM 1>2) */
-    unsigned bits;            /* Analog renders crushed (Bit Depth not Full) */
+    unsigned fm;              /* renders with FM (Sub FM or FM 1>2; BE4.44 W3: Analog or Wavetable) */
+    unsigned r1;              /* BE4.42: unused (BE4.41's bits=, the renders Bit Depth crushed) */
     unsigned fm_skipped;      /* renders with FM set but n > AN_FM_FRAMES (the modulator buffers): rendered without it */
     unsigned fm_missed;       /* OSC2 renders that wanted OSC1's signal (FM 1>2) but buffer B was not valid this voice-block */
-    unsigned r4, r5, r6, r7;
-} SaFmStats;                  /* 32 bytes: fm +0, bits +4, fm_skipped +8, fm_missed +12 */
+    unsigned wt;              /* BE4.44 W3: Wavetable renders through our reader (dsp/analog.cpp wt_body: tier 3, FM or a mip
+                               * held), the black box's wt= */
+    unsigned wt_mip;          /* BE4.44 W3: of those, the blocks that changed the mip level (rd_qm), wt=.../mip */
+    unsigned x2_lost;         /* BE4.45 X2: Mod Matrix routings on Sub FM / FM 1>2 the M7 could not keep (its store full:
+                               * SA_X2_N routed roots; or a source neither in the voice nor in the root) */
+    unsigned r7;
+} SaFmStats;                  /* 32 bytes: fm +0, fm_skipped +8, fm_missed +12, wt +16, wt_mip +20, x2_lost +24 */
 /* +0x0400 M7 private: the DSP's running state (two lines) */
 #define SA_RUN 0x0400u
+/* +0x0440 M7 private (BE4.45 X2, docs/plan-fm-targets.md): the Mod Matrix routings on Sub FM (key 0x18B) and FM 1>2 (0x132),
+ * per Wavetable root (stock keeps a destination's routings in the voice's own parameter object; these keys have none):
+ * SA_X2_N entries of 56 B (8 tracks: one per Wavetable root), used from the front (dsp/analog.cpp X2Root; their count is in the run state). Inside what the
+ * M7 zeroes at its take (+0x400..+0x800); free on main too (its run state is the same two lines) */
+#define SA_X2 0x0440u
+#define SA_X2_N 8u
 /* +0x0200 (BE4.21..BE4.31: the M4's Analog track table, published; unused since BE4.40, when an oscillator's Type, Shape,
  * Sync and Glide became stock properties that reach the M7 as set_property messages: docs/plan-native-props.md) */
 #define AN_GLIDE_MAX 1000u                                  /* Glide 0..1000 = 0..2 s, stock's encoder units */
 #define AN_FM_MAX 1000u                                     /* P3: Sub FM, FM 1>2 0..1000 (0..100.0 % of the knob; the FM
-                                                               sprint plays index 8 (v / 1000)^2) */
-#define AN_BITS_MAX 3u                                      /* P3: Bit Depth 0 Full, 1 12, 2 8, 3 4 bits (the list's labels) */
+                                                               sprint plays index 16 (v / 1000)^1.5, BE4.42; BE4.41 8 (v / 1000)^2) */
+/* BE4.43 (docs/plan-p3-fm-bits.md BE4.43; p3_golden.py fm_env, the spec): the FM envelope per oscillator, env x the FM
+ * amount's index at block rate (2N = 256 frames at 96 kHz = 2.667 ms). FM Atk 0..127 (0 instant), FM Dec 0..128 (128 = Inf,
+ * the top of the knob next to the longest decay: hold 1 = BE4.42's static depth, the default). A value's time in blocks is
+ * AN_FM_ENV_BLOCKS (p3_golden.FM_ENV_BLOCKS, the contract: n(x) = 1 + round((e^(L x) - 1) / L), 1 .. 3750 blocks = 2.7 ms
+ * .. 10.0 s, 128 distinct). Attack linear in index 0 -> 1 over n blocks; decay exponential to -60 dB at n blocks, then 0.
+ * Both cores read it (the M7's envelope, the M4's value texts) */
+#define AN_FM_ATK_MAX 127u
+#define AN_FM_DEC_INF 128u
+#define AN_FM_ENV_BLOCKS { \
+    1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 15, 16, 18, 20, 21, \
+    23, 25, 27, 29, 31, 34, 36, 38, 41, 44, 46, 49, 52, 55, 58, 62, \
+    65, 69, 72, 76, 80, 85, 89, 94, 98, 103, 108, 114, 119, 125, 131, 137, \
+    144, 151, 158, 165, 172, 180, 189, 197, 206, 215, 225, 235, 245, 256, 267, 279, \
+    291, 304, 317, 331, 345, 360, 376, 392, 408, 426, 444, 463, 482, 502, 524, 546, \
+    569, 592, 617, 643, 670, 698, 727, 757, 788, 821, 855, 890, 927, 965, 1005, 1046, \
+    1089, 1134, 1180, 1229, 1279, 1331, 1386, 1442, 1501, 1563, 1626, 1693, 1762, 1833, 1908, 1986, \
+    2066, 2150, 2238, 2329, 2423, 2521, 2624, 2730, 2841, 2956, 3075, 3200, 3329, 3464, 3604, 3750 }
 #define AN_SHAPE_MAX 127u                                   /* Shape 0..127: sine > triangle > saw > square > pulse (P3 Q3,
                                                                docs/plan-p3-fm-bits.md 4.6; BE4.40: saw > square > pulse) */
 #define AN_SHAPE_SINE 0u                                    /* P3 Q3 (OD6), one-sided plateaus: 0..2 plays the sine, */
@@ -114,14 +142,31 @@ typedef struct {
 #define SA_ANCACHE 0x0600u
 #define SA_ANCACHE_N 16u
 /* +0x0800 M7 private (P3, docs/plan-p3-fm-bits.md 3.3): the FM modulator buffers of the voice-block being rendered, two x
- * AN_FM_FRAMES floats in increment units: A (+0x800) the sub oscillator's copy, B (+0xC00) OSC1's pre-Level block on Bit
- * Depth's grid with its top at S (OD15: an_feed, before the audio crush; also for a silent OSC1), times OSC1's increment.
+ * AN_FM_FRAMES floats in increment units: A (+0x800) the sub oscillator's copy, B (+0xC00) OSC1's pre-Level block times
+ * OSC1's increment (an_feed; also for a silent OSC1; BE4.42: no Bit Depth grid any more, OD15 / OD18 moot).
  * Valid only while the run state's voice is that voice and its fmtag bit says so (dsp/analog.cpp). The M4 never reads or
  * writes it (SA_UI, the M4's synth UI state, unused since the review: the M4's state is in AN4) */
 #define SA_FMBUF 0x0800u
 #define AN_FM_FRAMES 256u                                   /* one buffer: 2N, the device's oscillator block */
 #define SA_FMBUF_A SA_FMBUF
 #define SA_FMBUF_B (SA_FMBUF + 4u * AN_FM_FRAMES)
+/* BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / FM Env 2 (OSC1's / OSC2's FM envelope) as mod-matrix sources
+ * 3 / 6 of a Wavetable voice, in the voice's allocation slack: stock's root ctor allocates a voice as 0xB88 B (0x0809CB40)
+ * and its pool rounds that to 0xBA0 (0x080A05E6), so voice + 0xB88 .. + 0xB9F is ours (S; no stock code writes it: M,
+ * test_analog FmEnvSrc). The pool (kind 2, 0x080A0720) is a bump allocator from 0x24001080, never freed, no header, inside
+ * the bss the M7 reset zeroes (0x08040492: 0x240001D0 .. 0x2401EDBC), so the slack is 0 at allocation (S). Stock's routing
+ * connect (0x0807C8A0, build.py fmenv_connect's stubs and bodies) gives source 3 the pointer voice + FMENV_SRC and source 6
+ * voice + FMENV_SRC + 4, on a Wavetable voice only ([voice + 0x178] == voice + 0x7A4: the class-0x5A root shares the
+ * connect); PARAM_VALUE reads a source's float at +4, so FM Env 1 is the float at voice + FMENV_VAL and FM Env 2 the next.
+ * On a voice's first such connect the body writes the pointer into FMENV_ON (nonzero: a route to 3 or 6 was connected on
+ * this voice since its allocation, sticky) and 1.0 into both values (later connects leave them); while FMENV_ON is 0 the DSP publishes
+ * nothing (an_enter: one load and a branch). Published: e0, the envelope's value at the block's start (fm_env_step's
+ * first line, read only), 1 for an unset envelope (Atk 0 / Dec Inf) and an untagged Wavetable oscillator. build.py reads
+ * these four (fmenv_offsets) */
+#define FMENV_SRC 0xB84u
+#define FMENV_VAL 0xB88u
+#define FMENV_ON 0xB90u
+#define FMENV_SLACK_END 0xBA0u
 /* +0x0080 drum stats, four 32 B lines (M7 writes and cleans after each block with a drum voice, M4 reads) */
 #define SA_DSTATS 0x0080u
 typedef struct {

@@ -1,0 +1,125 @@
+bento_enhanced v4.44: FM on Wavetable oscillators (stock 1.6.8) - delta checklist on top of v4.43
+==================================================================================================
+
+Kits (three, the same firmware but for one constant, D5: how soon heavy FM goes to a duller, cleaner copy of the table):
+  flash\bento_enhanced-v4.44          boot label BE4.44   the release (mip threshold 1.75)
+  flash\bento_enhanced-v4.44-mip1.5   boot label BEM1.5   a step cleaner (and duller) under heavy FM
+  flash\bento_enhanced-v4.44-mipoff   boot label BEMOFF   "never go darker": the note's own level under any FM
+  Each kit:
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write; "wt_mip" = its threshold)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.44.txt)
+
+Plan: docs\plan-wt-fm.md (sections 2, 3, 9 and "W4 result"). Release notes: docs\release-notes-v4.44.md. Everything below
+was measured in the emulator only. This is a delta on BE4.43: docs\checklist-v4.43.txt still applies, except its section 2's
+last item and section 4's "Mixed mode" item (OSC2's knob 6 next to a Wavetable OSC1 is FM 1>2 now, see "What changed").
+Run the release kit (BE4.44) for everything; the two alternates only for section 7.
+
+What changed since BE4.43:
+  - A Wavetable oscillator has FM, at the Analog knob numbers (slot 5 stays empty):
+        OSC1 Wavetable:  Level, Pitch, Position, Type, -, Sub FM, FM Atk, FM Dec
+        OSC2 Wavetable:  Level, Pitch, Position, Type, -, FM 1>2, FM Atk, FM Dec
+    Same depth law, envelope and times as Analog (checklist-v4.43's table holds for FM Atk / FM Dec).
+  - FM 1>2 works from either OSC1 type into either OSC2 type. The modulator is OSC1 before its Level (OSC1 at Level 0
+    still modulates: "mute the modulator, hear the FM").
+  - OSC2's knob 6 is FM 1>2 whatever OSC1 is. BE4.43 showed an Analog OSC2's Sub FM there next to a Wavetable OSC1: that
+    Sub FM no longer plays (value kept), and a hidden FM 1>2 value that OSC2 held now plays (expected change, D2).
+  - Mixed sync (Wavetable OSC1 master, Analog OSC2 slave): OSC1's Sub FM plays as 0 while synced (value kept, D3); FM 1>2
+    keeps working and sync stays sample-accurate as on BE4.43 (OSC1 plays stock's playback while synced; a per-block
+    re-alignment to OSC1's phase is only a safety net).
+  - A table frame's DC (average) is taken out of FM 1>2's modulator, so pulse / half-wave frames do not detune OSC2.
+  - The hold-shortcut code moved to a new flash page (to make room for this release): they must still work (section 1).
+What to expect that is not a bug:
+  - Under heavy FM a Wavetable oscillator reads a duller, cleaner copy of its table (one mip level coarser), crossfaded in
+    one block. On the release kit nothing changes up to about a third of the knob (amount 330 at any note); at full
+    depth at note 60 it is one level duller than the note's own and aliases about 8 dB more than stock's rule would.
+  - High notes under heavy FM alias (the coarsest level is reached): as stock above about 4.5 kHz.
+  - A note that starts with FM already on plays its FM level from the first block (no crossfade at a note start, as
+    stock's own level switch there). An FM Atk that sweeps the depth across a level boundary crossfades there.
+
+0. Gate
+[ ] Back up the SD card (folder copy), as before.
+[ ] ON THE COMPUTER: copy a BE4.43 project with Wavetable tracks to a NEW folder WTFM_A43 (keep the original).
+[ ] On BE4.43 (before flashing), in a copy WTFM_D2 of any project, one track: OSC1 Analog, OSC2 Analog, OSC2 FM 1>2 40 %;
+    then OSC1 -> Wavetable (load a factory WAV on OSC1); OSC2's knob 6 now reads Sub FM: set it to 60 %. Save. This
+    track holds a hidden FM 1>2 40 % and a playing Sub FM 60 % (BE4.43's layout). Listen to it once and remember it.
+
+1. Boot, black box, hold shortcuts (D-W0)
+[ ] Flash 01_TEST_FIRMWARE (release kit). The boot screen shows BE4.44.
+[ ] New empty project WTFM_A, save. BENTO_SAVES.log: "firmware BE4.44"; the ANALOG line has keys=ok.
+[ ] D-W0, every hold shortcut as on BE4.43 (their code now runs from a new flash page, 0x080DF000):
+    - hold TRACKS: top-row pads open tracks 1..8's instrument page, bottom-row pads their sequencer; release stays there;
+    - hold LAUNCH: bottom row starts a track's selected clip, top row stops it; release goes back; a plain tap stays;
+    - hold MIXER: Solo / Mute view, top row solo, bottom row mute, encoders work; release goes back;
+    - hold INST in a drum sequencer: a pad picks the sound, release returns to the sequencer with it selected;
+    - while a hold button is down pads play no notes; PROJ + pad plays as stock.
+    If any of these fails: stop, bring BENTO_DIAG.log (the fallback layout, 1b, is ready to build).
+
+2. The rows (WTFM_A, a new Wavetable track; load a factory WAV on both oscillators)
+[ ] OSC1's row: Level, Pitch, Position, Type, (empty), Sub FM, FM Atk, FM Dec. Sub FM 0.0 %, FM Atk "0 ms", FM Dec
+    "Inf". Photo.
+[ ] OSC2's row: Level, Pitch, Position, Type, (empty), FM 1>2, FM Atk, FM Dec. Photo.
+[ ] OSC2 Type -> Analog: knob 6 FM 1>2 (with OSC1 still Wavetable). OSC1 -> Analog and back: knob 6 stays FM 1>2.
+[ ] OSC1 Type -> Analog -> Wavetable with Sub FM 50 % set: the value comes back with it (the resend). No stale label.
+
+3. Old projects
+[ ] Load WTFM_A43: no crash; every Wavetable track sounds exactly as on BE4.43 (A/B by ear on 3 factory tables, sweep
+    Position on each), except a track with an Analog OSC2 next to a Wavetable OSC1 (D2, next row).
+[ ] Load WTFM_D2 (D2's last case, expected change): the track now plays FM 1>2 40 % from OSC1 (a Wavetable OSC1 modulating
+    OSC2) and no Sub FM. OSC2's knob 6 reads FM 1>2 40 %. Turn it to 0: OSC2 is plain. Write down how it sounded.
+[ ] Save WTFM_A. Turn the power off, flash stock 1.6.8 later (end of session), load WTFM_A: it opens and plays the
+    Wavetable tracks as stock (FM ignored). Optional: BE4.43 opens it too (Wavetable oscillators as stock).
+
+4. Sub FM on a Wavetable OSC1 (WTFM_A, track 1; sub row: Sine, an octave below; OSC2 Level 0)
+[ ] Sub FM 0 -> 100 % slowly on 3 factory tables at notes 36, 60, 84 (C1, C3, C5): smooth, no stepping, no clicks.
+    Note where the tone gets duller (about a third of the knob) and whether that bothers you (D5). Note where the top of
+    the knob stops being useful.
+[ ] FM from 0 up and back to 0 during a held note: no click in or out.
+[ ] Position swept by hand with Sub FM 60 %: no click, no zipper. Then an LFO on Position, and again with FM Dec 20.
+[ ] FM Atk / FM Dec on OSC1: pluck (Atk 0, Dec 20), swell (Atk 48, Dec Inf), Inf hold; each new note retriggers its own.
+
+5. FM 1>2 (track 2, OSC2 the carrier at Level up, OSC1 the modulator at Level 0, same Pitch)
+[ ] Analog OSC1 (Shape 0, sine) -> Wavetable OSC2, FM 1>2 0 -> 100 %: smooth, in tune at every amount.
+[ ] Wavetable OSC1 -> Wavetable OSC2, the same: smooth, in tune.
+[ ] Wavetable OSC1 -> Analog OSC2 (Shape 0), the same: smooth, in tune.
+[ ] D4 (the DC): with OSC1 on a factory table that has pulse / PWM or other lopsided frames, OSC1's Sub FM at 0 (its own
+    FM moves OSC2's pitch too, on Analog as well), sweep OSC1's Position while FM 1>2 is 30 %: OSC2's pitch must not slide
+    with the frame (the timbre changes, the pitch stays). Do it at a low note (C1) and at C3. Note any table where it does.
+[ ] D9 (OSC1 Level 0 while it feeds): OSC1 Level up, then down to 0 and back during a held note: no click, OSC2's FM
+    never stops.
+[ ] Both at once (the full Wavetable FM voice): OSC1 Sub FM 50 % + FM 1>2 60 %, both Wavetable. FM Atk / FM Dec on OSC2:
+    pluck, swell.
+
+6. Mixed sync (track 3: OSC1 Wavetable with a WAV, OSC2 Analog, Sync 1>2 on)
+[ ] OSC1 Sub FM 70 %: plays as 0 while synced (no FM on OSC1); Sync off: the Sub FM is heard; on again: gone.
+[ ] OSC2 FM 1>2 50 % with Sync on: sync and FM both audible. Expect no difference from BE4.43's sync (it stays
+    sample-accurate; the per-block re-seed is a safety net). Listen for roughness, buzz or a tick at a steady 2.7 ms rate
+    anyway, also right after turning Sync on mid-note: write down what you hear at notes 36, 60, 84.
+
+7. D5 by ear (the three kits; the same project on each: WTFM_A track 1, OSC1 Sub FM at 25 %, 50 %, 100 % at C3 and C5,
+   one bright factory table (a saw-like one) and one dark one)
+[ ] BE4.44 (1.75), BEM1.5 and BEMOFF (flash each, boot label tells which): which sounds best at 50 % and at 100 %? Which
+    one aliases in a way you dislike? Your pick becomes the default (or stays 1.75).
+
+8. CPU (write down the "DSP nn%" on OSC1's title, OVER or not; after a save the ANALOG line's avg_cyc / peak_cyc /
+   voices_peak and load_pm / over_with_analog)
+[ ] 8-voice heavy FM chords: both oscillators Wavetable (factory tables), OSC1 Sub FM 100 %, OSC2 FM 1>2 100 %, a chord of
+    8 notes around C2, held, then re-struck fast. Then the same around C4. Offline the full Wavetable FM voice is 27.4k
+    instructions a block (Analog's full FM voice 28.9k). (Full depth is the cheaper case for the table: the reader drops
+    to coarse levels. The next row is the worst one.)
+[ ] THE WORST CASE: an 8-voice chord around C0 / C1 (notes 24..36), both Wavetable, OSC1 Sub FM about 10 %, OSC2 FM 1>2
+    about 30 %, an LFO on Position on both oscillators (fast enough to move every block), held, then re-struck. Light FM
+    keeps OSC1 on its fine low-note levels, so every block reads a new frame there. Offline 34.8k a voice-block steady
+    (within the heaviest existing voice, 35.3k), and one block per note up to 39.4k where OSC2 settles its level.
+[ ] The same chord with Sub FM 30 % + FM 1>2 30 % and the Position LFO, and again with a short FM Dec pluck (FM Dec 20 on
+    both, re-struck fast): offline 34.8k steady, 39.4k heaviest.
+[ ] The full-depth chord with an LFO on Position (both oscillators): offline 34.5k a voice-block.
+[ ] The same with FM Atk 20 on both oscillators, notes re-struck: the heaviest blocks offline (43.9k, a few per note,
+    where the rising depth changes the table level).
+[ ] Compare with the v4.43 checklist's Analog full-FM chord (same 8 notes): better, worse, or the same. No reset, no
+    freeze, no "!!!" in the log, no OVER that stays on.
+
+Bring back: BENTO_SAVES.log, BENTO_CRASHES.log if any, the row photos (section 2), notes on sections 3 (WTFM_D2), 4 to 7
+(D5 pick, D4 tables that slide, mixed sync roughness), section 8's figures.

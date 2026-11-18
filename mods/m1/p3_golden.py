@@ -3,58 +3,13 @@
 
     python p3_golden.py          # self-test (no image, no build dir)
 
-Written from the plan text only (4.6, 4.7, OD6, OD11, OD4), before and without reading the DSP sources. Q2's part is the
-Bit Depth quantiser, Q3's the shapes below the saw (after the Bit Depth notes), Q5's the sub waves as modulators (OD10),
-the through-zero FM phase, the sync roles with the slave reset rule (4.3, OD5) and the Bessel check; Q6's FM 1>2 (OD15's modulator
-grid, buffer B, the two-oscillator voice, the DC-drift and aliasing checks: last). Q2b extends the quantiser with OD12's dc (written
-from OD12's decision text, quoted below; the kernel's an_crush was already built, so this part is not "before the DSP").
-
-Bit Depth (Q2; 4.7, OD11 = (b), Jeff 2026-11-15): a true b-bit two's-complement grid on the oscillator's 96 kHz block s,
-    q = clamp(rint(x * S), -S, S - 1) / S,   S = 2^(b-1): 2048, 128, 8 for b = 12, 8, 4
-- Exactly 2^b levels k/S, k in -S..S-1. The top clips at (S-1)/S, the bottom at -1 (asymmetric by one step), so BLEP
-  overshoot above +1 lands on (S-1)/S and 1.0 is never an output.
-- rint is round half to even, as VRINTX.F32 in the default FPSCR mode (RN). numpy's rint does the same (I: IEEE 754
-  roundTiesToEven in both). A tie k + 0.5 goes to the even k.
-- Setting -> b (4.7, OD4: out-of-range plays `4`, as the widget shows): 0 Full, 1 12, 2 8, 3 or any other value 4.
-
-Tolerances, and why (M: arithmetic):
-- **Same float32 input -> bit exact (tolerance 0).** S is a power of two, so x * S and k * (1/S) (or k / S) are exact in
-  float32 for every |x| < 2^100; rint and the clamp are exact; every k/S (|k| <= 2048) fits a 24-bit mantissa. So the
-  float64 model on the kernel's own float32 s equals the M7's float32 q in every bit, including the sign of zero
-  (rint(-0.3) = -0.0, and -0.0 / S = -0.0). Compare with `crush_bits` (uint32 patterns) for byte-for-byte checks;
-  `==` treats -0.0 and 0.0 alike.
-- **Input from another model (e.g. the golden sine against the kernel's sinq, max 1e-5 in 6.3) -> one step at ties.**
-  An input error e can move x * S across a half step when it is within e * S of k + 0.5, and then q differs by exactly
-  1/S (0.125 at 4 bits): no float tolerance on q is meaningful. `compare` allows one step only on those samples
-  (`near_tie`, margin e * S) and is exact elsewhere. The allowance is not a loosened tolerance: it is the set of samples
-  whose correct level is undefined at that input precision, and `compare` reports how many there were.
-- Compare at the post-pass point (s before SMOOTH_APPLY, the value B is written from: BD1). After Level the gain multiply
-  rounds again, so a post-Level check needs the same gain applied to q and its own one-ulp float32 bound.
-- Non-finite input raises: NaN through VCMP/VSEL clamps depends on the operand order, which the plan does not fix, and
-  the kernel's NaN guards (test_analog T1) keep NaN out of s.
-
-Mutations (6.6, Q2): `mutants` gives the wrong quantisers the plan names: mid-tread without the clamp (OD11 (a)), the
-top clamped at S, plus round half away from zero (C `roundf`), truncation and a symmetric clip. `discriminates` counts
-the samples where a case's block separates each one from the correct q; a crush case is useful only if its count is > 0.
-To catch the missing bottom clamp a block needs x * S < -S - 0.5 strictly (at exactly -S - 0.5 the tie goes to the even
--S, which is in range); to catch the top at S it needs x * S >= S - 0.5.
-
-Bit Depth about the pulse's DC (Q2b; OD12 = (b), Jeff 2026-11-15: "crush s + dc, then subtract dc, so the DC-free pulse
-sits on the grid's range; B stays DC-free; dc follows a Shape ramp part by part"). A spec change, so the model changes:
-    q = clamp(rint((x + dc) * S), -S, S - 1) / S - dc
-- dc is the kernel's DC term of the part the sample belongs to (the pulse's 2 w - 1, w its width; 0 for the saw, the square
-  and below the saw). It is a float32 value the caller supplies, a scalar or one per sample (a ramp's parts); the model
-  does not derive it from Shape (4.7 / OD12 do not fix the kernel's arithmetic; the caller pins that).
-- x + dc and the final - dc are float32 operations, each rounded once (I: the M7 holds s and dc as float32). The model adds
-  in float64 and rounds to float32: for two float32 operands that equals the float32 add / subtract (double rounding is
-  innocuous at 53 >= 2 * 24 + 2 bits, Figueroa 1995). (x + dc) * S, the clamp and the level / S stay exact (S a power of 2).
-- dc 0 is Q2's crush in every bit, sign of zero included: the add of a zero dc and the subtract of it are the identity (a
-  -0.0 input stays -0.0; plain float arithmetic would give -0.0 + 0.0 = +0.0). So every Q2 result stands where dc is 0.
-- For one dc: q + dc takes at most 2^b values, exactly 2^b on a sweep of x + dc over [-1.3, 1.3]; q itself is 2^b values
-  dc off the grid (`levels(q, b, dc)` takes dc back off, within the subtract's rounding: |q + dc - k/S| <= 2^-24 since
-  |k/S - dc| < 2). The clip acts on x + dc: (S-1)/S - dc at the top, -1 - dc at the bottom.
-- Mutations (6.6, Q2b): `mutants(x, b, dc)` adds OD12's wrong forms: dc not added (Q2's crush on the DC-free pulse,
-  OD12 (a)), dc added but not subtracted, the sign of dc flipped (subtracted first, added after).
+Written from the plan text only (4.6, 4.7, OD6, OD4), before and without reading the DSP sources: Q3's shapes below the saw,
+Q5's sub waves as modulators (OD10), the through-zero FM phase, the sync roles with the slave reset rule (4.3, OD5) and the
+Bessel check; Q6's FM 1>2 (buffer B, the two-oscillator voice, the DC-drift and aliasing checks: last).
+BE4.42 (docs/plan-p3-fm-bits.md, BE4.42; Jeff's device feedback 2026-11-16): Bit Depth is removed from the build, and with it
+this file's Q2 / Q2b quantiser (crush, its grid, levels, probe and mutants), OD15's modulator grid (crush_mod) and the crush's
+drift figure (crush_drift): B is OSC1's own pre-Level block times its increment. The FM index law is deeper: FD3 is now
+I = 16 (v/1000)^1.5 (BE4.41: 8 (v/1000)^2), fm_index / an_index32 below.
 
 Shapes 0..48 (Q3; 4.6, OD6 as recommended): written before Q3's kernel, from the plan and test_analog's BE4.40 model().
 - Map: kcoord(Shape) -> k, linear between the knots (0, -1) (2, -1) (22, -0.5) (26, -0.5) (45, 0) (48, 0): plateaus sine
@@ -107,8 +62,8 @@ Tolerances, and why:
 
 Through-zero linear FM (Q5; 4.3, OD5, FD3, OD10, 6.3, 6.5, 6.6): written from the plan text, Q3's model and test_analog's
 BE4.40 model() / k_of / dc_of, before and without reading any FM implementation (no DSP C/C++ read for it).
-- Index (FD3): fm_index(v) = 8 (v/1000)^2, v clamped 0..1000; index_ramp(v0, v1, N, off, n): I linear from I(v0) at sample
-  0 to I(v1) at sample N (so a part continues the block's ramp, and a held next block continues it with no step).
+- Index (FD3, BE4.42): fm_index(v) = 16 (v/1000)^1.5, v clamped 0..1000 (BE4.41's 8 (v/1000)^2 is the "square" mutant);
+  index_ramp(v0, v1, N, off, n): I linear from I(v0) at sample 0 to I(v1) at sample N (so a part continues the block's ramp, and a held next block continues it with no step).
 - Modulator: sub_wave / sub_mod, the sub's sine, triangle, saw, rev saw and square (DC-free, OD10), float64 phase, polarity
   and origin this model's (I). Noise is not modelled. For sample-by-sample checks feed the kernel's own A buffer instead
   (Q4: A = stock's sub up to dc, worst 0): Q5 checks the FM kernel given A, Q4 checked A.
@@ -164,51 +119,42 @@ Tolerances, and why (M: the self-test; I where marked):
   is conservative; it still fails an index 2 % off, the modulator one sample late, and the linear law (M). At Sub FM's
   sine (stock's table, not sinq) pass that table's stated error as eps_m.
 
-FM 1>2, OSC1 -> OSC2 (Q6; 4.1, 4.4 E3 (a), 4.5, 4.7 BD1, OD5, OD15 = (b) Jeff 2026-11-16, 6.3, 6.6): written from the plan text,
-this file's Q2b / Q5 parts and test_analog's harness API (fm_golden, fm_capture, FmBench), before and without reading any
-FM 1>2 implementation (no DSP C/C++ read for it). Stock's FIR taps are stock data read off the 1.6.8 image (S, below).
-- Modulator (BD1, OD15): B[i] = f32(f32(inc1) q_B[i]), q_B = crush_mod(OSC1's pre-Level s, its Bit Depth, its part dc)
-  = clamp(rint((s + dc) S), -S, S) / S - dc (the top at S: B's grid only; the audio keeps crush()); s itself at Full. inc1
-  OSC1's base increment (kin = I inc1, 4.1), not its FM'd di1. Level never enters (E3 (a): OSC1 at Level 0 modulates the
-  same). b_buffer; mutants after_level, before_crush, audio_grid (OD15 not applied), b_late, kin_fm.
-- Index (FD3, Q5 as built): an_index32(v) = f32(f32(v^2) f32(8e-6)); index_line(v0, v1, N) = (ia, dia), dia = f32(f32(I1 - I0)
-  / N) or 0; line_values: I_j = f32(ia + dia j) over the block frame j (m12's ramp the same rule as msub's, I: 4.1).
-- Voice: fm12_voice(n, inc1, k1, inc2, k2, a, is1, is2, i12, bits, state1, state2, sync, level1, off, law, fma, widths, dc,
-  order, mutant) -> Voice12(y1, q1, B, di1, r1, di2, y2, q2, r2): OSC1 = inc1 + I_s1 A (master when sync), its audio crush
-  q1, B from y1, OSC2 = inc2 + I_s2 A + I_12 B folded in `order` ("ab" = 4.3's text), slave on OSC1's bytes when sync
-  (OD5), its audio crush q2. Chained calls with off and the returned states are one call (state is (phase, delayed)).
-  "no_b" mutant: OSC2 ignores B (useB false).
+FM 1>2, OSC1 -> OSC2 (Q6; 4.1, 4.4 E3 (a), 4.5, 4.7 BD1, OD5, 6.3, 6.6): written from the plan text, this file's Q5 part and
+test_analog's harness API (fm_golden, fm_capture, FmBench), before and without reading any FM 1>2 implementation (no DSP
+C/C++ read for it). Stock's FIR taps are stock data read off the 1.6.8 image (S, below).
+- Modulator (BD1): B[i] = f32(f32(inc1) s[i]), s OSC1's pre-Level block (BE4.42: no Bit Depth, so no grid on it; BE4.41's
+  OD15 grid is gone with it). inc1 OSC1's base increment (kin = I inc1, 4.1), not its FM'd di1. Level never enters (E3 (a):
+  OSC1 at Level 0 modulates the same). b_buffer; mutants after_level, b_late, kin_fm.
+- Index (FD3, BE4.42 as built): an_index32(v) = f32(f32(v sqrt32(v)) f32(16 / 1000^1.5)), sqrt32 the correctly rounded
+  float32 square root (VSQRT); index_line(v0, v1, N) = (ia, dia), dia = f32(f32(I1 - I0) / N) or 0; line_values:
+  I_j = f32(ia + dia j) over the block frame j (m12's ramp the same rule as msub's, I: 4.1).
+- Voice: fm12_voice(n, inc1, k1, inc2, k2, a, is1, is2, i12, state1, state2, sync, level1, off, law, fma, widths, order,
+  mutant) -> Voice12(y1, B, di1, r1, di2, y2, r2): OSC1 = inc1 + I_s1 A (master when sync), B from y1, OSC2 = inc2 + I_s2 A
+  + I_12 B folded in `order` ("ab" = 4.3's text), slave on OSC1's bytes when sync (OD5). Chained calls with off and the
+  returned states are one call (state is (phase, delayed)). "no_b" mutant: OSC2 ignores B (useB false).
 - Drift (6.3): drift(di, inc, window) {L, travel, expect, cycles, cents, ok |cycles| <= DRIFT_BIN = 1}; whole_cycles(di_mod)
-  a window of whole forward modulator cycles; crush_drift(s, b, inc1, I12, inc2, dc, window) {mod, grid} in cents: the
-  crush's own share of OSC2's mean frequency, OD15's B and the audio grid on B (the mutant).
+  a window of whole forward modulator cycles.
 - Aliasing (6.3): STOCK_FIR, decimate(y, taps) (circular, one output per two inputs), fir_response, alias_db(y, cycles)
   (off-harmonic / harmonic energy, plan-analog-fm 4.3's metric), alias_case(route, cc, cm, I, k_c, k_m, wave, fs, n48).
 - Bessel (6.3): fm12_bessel(y2, cc, cm, I, pc0, qm0, walk): OSC1 at Shape 0 from qm0 plays -cos 2 pi (qm0 + i inc1), so B is
   fm_sine_time's modulator with phi = pi; eps_m = FM12_EPS_M = SINQ_ERR + TOL_F32 (OSC1's stated sample error).
 
 Tolerances, and why (M: the self-test, scratch p3/q6g; I where marked):
-- **B: bit for bit (tolerance 0).** S a power of two, the product of two float32 values exact in float64, one rounding each
-  (M: crush_mod equals numpy float32 arithmetic in every bit on 65,536 random x and kernel-range dc). The form
-  f32(f32(inc1) q) is a statement of the kernel's arithmetic: if the kernel folds inc1 into the crush (inc1 g / S - inc1
-  dc, or one VFMA), restate it here from the disassembly; never a tolerance.
+- **B: bit for bit (tolerance 0).** The product of two float32 values is exact in float64, so one rounding. The form
+  f32(f32(inc1) s) is a statement of the kernel's arithmetic (an_feed): restate it from the disassembly if that changes;
+  never a tolerance.
 - **OSC2 sample by sample: Q5's rules unchanged** (law "f32", fma, the same di bit for bit: feed the kernel's own A and B and
   lines; end phase equal first; fm_tol by OSC2's k and role; master bytes +-1 on ev_near). The fold order of the two terms
   ("ab" / "ba") changes di by at most 2^-24 (M) and is a statement: read it off the kernel.
 - **Bessel, sine -> sine (FM 1>2):** bessel_tol with FM12_EPS_M: 3.80e-4 a bin at I = 1 (0.34 dB on the J3 bin at ratio 1,
   under 6.3's 0.5 dB), 6.68e-4 at I = 2. The golden's own f32 renders use 0.07-0.4 % of it (ratio 1 at I = 1 and
-  an_index32(354) = 1.0025280, 3:1 at I = 2, 1:3 at I = 1); B one sample late, the index 2 % off and y1 after a Level of
-  0.98 fail by 17-31 x it. OSC1 at Full only: a crushed modulator has no Bessel law.
+  an_index32(157) (BE4.42's law near I = 1; BE4.41 used an_index32(354) = 1.0025280 of its own law), 3:1 at I = 2, 1:3
+  at I = 1); B one sample late, the index 2 % off and y1 after a Level of 0.98 fail by 17-31 x it.
 - **DC drift (6.3, 100 blocks, I = 8 through zero):** travel over whole modulator cycles within DRIFT_BIN (1 cycle, Q5's
   Square-sub precedent): Sub FM by a DC-free Square at PW 30 %, a sine and a triangle sub pass, the raw Square fails (-106
-  cycles); FM 1>2 from a free OSC1 at Shapes 48 / 88 / 127 x Full / 12 / 8 / 4 passes (worst 0.03 cycles). The audio grid on
-  B (OD15 not applied) fails the bin at 8 and 4 bits on the square (-2.1 / -33.7 cycles) but not at 12 (-0.13: under a
-  bin over 100 blocks), so 12 bits is seen by crush_drift (-3.3 cents against CRUSH_DRIFT_CENTS 1) and by B bit for bit.
-  Over an arbitrary window a zero-mean modulator's partial cycle alone moves the travel by up to I max|m| / 2 cycles
+  cycles); FM 1>2 from a free OSC1 at Shapes 48 / 88 / 127 passes (worst 0.03 cycles; BE4.42: also at I = 16, the new
+  law's 100 %). Over an arbitrary window a zero-mean modulator's partial cycle alone moves the travel by up to I max|m| / 2 cycles
   (|integral of a zero-mean wave over a part cycle| <= P max|m| / 2), so use whole cycles or a coherent block.
-- **crush_drift bound: CRUSH_DRIFT_CENTS = 1 cent at 12 and 8 bits, a free OSC1** (M, sweep of Shapes 0..127 x notes
-  36..108, I12 = 8, OSC1 = OSC2: worst +0.25 / +0.32 cents). Measured, not derived: the only derived bound (|mean
-  rounding| <= 1 / 2S) is 702 cents at 4 bits, useless. The audio-grid mutant: -3.4 / -55 / -1190 cents on the square,
-  -2.5 / -40 / -790 at Shape 100, -0.5 / -8 / -136 at 127, -0.04 / -3 / -208 on the sine (12 / 8 / 4 bits).
 - **Aliasing (6.3): 96 kHz + stock's FIR + decimation against the same voice rendered at 48 kHz** (the old design; its
   absolute figures, plan-analog-fm 4.3, had an unrecorded modulator, so the comparison is same-case): M at n48 16384, I = 4
   ratio 1 unless noted, dB off/harmonic 48k -> 96k+FIR: FM 1>2 saw carrier, sine OSC1 436 Hz -29.8 -> -37.4, 1731 Hz -22.4
@@ -227,178 +173,42 @@ Found in Q6 (for the plan; M unless marked):
   with OSC1 = OSC2 the mean increment 1 + I12 mean(y1) reaches 0.63 (-800 cents) at FM 1>2 35 % (I12 = 1) and reverses
   sign at 100 %. Its sign follows the Shape and J_2(I). 4.5's "B is OSC1's
   audible signal, including OSC1's own FM" makes this the specified behaviour, but it is a far larger detune than the
-  one OD15 removed. Options for Jeff (not this file's call): accept (FM character); a DC blocker on B (a one-pole high-pass
-  per block, a few instructions a sample, B no longer bit for bit OSC1's crushed s); or B from OSC1 before its own Sub FM
+  one OD15 removed (BE4.42: the deeper law doubles I12 at 100 %, 16 for 8, so this detune doubles with it). Options for
+  Jeff (not this file's call): accept (FM character); a DC blocker on B (a one-pole high-pass per block, a few
+  instructions a sample, B no longer bit for bit OSC1's s); or B from OSC1 before its own Sub FM
   (not available: one render). The 6.3 drift check is therefore stated for a free OSC1; with OSC1's own FM the golden
   predicts the drift exactly (I12 sum(B)) and a test should compare against it, not against 0.
-- **OD15 removes the grid's top-clip DC, not the rounding's own mean.** Where a wave's extreme falls between two levels the
-  rounding has a steady mean: Shape 36 peaks at 0.474, which 4 bits rounds up to 0.5 on every cycle: +16.6 cents at note
-  60, +30.0 at note 96 (FM 1>2 100 %, a free OSC1; a steady rate: +38.6 cycles over 400 blocks); with OSC1's own Sub FM
-  (I = 2) its phase dwells on a few values: -139 cents at 4 bits, -3.1 at 8. No sample reaches the top there, so OD15
-  changes nothing. 12 and 8 bits from a free OSC1 stay within 0.32 cents. So "no OSC2 detune at any depth" (OD15) holds
-  for the top clip's term at every depth, and in total only at 12 and 8 bits from a free OSC1.
+
+BE4.43 FM envelope (Jeff's design 2026-11-16, docs/plan-p3-fm-bits.md BE4.43), written from the design text before any M7
+envelope code, so this is the spec the M7 follows: fm_env_blocks / fm_env_consts / fm_env / fm_env_lines below.
+- Per oscillator: FM Atk a 0..127, FM Dec d 0..128 (FM_DEC_INF = 128, shown Inf: the top of the knob is the longest decay,
+  one byte, and the stored default 128 is distinct from every time). Effective index = the amount's index x env, env at
+  block rate (T_BLOCK = 128 frames at 48 kHz = 2N = 256 at 96 kHz, 2.667 ms), linear between block boundaries.
+- Time curve (I): n(x) = 1 + round((e^(L x) - 1) / L) blocks, L = 0.0393823365313980 (e^(127 L) - 1 = 3749 L): 1 block
+  (2.7 ms) at 0, 10.0 s (3750) at 127, slope 1 block a step at 0 so all 128 values are distinct block counts (a pure
+  exponential 2.7 ms .. 10 s collapses to 100 distinct counts at block rate), about 4 % a step at the top. 20 = 83 ms,
+  32 = 173 ms, 48 = 384 ms, 64 = 776 ms, 80 = 1.52 s, 96 = 2.90 s, 112 = 5.51 s. Atk 0 is instant (not n(0)).
+- Shape (I): attack linear in index, 0 -> 1 over n_a blocks (e_k = k / n_a): the index is already the brightness control
+  (sidebands about I + 1), so linear in I is an even swell and lands exactly on 1 by a counter; decay exponential,
+  e = 0.001^(j / n_d) (-60 dB at n_d blocks: the time a Dec value names), then 0 (at most 0.016 index at 100 %, no
+  denormals). Inf holds 1. A note start resets the envelope (hard retrigger, per voice): e0 = 0 (1 for Atk 0).
+- Stated float32 arithmetic (law f32): step = f32(1 / n_a), r = f32(0.001^(1 / n_d)); attack f32(f32(k) step), 1.0 at
+  k = n_a; decay 1.0 then f32(e r) a block; every stage change by a block counter, never a float compare. Lines:
+  ia = f32(I(v0) e0), end = f32(I(v1) e1), dia = f32(f32(end - ia) / N), index_line's rule, so Atk 0 / Dec Inf is
+  index_line bit for bit. M: |f32 - f64| env 4.0e-6 at Dec 127 (FM_ENV_TOL 4e-5 the stated bound).
+- Cost: per oscillator-block a counter, one VMUL for the envelope, two VMULs on the line's ends; nothing a sample.
 """
 import math, sys
 import numpy as np
 
-BITS = (12, 8, 4)                       # the crushed settings 1, 2, 3 (Full is 0)
-
-
-def bits_of(setting):
-    """Bit Depth setting value -> b, or None for Full. Out of range (hand-edited files, OD4) plays 4, as the widget."""
-    return {0: None, 1: 12, 2: 8}.get(int(setting), 4)
-
-
-def scale(b):
-    """S = 2^(b-1): 2048, 128, 8."""
-    if b not in BITS: raise ValueError(f"b must be one of {BITS}, not {b!r}")
-    return float(1 << (b - 1))
-
-
 def _x(x, f32):
     x = np.asarray(x, dtype=np.float64)
     if f32: x = x.astype(np.float32).astype(np.float64)        # the kernel's s is float32 (no-op on captured samples)
-    if not np.all(np.isfinite(x)): raise ValueError("non-finite input: the quantiser's NaN/Inf result is unspecified")
+    if not np.all(np.isfinite(x)): raise ValueError("non-finite input")
     return x
 
 
 def _f32(v): return np.asarray(v, dtype=np.float64).astype(np.float32).astype(np.float64)
-
-
-def _dc(dc, shape):
-    """dc as a float64 array of x's shape; it must be finite float32 values (the kernel's)."""
-    d = np.broadcast_to(np.asarray(dc, dtype=np.float64), shape)
-    if not np.all(np.isfinite(d)): raise ValueError("non-finite dc")
-    if not np.array_equal(d, _f32(d)): raise ValueError("dc must be float32 values (the kernel's own)")
-    return d
-
-
-def _on(x, d, f32):
-    """x + dc as the M7 adds it: one float32 rounding; a zero dc is the identity (sign of zero kept)."""
-    y = x + d
-    if f32: y = _f32(y)
-    return np.where(d == 0, x, y)
-
-
-def _grid(x, b, f32, dc, top):
-    """clamp(rint((x + dc) S), -S, top) / S - dc, the add and the subtract one float32 rounding each, a zero dc the
-    identity. top S - 1: the audio grid (OD11 (b)); top S: FM 1>2's modulator grid (OD15 (b))."""
-    x = _x(x, f32)
-    if b is None: return x.copy()
-    S = scale(b); d = _dc(dc, x.shape)
-    g = np.clip(np.rint(_on(x, d, f32) * S), -S, S - 1 if top == "audio" else S) / S
-    out = g - d
-    if f32: out = _f32(out)
-    return np.where(d == 0, g, out)
-
-
-def crush(x, b, f32=True, dc=0.0):
-    """The crushed block (float64 array; every value is an exact float32). b None (Full) returns x unchanged (any dc).
-    f32: round x to float32 first, as the M7 holds s; pass False only to study a float64 signal on its own.
-    dc (Q2b, OD12): the part's DC term, a float32 scalar or one per sample: the grid acts on x + dc, and dc comes off after."""
-    return _grid(x, b, f32, dc, "audio")
-
-
-def crush_bits(x, b, dc=0.0):
-    """crush() as the uint32 IEEE patterns of its float32 values: for byte-for-byte checks (sign of zero included)."""
-    return crush(x, b, dc=dc).astype(np.float32).view(np.uint32)
-
-
-def levels(q, b, dc=0.0):
-    """Grid indices k = (q + dc) * S (int64). Raises if any value is off the grid (beyond the subtract's rounding when dc is
-    not 0: |q + dc - k/S| <= 2^-24) or outside -S..S-1."""
-    S = scale(b); q = np.asarray(q, dtype=np.float64); d = _dc(dc, q.shape)
-    k = (q + d) * S; kr = np.rint(k)
-    off = np.abs(k - kr) > np.where(d == 0, 0.0, 2.0 ** -24 * S)
-    if np.any(off): raise AssertionError(f"{b}-bit: {int(np.sum(off))} values off the 1/{S:g} grid")
-    if k.size and (kr.min() < -S or kr.max() > S - 1):
-        raise AssertionError(f"{b}-bit: index range {kr.min():g}..{kr.max():g} outside {-S:g}..{S - 1:g}")
-    return kr.astype(np.int64)
-
-
-def check_levels(q, b, dc=0.0):
-    """On-grid (about dc), in range, and at most 2^b distinct values; dc must be one value (a constant-dc part), since a
-    ramp's parts each have their own 2^b. Returns the distinct-level count (of q itself)."""
-    if np.ndim(dc): raise ValueError("check_levels: one dc (a constant-dc part)")
-    levels(q, b, dc)
-    n = int(np.unique(np.asarray(q, dtype=np.float64)).size)
-    if n > 1 << b: raise AssertionError(f"{b}-bit: {n} levels > {1 << b}")
-    return n
-
-
-def check_clip(x, q, b, f32=True, dc=0.0):
-    """The asymmetric clip of x + dc: every (x + dc) * S >= S - 0.5 gives (S-1)/S - dc, every one <= -S - 0.5 gives -1 - dc,
-    and (q + dc) = +1.0 never appears. Returns (n_top, n_bottom), the clipped sample counts, so a case can assert it reached
-    each side."""
-    x = _x(x, f32); q = np.asarray(q, dtype=np.float64); S = scale(b); d = _dc(dc, x.shape)
-    y = _on(x, d, f32); k = levels(q, b, d)
-    top, bot = y * S >= S - 0.5, y * S <= -S - 0.5
-    if np.any(k >= S): raise AssertionError(f"{b}-bit: +1.0 in the output (top clamped at S, not S - 1)")
-    if not np.all(k[top] == S - 1): raise AssertionError(f"{b}-bit: top not clipped at (S-1)/S")
-    if not np.all(k[bot] == -S): raise AssertionError(f"{b}-bit: bottom not clipped at -1")
-    return int(top.sum()), int(bot.sum())
-
-
-def near_tie(x, b, err):
-    """Mask of samples whose x * S is within err * S of a half step: an input error <= err may change their level."""
-    S = scale(b); t = np.asarray(x, dtype=np.float64) * S
-    return np.abs(t - np.floor(t) - 0.5) <= err * S
-
-
-def compare(got, x, b, err=0.0, dc=0.0):
-    """got (the M7's crushed block) against crush(x, b, dc=dc). err = 0: x is the M7's own float32 s, so every sample must
-    match exactly. err > 0: x comes from another model within err of s; samples near a tie (near_tie, of x + dc) may differ
-    by exactly one step, all others exactly. Returns the number of tie samples that did differ; raises on any other
-    mismatch."""
-    got = np.asarray(got, dtype=np.float64); want = crush(x, b, f32=err == 0.0, dc=dc)
-    if got.shape != want.shape: raise AssertionError(f"shape {got.shape} != {want.shape}")
-    d = np.abs(levels(got, b, dc) - levels(want, b, dc))
-    tie = near_tie(np.asarray(x, dtype=np.float64) + dc, b, err) if err > 0 else np.zeros(d.shape, bool)
-    bad = (d > 1) | ((d == 1) & ~tie)
-    if np.any(bad):
-        i = int(np.flatnonzero(bad)[0])
-        raise AssertionError(f"{b}-bit: {int(bad.sum())} samples differ, first [{i}] x={x[i]!r} got={got[i]!r} want={want[i]!r}")
-    return int(np.sum(d == 1))
-
-
-def mutants(x, b, dc=0.0):
-    """The wrong quantisers 6.6 must catch (plus three plausible slips), each on the same float32 input; with a dc (Q2b,
-    OD12) the Q2 forms act on x + dc as the correct one does, and OD12's own wrong forms are added."""
-    x = _x(x, True); S = scale(b); d = _dc(dc, x.shape); y = _on(x, d, True); t = y * S
-    off = lambda g: np.where(d == 0, g, _f32(g - d))
-    away = np.sign(t) * np.floor(np.abs(t) + 0.5)                # C roundf: ties away from zero
-    m = {
-        "mid_tread_no_clamp": off(np.rint(t) / S),               # OD11 (a)
-        "top_clamped_at_S": off(np.clip(np.rint(t), -S, S) / S),
-        "half_away_from_zero": off(np.clip(away, -S, S - 1) / S),
-        "truncate": off(np.clip(np.trunc(t), -S, S - 1) / S),
-        "symmetric_clip": off(np.clip(np.rint(t), -(S - 1), S - 1) / S),
-    }
-    if np.any(d != 0):
-        m["dc_not_added"] = crush(x, b)                          # OD12 (a): Q2's grid on the DC-free pulse
-        m["dc_not_subtracted"] = np.clip(np.rint(t), -S, S - 1) / S
-        m["dc_sign_flipped"] = crush(x, b, dc=-d)
-    return m
-
-
-def discriminates(x, b, dc=0.0):
-    """{mutant: number of samples where it differs from crush(x, b, dc=dc)}: a crush case's block must score > 0 on each
-    mutant it is meant to kill."""
-    want = crush(x, b, dc=dc)
-    return {k: int(np.sum(v != want)) for k, v in mutants(x, b, dc).items()}
-
-
-def probe(b, dc=0.0):
-    """A crafted float32 block for b: every tie at the bottom, middle and top of the range, -0.0, a negative value that
-    rounds to -0.0, overshoot past +1 and below -1 (beyond the tie at -S - 0.5), and both exact ends. dc (Q2b): the same
-    points for x + dc (the block is shifted by -dc; exact, so still every tie, for a dc of few bits such as -0.75; for a
-    kernel dc of 24 bits the float32 shift moves each point by an ulp, so near-ties on both sides instead)."""
-    S = scale(b)
-    k = np.r_[-S - 3, -S - 1, -S - 0.5, -S, -S + 0.5, -2.5, -1.5, -0.5, -0.3, 0.0, 0.3, 0.5, 1.5, 2.5,
-              S - 1.5, S - 1, S - 0.5, S, S + 0.5, S + 3]
-    x = np.r_[k / S, -0.0, 1.06, -1.06]
-    x = x.astype(np.float32).astype(np.float64)
-    return x if dc == 0 else _f32(x - float(np.float32(dc)))
 
 
 # ---- Q3: the shapes below the saw (4.6, OD6) -------------------------------------------------------------------------------
@@ -630,15 +440,20 @@ SUB_WAVES = ("sine", "triangle", "saw", "rev_saw", "square")
 EV_NONE = 255
 
 
-def fm_index(v, law="square"):
-    """FD3: Sub FM / FM 1>2 amount v (0..1000, clamped as an_prop stores it) -> index I = 8 (v/1000)^2, 0..8.
-    law "linear" (8 v/1000) is 6.6's mutant, for tests that must turn red on it."""
+FM_LAWS = ("pow15", "square", "linear")
+
+
+def fm_index(v, law="pow15"):
+    """FD3 (BE4.42): Sub FM / FM 1>2 amount v (0..1000, clamped as an_prop stores it) -> index I = 16 (v/1000)^1.5, 0..16
+    (50 % 5.66, 25 % 2). Mutants, for tests that must turn red on them: "square" is BE4.41's law 8 (v/1000)^2 (0..8),
+    "linear" 6.6's 16 v/1000."""
+    if law not in FM_LAWS: raise ValueError(f"law must be one of {FM_LAWS}")
     v = np.clip(np.asarray(v, dtype=np.float64), 0, 1000) / 1000
-    I = 8 * v * v if law == "square" else 8 * v
+    I = 16 * v * np.sqrt(v) if law == "pow15" else 8 * v * v if law == "square" else 16 * v
     return float(I) if I.ndim == 0 else I
 
 
-def index_ramp(v0, v1, N, off=0, n=None, law="square"):
+def index_ramp(v0, v1, N, off=0, n=None, law="pow15"):
     """The index per sample of a 2N block whose amount moves v0 (last block's msub / m12) -> v1: linear in I from I(v0) at
     sample 0 to I(v1) at sample N (the next block's first), I_j = I0 + (I1 - I0) j / N, j = off .. off + n - 1 (a part
     of the block; n default N - off). So chunked parts continue one ramp and a held next block continues it without a step
@@ -998,12 +813,10 @@ def _fm_sine_with_errors(n, inc_c, inc_m, I, pc0, qm0, phi, eps_c, eps_m, e1):
     return -np.cos(2 * np.pi * p) + eps_c * e1(p)
 
 
-# ---- Q6: FM 1>2, OSC1 -> OSC2 (4.1, 4.4 E3 (a), 4.5, 4.7 BD1, OD5, OD15 = (b); 6.3, 6.6) ---------------------------------
-FM12_MUTANTS = ("after_level", "before_crush", "audio_grid", "b_late", "kin_fm", "no_b")
+# ---- Q6: FM 1>2, OSC1 -> OSC2 (4.1, 4.4 E3 (a), 4.5, 4.7 BD1, OD5; 6.3, 6.6) ----------------------------------------------
+FM12_MUTANTS = ("after_level", "b_late", "kin_fm", "no_b")
 FM12_EPS_M = SINQ_ERR + TOL_F32     # OSC1 as the Bessel modulator: sinq's stated error + its float32 sample bound (6.3)
 DRIFT_BIN = 1.0                     # 6.3 / Q5's precedent: the mean frequency within one bin of the window (1 cycle)
-CRUSH_DRIFT_CENTS = {12: 1.0, 8: 1.0, 4: None}   # OD15: the crush's share of OSC2's mean frequency, a free OSC1 (M: worst
-                                    # 0.25 / 0.32 cents); 4 bits has no bound: the extremes' rounding (Q6 notes, M: +30 cents)
 # Stock 1.6.8's 2x decimator 0x0807FCC0 (S: its 11 VFMA taps, the literals at 0x0807FDD0..0x0807FDE7 as its chain reads
 # them: x[1] s10, x[0] s11, x[2] s12, x[3] s13, x[4] s14, x[5] s0, x[6] s14, x[7] s13, x[8] s12, x[9] s10, x[10] s11; one
 # output per two inputs). Data read off the stock image, not our C; a test should re-read the six words and assert them.
@@ -1012,27 +825,17 @@ _FIR6 = (-0.044159356504678726, 0.05654638633131981, -0.09867829829454422, 0.027
 STOCK_FIR = (_FIR6[1], _FIR6[0], _FIR6[2], _FIR6[3], _FIR6[4], _FIR6[5], _FIR6[4], _FIR6[3], _FIR6[2], _FIR6[0], _FIR6[1])
 
 
-def crush_mod(x, b, f32=True, dc=0.0):
-    """OD15 (b) (Jeff 2026-11-16): FM 1>2's modulator is crushed with its top clamp at S, not S - 1:
-    q_B = clamp(rint((x + dc) S), -S, S) / S - dc. The audio keeps crush() (OD11 (b)); only B takes this. The grid is then
-    symmetric (2^b + 1 levels, rint odd), so a +1 high keeps its level and B carries only rounding, no grid DC: the -f_hi / S
-    mean shift of crush() (Q2b) is gone at every depth. b None (Full) returns x (rounded to float32 when f32)."""
-    return _grid(x, b, f32, dc, "mod")
-
-
-def b_buffer(s, inc1, b=None, dc=0.0, level=1.0, mutant=None, di1=None, f32=True):
-    """Buffer B (4.1, BD1, OD15): B[i] = f32(f32(inc1) q_B[i]), q_B = crush_mod(OSC1's pre-Level block s, its Bit Depth b,
-    its part's dc) (s itself at Full), inc1 OSC1's base increment (before its own FM: kin = I inc1, 4.1). One rounding: the
-    product of two float32 values is exact in float64. Level never enters (BD1: before Level; E3 (a): a silent OSC1 still
-    modulates); `level` exists for the mutant. That form is a statement of the kernel's arithmetic (read it off the
-    disassembly): compare B bit for bit; if the kernel folds inc1 into the crush differently, restate the form here.
-    mutant (6.6 and plausible slips): "after_level" (B = inc1 f32(level q): y1 taken after Level), "before_crush" (B from s
-    with a Bit Depth set), "audio_grid" (B from crush(): OD15 not applied, the grid's DC), "b_late" (B[i] from OSC1's sample
-    i - 1), "kin_fm" (kin from OSC1's FM'd increment di1, not its base inc1). f32 False: all in float64 (law "f64")."""
+def b_buffer(s, inc1, level=1.0, mutant=None, di1=None, f32=True):
+    """Buffer B (4.1, BD1): B[i] = f32(f32(inc1) s[i]), s OSC1's pre-Level block, inc1 OSC1's base increment (before its own
+    FM: kin = I inc1, 4.1). One rounding: the product of two float32 values is exact in float64. Level never enters (BD1:
+    before Level; E3 (a): a silent OSC1 still modulates); `level` exists for the mutant. That form is a statement of the
+    kernel's arithmetic (an_feed; read it off the disassembly): compare B bit for bit. BE4.42: no Bit Depth, so no grid
+    (BE4.41's OD15 crush_mod and its before_crush / audio_grid mutants are retired).
+    mutant (6.6 and plausible slips): "after_level" (B = inc1 f32(level s): y1 taken after Level), "b_late" (B[i] from
+    OSC1's sample i - 1), "kin_fm" (kin from OSC1's FM'd increment di1, not its base inc1). f32 False: all in float64."""
     if mutant not in (None,) + FM12_MUTANTS: raise ValueError(f"mutant must be one of {FM12_MUTANTS}")
     r = _f32 if f32 else (lambda v: np.asarray(v, dtype=np.float64))
-    q = (crush(s, b, f32, dc) if mutant == "audio_grid" else _x(s, f32) if mutant == "before_crush"
-         else crush_mod(s, b, f32, dc))
+    q = _x(s, f32)
     if mutant == "after_level": q = r(q * float(r(level)))
     if mutant == "b_late": q = np.r_[q[:1], q[:-1]]
     k = r(di1) if mutant == "kin_fm" else float(r(inc1))
@@ -1040,10 +843,12 @@ def b_buffer(s, inc1, b=None, dc=0.0, level=1.0, mutant=None, di1=None, f32=True
 
 
 def an_index32(v):
-    """FD3's index in the kernel's stated arithmetic (Q5 as built: an_index, `I(v) = f32(v^2) x f32(8e-6)`, one rounding):
-    fm_index within float32 rounding; exact 2 at 500 and 8 at 1000. v clamped 0..1000 as an_prop stores it."""
-    v = int(min(max(int(v), 0), 1000))
-    return float(np.float32(float(np.float32(v * v)) * float(np.float32(8e-6))))
+    """FD3's index in the kernel's stated arithmetic (BE4.42 as built: an_index, I(v) = f32(f32(v sqrt32(v)) K),
+    K = f32(16 / 1000^1.5), sqrt32 the correctly rounded float32 square root, VSQRT; v is exact in float32): fm_index within
+    float32 rounding; exact 2 at 250 and 16 at 1000. v clamped 0..1000 as an_prop stores it."""
+    v = np.float32(min(max(int(v), 0), 1000))
+    p = np.float32(v * np.sqrt(v))                              # numpy's float32 sqrt is IEEE correctly rounded
+    return float(np.float32(p * np.float32(16.0 / 1000.0 ** 1.5)))
 
 
 def index_line(v0, v1, N=256):
@@ -1062,37 +867,182 @@ def line_values(line, off, n):
     return _fma32(np.full(n, float(np.float32(ia))), np.full(n, float(np.float32(dia))), j)
 
 
-def wave_dc(k, law="f32", width=None):
-    """A part's dc (OD12, the crush's argument): the pulse's 2 w - 1 above k = 0.5, 0 at and below (saw, square, LOW). The
-    kernel's own an_dc is the authority for a bit-for-bit check (pass it as dc=); this is FmWave's float32 form."""
-    return FmWave(k, law, width).dc if k > 0.5 else 0.0
+# ---- BE4.43 FM envelope (Jeff's design 2026-11-16; docs/plan-p3-fm-bits.md, BE4.43): the spec the M7 follows -------------
+# Written from the design text only, before any M7 envelope code exists. Per oscillator: FM Atk a (0..127), FM Dec d (0..127,
+# FM_DEC_INF = 128 shown "Inf"). The effective index = the amount's index (Sub FM / FM 1>2, FD3) x env. All block rate.
+T_BLOCK = 128 / 48000.0             # one voice block: 128 frames at 48 kHz = 2N = 256 frames at 96 kHz, 2.667 ms
+FM_ENV_N = 256                      # the index line's length in the 96 kHz domain (index_line's N)
+FM_DEC_INF = 128                    # FM Dec's top value: hold 1 (BE4.42's static depth)
+FM_ENV_FLOOR = 1e-3                 # the decay's end level, -60 dB: the time a Dec value names is the time to reach it
+FM_ENV_MAX_BLOCKS = 3750            # 10.0 s / T_BLOCK, exactly
+FM_ENV_MUTANTS = ("lin_decay", "exp_attack", "no_floor", "env_end_late", "no_retrig")
+
+
+def _fm_env_L():
+    """L solving e^(127 L) - 1 = (FM_ENV_MAX_BLOCKS - 1) L (bisection, float64): the curve's slope is 1 block a step at 0."""
+    lo, hi = 1e-3, 1.0
+    for _ in range(200):
+        m = (lo + hi) / 2
+        if math.expm1(127 * m) - (FM_ENV_MAX_BLOCKS - 1) * m > 0: hi = m
+        else: lo = m
+    return lo
+
+
+FM_ENV_L = _fm_env_L()              # 0.0393823365..., e^L = 1.04017 a step at the top
+FM_ENV_BLOCKS = tuple(1 + int(round(math.expm1(FM_ENV_L * x) / FM_ENV_L)) for x in range(128))
+
+
+def fm_env_blocks(x):
+    """The time curve, in whole blocks (the spec; the M7 holds this 128-entry table, or computes it with the same rounding):
+    n(x) = 1 + round((e^(L x) - 1) / L), x = 0..127, L = FM_ENV_L. An offset exponential: n(0) = 1 block (2.67 ms), slope
+    1 block a step at 0 (so every value is a distinct block count: 128 distinct times, 1 .. 3750 blocks), n(127) = 3750 =
+    10.0 s, about 4 % a step at the top. Atk 0 is instant (not n(0)); Dec 128 is Inf (no n)."""
+    x = int(x)
+    if not 0 <= x <= 127: raise ValueError("x must be 0..127")
+    return FM_ENV_BLOCKS[x]
+
+
+def fm_env_time(x, stage):
+    """Seconds a value names: stage "atk": 0 -> 0 (instant), else n(x) T_BLOCK (0 -> 1 linear); "dec": 128 -> inf, else
+    n(x) T_BLOCK (1 -> FM_ENV_FLOOR, then 0). For the labels (ms below 1 s, s above: the UI's choice)."""
+    if stage not in ("atk", "dec"): raise ValueError("stage must be atk or dec")
+    x = int(x)
+    if stage == "atk" and x == 0: return 0.0
+    if stage == "dec" and x == FM_DEC_INF: return math.inf
+    return fm_env_blocks(x) * T_BLOCK
+
+
+def _f32s(v): return float(np.float32(v))
+
+
+def fm_env_consts(atk, dec):
+    """The per-oscillator constants the M7 derives when FM Atk / FM Dec change (stated float32 arithmetic):
+    (n_a, step, n_d, r). n_a: attack blocks (0 for Atk 0); step = f32(1 / n_a) (0 for Atk 0); n_d: decay blocks (None for
+    Inf); r = f32(FM_ENV_FLOOR ^ (1 / n_d)) the per-block decay factor (1 for Inf; Dec 0: n_d 1, r 0.001)."""
+    a, d = int(atk), int(dec)
+    if not 0 <= a <= 127: raise ValueError("atk must be 0..127")
+    if not 0 <= d <= FM_DEC_INF: raise ValueError("dec must be 0..128")
+    n_a = 0 if a == 0 else fm_env_blocks(a)
+    n_d = None if d == FM_DEC_INF else fm_env_blocks(d)
+    return n_a, (0.0 if n_a == 0 else _f32s(1.0 / n_a)), n_d, (1.0 if n_d is None else _f32s(FM_ENV_FLOOR ** (1.0 / n_d)))
+
+
+def _env_seq(atk, dec, count, law="f64", mutant=None):
+    """env at the boundaries k = 0 .. count of one note (the spec, fm_env_at's rules), sequentially: the f32 decay is a
+    recurrence, so this is the M7's own order of operations."""
+    n_a, step, n_d, r = fm_env_consts(atk, dec)
+    out = []; e = np.float32(1.0)
+    for k in range(count + 1):
+        if k < n_a:
+            if mutant == "exp_attack": v = 1.0 - FM_ENV_FLOOR ** (k / n_a)
+            else: v = _f32s(np.float32(k) * np.float32(step)) if law == "f32" else k / n_a
+        else:
+            j = k - n_a
+            if n_d is None: v = 1.0
+            elif j >= n_d and mutant != "no_floor": v = 0.0
+            elif mutant == "lin_decay": v = 1.0 - j / n_d
+            elif law == "f32":
+                if j > 0: e = np.float32(e * np.float32(r))
+                v = float(e)
+            else: v = FM_ENV_FLOOR ** (j / n_d)
+        out.append(v)
+    return out
+
+
+def fm_env_at(atk, dec, k, law="f64", mutant=None):
+    """env at block boundary k >= 0 after a note start (k = 0: the note's first block's start). The continuous spec, at
+    boundaries: attack (Atk > 0) e_k = k / n_a for k <= n_a (linear 0 -> 1; e_{n_a} = 1 exactly); Atk 0: e_0 = 1 (instant,
+    n_a = 0). Then decay from k_a = n_a: Inf holds 1; else e_{k_a + j} = FM_ENV_FLOOR^(j / n_d) for j < n_d (exponential,
+    -60 dB at n_d blocks), and 0 from j = n_d on (the end: inaudible, at most 0.016 index at 100 %, and no denormals).
+    law "f32": the stated arithmetic the M7 follows (a block counter decides every stage change, so no float compare and
+    no accumulated attack): attack e = f32(f32(k) step), e_{n_a} = 1.0 exactly; decay e_{k_a} = 1.0,
+    e_{k_a + j} = f32(e_{k_a + j - 1} r) (one VMUL a block), 0 at j = n_d.
+    Mutants (tests must turn red on them): "lin_decay" (1 - j / n_d), "exp_attack" (1 - FLOOR^(k / n_a)), "no_floor" (the
+    decay never snaps to 0); fm_env adds "env_end_late" and "no_retrig"."""
+    if int(k) < 0: raise ValueError("k must be >= 0")
+    return _env_seq(atk, dec, int(k), law, mutant)[int(k)]
+
+
+def fm_env(atk, dec, nblocks, notes=(0,), law="f64", mutant=None):
+    """(e0, e1): env at the start and the end of each of nblocks voice blocks of one oscillator through notes (the blocks
+    where a note starts on this voice, ascending, the first 0). A note start resets the envelope (retrigger per voice, hard:
+    e0 of that block is e(0), 0, or 1 for Atk 0, whatever the last block ended on). Within a note, block b at boundary
+    k = b - start: e0 = e_k, e1 = e_{k+1} (the M7 steps the envelope one block ahead: the line's end needs e_{k+1}).
+    Mutants: fm_env_at's, "env_end_late" (e1 = e_k: the envelope lags a block, a staircase), "no_retrig" (only the
+    first note starts it)."""
+    notes = sorted(set(int(b) for b in notes))
+    if not notes or notes[0] != 0: raise ValueError("notes must start at block 0")
+    if mutant == "no_retrig": notes = [0]
+    e0 = np.zeros(nblocks); e1 = np.zeros(nblocks)
+    for i, s in enumerate(notes):
+        end = min(notes[i + 1] if i + 1 < len(notes) else nblocks, nblocks)
+        if s >= end: continue
+        seq = _env_seq(atk, dec, end - s, law, mutant)
+        e0[s:end] = seq[:end - s]
+        e1[s:end] = seq[:end - s] if mutant == "env_end_late" else seq[1:end - s + 1]
+    return e0, e1
+
+
+def fm_env_lines(atk, dec, v0, v1, nblocks, notes=(0,), N=FM_ENV_N, law="f64", mutant=None):
+    """The per-block index lines of one oscillator's FM (its own amount: OSC1 Sub FM; OSC2 FM 1>2, or Sub FM when OSC1 is not
+    Analog) under its envelope. v0 / v1: the amount's per-block endpoints as today (last block's msub / m12 -> this block's;
+    scalars: held), arrays of nblocks. Block b's line runs from I(v0_b) e0_b at frame 0 to I(v1_b) e1_b at frame N (the next
+    block's first; index_line's end convention), linear between: so a held amount and a held envelope continue one ramp,
+    and the envelope costs nothing per sample (the line's two endpoints are two VMULs a block).
+    law "f64": a list of (start, end) float64 (fm_index; I_j = start + (end - start) j / N, index_ramp's form);
+    law "f32": a list of (ia, dia) index lines in the kernel's stated arithmetic for line_values: ia = f32(I0 e0),
+    end = f32(I1 e1), dia = f32(f32(end - ia) / N), 0 when equal (index_line's rule; I = an_index32, e the f32 envelope).
+    Atk 0 / Dec Inf: e = 1, so the lines are index_line's bit for bit (BE4.42 projects sound unchanged)."""
+    v0 = np.broadcast_to(np.asarray(v0, dtype=np.float64), (nblocks,))
+    v1 = np.broadcast_to(np.asarray(v1, dtype=np.float64), (nblocks,))
+    e0, e1 = fm_env(atk, dec, nblocks, notes, law, mutant)
+    out = []
+    for b in range(nblocks):
+        if law == "f32":
+            ia = _f32s(np.float32(an_index32(v0[b])) * np.float32(e0[b]))
+            end = _f32s(np.float32(an_index32(v1[b])) * np.float32(e1[b]))
+            out.append((ia, 0.0 if end == ia else _f32s(_f32s(end - ia) / N)))
+        else:
+            out.append((fm_index(v0[b]) * e0[b], fm_index(v1[b]) * e1[b]))
+    return out
+
+
+def fm_env_samples(lines, N=FM_ENV_N, law="f64"):
+    """The per-sample index of consecutive blocks' lines (N frames each, 96 kHz domain): index_ramp's form for "f64",
+    line_values for "f32" lines."""
+    if law == "f32": return np.concatenate([line_values(l, 0, N) for l in lines])
+    j = np.arange(N, dtype=np.float64) / N
+    return np.concatenate([s + (e - s) * j for s, e in lines])
+
+
+FM_ENV_TOL = 4e-5   # |f32 env - f64 env| bound: the decay's f32 recurrence, j (rounding of r + one VMUL) <= j 1.2e-7 r^j,
+                    # max near j = n_d / ln 1000 (about 2.0e-5 at n_d = 3750); the attack's one rounding 6e-8. Times I <= 16.
 
 
 class Voice12(tuple):
-    """fm12_voice's result: (y1, q1, B, di1, r1, di2, y2, q2, r2). y1 OSC1's render (pre-crush, pre-Level), q1 its audio
-    crush (OD11 (b) grid), B buffer B, di1 / di2 the increments each oscillator rendered with, r1 / r2 their FmRender (end
-    state, master bytes, edges), y2 OSC2's render, q2 its audio crush."""
+    """fm12_voice's result: (y1, B, di1, r1, di2, y2, r2). y1 OSC1's render (pre-Level), B buffer B, di1 / di2 the
+    increments each oscillator rendered with, r1 / r2 their FmRender (end state, master bytes, edges), y2 OSC2's render.
+    (BE4.42: BE4.41's audio crushes q1 / q2 are gone with Bit Depth.)"""
     __slots__ = ()
-    _f = ("y1", "q1", "B", "di1", "r1", "di2", "y2", "q2", "r2")
+    _f = ("y1", "B", "di1", "r1", "di2", "y2", "r2")
     def __new__(cls, *a): return tuple.__new__(cls, a)
     def __getattr__(self, k):
         try: return self[self._f.index(k)]
         except ValueError: raise AttributeError(k) from None
 
 
-def fm12_voice(n, inc1, k1, inc2, k2, a=None, is1=0.0, is2=0.0, i12=0.0, bits=(None, None), state1=(0.0, None),
-               state2=(0.0, None), sync=False, level1=1.0, off=0, law="f32", fma=True, widths=(None, None), dc=(None, None),
+def fm12_voice(n, inc1, k1, inc2, k2, a=None, is1=0.0, is2=0.0, i12=0.0, state1=(0.0, None),
+               state2=(0.0, None), sync=False, level1=1.0, off=0, law="f32", fma=True, widths=(None, None),
                order="ab", mutant=None):
     """One voice-block (or a part of one: frames off .. off + n - 1) of OSC1 -> OSC2 (4.1), both oscillators Analog:
     - OSC1: di1 = inc1 + I_s1 A (increments, law / fma as stated; no Sub FM: inc1 alone, clamped), rendered on k1 in role
-      "master" when sync else "free" (OD5: a byte at every wrap, either way). q1 = crush(y1, bits[0], dc1) (its audio).
-    - B = b_buffer(y1, inc1, bits[0], dc1) (BD1, OD15; level1 only reaches the "after_level" mutant: E3 (a)).
+      "master" when sync else "free" (OD5: a byte at every wrap, either way).
+    - B = b_buffer(y1, inc1) (BD1; level1 only reaches the "after_level" mutant: E3 (a)).
     - OSC2: di2 = inc2 + I_s2 A + I_12 B, folded in `order` ("ab": A first, 4.3's text; "ba"), rendered on k2 in role
-      "slave" on OSC1's bytes when sync (OD5: any master wrap resets; backward to p = 1) else "free"; q2 its audio crush.
+      "slave" on OSC1's bytes when sync (OD5: any master wrap resets; backward to p = 1) else "free".
     a: buffer A from frame off (increment units, the sub copy: sub_a-style or the kernel's own), None for 0. is1 / is2 /
     i12: an index line (ia, dia) over the absolute frame (index_line), or a scalar. state1 / state2: (phase, delayed),
-    delayed None -> the wave at phase (a steady start). dc: each oscillator's part dc, None -> wave_dc(k). widths: the
-    kernel's float32 pulse widths (FmWave's width=). One call covers the whole range: chained calls on the returned states
+    delayed None -> the wave at phase (a steady start). widths: the kernel's float32 pulse widths (FmWave's width=). One call covers the whole range: chained calls on the returned states
     (r1 / r2 .phase / .delayed) with the next off are the same render (the golden's state is (phase, delayed) only), so
     AN_EVENTS chunks and Shape parts need no separate path here.
     mutant: FM12_MUTANTS: b_buffer's, plus "no_b" (OSC2 ignores B: 4.1's useB false)."""
@@ -1100,8 +1050,6 @@ def fm12_voice(n, inc1, k1, inc2, k2, a=None, is1=0.0, is2=0.0, i12=0.0, bits=(N
     a = np.zeros(n) if a is None else np.asarray(a, dtype=np.float64)
     if a.size != n: raise ValueError("a must hold n samples (from frame off)")
     w1, w2 = FmWave(k1, law, widths[0]), FmWave(k2, law, widths[1])
-    d1 = wave_dc(k1, "f32", widths[0]) if dc[0] is None else dc[0]          # a float32 constant in the kernel
-    d2 = wave_dc(k2, "f32", widths[1]) if dc[1] is None else dc[1]
     I1, I2, I12 = (line_values(x, off, n) for x in (is1, is2, i12))
     t1 = [(I1, a)] if np.any(I1 != 0) else []
     di1 = np.broadcast_to(increments(inc1, t1, law=law, fma=fma), (n,)).copy()      # no terms: one value
@@ -1109,15 +1057,14 @@ def fm12_voice(n, inc1, k1, inc2, k2, a=None, is1=0.0, is2=0.0, i12=0.0, bits=(N
     r1 = fm_render(di1, k=k1, phase=p1, delayed=w1.value(p1 % 1.0 if p1 != 1.0 else 1.0) if e1 is None else e1,
                    role="master" if sync else "free", law=law, fma=fma, width=widths[0])
     f32 = law == "f32"
-    y1 = r1.y; q1 = crush(y1, bits[0], f32, d1)
-    B = b_buffer(y1, inc1, bits[0], d1, level1, None if mutant == "no_b" else mutant, di1, f32)
+    y1 = r1.y
+    B = b_buffer(y1, inc1, level1, None if mutant == "no_b" else mutant, di1, f32)
     terms = [(I2, a), (I12, B)] if order == "ab" else [(I12, B), (I2, a)]
     terms = [t for t in terms if np.any(t[0] != 0) and not (mutant == "no_b" and t[1] is B)]
     di2 = np.broadcast_to(increments(inc2, terms, law=law, fma=fma), (n,)).copy()
     r2 = fm_render(di2, k=k2, phase=p2, delayed=w2.value(p2 % 1.0 if p2 != 1.0 else 1.0) if e2 is None else e2,
                    role="slave" if sync else "free", sync=r1.ev if sync else None, law=law, fma=fma, width=widths[1])
-    q2 = crush(r2.y, bits[1], f32, d2)
-    return Voice12(y1, q1, B, di1, r1, di2, r2.y, q2, r2)
+    return Voice12(y1, B, di1, r1, di2, r2.y, r2)
 
 
 # ---- 6.3 DC drift (mean frequency) --------------------------------------------------------------------------------------
@@ -1147,17 +1094,6 @@ def drift(di, inc, window=None):
     return dict(L=L, travel=travel, expect=expect, cycles=travel - expect,
                 cents=1200 * math.log2(travel / expect) if travel > 0 and expect > 0 else float("nan"),
                 ok=abs(travel - expect) <= DRIFT_BIN)
-
-
-def crush_drift(s, b, inc1, I12, inc2, dc=0.0, window=None):
-    """OD15's figure: the crush's own share of OSC2's mean frequency, in cents: 1200 log2(1 + I12 mean(B - B_Full) / inc2)
-    over the window, B_Full = f32(inc1 s) (BD1 at Full), for OD15 (b) ("mod", b_buffer) and for the audio grid on B
-    ("grid", the "audio_grid" mutant: 4.7's -3 / -55 / -1200 cents at 12 / 8 / 4 bits on a square, I = 8, OSC1 = OSC2).
-    s: OSC1's uncrushed float32 block."""
-    s = _x(s, True); t0, t1 = (0, s.size) if window is None else window
-    full = b_buffer(s, inc1)[t0:t1]
-    c = lambda B: 1200 * math.log2(1 + float(I12) * float(np.mean(B[t0:t1] - full)) / float(inc2))
-    return dict(mod=c(b_buffer(s, inc1, b, dc)), grid=c(b_buffer(s, inc1, b, dc, mutant="audio_grid")))
 
 
 # ---- 6.3 aliasing after the FIR model -----------------------------------------------------------------------------------
@@ -1212,122 +1148,228 @@ def fm12_bessel(y2, cc, cm, I, pc0, qm0, walk=0.0, eps_c=SINQ_ERR, eps_m=FM12_EP
     modulator. OSC1 at Shape 0 from phase qm0 (delayed = its wave there) plays y1[i] = -cos 2 pi (qm0 + i inc1), so
     B[i] = inc1 y1[i] is fm_sine_time's m with phi = pi and inc_m = inc1 (= cm / n): OSC2 (from pc0, cc / n) sees exactly that
     law. eps_m defaults to OSC1's stated per-sample error, sinq + float32 (FM12_EPS_M); B's own rounding (2^-24 relative)
-    is below it. Use OSC1 at Full: a crushed modulator has no Bessel law."""
+    is below it."""
     return bessel_check(y2, cc, cm, I, pc0, qm0, np.pi, eps_c, eps_m, eps32, walk)
+
+
+# ---- BE4.44 W2: the Wavetable table reader under FM (docs/plan-wt-fm.md 3.4, 7.1; D5 as decided) -------------------------
+# Written from the plan text and the W2 trace of stock's mip builder, before the M7 reader: numpy, float64 phase (a fraction of
+# a cycle), no C shared. The table (S, kmodel.py; test_analog Rig.tabled): 7 levels k = 0..6, D = 2^k, len_k = 2048 / D,
+# level k's 256 frames at float offset 0x100000 - (0x100000 >> k), frame f at + f len_k.
+# Stock's mip builder (W2 trace, S: M4 0x08112544..0x081126DE; M: its decimator emulated, bit for bit against wt_build_levels,
+# test_analog WtFmW2.test_the_mip_builder_is_stocks): level k = 1..6 is made from level k - 1 as ONE stream of all 256 frames:
+# z = 12 zeros + the level, y[m] = sum_t c_t z[2m + t] (t = 0..10, the 11 taps STOCK_FIR, accumulated in float32 in that
+# order), m = 0 .. len / 2 - 1. So y[m] is centred on z[2m + 5] = level k - 1's sample 2m - 7: level k's sample i is level
+# 0's position 2^k i - 7 (2^k - 1). The same sound on level k is 7 (2^k - 1) / 2048 of a cycle later than on level 0
+# (wt_skew): the reader reads a level other than the note's at the difference of the two skews. Each level's DC gain is
+# sum c = 0.951 (stock's levels get quieter, about 0.44 dB a level, and a frame's first samples carry the previous
+# frame's tail: stock's data, played as it is).
+# The block (3.4): stock's ladder on a pending flag; the phase in from (idx + frac) / len at the note's level; the mip
+# choice from the peak step (the rule's arithmetic is the device's, float32, wt_peak: a decision, not a sample); one change
+# a block (W2 review: a frame change crossfades the frame at the mip playing and defers a wanted mip change, marking it
+# (st["wait"]); the next block changes the mip and defers the frame; else a mip change crossfades the two levels); each
+# sample read at the phase, then the phase advanced by di = inc + I_j a_j + J_j b_j, clamped to +-INC_MAX, wrapped mod 1
+# both ways; crossfade weight (j + 1) / n; out: idx, frac at the note's len, the frame playing, mipcur (HOME after a
+# mip-home block, the line None, back at the note's level).
+WT_HOME = 0xFF
+WT_LEVELS = 7
+WT_MIP_HYST = 0.84                  # D5: hysteresis derived from the one threshold (stock's 1.25 -> 1.05, plan 3.4)
+WT_RD_MUTANTS = ("clamp_wrap", "fixed_mip", "xf_reversed", "units", "no_skew", "no_hyst", "read_late", "no_wait", "note_xf")
+
+
+def wt_level_off(k): return 0x100000 - (0x100000 >> k)
+def wt_level_len(k): return 2048 >> k
+def wt_skew(k): return 7.0 * (2 ** k - 1) / 2048.0
+
+
+def wt_build_levels(frames):
+    """Stock's table from its 256 level-0 frames (float32 (256, 2048)): levels 1..6 by stock's decimator, as above."""
+    t = np.zeros(0x100000, np.float32)
+    lev = np.asarray(frames, np.float32).reshape(-1)
+    t[:lev.size] = lev
+    c = np.asarray(STOCK_FIR, np.float32)
+    for k in range(1, WT_LEVELS):
+        z = np.concatenate([np.zeros(12, np.float32), lev])
+        m = lev.size // 2
+        s = (z[0:2 * m:2] * c[0]).astype(np.float32)
+        for j in range(1, 11):
+            s = (s + (z[j:j + 2 * m:2] * c[j]).astype(np.float32)).astype(np.float32)
+        lev = s
+        t[wt_level_off(k):wt_level_off(k) + m] = lev
+    return t
+
+
+def wt_ladder(rate):
+    """Stock's mip ladder at a note's first block (kmodel.py, kernel 0x080A2000): x = f32(rate), halved while >= 1.25."""
+    x, k = np.float32(rate), 0
+    while x >= np.float32(1.25) and k < WT_LEVELS - 1:
+        x = np.float32(x * np.float32(0.5)); k += 1
+    return k
+
+
+def wt_mip_for(x, thr, k):
+    """The finest level k' >= k with x < thr 2^k' (6 at most); x, thr float32."""
+    x, thr = np.float32(x), np.float32(thr)
+    while k < WT_LEVELS - 1 and x >= np.float32(thr * np.float32(2 ** k)): k += 1
+    return k
+
+
+def an_peak(k):
+    """W3 review (B's known peak): the peak of an Analog oscillator's waveform at shape k (an_shape's, -1..1), from the
+    kernel's wave(): LOW (k < 0) its three weights sum to 1, so 1; the saw..square blend (0..0.5) 1; past 0.5 the pulse
+    narrows, width w = 0.5 - (k - 0.5) 0.84, and its DC-free high side is 1 - dc = 2 - 2 w (1.84 at k 1). Written from the
+    waveform (set_shape, wave), not from analog.cpp's an_peak."""
+    if not k > 0.5:
+        return 1.0
+    w = 0.5 - (min(k, 1.0) - 0.5) * 0.84
+    return 2.0 - 2.0 * w
+
+
+def wt_peak(inc, line, n, pa=0.0):
+    """The peak step in base-table samples a sample, float32 as the M7 forms it: (inc + I max|a| + J max|b|) 2048, I, J the
+    larger end of each index line (I_n = f32(ia + dia n)); max|a| = pa when it is known (Sub FM's A: inc_sub x the sub
+    wave's peak, W2 review; B on its own route, a Wavetable OSC2's FM 1>2: inc1 x an_peak of OSC1's Shape, W3 review), else,
+    and max|b| always, the max over every 4th sample of the block (the scan's stride)."""
+    a, ia, dia, b, ib, dib = line
+    f = np.float32
+    ma = f(pa) if pa else f(np.max(np.abs(np.asarray(a, f)[0:n:4])))
+    mb = f(np.max(np.abs(np.asarray(b, f)[0:n:4])))
+    I = max(abs(f(ia)), abs(f(_fma32(f(ia), f(dia), f(n)))))
+    J = max(abs(f(ib)), abs(f(_fma32(f(ib), f(dib), f(n)))))
+    x = f(_fma32(f(_fma32(f(inc), I, ma)), J, mb))
+    return f(x * f(2048))
+
+
+def wt_mip_choice(x, kn, kc, thr, mutant=None):
+    """D5's rule: coarser at once to the finest level under thr; finer only to the finest level under thr x WT_MIP_HYST."""
+    up = wt_mip_for(x, thr, kn)
+    if mutant == "no_hyst": return up
+    dn = wt_mip_for(x, np.float32(np.float32(thr) * np.float32(WT_MIP_HYST)), kn)
+    return up if up > kc else dn if dn < kc else kc
+
+
+def wt_state(idx=0, frac=0.0, frame=-1, flag=1, mip=WT_HOME, k=0, wait=0):
+    """Stock's kernel state (+0xC0 .. +0xD8) plus mipcur and the mip-wait bit; the default is a note start's (kernel reset
+    0x080A1FC0)."""
+    return dict(frac=float(np.float32(frac)), idx=int(idx), frame=int(frame), off=wt_level_off(k), D=1 << k,
+                len=wt_level_len(k), flag=int(flag), mip=int(mip), wait=int(wait))
+
+
+def wt_read_block(tab, st, req, rate, n, line, thr, mutant=None, pa=0.0):
+    """One reader block. tab: the table (float32, 0x100000); st: wt_state(); req: Position's frame; rate: stock's rate (f32);
+    line: None (no FM: the mip-home block) or (a, ia, dia, b, ib, dib), a / b the modulators in increment units; thr: the
+    build's threshold (no default: the manifest's wt_mip, or a fixture's; W3: "off", BE_WT_MIP=off: always the note's
+    level, mipcur HOME, the D5 rows' "note level"); pa: max|a| when known (0: scanned). Returns
+    (y float64, the new state, the levels read (kc, kt)). Mutants (7.1 and the plan's 7.5): "clamp_wrap" (the phase cannot
+    go backward: a wrap by compare that fails on reverse), "fixed_mip" (the note's level always), "xf_reversed" (crossfade
+    weights reversed), "units" (the phase advanced in the note's samples, not cycles), "no_skew" (levels read unskewed),
+    "no_hyst", "read_late" (the phase advanced before the read, the reader prototype's order), "no_wait" (W2 as first
+    built: a frame change always wins, so a Position moving every block holds the mip off), "note_xf" (W3 as built: a note's
+    first block crossfades from the note's level to the FM level). W4 (Jeff, "Decisions before W4", lever (a)): a block
+    whose pending flag is set (a note's first, stock's ladder choosing the note's level there, itself a switch with no
+    crossfade) reads the FM level from its first sample: the levels read are (kt, kt)."""
+    if mutant not in (None,) + WT_RD_MUTANTS: raise ValueError(f"mutant must be one of {WT_RD_MUTANTS}")
+    st = dict(st)
+    rate = float(np.float32(rate))
+    fresh = st["flag"]
+    if st["flag"]:
+        k = wt_ladder(rate)
+        L = wt_level_len(k)
+        st.update(D=1 << k, len=L, off=wt_level_off(k), idx=int(math.fmod(st["idx"], L)), flag=0)
+    L = st["len"]; kn = 11 - int(round(math.log2(L)))
+    fcur = st["frame"] if 0 <= st["frame"] <= 255 else req
+    phi = ((st["idx"] + st["frac"]) / L) % 1.0
+    inc = float(np.float32(rate) * np.float32(1.0 / 2048.0))
+    kc = st["mip"] if st["mip"] < WT_LEVELS else kn
+    kc = max(kc, kn)
+    if line is None:
+        kt, a, b, ia, dia, ib, dib = kn, np.zeros(n), np.zeros(n), 0.0, 0.0, 0.0, 0.0
+    else:
+        a, ia, dia, b, ib, dib = line
+        kt = kn if thr == "off" else wt_mip_choice(wt_peak(inc, line, n, pa), kn, kc, thr, mutant)
+        if fresh and mutant != "note_xf": kc = kt   # W4 lever (a): a note's first block plays the FM level at once
+    if mutant == "fixed_mip": kc = kt = kn
+    j = np.arange(n, dtype=np.float64)
+    di = inc + (ia + dia * j) * np.asarray(a, np.float64)[:n] + (ib + dib * j) * np.asarray(b, np.float64)[:n]
+    di = clamp_fm(di)
+    if mutant == "clamp_wrap": di = np.maximum(di, 0.0)
+    if mutant == "units": di = di * L / 2048.0
+    ph = (phi + np.concatenate([[0.0], np.cumsum(di)])) % 1.0
+    rd_ph = ph[1:] if mutant == "read_late" else ph[:-1]
+    t = np.asarray(tab, np.float32).astype(np.float64)
+    def read(k, f):
+        Lk = wt_level_len(k); base = wt_level_off(k) + f * Lk
+        sk = 0.0 if mutant == "no_skew" else wt_skew(k) - wt_skew(kn)
+        x = ((rd_ph + sk) % 1.0) * Lk
+        i = np.floor(x).astype(np.int64) % Lk; fr = x - np.floor(x)
+        s0 = t[base + i]; s1 = t[base + (i + 1) % Lk]
+        return s0 + fr * (s1 - s0)
+    w = (j + 1) / n
+    wait, fout = 0, req
+    if req != fcur and (kt == kc or not st.get("wait", 0) or mutant == "no_wait"):
+        p, q = read(kc, fcur), read(kc, req)
+        wait = int(kt != kc and mutant != "no_wait"); kt = kc
+    elif kt != kc:
+        p, q = read(kc, fcur), read(kt, fcur); fout = fcur
+    else:
+        p = q = read(kc, fcur)
+    y = q + w * (p - q) if mutant == "xf_reversed" else p + w * (q - p)
+    x = ph[-1] * L
+    st["idx"] = int(math.floor(x)) % L; st["frac"] = x - math.floor(x); st["frame"] = fout
+    st["mip"] = WT_HOME if thr == "off" or (line is None and kt == kn) else kt
+    st["wait"] = wait
+    return y, st, (kc, kt)
+
+
+def wt_fm_run(tab, rate, blocks, v, thr, req=0, n=256, inc_sub=None, wave="sine", st=None, mutant=None):
+    """Steady Sub FM for some blocks (D5's rows): the sub an octave down (inc_sub = inc / 2 unless given), A = inc_sub x the
+    sub's wave (its known peak pa = inc_sub: the device's for the Sine), the index I = an_index32(v) held (v0 = v1).
+    Returns (y, st, the levels each block played)."""
+    inc = float(np.float32(rate) * np.float32(1 / 2048))
+    inc_sub = inc / 2 if inc_sub is None else inc_sub
+    st = st or wt_state()
+    q, ys, ks = 0.0, [], []
+    I = an_index32(v)
+    pa = float(np.float32(inc_sub))
+    for _ in range(blocks):
+        m, q = sub_mod(wave, inc_sub, n, q)
+        a = (m * inc_sub).astype(np.float32).astype(np.float64)
+        y, st, k = wt_read_block(tab, st, req, rate, n, (a, I, 0.0, a, 0.0, 0.0) if v else None, thr, mutant, pa)
+        ys.append(y); ks.append(k)
+    return np.concatenate(ys), st, ks
+
+
+def wt_saw_frames(h=None):
+    """256 equal level-0 frames of a band-limited saw (h harmonics, 1023 default: the table's own limit), float32."""
+    h = h or 1023
+    x = np.arange(2048) / 2048
+    w = sum(np.sin(2 * np.pi * k * x) / k for k in range(1, h + 1)) * (2 / np.pi) * 0.5
+    return np.tile(w.astype(np.float32), (256, 1))
+
+
+def wt_spectrum_rows(y, cycles_c, cycles_m, hf=16):
+    """(on-grid centroid in carrier harmonics, alias dB, HF dB) of a steady FM run y that is periodic over its length (the
+    carrier cycles_c and the modulator cycles_m whole cycles in it; W2 review: a rectangular window on exact bins, so the
+    grid is exact): every component of the band-limited FM tone lies on the modulator's grid (multiples of cycles_m bins).
+    alias: the energy off the grid over the total; centroid: of the on-grid energy (alias not counted as brightness); HF:
+    the on-grid energy above carrier harmonic hf (16: level 6's table limit, so what a coarser level removes) over all
+    on-grid energy (DC out), the brightness row D5 is read from."""
+    N = len(y)
+    Y = np.abs(np.fft.rfft(y)) ** 2
+    k = np.arange(len(Y))
+    on = (k % cycles_m) == 0
+    on[0] = False
+    tot = float(np.sum(Y[1:])) or 1e-30
+    alias = float(np.sum(Y[1:][~on[1:]])) / tot
+    E = float(np.sum(Y[on])) or 1e-30
+    cen = float(np.sum(k[on] * Y[on]) / E) / cycles_c
+    hfe = float(np.sum(Y[on & (k > hf * cycles_c)])) / E
+    return cen, 10 * np.log10(max(alias, 1e-30)), 10 * np.log10(max(hfe, 1e-30))
 
 
 # ---- self-test ----------------------------------------------------------------------------------------------------------
 def _selftest():
     import unittest
-
-    class BitDepth(unittest.TestCase):
-        def test_settings(self):
-            self.assertEqual([bits_of(v) for v in (0, 1, 2, 3, 7, -1)], [None, 12, 8, 4, 4, 4])
-            self.assertEqual([scale(b) for b in BITS], [2048.0, 128.0, 8.0])
-            x = probe(8); self.assertTrue(np.array_equal(crush(x, None), x))
-
-        def test_four_bit_by_hand(self):                         # OD11: -8..+7 in steps of 1/8, ties to even
-            x = np.array([-1.2, -1.0, -0.0625, -0.03, 0.0625, 0.1875, 0.8125, 0.875, 0.9375, 1.0, 1.3])
-            want = np.array([-8, -8, -0.0, -0.0, 0, 2, 6, 7, 7, 7, 7]) / 8   # -0.5 -> -0, 0.5 -> 0, 1.5 -> 2, 6.5 -> 6
-            q = crush(x, 4); self.assertTrue(np.array_equal(q, want), q * 8)
-            self.assertTrue(np.signbit(q[2]) and np.signbit(q[3]) and not np.signbit(q[4]))
-
-        def test_ties_go_to_even(self):
-            for b in BITS:
-                S = scale(b); k = np.arange(-S, S - 1)          # ties k + 0.5 for k = -S .. S-2
-                q = crush((k + 0.5) / S, b) * S
-                self.assertTrue(np.all(q % 2 == 0), b)
-                self.assertTrue(np.all((q == k) | (q == k + 1)), b)
-
-        def test_levels_and_clip_on_a_full_sweep(self):          # every level reached, exactly 2^b, both clips
-            for b in BITS:
-                x = np.linspace(-1.3, 1.3, 200001); q = crush(x, b)
-                self.assertEqual(check_levels(q, b), 1 << b)
-                top, bot = check_clip(x, q, b); self.assertGreater(top, 0); self.assertGreater(bot, 0)
-                self.assertEqual(q.max(), (scale(b) - 1) / scale(b)); self.assertEqual(q.min(), -1.0)
-
-        def test_float32_exact(self):                            # model in float64 == float32 arithmetic, every bit
-            rng = np.random.default_rng(4410)
-            x32 = (rng.standard_normal(65536) * 0.7).astype(np.float32)
-            for b in BITS:
-                S = np.float32(scale(b))
-                with np.errstate(all="raise"):
-                    q32 = np.minimum(np.maximum(np.rint(x32 * S), -S), S - np.float32(1)) * (np.float32(1) / S)
-                self.assertTrue(np.array_equal(q32.view(np.uint32), crush_bits(x32, b)), b)
-
-        def test_compare(self):
-            x = probe(4); q = crush(x, 4)
-            self.assertEqual(compare(q, x, 4), 0)
-            bad = q.copy(); bad[10] += 1 / 8                     # one step off on a non-tie sample (0.3 -> got 1)
-            with self.assertRaises(AssertionError): compare(bad, x, 4)
-            y = x + 1e-5 * np.sign(np.sin(np.arange(x.size)))   # another model's input, within 1e-5
-            self.assertGreaterEqual(compare(q, y, 4, err=2e-5), 0)
-            with self.assertRaises(AssertionError): compare(bad, y, 4, err=2e-5)
-
-        def test_probe_kills_every_mutant(self):                 # 6.6: the crafted block separates each wrong grid
-            for b in BITS:
-                for name, n in discriminates(probe(b), b).items(): self.assertGreater(n, 0, (b, name))
-
-        def test_checks_reject_wrong_grids(self):
-            x = probe(8)
-            with self.assertRaises(AssertionError): check_clip(x, mutants(x, 8)["top_clamped_at_S"], 8)
-            with self.assertRaises(AssertionError): levels(mutants(x, 8)["mid_tread_no_clamp"], 8)
-            with self.assertRaises(AssertionError): levels(x, 8)              # uncrushed input is off the grid
-            with self.assertRaises(ValueError): crush([0.0, np.nan], 8)
-
-        # ---- Q2b (OD12 = (b)): the grid about the part's dc
-        def test_dc_zero_is_q2s_grid(self):                      # every bit, sign of zero included
-            rng = np.random.default_rng(4412)
-            for b in BITS:
-                S = scale(b)
-                for x in (probe(b), _f32(rng.standard_normal(4096) * 0.7)):
-                    q2 = np.clip(np.rint(x * S), -S, S - 1) / S
-                    self.assertTrue(np.array_equal(crush_bits(x, b, dc=0.0), q2.astype(np.float32).view(np.uint32)), b)
-            self.assertTrue(np.signbit(crush([-0.0], 8, dc=0.0)[0]))
-
-        def test_dc_by_hand(self):                               # 4 bits about dc -0.75: the pulse 1.75 / -0.25 (w 1/8)
-            x = np.array([1.75, -0.25, 0.8125, 1.9, -0.4])           # x + dc = 1, -1, 1/16 (a tie), 1.15, -1.15
-            q = crush(x, 4, dc=-0.75)
-            self.assertTrue(np.array_equal(q, [1.625, -0.25, 0.75, 1.625, -0.25]), q)
-            self.assertTrue(np.array_equal(levels(q, 4, -0.75), [7, -8, 0, 7, -8]))
-            self.assertEqual(check_clip(x, q, 4, dc=-0.75), (2, 1))
-            self.assertTrue(np.array_equal(crush(x, None, dc=-0.75), _f32(x)))          # Full: untouched (any dc)
-
-        def test_dc_float32_exact(self):                         # == the float32 add, grid, subtract, every bit
-            rng = np.random.default_rng(4413)
-            x32 = (rng.standard_normal(65536) * 0.9).astype(np.float32)
-            d32 = (-0.84 * rng.random(65536)).astype(np.float32)
-            for b in BITS:
-                S = np.float32(scale(b))
-                with np.errstate(all="raise"):
-                    g = np.minimum(np.maximum(np.rint((x32 + d32) * S), -S), S - np.float32(1)) * (np.float32(1) / S)
-                    q32 = g - d32
-                self.assertTrue(np.array_equal(q32.view(np.uint32), crush_bits(x32, b, dc=d32)), b)
-
-        def test_dc_levels_and_clip_on_a_sweep(self):            # one dc: exactly 2^b values, both clips about dc
-            d = float(np.float32(-0.84))
-            for b in BITS:
-                S = scale(b); x = _f32(np.linspace(-1.3, 1.3, 200001) - d); q = crush(x, b, dc=d)
-                self.assertEqual(check_levels(q, b, d), 1 << b)
-                top, bot = check_clip(x, q, b, dc=d); self.assertGreater(top, 0); self.assertGreater(bot, 0)
-                self.assertEqual(q.max(), float(np.float32((S - 1) / S - d)), b)
-                self.assertEqual(q.min(), float(np.float32(-1 - d)), b)
-            with self.assertRaises(ValueError): check_levels(q, 4, np.full(q.shape, d))
-            with self.assertRaises(ValueError): crush([0.1], 8, dc=0.1)       # not a float32 value
-
-        def test_the_pulse_keeps_its_mean(self):                 # OD12's point: the DC-free pulse stays DC-free
-            for w in (0.08, 0.25, 0.4):
-                d = float(np.float32(2 * w - 1)); P = 400; hi = int(round(w * P))
-                one = np.r_[np.full(hi, 1 - d), np.full(P - hi, -1 - d)]; x = _f32(np.tile(one, 50))
-                for b in BITS:
-                    S = scale(b); q = crush(x, b, dc=d)
-                    self.assertLess(abs(np.mean(q - x) + hi / P / S), 2.0 ** -23, (w, b))   # the +1 high loses one step
-                    self.assertGreater(abs(np.mean(crush(x, b) - x)), 2 * hi / P / S, (w, b))   # OD12 (a): over twice
-
-        def test_probe_about_dc_kills_every_mutant(self):
-            for b in BITS:
-                for name, n in discriminates(probe(b, -0.75), b, -0.75).items(): self.assertGreater(n, 0, (b, name))
-                self.assertEqual(len(mutants(probe(b, -0.75), b, -0.75)), 8)
 
     class Shapes(unittest.TestCase):                             # Q3 (4.6, OD6)
         CASES = (0, 1, 12, 23, 24, 36, 45.5, 47)
@@ -1410,14 +1452,20 @@ def _selftest():
     class FM(unittest.TestCase):                                 # Q5 (4.3, OD5, FD3, OD10, 6.3)
         KS = (-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0)
 
-        def test_index_law_and_ramp(self):                       # FD3: I = 8 (v/1000)^2, the ramp linear over 2N
-            self.assertEqual(list(fm_index([0, 250, 500, 1000, 5000, -3])), [0, 0.5, 2, 8, 8, 0])
-            self.assertEqual(float(fm_index(500, law="linear")), 4.0)               # the 6.6 mutant
-            r = index_ramp(0, 1000, 256); self.assertEqual((r[0], r[128]), (0.0, 4.0))
+        def test_index_law_and_ramp(self):                       # FD3 (BE4.42): I = 16 (v/1000)^1.5, the ramp linear over 2N
+            got = fm_index([0, 250, 1000, 5000, -3, 500, 750])
+            self.assertEqual(list(got[:5]), [0, 2, 16, 16, 0])
+            self.assertAlmostEqual(float(got[5]), 8 / math.sqrt(2), delta=1e-12)               # 50 %: 5.657 (BE4.41: 2)
+            self.assertAlmostEqual(float(got[6]), 16 * 0.75 ** 1.5, delta=1e-12)               # 75 %: 10.39 (BE4.41: 4.5)
+            self.assertEqual(list(fm_index([250, 500, 1000], law="square")), [0.5, 2, 8])     # BE4.41's law (a mutant now)
+            self.assertEqual(float(fm_index(500, law="linear")), 8.0)               # the 6.6 mutant
+            self.assertTrue(np.all(fm_index(np.arange(1, 1000)) > fm_index(np.arange(1, 1000), "square")))   # deeper everywhere
+            r = index_ramp(0, 1000, 256); self.assertEqual((r[0], r[128]), (0.0, 8.0))
             self.assertTrue(np.array_equal(np.r_[index_ramp(300, 700, 256, 0, 128), index_ramp(300, 700, 256, 128)],
                                            index_ramp(300, 700, 256)))           # chunked parts continue one ramp
-            nxt = index_ramp(700, 700, 256)[0]; self.assertAlmostEqual(r[-1] + (r[1] - r[0]), 8.0, delta=1e-12)
+            nxt = index_ramp(700, 700, 256)[0]; self.assertAlmostEqual(r[-1] + (r[1] - r[0]), 16.0, delta=1e-12)
             self.assertEqual(nxt, fm_index(700))
+            with self.assertRaises(ValueError): fm_index(500, law="cube")
 
         def test_sub_waves_are_dc_free(self):                    # OD10: the Square's DC removed, every wave mean 0
             for w in SUB_WAVES:
@@ -1603,74 +1651,44 @@ def _selftest():
             self.assertEqual(np.max(np.abs(hi)), INC_MAX)
             self.assertGreater(np.max(np.abs(increments(0.4, [(8.0, m / 64)], clamp=False))), 0.5)
 
-    class FM12(unittest.TestCase):                               # Q6 (4.1, 4.4 E3 (a), BD1, OD5, OD15 = (b), 6.3)
+    class FM12(unittest.TestCase):                               # Q6 (4.1, 4.4 E3 (a), BD1, OD5, 6.3)
         NOTE60 = float(np.float32(440 * 2 ** (-9 / 12) / 96000))   # note 60 at 96 kHz (the device's domain)
         N100 = 100 * 256                                         # 100 device blocks (2N = 256)
 
-        def test_the_modulators_grid_keeps_the_top(self):        # OD15 (b): top at S, the audio grid untouched
-            x = np.array([1.0, 1.06, 0.9375, 0.875, -1.0, -1.06, -0.0625, 0.0])
-            self.assertTrue(np.array_equal(crush_mod(x, 4), [1.0, 1.0, 1.0, 0.875, -1.0, -1.0, -0.0, 0.0]))
-            self.assertTrue(np.array_equal(crush(x, 4), [0.875, 0.875, 0.875, 0.875, -1.0, -1.0, -0.0, 0.0]))
-            for b in BITS:
-                S = scale(b); x = probe(b); m, a = crush_mod(x, b), crush(x, b)
-                self.assertTrue(np.array_equal(crush_mod(-x, b).view(np.uint64), (-m).view(np.uint64)), b)   # odd: rint
-                hi = np.rint(x * S) >= S
-                self.assertTrue(np.array_equal(m[~hi], a[~hi]) and np.all(m[hi] == 1.0), b)   # differs only at the top
-                q = crush_mod(np.linspace(-1.3, 1.3, 200001), b)
-                self.assertEqual(np.unique(q).size, (1 << b) + 1, b)                 # 2^b + 1 levels, symmetric
-                self.assertEqual((q.min(), q.max()), (-1.0, 1.0))
-            rng = np.random.default_rng(4420)                     # float32-exact, about a kernel dc too
-            x32 = (rng.standard_normal(65536) * 0.9).astype(np.float32); d32 = (-0.84 * rng.random(65536)).astype(np.float32)
-            for b in BITS:
-                S = np.float32(scale(b))
-                with np.errstate(all="raise"):
-                    g = np.minimum(np.maximum(np.rint((x32 + d32) * S), -S), S) * (np.float32(1) / S)
-                self.assertTrue(np.array_equal((g - d32).view(np.uint32), _f32(crush_mod(x32, b, dc=d32)).astype(np.float32).view(np.uint32)))
-            self.assertTrue(np.array_equal(crush_mod([1.75, -0.25], 4, dc=-0.75), [1.75, -0.25]))   # the pulse's +1 high
-            self.assertTrue(np.array_equal(crush_mod(x, None), _f32(x)))
-
-        def test_the_square_carries_no_grid_dc(self):            # OD15's point, on the naive square (+-1 on the grid)
-            x = np.tile(np.r_[np.ones(200), -np.ones(200)], 20)
-            for b in BITS:
-                self.assertEqual(float(np.mean(crush_mod(x, b))), 0.0, b)
-                self.assertAlmostEqual(float(np.mean(crush(x, b))), -0.5 / scale(b), delta=1e-15)   # Q2b's -f_hi / S
-
-        def test_b_buffer(self):                                 # BD1 / OD15 form, one rounding; the mutants differ
+        def test_b_buffer(self):                                 # BD1 form, one rounding; the mutants differ
             rng = np.random.default_rng(4421); n = 512
             s = _f32(np.sign(np.sin(2 * np.pi * np.arange(n) / 61)) * 0.999 + 0.001 * rng.standard_normal(n))
             inc1 = 0.0027250234
-            for b in (None,) + BITS:
-                q = crush_mod(s, b).astype(np.float32)
-                want = (np.float32(inc1) * q).view(np.uint32)
-                self.assertTrue(np.array_equal(b_buffer(s, inc1, b).astype(np.float32).view(np.uint32), want), b)
-                self.assertTrue(np.array_equal(b_buffer(s, inc1, b, level=0.0), b_buffer(s, inc1, b)), b)   # Level never enters
+            want = (np.float32(inc1) * s.astype(np.float32)).view(np.uint32)
+            self.assertTrue(np.array_equal(b_buffer(s, inc1).astype(np.float32).view(np.uint32), want))
+            self.assertTrue(np.array_equal(b_buffer(s, inc1, level=0.0), b_buffer(s, inc1)))   # Level never enters
             di1 = _f32(inc1 * (1 + 0.5 * np.sin(np.arange(n) / 9)))
-            base = b_buffer(s, inc1, 4)
-            for mu in ("after_level", "before_crush", "audio_grid", "b_late", "kin_fm"):
-                got = b_buffer(s, inc1, 4, level=0.5, mutant=mu, di1=di1)
+            base = b_buffer(s, inc1)
+            for mu in ("after_level", "b_late", "kin_fm"):
+                got = b_buffer(s, inc1, level=0.5, mutant=mu, di1=di1)
                 self.assertGreater(int(np.sum(got != base)), 0, mu)
-            self.assertTrue(np.array_equal(b_buffer(s, inc1, None, mutant="before_crush"), b_buffer(s, inc1)))   # Full: same
-            with self.assertRaises(ValueError): b_buffer(s, inc1, mutant="nope")
+            for mu in ("nope", "audio_grid", "before_crush"):    # (BE4.41's grid mutants: retired with Bit Depth)
+                with self.assertRaises(ValueError): b_buffer(s, inc1, mutant=mu)
 
         def test_the_index_line(self):                           # FD3 in the kernel's float32 form; parts continue it
-            for v in (0, 1, 250, 354, 500, 707, 999, 1000):
+            for v in range(1001):                               # every amount: two float32 roundings (M: 1.7e-7 worst)
                 self.assertLessEqual(abs(an_index32(v) - fm_index(v)), 2.0 ** -22 * max(fm_index(v), 2.0 ** -20), v)
-            self.assertEqual((an_index32(500), an_index32(1000), an_index32(5000), an_index32(-3)), (2.0, 8.0, 8.0, 0.0))
+            self.assertEqual((an_index32(250), an_index32(1000), an_index32(5000), an_index32(-3)), (2.0, 16.0, 16.0, 0.0))
             ia, dia = index_line(0, 1000); self.assertEqual(ia, 0.0)
-            self.assertLessEqual(abs(ia + 256 * dia - 8.0), 1e-6 * 8)
+            self.assertLessEqual(abs(ia + 256 * dia - 16.0), 1e-6 * 16)
             self.assertEqual(index_line(700, 700), (an_index32(700), 0.0))
             L = index_line(300, 900); Lv = line_values(L, 0, 256)
             self.assertTrue(np.array_equal(np.r_[line_values(L, 0, 128), line_values(L, 128, 128)], Lv))
             self.assertLessEqual(float(np.max(np.abs(Lv - (L[0] + L[1] * np.arange(256))))), 2.0 ** -21)   # one VFMA
-            self.assertLessEqual(abs(Lv[-1] + L[1] - an_index32(900)), 1e-6 * 8)   # it reaches the next block's I
+            self.assertLessEqual(abs(Lv[-1] + L[1] - an_index32(900)), 1e-6 * 16)  # it reaches the next block's I
             self.assertTrue(np.array_equal(line_values(2.0, 5, 3), [2.0, 2.0, 2.0]))
 
-        def case(self, n=512, sync=False, sub=True, bits=(None, None), level1=1.0, mutant=None, k=(0.0, 0.25), law="f32",
+        def case(self, n=512, sync=False, sub=True, level1=1.0, mutant=None, k=(0.0, 0.25), law="f32",
                  off=0, i12=(0.72, 0.0), states=((0.1, None), (0.3, None)), is1v=2.0):
             inc = self.NOTE60 * 4; isub = float(np.float32(inc / 2))
             m, _ = sub_mod("sine", isub, n, 0.2); a = _f32(isub * m) if sub else None
             return fm12_voice(n, inc, k[0], inc * 1.5, k[1], a=a, is1=(is1v, 0.0) if sub else 0.0,
-                              is2=(8.0, 0.0) if sub else 0.0, i12=i12, bits=bits, state1=states[0], state2=states[1],
+                              is2=(8.0, 0.0) if sub else 0.0, i12=i12, state1=states[0], state2=states[1],
                               sync=sync, level1=level1, off=off, law=law, mutant=mutant)
 
         def test_a_silent_osc1_still_modulates(self):            # E3 (a), BD1: B is before Level
@@ -1685,25 +1703,24 @@ def _selftest():
 
         def test_the_voice_is_its_parts(self):                   # 4.1's composition, stated once; parts chain
             for sync in (False, True):
-                for bits in ((None, None), (8, 4), (4, None)):
-                    v = self.case(sync=sync, bits=bits, k=(0.9, -0.3))
+                for bits in (None,):                            # (BE4.42: one case; BE4.41 also ran its Bit Depth pairs)
+                    v = self.case(sync=sync, k=(0.9, -0.3))
                     inc = self.NOTE60 * 4; isub = float(np.float32(inc / 2))
                     m, _ = sub_mod("sine", isub, 512, 0.2); a = _f32(isub * m)
                     di1 = increments(inc, [(line_values((2.0, 0.0), 0, 512), a)], law="f32")
                     r1 = fm_render(di1, k=0.9, phase=0.1, delayed=FmWave(0.9, "f32").value(0.1), role="master" if sync else "free", law="f32")
-                    d1 = wave_dc(0.9); B = b_buffer(r1.y, inc, bits[0], d1)
+                    B = b_buffer(r1.y, inc)
                     di2 = increments(inc * 1.5, [(np.full(512, 8.0), a), (np.full(512, 0.72), B)], law="f32")
                     r2 = fm_render(di2, k=-0.3, phase=0.3, delayed=FmWave(-0.3, "f32").value(0.3), role="slave" if sync else "free",
                                    sync=r1.ev if sync else None, law="f32")
-                    for got, want in ((v.y1, r1.y), (v.B, B), (v.di2, di2), (v.y2, r2.y), (v.q1, crush(r1.y, bits[0], dc=d1)),
-                                      (v.q2, crush(r2.y, bits[1]))):
+                    for got, want in ((v.y1, r1.y), (v.B, B), (v.di2, di2), (v.y2, r2.y)):
                         self.assertTrue(np.array_equal(got, want), (sync, bits))
-                    p = self.case(n=256, sync=sync, bits=bits, k=(0.9, -0.3))  # two parts of 128 = one call of 256
-                    h = self.case(n=128, sync=sync, bits=bits, k=(0.9, -0.3))
+                    p = self.case(n=256, sync=sync, k=(0.9, -0.3))  # two parts of 128 = one call of 256
+                    h = self.case(n=128, sync=sync, k=(0.9, -0.3))
                     inc = self.NOTE60 * 4; isub = float(np.float32(inc / 2))
                     m2, _ = sub_mod("sine", isub, 256, 0.2); a2 = _f32(isub * m2)
                     h2 = fm12_voice(128, inc, 0.9, inc * 1.5, -0.3, a=a2[128:], is1=(2.0, 0.0), is2=(8.0, 0.0), i12=(0.72, 0.0),
-                                    bits=bits, state1=(h.r1.phase, h.r1.delayed), state2=(h.r2.phase, h.r2.delayed), sync=sync, off=128)
+                                    state1=(h.r1.phase, h.r1.delayed), state2=(h.r2.phase, h.r2.delayed), sync=sync, off=128)
                     self.assertTrue(np.array_equal(np.r_[h.y2, h2.y2], p.y2) and np.array_equal(np.r_[h.B, h2.B], p.B), (sync, bits))
                     self.assertEqual((h2.r2.phase, h2.r2.delayed), (p.r2.phase, p.r2.delayed))
 
@@ -1734,7 +1751,7 @@ def _selftest():
 
         def test_bessel_sine_to_sine(self):                      # 6.3: OSC1 Shape 0 -> OSC2 Shape 0, ratio 1 and 3:1
             n = 4096
-            for cc, cm, I, law in ((11, 11, 1.0, "f64"), (11, 11, 1.0, "f32"), (11, 11, an_index32(354), "f32"),
+            for cc, cm, I, law in ((11, 11, 1.0, "f64"), (11, 11, 1.0, "f32"), (11, 11, an_index32(157), "f32"),
                                    (33, 11, 2.0, "f32"), (7, 21, 1.0, "f32")):
                 inc2, inc1 = cc / n, cm / n
                 v = fm12_voice(n, inc1, -1.0, inc2, -1.0, i12=I, state1=(0.13, None), state2=(0.29, None), law=law)
@@ -1751,41 +1768,15 @@ def _selftest():
             j3 = 2 * abs(fm_sine_expect(n, 11, 11, 1.0, 0.0, 0.0)[4 * 11])
             self.assertLess(20 * np.log10(1 + 2 * tol / j3), 0.5)
 
-        def test_no_dc_drift_over_100_blocks(self):              # 6.3, I = 8 through zero, OSC1 free (no own FM)
+        def test_no_dc_drift_over_100_blocks(self):              # 6.3, I = 8 and 16 (BE4.42's 100 %) through zero, OSC1 free
             inc, N = self.NOTE60, self.N100
             for shape in (48, 88, 127):
                 k = k_of_shape(shape)
-                for b in (None,) + BITS:
-                    v = fm12_voice(N, inc, k, inc, 0.0, i12=8.0, bits=(b, None), state1=(0.1, None), state2=(0.3, None))
+                for I in (8.0, 16.0):
+                    v = fm12_voice(N, inc, k, inc, 0.0, i12=I, state1=(0.1, None), state2=(0.3, None))
                     self.assertLess(float(v.di2.min()), 0.0, "through zero")
                     w = whole_cycles(v.di1, 0.1); d = drift(v.di2, inc, w)
-                    self.assertTrue(d["ok"], (shape, b, d))
-                    c = crush_drift(v.y1, b, inc, 8.0, inc, dc=wave_dc(k), window=w)
-                    if CRUSH_DRIFT_CENTS.get(b) is not None:
-                        self.assertLessEqual(abs(c["mod"]), CRUSH_DRIFT_CENTS[b], (shape, b, c))
-                    else:
-                        self.assertLessEqual(abs(c["mod"]), 1.0, (shape, b, c))   # these Shapes' extremes are on the grid
-                    if shape == 88 and b is not None:             # the grid's DC (4.7: -3 / -55 / -1200 cents)
-                        self.assertLess(c["grid"], {12: -2.0, 8: -40.0, 4: -1000.0}[b], (b, c))
-                        g = fm12_voice(N, inc, k, inc, 0.0, i12=8.0, bits=(b, None), state1=(0.1, None), state2=(0.3, None),
-                                       mutant="audio_grid")
-                        self.assertEqual(drift(g.di2, inc, w)["ok"], b == 12, (b, "12 bits: under a bin; crush_drift sees it"))
-
-        def test_the_crush_dc_od15_leaves(self):                 # found in Q6 (M): rounding of extremes between levels
-            # OD15 removes the top clip's -f_hi / S. What is left is the rounding's own mean over the wave's values, nonzero
-            # where an extreme falls between two levels: Shape 36 peaks at tw = 0.474 (k = -0.237), which rounds up to 0.5 at
-            # 4 bits on every cycle; under OSC1's own Sub FM the phase also dwells (di1 -> 0) on a few values. A steady rate:
-            # travel grows with the window (M: +9.8 cycles in 100 blocks, +38.6 in 400, note 96).
-            for shape, note, I1, b, lo, hi in ((36, 96, 0.0, 4, 20.0, 40.0), (36, 60, 0.0, 4, 10.0, 25.0),
-                                               (75, 36, 2.0, 4, -160.0, -100.0), (36, 96, 0.0, 8, -1.0, 1.0),
-                                               (36, 96, 0.0, 12, -1.0, 1.0)):
-                inc = float(np.float32(440 * 2 ** ((note - 69) / 12) / 96000)); isub = float(np.float32(inc / 2))
-                m, _ = sub_mod("sine", isub, self.N100, 0.1); k = k_of_shape(shape)
-                v = fm12_voice(self.N100, inc, k, inc, 0.0, a=_f32(isub * m), is1=I1, i12=8.0, bits=(b, None),
-                               state1=(0.1, None), state2=(0.3, None))
-                c = crush_drift(v.y1, b, inc, 8.0, inc, dc=wave_dc(k))
-                self.assertTrue(lo < c["mod"] < hi, (shape, note, I1, b, c))      # M: +30.0, +16.6, -139.2, then < 1
-                if b == 4: self.assertEqual(c["mod"], c["grid"], "no sample reaches the top: OD15 changes nothing here")
+                    self.assertTrue(d["ok"], (shape, I, d))
 
         def test_sub_fm_has_no_dc_drift(self):                   # 6.3 for Sub FM (carried from Q5): OD10's DC-free square
             inc, N = self.NOTE60, self.N100; isub = float(np.float32(inc / 2))
@@ -1797,7 +1788,7 @@ def _selftest():
                 d = drift(v.di2, inc, whole_cycles(np.full(N, isub), 0.1))
                 self.assertEqual(d["ok"], not raw, (wave, raw, d))
 
-        def test_osc1s_own_sub_fm_puts_dc_in_b(self):            # found in Q6 (M): a real DC, not a crush artefact
+        def test_osc1s_own_sub_fm_puts_dc_in_b(self):            # found in Q6 (M): a real DC, not an artefact
             # A sub an octave below OSC1 is commensurate: OSC1's FM spectrum has its sideband f1 - 2 f_sub at 0 Hz, so its
             # (correct, band-limited) render has a mean, and FM 1>2 turns that mean into an OSC2 detune of I12 inc1 mean(y1).
             inc, N = self.NOTE60, self.N100; isub = float(np.float32(inc / 2))
@@ -1830,8 +1821,247 @@ def _selftest():
                     self.assertGreater(alias_case(*case, fs=96000, n48=8192, taps=(0, 1)), a48)
             with self.assertRaises(ValueError): alias_case("sub", 298, 149, 4.0, 0.0, wave="square")
 
+    class FmEnv(unittest.TestCase):                              # BE4.43 (Jeff's design 2026-11-16): the FM envelope
+        def test_the_time_curve(self):
+            n = FM_ENV_BLOCKS
+            self.assertEqual(len(n), 128); self.assertEqual((n[0], n[1], n[127]), (1, 2, FM_ENV_MAX_BLOCKS))
+            self.assertTrue(all(b > a for a, b in zip(n, n[1:])))                   # 128 distinct times, monotone
+            self.assertAlmostEqual(n[127] * T_BLOCK, 10.0, delta=1e-12)            # 3750 blocks = 10.0 s
+            self.assertAlmostEqual(math.exp(FM_ENV_L), 1.04017, delta=1e-5)
+            # the table is the contract: no entry is within 1e-6 of a rounding tie, so any careful generator agrees
+            frac = [math.expm1(FM_ENV_L * x) / FM_ENV_L % 1.0 for x in range(1, 127)]
+            self.assertGreater(min(abs(f - 0.5) for f in frac), 1e-6)
+            self.assertEqual((fm_env_time(0, "atk"), fm_env_time(FM_DEC_INF, "dec")), (0.0, math.inf))
+            self.assertAlmostEqual(fm_env_time(0, "dec"), T_BLOCK, delta=1e-15)
+            with self.assertRaises(ValueError): fm_env_blocks(128)
+            with self.assertRaises(ValueError): fm_env_consts(128, 0)
+            with self.assertRaises(ValueError): fm_env_consts(0, 129)
+
+        def test_defaults_are_bit_for_bit_be442(self):                             # Atk 0, Dec Inf: e = 1 everywhere
+            for v0, v1 in ((0, 0), (250, 250), (157, 1000), (1000, 3), (499, 500)):
+                L32 = fm_env_lines(0, FM_DEC_INF, v0, v1, 40, notes=(0, 7, 31), law="f32")
+                self.assertTrue(all(l == index_line(v0, v1) for l in L32), (v0, v1))
+                L64 = fm_env_lines(0, FM_DEC_INF, v0, v1, 40, notes=(0, 7, 31))
+                self.assertTrue(all(l == (fm_index(v0), fm_index(v1)) for l in L64))
+
+        def test_attack_by_hand(self):
+            a = 20; na = fm_env_blocks(a); self.assertEqual(na, 31)               # 31 blocks = 82.7 ms
+            e0, e1 = fm_env(a, FM_DEC_INF, 40)
+            self.assertTrue(np.array_equal(e0[:na + 1], np.arange(na + 1) / na))  # linear 0 -> 1, exactly 1 at n_a
+            self.assertTrue(np.all(e0[na:] == 1.0) and np.all(e1[na - 1:] == 1.0))
+            self.assertTrue(np.array_equal(e1[:-1], e0[1:]))                     # one ramp across block boundaries
+            f0, _ = fm_env(1, FM_DEC_INF, 4); self.assertEqual(list(f0), [0.0, 0.5, 1.0, 1.0])  # Atk 1: 2 blocks
+            g0, g1 = fm_env(0, FM_DEC_INF, 3); self.assertEqual((g0[0], g1[0]), (1.0, 1.0))    # Atk 0: instant
+
+        def test_decay_by_hand(self):
+            for d in (0, 1, 40, 90, 127):
+                nd = fm_env_blocks(d); e0, e1 = fm_env(0, d, nd + 3)
+                j = np.arange(nd)
+                self.assertTrue(np.allclose(e0[:nd], FM_ENV_FLOOR ** (j / nd), rtol=1e-12, atol=0), d)
+                self.assertTrue(np.all(e0[nd:] == 0.0) and e1[nd - 1] == 0.0, d)  # -60 dB at n_d blocks, then 0
+                self.assertGreater(e0[nd - 1], FM_ENV_FLOOR)
+                self.assertAlmostEqual(nd * T_BLOCK, fm_env_time(d, "dec"), delta=1e-15)
+            e0, e1 = fm_env(0, 0, 3); self.assertEqual((list(e0), list(e1)), ([1.0, 0.0, 0.0], [0.0, 0.0, 0.0]))
+            a, d = 10, 30; na, nd = fm_env_blocks(a), fm_env_blocks(d)            # attack then decay from k_a = n_a
+            e0, _ = fm_env(a, d, na + nd + 2)
+            self.assertEqual(e0[na], 1.0); self.assertAlmostEqual(e0[na + 1], FM_ENV_FLOOR ** (1 / nd), delta=1e-15)
+            self.assertEqual(e0[na + nd], 0.0)
+
+        def test_retrigger_per_note(self):
+            a, d = 20, 40; e0, e1 = fm_env(a, d, 120, notes=(0, 50, 51, 90))
+            r0, r1 = fm_env(a, d, 50)
+            for s, end in ((0, 50), (51, 90)):
+                self.assertTrue(np.array_equal(e0[s:end], r0[:end - s]) and np.array_equal(e1[s:end], r1[:end - s]))
+            self.assertEqual((e0[50], e1[50], e0[90]), (0.0, r1[0], 0.0))         # hard reset, from whatever it was
+            self.assertGreater(e1[89], 0.1)                                     # so a step at the note's boundary
+            i0, _ = fm_env(0, 40, 60, notes=(0, 30)); self.assertEqual(i0[30], 1.0)   # Atk 0: back to 1
+
+        def test_lines_and_samples(self):
+            a, d = 12, 60; nb = 80
+            L = fm_env_lines(a, d, 600, 600, nb, notes=(0, 40))
+            y = fm_env_samples(L); I = fm_index(600)
+            self.assertEqual(y.size, nb * FM_ENV_N)
+            e0, e1 = fm_env(a, d, nb, notes=(0, 40))
+            self.assertTrue(np.allclose([s for s, _ in L], I * e0, rtol=0, atol=1e-15))
+            j = np.arange(FM_ENV_N) / FM_ENV_N                                  # within a note: continuous
+            b = 20; self.assertAlmostEqual(y[(b + 1) * FM_ENV_N], L[b][1], delta=1e-15)
+            self.assertTrue(np.allclose(y[b * FM_ENV_N:(b + 1) * FM_ENV_N], L[b][0] + (L[b][1] - L[b][0]) * j, atol=1e-15))
+            self.assertEqual(y[40 * FM_ENV_N], 0.0)                              # the retrigger: back to 0
+            # an amount that moves (msub v0 -> v1) and the envelope: endpoints multiply, the line stays one VFMA
+            v0 = np.linspace(0, 1000, nb); v1 = np.r_[v0[1:], 1000]
+            M = fm_env_lines(a, d, v0, v1, nb)
+            ee0, ee1 = fm_env(a, d, nb)
+            self.assertTrue(all(abs(m[0] - fm_index(p) * q) < 1e-15 and abs(m[1] - fm_index(r) * s) < 1e-15
+                                for m, p, q, r, s in zip(M, v0, ee0, v1, ee1)))
+            self.assertTrue(all(M[b][1] == M[b + 1][0] for b in range(nb - 1)))
+
+        def test_f32_stated_arithmetic_within_tolerance(self):
+            worst = 0.0
+            for a, d in ((0, 127), (127, 127), (1, 0), (64, 64), (90, 100), (5, FM_DEC_INF)):
+                n = (fm_env_blocks(a) if a else 0) + (fm_env_blocks(d) if d != FM_DEC_INF else 10) + 3
+                e64, _ = fm_env(a, d, n); e32, _ = fm_env(a, d, n, law="f32")
+                worst = max(worst, float(np.max(np.abs(e64 - e32))))
+                self.assertTrue(np.all(e32[e64 == 0] == 0) and np.all(e32[e64 == 1] == 1), (a, d))  # counters decide
+                L32 = fm_env_lines(a, d, 1000, 1000, n, law="f32")
+                L64 = fm_env_lines(a, d, 1000, 1000, n)
+                y32 = fm_env_samples(L32, law="f32"); y64 = fm_env_samples(L64)
+                self.assertLess(float(np.max(np.abs(y32 - y64))), 16 * FM_ENV_TOL + 2e-5, (a, d))
+            self.assertLess(worst, FM_ENV_TOL)                                    # M: 4.0e-6 at Dec 127 (bound 2.4e-5)
+
+        def test_mutants_turn_red(self):
+            spec = {m: None for m in FM_ENV_MUTANTS}
+            for m in FM_ENV_MUTANTS:
+                a, d, notes = (20, 40, (0, 60)) if m == "no_retrig" else (20, 40, (0,))
+                n = 200 if m == "no_floor" else 120
+                r = fm_env(a, d, n, notes)
+                x = fm_env(a, d, n, notes, mutant=m)
+                spec[m] = max(float(np.max(np.abs(r[0] - x[0]))), float(np.max(np.abs(r[1] - x[1]))))
+                self.assertGreater(spec[m], 100 * FM_ENV_TOL / 16, m)       # at I = 16, far above the f32 bound
+            self.assertGreater(spec["lin_decay"], 0.2)
+
+    THR = 1.75                                                   # WtRead: a fixture threshold (not the build's: test_analog reads the manifest)
+    class WtRead(unittest.TestCase):                             # BE4.44 W2 (docs/plan-wt-fm.md 3.4, 7.1)
+        @staticmethod
+        def sine_table():
+            x = np.arange(2048) / 2048
+            return wt_build_levels(np.tile(np.sin(2 * np.pi * x).astype(np.float32), (256, 1)))
+
+        def test_the_builder_skews_each_level(self):
+            """Stock's levels (wt_build_levels): level k's fundamental lags level 0's by wt_skew(k) = 7 (2^k - 1) / 2048 of a
+            cycle, gain 0.951^k (the decimator's DC gain); frame 128 (no zero padding reaches it)."""
+            t = self.sine_table()
+            for k in range(WT_LEVELS):
+                L = wt_level_len(k)
+                c = np.fft.rfft(t[wt_level_off(k) + 128 * L:wt_level_off(k) + 129 * L].astype(np.float64))[1]
+                lag = (np.angle(c) + np.pi / 2) / (2 * np.pi)    # sin(2 pi (i / L - s)): angle -pi/2 - 2 pi s
+                self.assertAlmostEqual(-lag, wt_skew(k), delta=1e-6, msg=k)
+                self.assertAlmostEqual(abs(c) * 2 / L, float(np.sum(STOCK_FIR)) ** k, delta=5e-3, msg=k)
+
+        def test_fm0_plays_the_pitch(self):
+            """No FM at a fixed level: the phase moves n inc (stock's pitch), each sample the table at the phase before it."""
+            t = self.sine_table()
+            rate = 5.58131
+            st = wt_state(idx=17, frac=0.25, frame=9, flag=0, k=3)
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            z = np.zeros(256)
+            y, s2, ks = wt_read_block(t, st, 9, rate, 256, (z, 0.0, 0.0, z, 0.0, 0.0), THR)
+            self.assertEqual(ks, (3, 3))
+            p0 = (17.25 / 256)
+            self.assertAlmostEqual(((s2["idx"] + s2["frac"]) / 256 - p0 - 256 * inc) % 1.0, 0.0, delta=1e-12)
+            ph = (p0 + inc * np.arange(256)) % 1
+            L, base = 256, wt_level_off(3) + 9 * 256
+            x = ph * L; i = np.floor(x).astype(int)
+            tt = t.astype(np.float64)
+            self.assertLess(float(np.max(np.abs(y - (tt[base + i] + (x - i) * (tt[base + (i + 1) % L] - tt[base + i]))))), 1e-12)
+
+        def test_other_levels_are_read_in_phase(self):
+            """A level read at its skew relative to the note's is the same wave (gain apart); unskewed it is not (no_skew)."""
+            t = self.sine_table()
+            st = wt_state(idx=40, frac=0.5, frame=3, flag=0, k=2, mip=5)
+            z = np.zeros(256)
+            for mut, lo, hi in ((None, 0.0, 2e-3), ("no_skew", 0.05, 9.0)):
+                st5 = dict(st)
+                y5, _, ks = wt_read_block(t, st5, 3, 2.79, 256, (z, 0.0, 0.0, z, 0.0, 0.0), THR, mutant=mut)
+                self.assertEqual(ks, (5, 2), "mip 5 held, back to the note's level 2 (the peak is far below)")
+                g = float(np.sum(STOCK_FIR))
+                y2, _, _ = wt_read_block(t, dict(st, mip=WT_HOME), 3, 2.79, 256, (z, 0.0, 0.0, z, 0.0, 0.0), THR)
+                # (the crossfade's first sample is mostly level 5: compare it to level 2 after the gains)
+                d = abs(y5[0] / g ** 5 - y2[0] / g ** 2)
+                self.assertTrue(lo <= d <= hi, (mut, d))
+
+        def test_through_zero_returns(self):
+            """A symmetric through-zero sweep (a sine modulator, whole cycles in the block, the increment well below 0 at its
+            trough) ends n inc on: the backward stretch is undone exactly. The wrap-by-compare mutant cannot go back."""
+            t = self.sine_table()
+            rate, n = 5.58131, 256
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            a = np.sin(2 * np.pi * 4 * np.arange(n) / n) * inc
+            line = (a, 6.0, 0.0, a, 0.0, 0.0)
+            self.assertLess(float(np.min(inc + 6.0 * a)), -4 * inc, "control: through zero")
+            st = wt_state(idx=100, frac=0.5, frame=0, flag=0, k=3)
+            _, s2, _ = wt_read_block(t, st, 0, rate, n, line, THR)
+            self.assertAlmostEqual(((s2["idx"] + s2["frac"]) / 256 - 100.5 / 256 - n * inc) % 1.0, 0.0, delta=1e-9)
+            _, s3, _ = wt_read_block(t, st, 0, rate, n, line, THR, mutant="clamp_wrap")
+            self.assertGreater(abs((s3["idx"] + s3["frac"]) - (s2["idx"] + s2["frac"])), 0.3)
+
+        def test_one_change_waits_one_block(self):
+            """W2 review: Position moving every block with a heavy index (the mip wants to go coarser) and then with the line
+            gone (the mip-home block): each change waits one block at most, alternating (frame, mip, frame, ...); the frame
+            playing is never more than one block behind. "no_wait" (W2 as first built) starves the mip both ways."""
+            t = wt_build_levels(wt_saw_frames(200))
+            rate, n = 5.58131, 256
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            a = np.sin(2 * np.pi * 2 * np.arange(n) / n) * inc / 2
+            for mut in (None, "no_wait"):
+                st = wt_state(idx=11, frac=0.3, frame=5, flag=0, k=3)
+                mips, frames = [], []
+                for blk in range(12):
+                    line = (a, 12.0, 0.0, a, 0.0, 0.0) if blk < 6 else None
+                    _, st, _ = wt_read_block(t, st, 6 + blk, rate, n, line, THR, mutant=mut)
+                    mips.append(st["mip"]); frames.append(st["frame"])
+                if mut is None:
+                    self.assertEqual(mips[0], 3, "the frame first")
+                    self.assertGreater(mips[1], 3, "the mip change the block after the frame's")
+                    self.assertEqual(mips[6:8], [mips[5], WT_HOME], "mip home the block after the frame's")
+                    self.assertTrue(all(6 + b - f <= 1 for b, f in enumerate(frames)), frames)
+                else:
+                    self.assertLessEqual(set(mips), {3, WT_HOME}, "starved: the mip never leaves the note's level")
+
+        def test_a_notes_first_block_plays_the_fm_level(self):
+            """W4 lever (a): a block with the pending flag set (a note's first) under an index that wants a coarser level reads
+            that level from its first sample (levels (kt, kt), no crossfade): every sample is the coarse level's plain read
+            at the phase. The block after a held mip still crossfades (no flag: a mip change). "note_xf" (W3 as built)
+            crossfades from the note's level instead."""
+            t = wt_build_levels(wt_saw_frames(200))
+            rate, n = 5.58131, 256
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            a = np.sin(2 * np.pi * 2 * np.arange(n) / n) * inc / 2
+            line = (a, 12.0, 0.0, a, 0.0, 0.0)
+            st = wt_state(idx=1500, frac=0.25, frame=-1, flag=1)
+            y, s1, ks = wt_read_block(t, st, 7, rate, n, line, THR, pa=float(np.float32(inc / 2)))
+            kn = wt_ladder(rate)
+            self.assertGreater(ks[1], kn, "control: the index wants a coarser level")
+            self.assertEqual(ks, (ks[1], ks[1]), "the FM level from the first sample")
+            self.assertEqual((s1["mip"], s1["flag"], s1["frame"]), (ks[1], 0, 7))
+            yx, _, kx = wt_read_block(t, st, 7, rate, n, line, THR, pa=float(np.float32(inc / 2)), mutant="note_xf")
+            self.assertEqual(kx, (kn, ks[1]), "note_xf: from the note's level")
+            self.assertGreater(float(np.max(np.abs(yx[:8] - y[:8]))), 1e-4, "note_xf differs where the crossfade starts")
+            # the plain read at the coarse level, by hand
+            st2 = dict(st, flag=0, D=1 << kn, len=wt_level_len(kn), off=wt_level_off(kn), idx=1500 % wt_level_len(kn),
+                       mip=ks[1])
+            yh, _, kh = wt_read_block(t, st2, 7, rate, n, line, THR, pa=float(np.float32(inc / 2)))
+            self.assertEqual(kh, (ks[1], ks[1]))
+            self.assertTrue(np.array_equal(yh, y), "the same samples as a block that held that level already")
+
+        def test_the_mip_rule(self):
+            """D5 against a hand table (thr 1.25, hysteresis 1.05): coarser at once, finer only below 1.05 x 2^k, never
+            finer than the note's level, 6 at most."""
+            for x, kn, kc, want in ((1.0, 0, 0, 0), (1.25, 0, 0, 1), (2.4, 0, 0, 1), (2.5, 0, 0, 2), (2.4, 0, 2, 2),
+                                    (2.2, 0, 2, 2), (2.0, 0, 2, 1), (1.0, 0, 2, 0), (1.04, 0, 1, 0), (1.06, 0, 1, 1),
+                                    (500.0, 0, 0, 6), (1.0, 3, 3, 3), (9.0, 3, 3, 3), (10.0, 3, 3, 4), (8.5, 3, 4, 4),
+                                    (8.3, 3, 4, 3)):
+                self.assertEqual(wt_mip_choice(x, kn, kc, 1.25), want, (x, kn, kc))
+            self.assertEqual(wt_mip_choice(2.0, 0, 2, 1.25, "no_hyst"), 1)
+            self.assertEqual(wt_mip_choice(1.06, 0, 1, 1.25, "no_hyst"), 0)
+
+        def test_mutants_turn_red(self):
+            """Each golden mutant changes a block it should: a mip-change block (skew, weights, fixed mip), a through-zero
+            block (wrap), any block (units, read order), a ramp parked between the two thresholds (hysteresis)."""
+            t = wt_build_levels(wt_saw_frames(200))
+            rate, n = 5.58131, 256
+            inc = float(np.float32(rate) * np.float32(1 / 2048))
+            a = (np.sin(2 * np.pi * 2 * np.arange(n) / n) * inc / 2)
+            st = wt_state(idx=11, frac=0.3, frame=5, flag=0, k=3)
+            for m, line, s in (("no_skew", (a, 12.0, 0.0, a, 0.0, 0.0), st), ("xf_reversed", (a, 12.0, 0.0, a, 0.0, 0.0), st),
+                               ("fixed_mip", (a, 12.0, 0.0, a, 0.0, 0.0), st), ("clamp_wrap", (a, 12.0, 0.0, a, 0.0, 0.0), st),
+                               ("units", None, st), ("read_late", None, st),
+                               ("no_hyst", (a, 2.6, 0.0, a, 0.0, 0.0), dict(st, mip=4))):
+                y0, s0, k0 = wt_read_block(t, s, 5, rate, n, line, THR)
+                y1, s1, k1 = wt_read_block(t, s, 5, rate, n, line, THR, mutant=m)
+                self.assertGreater(float(np.max(np.abs(y1 - y0))) + abs(s1["idx"] - s0["idx"]) + (k1 != k0), 1e-3, m)
+
     L = unittest.defaultTestLoader
-    r = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([L.loadTestsFromTestCase(c) for c in (BitDepth, Shapes, FM, FM12)]))
+    r = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([L.loadTestsFromTestCase(c) for c in (Shapes, FM, FM12, FmEnv, WtRead)]))
     return 0 if r.wasSuccessful() else 1
 
 

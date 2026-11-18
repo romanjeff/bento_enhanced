@@ -1,0 +1,7 @@
+# The build toolchain plus what the emulated test suites need (make_kit.py --test, mods/m1/test_*.py).
+#   python -m pip install -r requirements-test.txt
+# numpy 2.5.4 has wheels for Python 3.12 and later only.
+-r requirements.txt
+unicorn==2.1.3          # CPU emulator the suites run the patched image in
+numpy==2.5.4
+pillow==13.0.0          # display emulator (tools/display_emulator), used by the UI suites

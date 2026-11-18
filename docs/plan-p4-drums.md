@@ -255,6 +255,15 @@ changed only tests, tables and docs.
 
 **Not done in P4-1 (I):** an every-pad PROP_PUSH test (P4-3); the be442 merge.
 
+**v4.46 merge (2026-11-18, branch webpatch = v4.46 + the web patcher, into main):** review item 2 as foreseen. A drums build
+now has 0x2FC + 8 (BE4.43's Analog keys: FM Atk 0x1A4, FM Dec 0x1A0; Bit Depth gone) + 9 = 0x30D template entries, padded
+to **0x310 with three type-0xFF entries**, so in a drums build type 0xFF is creatable again (Hazard expects it there; the
+reader checks are unchanged); the default build keeps v4.46's 0x304, no pad. test_keys ALLOW: 8 + 9 = 17 keys.
+DefaultImage now checks a default build at a released version against tools/release_hashes.json (v4.46: d09bcff5...).
+The default build is v4.46's image byte for byte (P4-0 / P4-1 change nothing there). On v4.46's layout (DSP window
+0x080D0140..0x080DA000, 40,640 B), a drums build is: image 0x18B37C (proven max 0x18D334), 140 writes, DSP 39,132 B (fits,
+1,508 B left), synth UI 23,830 B. The table above (0x30C, DSP 29,836 B) is P4-1 on BE4.41.
+
 ---
 
 ## 1. Requirements

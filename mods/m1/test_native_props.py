@@ -2,7 +2,8 @@
 """Analog's settings as native stock properties (BE4.40, docs/plan-native-props.md N1 / N2), on stock 1.6.8's own code.
 
     python test_native_props.py <stock bento1.bin> <m1 build dir> [<BE4.22 kit dir>]
-    (BE_REF: the BE4.40 reference build dir, default ~/bento/out/m1-be440: test_be440_opens_a_p3_project)
+    (BE_REF: the BE4.40 reference build dir, default ~/bento/out/m1-be440: test_be440_opens_a_p3_project;
+     BE_REF441: the BE4.41 build dir, default ~/bento/out/m1-be441: test_a_be441_project_with_bit_depth_opens)
 
 What runs: the built image from the M4 reset's .data copy and static constructors on (emu.py), model init's registry build
 (our N2 wrapper: stock's REG_BUILD, then np_keys), stock's object store, track and child constructors (STORE_CREATE,
@@ -15,14 +16,24 @@ and ENGINE_PROPERTY are logged and return. The same reader then runs on stock 1.
 P3 Q1 (docs/plan-p3-fm-bits.md 3.1, 3.2, 6.1): three more keys (Sub FM, Bit Depth, FM 1>2), so the template has its first
 type-0xFF pad entry, which makes type 0xFF creatable (CHILD_CREATE): Hazard pins that and shows no reader path asks for it.
 The same text is read by BE4.40 (the likeliest rollback) and through stock's preset reader (PATCH_READ).
+BE4.42 (docs/plan-p3-fm-bits.md, BE4.42): Bit Depth (0x1A4, bento_bits) is gone: six keys, two pad entries (the count stays
+0x304). A project BE4.41 saved with Bit Depth set (written by the BE4.41 build itself, BE_REF441) opens here with its other
+values, the bits value is not read, never reaches the M7, and the next save drops it.
+BE4.43 (docs/plan-p3-fm-bits.md, BE4.43): the FM envelope's two keys, FM Atk 0x1A4 (bento_fmatk, default 0) and FM Dec 0x1A0
+(bento_fmdec, default 128 = Inf): eight keys, 0x2FC + 8 = 0x304, so no pad entry any more (Hazard: type 0xFF is not creatable
+again, as on stock). A BE4.41 project's bento_bits still is not read (0x1A4's token is bento_fmatk: FM Atk keeps its default);
+a project BE4.42 saved (BE_REF442, default ~/bento/out/m1-be442, the v4.42 kit's image) opens with Atk 0 / Dec Inf, the
+values that play BE4.42's static depth.
 P4-1 (docs/plan-p4-drums.md 3.3 N1 / N2), a drums build (BE_ENABLE=drums): the template also has the drum keys on type 1 and
-0x0E (0x30C entries, no pad entry); DrumProject writes and reads a Drum Synth track's pads and flag with stock's own code, and
-stock 1.6.8 and BE4.41 (BE_REF441, default ~/bento/out/m1-be441) open it.
+0x0E (written on BE4.41: 0x30C entries, no pad entry; since the v4.46 merge, on BE4.43's eight keys: 0x2FC + 8 + 9 = 0x30D,
+padded to 0x310 with three pad entries, so type 0xFF is creatable again in a drums build, the hazard Hazard guards);
+DrumProject writes and reads a Drum Synth track's pads and flag with stock's own code, and stock 1.6.8 and BE4.41
+(BE_REF441, default ~/bento/out/m1-be441) open it.
 Typed independently of the code under test: our keys and tokens (plan-native-props 3.1, plan-p3-fm-bits 2.1), Shape's
 default 48, stock's seven type-6 keys in order, the template count rule (cmp.w encodes every multiple of 4 from 0x300), the
 set_property message's index (WT1 0, WT2 1). Skipped on a build without the analog group (1.6.1).
 """
-import json, os, re, struct, sys, unittest
+import hashlib, json, os, re, struct, sys, unittest
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "tools" / "display_emulator"))
@@ -38,7 +49,8 @@ IMG = (Path(sys.argv[2]) / "bento1.bin").read_bytes()
 MAN = json.loads((Path(sys.argv[2]) / "manifest.json").read_text())
 KIT422 = Path(sys.argv[3]) if len(sys.argv) > 3 else HERE.parents[2] / "flash" / "bento_enhanced-v4.22"
 REF440 = Path(os.environ.get("BE_REF", str(Path.home() / "bento" / "out" / "m1-be440")))   # BE4.40 (P3 Q1: the rollback)
-REF441 = Path(os.environ.get("BE_REF441", str(Path.home() / "bento" / "out" / "m1-be441")))   # BE4.41 (P4-1: the drums' rollback)
+REF441 = Path(os.environ.get("BE_REF441", str(Path.home() / "bento" / "out" / "m1-be441")))   # BE4.41 (BE4.42: Bit Depth's files; P4-1: the drums' rollback)
+REF442 = Path(os.environ.get("BE_REF442", str(Path.home() / "bento" / "out" / "m1-be442")))   # BE4.42 (BE4.43: no envelope)
 del sys.argv[1:4]
 SYM = {k[6:]: int(v, 16) for k, v in MAN.get("m4_symbols", {}).items() if k.startswith("synth.")}
 BUILT = "analog" not in MAN.get("omitted", []) and "np_keys" in SYM
@@ -60,9 +72,13 @@ FEED = 0xC0C00000                  # the text DOC_READ hands the parser  # addr-
 STUB = 0x083F0000                  # our DOC_READ replacement (feeds the parser; executable: 0xC0000000+ is XN)  # addr-ok: harness
 EV = 0xC0F01000                    # an event record  # addr-ok: harness
 # our keys, tokens and defaults (docs/plan-native-props.md 3.1; Shape's default 48 = saw, NP6), in template order; P3 Q1
-# (docs/plan-p3-fm-bits.md 2.1): Sub FM, Bit Depth, FM 1>2 after Glide, all 0
+# (docs/plan-p3-fm-bits.md 2.1): Sub FM, FM 1>2 after Glide, both 0 (BE4.42: BE4.41's Bit Depth, between them, is gone)
+# BE4.43: FM Atk (0x1A4, default 0: instant) and FM Dec (0x1A0, default 128: Inf) after FM 1>2
 OURS = [(0x1C0, "bento_osc_type", 0), (0x1A7, "bento_shape", 48), (0x1AB, "bento_sync", 0), (0x1B7, "bento_glide", 0),
-        (0x18B, "bento_subfm", 0), (0x1A4, "bento_bits", 0), (0x132, "bento_fm12", 0)]
+        (0x18B, "bento_subfm", 0), (0x132, "bento_fm12", 0), (0x1A4, "bento_fmatk", 0), (0x1A0, "bento_fmdec", 128)]
+BITS = 0x1A4                       # BE4.41's Bit Depth key (bento_bits): BE4.42 had no such key; BE4.43's FM Atk (bento_fmatk)
+FMATK, FMDEC = 0x1A4, 0x1A0
+BE442_N = 6                        # BE4.42's keys: the first six
 KEYS = [k for k, _, _ in OURS]
 BE440_N = 4                        # BE4.40's keys: the first four
 PAD = 0xFF                         # the template's pad type (build.py NP_PAD_TYPE)
@@ -216,14 +232,14 @@ def cells(text):
     return out
 
 
-# setup_wt's values of our keys (Type, Shape, Sync, Glide, Sub FM, Bit Depth, FM 1>2), each different from its default
-V1 = [1, 127, 0, 77, 250, 2, 0]
-V2 = [1, 5, 1, 0, 1000, 3, 640]
+# setup_wt's values of our keys (Type, Shape, Sync, Glide, Sub FM, FM 1>2), each different from its default
+V1 = [1, 127, 0, 77, 250, 0, 20, 40]     # BE4.43: FM Atk 20, FM Dec 40
+V2 = [1, 5, 1, 0, 1000, 640, 127, 0]    # BE4.43: FM Atk 127, FM Dec 0
 
 
 def setup_wt(r):
-    """A Wavetable track, WT1 Analog (Shape 127, Glide 77, Sub FM 250, Bit Depth 8), WT2 Analog (Shape 5, Sync on, Sub FM
-    1000, Bit Depth 4, FM 1>2 640), WT1's Position 321."""
+    """A Wavetable track, WT1 Analog (Shape 127, Glide 77, Sub FM 250, FM Atk 20, FM Dec 40), WT2 Analog (Shape 5, Sync on,
+    Sub FM 1000, FM 1>2 640, FM Atk 127, FM Dec 0), WT1's Position 321."""
     t, w1, w2 = r.wavetable()
     for o, vals in ((w1, V1), (w2, V2)):
         for k, v in zip(KEYS, vals):
@@ -267,12 +283,14 @@ class Template(unittest.TestCase):
         pad = [struct.pack("<BBHI", 0xFF, 0, 0, 0)] * (n - len(want))
         self.assertEqual(ours, want + pad)
         if DR_TPL and not DISABLED:
-            # derived, not 0x30C literally (review): a merge that changes the Analog key count (be442) moves it
+            # derived, not a literal (review): a merge that changes the Analog key count moves it (the v4.46 merge did:
+            # BE4.43's eight keys, 0x2FC + 8 + 9 = 0x30D -> 0x310, three pad entries; on BE4.41 it was 0x30C, none)
             keys = 0x2FC + len(OURS) + len(DR_PAD) + len(DR_TRACK)
             self.assertEqual((n, len(pad)), ((keys + 3) & ~3, ((keys + 3) & ~3) - keys), "P4-1, a drums build: 0x2FC + Analog's "
-                             "keys + 8 pad keys + 1 track key, padded to a multiple of 4 (BE4.50 P4-1: 0x30C, no pad entry)")
+                             "keys + 8 pad keys + 1 track key, padded to a multiple of 4")
         elif not DISABLED:
-            self.assertEqual((n, len(pad)), (0x304, 1), "seven keys: 0x2FC + 7 = 0x303 -> 0x304, one pad entry (P3 Q1; BE4.40's four gave 0x300)")
+            self.assertEqual((n, len(pad)), (0x304, 0), "eight keys: 0x2FC + 8 = 0x304, no pad entry (BE4.43; BE4.42's six "
+                             "had two pads, BE4.41's seven one, BE4.40's four 0x300)")
 
     @unittest.skipUnless(HAVE, "BE_DISABLE=analog: the template is stock's")
     def test_every_object_gets_stocks_keys_and_type_6_ours_too(self):
@@ -355,7 +373,7 @@ class Stock(unittest.TestCase):
         for idx, want in ((0, V1), (1, V2)):
             got = [(k, v) for h, k, v, i in r.props if i == idx and k in KEYS]
             self.assertEqual(got, list(zip(KEYS, want)), f"oscillator {idx}: our keys in template order (P3: Type, Shape, "
-                             "Sync, Glide, Sub FM, Bit Depth, FM 1>2)")
+                             "Sync, Glide, Sub FM, FM 1>2)")
             self.assertTrue(all(h == r.handle(t) for h, k, v, i in r.props if k in KEYS), "addressed to the track")
 
 
@@ -399,15 +417,91 @@ class Project(unittest.TestCase):
         self.assertIn((r.handle(t), 0xC9, 321, 0), r.props, "stock's own Position the same way, before ours")
 
     def test_out_of_range_file_values_load_raw(self):
-        """Stock stores what the file says: the readers clamp (the M7: test_analog, P3 Bit Depth 7 / -1 -> 3 there; the page:
-        test_synth_ui)."""
+        """Stock stores what the file says: the readers clamp (the M7: test_analog; the page: test_synth_ui)."""
         bad = self.text.replace('bento_osc_type="1" bento_shape="127"', 'bento_osc_type="-7" bento_shape="1000"', 1)
-        bad = bad.replace('bento_subfm="250" bento_bits="2"', 'bento_subfm="5000" bento_bits="7"', 1)
-        bad = bad.replace('bento_subfm="1000" bento_bits="3" bento_fm12="640"', 'bento_subfm="-3" bento_bits="-1" bento_fm12="99999"', 1)
-        self.assertEqual(bad.count("99999") + bad.count('bento_bits="7"'), 2, "both cells edited")
+        bad = bad.replace('bento_subfm="250"', 'bento_subfm="5000"', 1)
+        bad = bad.replace('bento_subfm="1000" bento_fm12="640"', 'bento_subfm="-3" bento_fm12="99999"', 1)
+        bad = bad.replace('bento_fmatk="20" bento_fmdec="40"', 'bento_fmatk="500" bento_fmdec="-9"', 1)      # BE4.43
+        bad = bad.replace('bento_fmatk="127" bento_fmdec="0"', 'bento_fmatk="-1" bento_fmdec="129"', 1)
+        self.assertEqual(bad.count("99999") + bad.count('bento_subfm="5000"') + bad.count('bento_fmatk="500"') + bad.count('bento_fmdec="129"'), 4,
+                         "both cells edited")
         r = Rig(); c = r.children(r.wt_tracks(r.load(bad))[0])
-        self.assertEqual(r.ours(c[0]), [-7, 1000, 0, 77, 5000, 7, 0])
-        self.assertEqual(r.ours(c[1]), [1, 5, 1, 0, -3, -1, 99999])
+        self.assertEqual(r.ours(c[0]), [-7, 1000, 0, 77, 5000, 0, 500, -9])
+        self.assertEqual(r.ours(c[1]), [1, 5, 1, 0, -3, 99999, -1, 129])
+
+    def test_a_be441_project_with_bit_depth_opens(self):
+        """BE4.42 (Bit Depth removed): a project BE4.41 saved with Bit Depth set (8 bits on WT1, 4 on WT2: the BE4.41 build
+        itself writes it, its own template and descriptors) opens here with every other value of ours and stock's, Bit
+        Depth's bento_bits is not read (no descriptor, no token: the oscillators have no 0x1A4 property), the push after the
+        load sends no 0x1A4 to the M7 (whose an_prop would not take it anyway: test_analog), and the next save drops it.
+        BE4.43 (expected change): 0x1A4 is FM Atk's (token bento_fmatk), so the oscillators have a 0x1A4 property, at FM Atk's
+        default 0 whatever bento_bits said, and the push sends that 0 (FM Dec its 128): the envelope plays 1, BE4.42's sound."""
+        img = REF441 / "bento1.bin"
+        if not img.exists():
+            self.skipTest(f"no BE4.41 build at {REF441} (BE_REF441)")
+        man = json.loads((REF441 / "manifest.json").read_text())
+        self.assertEqual(man["version"], "4.41")
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        self.assertEqual(sym["np_template_n"], 0x304, "BE4.41's template: seven keys, one pad")
+        old = Rig(img=img.read_bytes(), sym=sym)
+        t, w1, w2 = old.wavetable()
+        for o, vals, bits in ((w1, V1, 2), (w2, V2, 3)):
+            for k, v in zip(KEYS[:BE442_N], vals):                # (BE4.41's own keys but Bit Depth: BE4.42's six)
+                old.set(o, k, v)
+            old.set(o, BITS, bits)
+            self.assertEqual(old.prop(o, BITS), bits, "control: BE4.41 stores Bit Depth")
+        old.set(w1, 0xC9, 321)
+        text = old.save()
+        self.assertEqual((text.count('bento_bits="2"'), text.count('bento_bits="3"')), (1, 1), "control: BE4.41 wrote it")
+        r = Rig()
+        st = r.load(text)
+        c = r.children(r.wt_tracks(st)[0])
+        self.assertEqual([r.ours(o)[:BE442_N] for o in c[:2]], [V1[:BE442_N], V2[:BE442_N]], "every other value of ours")
+        self.assertEqual([r.ours(o)[BE442_N:] for o in c[:2]], [[0, 128]] * 2,
+                         "BE4.43: bento_bits is not read: FM Atk (0x1A4) keeps its default 0, FM Dec 128")
+        self.assertEqual([k for _, k, _ in r.props_of(c[0])], STOCK_T6 + KEYS)
+        self.assertEqual(r.prop(c[0], 0xC9), 321)
+        r.call(S.STORE_COPY_ALL, r.live, st)
+        r.props.clear()
+        r.call(S.LOAD_PUSH_ALL, S.MODEL, count=200_000_000)
+        self.assertGreater(len([1 for h, k, v, i in r.props if k in KEYS]), 0, "control: the push sends our keys")
+        self.assertEqual({p[2] for p in r.props if p[1] == BITS}, {0}, "BE4.43: 0x1A4 reaches the M7 only as FM Atk's 0")
+        again = r.save(st)
+        self.assertNotIn("bento_bits", again, "dropped on BE4.42's save")
+        self.assertIn('bento_subfm="1000"', again)
+        self.assertIn('bento_fm12="640"', again)
+
+    def test_a_be442_project_opens_with_the_envelope_at_its_defaults(self):
+        """BE4.43: a project BE4.42 saved (the v4.42 kit's image, BE_REF442: its six keys, no envelope) opens here with its six
+        values, FM Atk 0 and FM Dec 128 on both oscillators (the template's defaults: env 1, so it sounds as on BE4.42; the
+        expected change is only OSC2's Sub FM next to an Analog OSC1, test_analog), the push sends them, the next save writes
+        bento_fmatk="0" bento_fmdec="128"."""
+        img = REF442 / "bento1.bin"
+        if not img.exists():
+            self.skipTest(f"no BE4.42 build at {REF442} (BE_REF442)")
+        man = json.loads((REF442 / "manifest.json").read_text())
+        self.assertEqual(man["version"], "4.42")
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        old = Rig(img=img.read_bytes(), sym=sym)
+        t, w1, w2 = old.wavetable()
+        for o, vals in ((w1, V1), (w2, V2)):
+            for k, v in zip(KEYS[:BE442_N], vals):
+                old.set(o, k, v)
+            self.assertIsNone(old.prop(o, FMDEC), "control: BE4.42 has no FM Dec")
+        old.set(w1, 0xC9, 321)
+        text = old.save()
+        self.assertNotIn("bento_fmatk", text, "control: BE4.42 writes no envelope")
+        r = Rig()
+        st = r.load(text)
+        c = r.children(r.wt_tracks(st)[0])
+        self.assertEqual([r.ours(o) for o in c[:2]], [V1[:BE442_N] + [0, 128], V2[:BE442_N] + [0, 128]])
+        r.call(S.STORE_COPY_ALL, r.live, st)
+        r.props.clear()
+        r.call(S.LOAD_PUSH_ALL, S.MODEL, count=200_000_000)
+        self.assertEqual([(k, v) for h, k, v, i in r.props if i == 0 and k in (FMATK, FMDEC)], [(FMATK, 0), (FMDEC, 128)],
+                         "the push: WT1's envelope at its defaults")
+        again = r.save(st)
+        self.assertEqual(again.count('bento_fmatk="0" bento_fmdec="128"'), 2, "saved with both oscillators' defaults")
 
     def test_stock_168_opens_it_as_a_plain_wavetable(self):
         """Stock 1.6.8 (no keys of ours in its template, no descriptors): the project opens, its oscillators have stock's
@@ -445,7 +539,7 @@ class Project(unittest.TestCase):
     def test_be440_opens_a_p3_project(self):
         """P3 3.2 (review R14): the likeliest rollback, BE4.40 (its image and N2 wrapper, its manifest's symbols): its four
         keys load with their values, the three new tokens are skipped without a fault (it has no descriptor for them), and
-        its next save keeps bento_shape but drops bento_subfm / bento_bits / bento_fm12 (release note, checklist item 10)."""
+        its next save keeps bento_shape but drops bento_subfm / bento_fm12 (release note, checklist item 10)."""
         img = REF440 / "bento1.bin"
         if not img.exists():
             self.skipTest(f"no BE4.40 build at {REF440} (BE_REF)")
@@ -462,15 +556,49 @@ class Project(unittest.TestCase):
         self.assertEqual(r.prop(c[0], 0xC9), 321)
         again = r.save(st)
         self.assertIn('bento_shape="127"', again)
-        for tok in ("bento_subfm", "bento_bits", "bento_fm12"):
+        for tok in ("bento_subfm", "bento_fm12", "bento_fmatk", "bento_fmdec"):     # (BE4.43: the envelope's too)
             self.assertNotIn(tok, again, f"{tok}: dropped on BE4.40's save")
+
+    def test_be442_opens_a_be443_project(self):
+        """BE4.43 review: the likeliest rollback now, BE4.42 (the v4.42 kit's image, BE_REF442, its manifest's symbols): its six
+        keys load with their values, FM Atk / FM Dec are skipped without a fault (no descriptor), its push sends neither, and
+        its next save drops bento_fmatk / bento_fmdec and keeps the rest. Its push also sends WT2's Sub FM (1000 here, next to
+        an Analog WT1), which BE4.43 keeps and saves but does not play: BE4.42 plays it again (release note: rolling back
+        brings back a hidden OSC2 Sub FM)."""
+        img = REF442 / "bento1.bin"
+        if not img.exists():
+            self.skipTest(f"no BE4.42 build at {REF442} (BE_REF442)")
+        self.assertIn("bento_fmatk", self.text); self.assertIn("bento_fmdec", self.text)
+        man = json.loads((REF442 / "manifest.json").read_text())
+        self.assertEqual(man["version"], "4.42")
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        old = Rig(img=img.read_bytes(), sym=sym)
+        st = old.load(self.text)
+        c = old.children(old.wt_tracks(st)[0])
+        for o, want in ((c[0], V1), (c[1], V2)):
+            self.assertEqual([k for _, k, _ in old.props_of(o)], STOCK_T6 + KEYS[:BE442_N], "BE4.42's array: no envelope key")
+            self.assertEqual(old.ours(o)[:BE442_N], want[:BE442_N])
+            self.assertIsNone(old.prop(o, FMATK)); self.assertIsNone(old.prop(o, FMDEC))
+        self.assertEqual(old.prop(c[0], 0xC9), 321)
+        old.call(S.STORE_COPY_ALL, old.live, st)
+        old.props.clear()
+        old.call(S.LOAD_PUSH_ALL, S.MODEL, count=200_000_000)
+        keys = {k for h, k, v, i in old.props}
+        self.assertNotIn(FMATK, keys); self.assertNotIn(FMDEC, keys)
+        self.assertIn((0x18B, V2[4], 1), {(k, v, i) for h, k, v, i in old.props},
+                      "BE4.42 pushes WT2's Sub FM (hidden under an Analog WT1 on BE4.43) and plays it")
+        again = old.save(st)
+        for tok in ("bento_fmatk", "bento_fmdec"):
+            self.assertNotIn(tok, again, f"{tok}: dropped on BE4.42's save")
+        self.assertIn('bento_subfm="250"', again)
+        self.assertIn('bento_subfm="1000"', again)
 
     def test_the_preset_reader_keeps_them(self):
         """P3 M7 / 6.1 (review R20), the reader half of the preset file: stock's patch import PATCH_READ (0x0813163C, after
         'Importing patch %s', S) reads <document><session><cell>..: the first cell's type picks the track (wavetable ->
         wttrack), every cell becomes a child through CELL_TYPE_OF, CHILD_CREATE and INST_LOAD, the same key-generic reader as
         the project's. A preset of this track in that form (the project text with the <track> element taken out) comes back
-        with all seven values on both oscillators. The writer half is not found offline: PROJECT_WRITE (which the preset code
+        with all six values on both oscillators. The writer half is not found offline: PROJECT_WRITE (which the preset code
         calls for 'patch.xml', 0x081299AC) writes <track> elements, which PATCH_READ does not take (M: it returns 0), so the
         preset file's writer stays device-only (I; checklist item 10)."""
         r = Rig()
@@ -596,21 +724,26 @@ class DrumProject(unittest.TestCase):
 
 @unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
 class Hazard(unittest.TestCase):
-    """P3 3.1 (review R13): the template's first pad entry (type 0xFF, key 0) makes type 0xFF creatable. Stock's default
+    """P3 3.1 (review R13): the template's pad entries (type 0xFF, key 0; BE4.42: two) made type 0xFF creatable. Stock's default
     lookup matches on (type, key) (0x0812EA0C..42, S), so the pad is reachable only through an object of type 0xFF: the tests
-    pin the hazard and show that no reader path asks for that type."""
-    def test_child_create_of_the_pad_type_fails_on_stock_and_succeeds_on_p3(self):
+    pin it and show that no reader path asks for that type. BE4.43: eight keys fill the count (0x304) and the pads are gone,
+    so type 0xFF is not creatable, as on stock (the hazard is closed; the reader checks stay for a later pad)."""
+    def test_child_create_of_the_pad_type_fails_on_stock_and_on_be443(self):
         a, b = Rig(), Rig(img=STOCK, wrap=False)
         for r in (a, b):
             r.parent = r.create(r.live, S.TYPE_WAVETABLE)
         x, y = a.child(a.live, PAD, a.parent), b.child(b.live, PAD, b.parent)
         self.assertIsNone(y, "stock: no template entry of type 0xFF, so no object")
         at, n = SYM["np_template"], SYM["np_template_n"]
-        if PAD not in [IMG[at - BASE + 8 * i] for i in range(n)]:
-            self.assertIsNone(x, "P4-1, a drums build: 0x30C entries, no pad entry, so type 0xFF is not creatable (as stock)")
+        npad = [IMG[at - BASE + 8 * i] for i in range(n)].count(PAD)
+        if not npad:
+            self.assertIsNone(x, "BE4.43: no pad entry, so no object (BE4.41 / BE4.42: one made, the hazard this class guarded)")
+            self.assertEqual(n, 0x304)
             return
-        self.assertIsNotNone(x, "P3: the pad entry makes one (the hazard this class guards)")
-        self.assertEqual([(k, v) for v, k, _ in a.props_of(x)], [(0, 0)], "one property, key 0")
+        # P4-1 on BE4.43's eight keys (the v4.46 merge): only a drums build has pad entries (0x30D -> 0x310, three)
+        self.assertTrue(DR_TPL, f"pad entries ({npad}) only in a drums build")
+        self.assertIsNotNone(x, "a drums build: the pad entries make one (the hazard this class guards)")
+        self.assertEqual([(k, v) for v, k, _ in a.props_of(x)], [(0, 0)] * npad, "one property, key 0, per pad entry")
 
     def test_no_type_name_the_reader_accepts_is_the_pad_type(self):
         """The reader turns every <track type> / <cell type> into a type through CELL_TYPE_OF (its five callers, S): a 48-entry
@@ -659,18 +792,783 @@ class Hazard(unittest.TestCase):
 
 
 class DefaultImage(unittest.TestCase):
-    """P4 (review): while P4's default build promises BE4.41's image, a build at BE4.41's version and base with BE4.41's
-    groups (disabled / omitted) is that image byte for byte; any other build (a drums build, a bisect, another base, a
-    bumped version) skips. Retires itself when the version changes on purpose."""
-    def test_a_default_build_at_4_41_is_be441s_image(self):
-        if MAN.get("version") != "4.41" or MAN.get("base_label") != "stock-1.6.8":
-            self.skipTest(f"version {MAN.get('version')} on {MAN.get('base_label')}: not BE4.41's")
-        self.assertTrue((REF441 / "bento1.bin").exists(), f"no BE4.41 build at {REF441} (BE_REF441)")
-        ref = json.loads((REF441 / "manifest.json").read_text())
+    """P4 (review): P4's default build promises the last release's image (BE4.41's when P4-1 was written; v4.46's since the
+    v4.46 merge): a default build (no BE_ENABLE / BE_DISABLE: the groups typed here) at a released version
+    (tools/release_hashes.json) on that release's base is the released image byte for byte; any other build (a drums
+    build, a bisect, another base, a bumped version) skips. Retires itself when the version changes on purpose."""
+    DEFAULT_GROUPS = {"4.46": (["drums", "irq30", "modtest", "mx", "stall"], ["drums", "mx"])}   # (disabled, omitted)
+    def test_a_default_build_at_a_release_is_its_image(self):
+        rel = json.loads((HERE.parents[1] / "tools" / "release_hashes.json").read_text())["releases"].get(MAN.get("version"))
+        if not rel or MAN.get("base_label") != f"stock-{rel['base']}":
+            self.skipTest(f"version {MAN.get('version')} on {MAN.get('base_label')}: not a released image")
         mine = (sorted(MAN.get("disabled", [])), sorted(MAN.get("omitted", [])))
-        if mine != (sorted(ref.get("disabled", [])), sorted(ref.get("omitted", []))):
-            self.skipTest(f"groups {mine}: not BE4.41's default build")
-        self.assertTrue(IMG == (REF441 / "bento1.bin").read_bytes(), "the default build differs from BE4.41's image")
+        if mine != self.DEFAULT_GROUPS.get(MAN.get("version")):
+            self.skipTest(f"groups {mine}: not the default build")
+        self.assertEqual(hashlib.sha256(IMG).hexdigest(), rel["bento1.bin"], "the default build differs from the released image")
+
+
+# ---- BE4.45 X1 (docs/plan-fm-targets.md): Sub FM / FM 1>2 as Mod Matrix destinations (M4: the table, rows, names, routings)
+REF444 = Path(os.environ.get("BE_REF444", str(Path.home() / "bento" / "out" / "be444w4f")))   # BE4.44 (the rollback)
+SUBFM, FM12 = 0x18B, 0x132
+LFO1 = 1                           # stock's source id 1 = LFO 1 (token "lfo1")
+# the Wavetable track's destinations, typed from stock's table (tab.py: (type, instance, key)), ours marked
+STOCK_DEST = [(6, 0, 3), (6, 0, 0xC4), (6, 0, 0xC9), (6, 1, 3), (6, 1, 0xC4), (6, 1, 0xC9), (8, 0, 3), (8, 0, 0xC4), (8, 0, 0xC5),
+              (10, 0, 0xCE), (10, 0, 0x33), (10, 1, 0xCE), (10, 1, 0x33), (9, 0, 0x1E), (9, 0, 0x1F), (9, 0, 0x21),
+              (9, 1, 0x1E), (9, 1, 0x1F), (9, 1, 0x21), (11, 0, 0x4C), (11, 0, 0x4B), (11, 1, 0x4C), (11, 1, 0x4B)]
+OUR_DEST = STOCK_DEST[:3] + [(6, 0, SUBFM)] + STOCK_DEST[3:6] + [(6, 1, FM12), (6, 1, SUBFM)] + STOCK_DEST[6:]
+STOCK_NAMES_T6 = ["WT1: Pitch", "WT1: Level", "WT1: Position", "WT2: Pitch", "WT2: Level", "WT2: Position"]
+OUR_NAMES_T6 = ["OSC1: Pitch", "OSC1: Level", "OSC1: Position", "OSC1: Sub FM",
+                "OSC2: Pitch", "OSC2: Level", "OSC2: Position", "OSC2: FM 1>2", "OSC2: Sub FM"]
+MXV_ROWS, MXV_KEYS, MXV_HANDLES, MXV_CC, MXV_NAMES = 0x8AC4D, 0x8AC50, 0x8ACCC, 0x8ADBC, 0x8AE04   # the Mod Matrix view's rows
+
+
+def dest_entries(img, at, n):
+    return [struct.unpack_from("<BxxxIHxxIIB", img, at - BASE + 24 * i) for i in range(n)]
+
+
+def mx_rows(r, track):
+    """Stock's row filler MX_WT_ROWS on a fresh view for this track: [(key, handle, CC byte, name)]."""
+    view = r.buf(0x8C000)
+    r.w32(view + 0x8AC44, r.handle(track))
+    r.call(S.MX_WT_ROWS, view)
+    n = r.u.mem_read(view + MXV_ROWS, 1)[0]
+    return [(struct.unpack("<H", r.u.mem_read(view + MXV_KEYS + 2 * i, 2))[0], r.r32(view + MXV_HANDLES + 4 * i),
+             r.u.mem_read(view + MXV_CC + i, 1)[0], r.e.text(view + MXV_NAMES + 16 * i, 16)) for i in range(n)]
+
+
+PR_VIEW_TRACK, PR_VIEW_LANE = 0x11CD08, 0x125D34      # the piano view: its track's handle, its lane (0..3: seq1..seq4)  # addr-ok: X3
+PR_LIST, PR_LIST_N, PR_LIST_ENT, PR_LIST_SEL = 0x7E38, 0x113BB4, 0x112FB4, 0x10EF04   # its list: count, entries (0x30), sel
+PR_UI_STUBS = (0x0817D494, 0x0817CCFE, 0x0817C8EC, 0x0813CCF8, 0x0815A048)   # the list's finish / redraws (UI)  # addr-ok: X3
+SEQ1 = 9                           # stock's source ids 9..12: seq1..seq4, the piano roll's lanes (lane + 9)
+
+
+class Piano:
+    """Stock's piano-roll destination list (PR_DEST_LIST) and lane toggle (PR_LANE_TOGGLE) on a fresh piano view of a track.
+    Stubbed: the list's finish and redraws (PR_UI_STUBS, UI only); UI_POST (the toggle's 0xD1) and MX_KEY_POST (the model's
+    0x3F to the M7) are logged and return. The entry's lane state (0x0815973C, a read of the routes) runs."""
+    def __init__(self, r, track, roles):
+        self.r, self.roles, self.posts, self.keyposts = r, roles, [], []
+        self.view = r.buf(0x126000)
+        r.w32(self.view + PR_VIEW_TRACK, r.handle(track))
+        def ret0(uc, a, sz, _):
+            uc.reg_write(UC_ARM_REG_R0, 0); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+        def uipost(uc, a, sz, _):
+            self.posts.append(bytes(uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 0x14))); ret0(uc, a, sz, _)
+        def keypost(uc, a, sz, _):           # MX_KEY_POST (model, obj, key, slot, [sp] source, [sp+4] amount, [sp+8] instance)
+            sp = uc.reg_read(UC_ARM_REG_SP)
+            src, amt, inst = struct.unpack("<IiI", bytes(uc.mem_read(sp, 12)))
+            self.keyposts.append((uc.reg_read(UC_ARM_REG_R1), uc.reg_read(UC_ARM_REG_R2), uc.reg_read(UC_ARM_REG_R3), src & 0xFFFF,
+                                  amt, inst))
+            ret0(uc, a, sz, _)
+        for a in PR_UI_STUBS:
+            r.u.hook_add(UC_HOOK_CODE, ret0, begin=a, end=a)
+        r.u.hook_add(UC_HOOK_CODE, uipost, begin=S.UI_POST, end=S.UI_POST)
+        r.u.hook_add(UC_HOOK_CODE, keypost, begin=S.MX_KEY_POST, end=S.MX_KEY_POST)
+        r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+
+    def dests(self, lane=0):
+        """[(role of the entry's handle, key, name)]; self.state: (key, slot, amount, lane state) per entry."""
+        r = self.r
+        r.w32(self.view + PR_VIEW_LANE, lane)
+        r.call(S.PR_DEST_LIST, self.view)
+        lst = self.view + PR_LIST
+        out, self.state = [], []
+        for i in range(r.r32(lst + PR_LIST_N)):
+            e = lst + PR_LIST_ENT + 0x30 * i
+            out.append((self.roles.get(r.r32(e), hex(r.r32(e))), struct.unpack("<H", bytes(r.u.mem_read(e + 4, 2)))[0],
+                        r.e.text(e + 0xE, 32)))
+            self.state.append(struct.unpack("<HhiB", bytes(r.u.mem_read(e + 4, 9))))
+        return out
+
+    def toggle(self, lane, role, key, amount):
+        """Select the entry (role, key) on lane `lane`, stock's toggle with `amount` (0: off); its 0xD1 into the model's handler
+        (MX_SET_ROUTE, as the app hands it on). Returns (the 0xD1 events, the 0x3F posts it made)."""
+        r = self.r
+        i = [(x[0], x[1]) for x in self.dests(lane)].index((role, key))
+        r.w32(self.view + PR_LIST + PR_LIST_SEL, i)
+        self.posts.clear(); self.keyposts.clear()
+        r.call(S.PR_LANE_TOGGLE, self.view, amount & 0xFFFFFFFF)
+        evs = list(self.posts)
+        for ev in evs:
+            r.u.mem_write(EV, ev)
+            r.call(S.MX_SET_ROUTE, S.MODEL, EV)
+        return evs, list(self.keyposts)
+
+
+def piano_dests(r, track, roles):
+    """The piano roll's destination list on a fresh view of this track: [(role of the entry's handle, key, name)]."""
+    return Piano(r, track, roles).dests()
+
+
+def routes(r, o):
+    """The routings stored on an object: the type-1 nodes of its list (first at +0x14, next at +4: 0x0812EE94)
+    {+8 type, +0xC amount, +0x10 source, +0x12 key, +0x14 slot}."""
+    out, c = [], r.r32(o + 0x14)
+    while c:
+        if r.u.mem_read(c + 8, 1)[0] == 1:
+            amt, src, key, slot = struct.unpack("<iHHh", bytes(r.u.mem_read(c + 0xC, 10)))
+            out.append((key, src, slot, amt))
+        c = r.r32(c + 4)
+    return sorted(out)
+
+
+def set_route(r, h, key, src, slot, amount):
+    """The model's 0xD1, as MX_EDIT posts it (0x0814DCB4..EE): {0xD1, handle, key | 1 << 16, source | slot << 16, amount}."""
+    r.u.mem_write(EV, struct.pack("<HHIIIi", 0xD1, 0, h, key | 1 << 16, src | slot << 16, amount))
+    r.call(S.MX_SET_ROUTE, S.MODEL, EV)
+
+
+ROUTED = [(1, SUBFM, LFO1, 0, 500), (2, FM12, LFO1, 1, -250), (2, SUBFM, 5, 2, 1000)]   # (osc, key, source, slot, amount)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
+class FmTargets(unittest.TestCase):
+    """X1: OSC1 Sub FM (0x18B, instance 0), OSC2 FM 1>2 (0x132, instance 1), OSC2 Sub FM (0x18B, instance 1) as Wavetable-track
+    Mod Matrix destinations: stock's table copied with the three rows (MX_WT_DEST_TAB -> ours), stock's row filler, DEST_NAME,
+    the model's routing set (0xD1), the project writer and reader, and the reader of stock 1.6.8 and BE4.44 (the rollbacks).
+    Until X2 the M7 ignores these keys (the class's connect slot 10 0x08081B60 routes only 0xC4 / 0xC9 / 3: test_analog).
+    X3: the piano roll's destination list (PR_DEST_LIST) offers them on their own oscillator; a lane on one is stock's lane
+    toggle's routing from seq1..seq4 (Piano), saved and loaded as any routing; every other list stays stock's."""
+
+    def test_the_table_is_stocks_with_our_rows(self):
+        at, n = SYM["mx_dest"], SYM["mx_dest_n"]
+        self.assertEqual(n, 26)
+        got, old = dest_entries(IMG, at, n), dest_entries(STOCK, S.MX_WT_DEST_TAB, 23)
+        self.assertEqual([(t, i, k) for t, i, k, _, _, _ in got], OUR_DEST)
+        self.assertEqual([(t, i, k) for t, i, k, _, _, _ in old], STOCK_DEST, "stock's table as typed (control)")
+        mine = [got[OUR_DEST.index(d)] for d in STOCK_DEST]
+        self.assertEqual([e[3:] for e in mine[6:]], [e[3:] for e in old[6:]], "the other rows: stock's format, name, CC byte")
+        self.assertEqual([e[4:] for e in mine[:6]], [e[4:] for e in old[:6]], "the oscillator rows: stock's name, CC byte")
+        text = lambda img, a: img[a - BASE:img.index(b"\0", a - BASE)].decode()
+        self.assertEqual([text(IMG, e[3]) for e in got[:9]], ["OSC1: %s"] * 4 + ["OSC2: %s"] * 5)
+        self.assertEqual([text(IMG, e[4]) if e[4] else None for e in got[:9]],
+                         [None] * 3 + ["Sub FM"] + [None] * 3 + ["FM 1>2", "Sub FM"])
+        self.assertEqual([e[5] for e in got if e[2] in (SUBFM, FM12)], [0, 0, 0], "CC column blank")
+        word = lambda img, a: struct.unpack_from("<I", img, a - BASE)[0]
+        for lit in ("MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4"):   # X3: LIT_3 too
+            self.assertEqual(word(IMG, getattr(S, lit)), at, lit)
+        cnt = SYM["mx_dest_count"]
+        self.assertEqual(cnt, at + 26 * 24 + len(b"OSC1: %s\0\0\0\0OSC2: %s\0\0\0\0FM 1>2\0\0Sub FM\0\0"), "after the strings")
+        self.assertEqual(word(IMG, cnt), 26, "our count word")
+        for lit in ("MX_WT_DEST_N_LIT_1", "MX_WT_DEST_N_LIT_3", "MX_WT_DEST_N_LIT_4"):
+            self.assertEqual(word(IMG, getattr(S, lit)), cnt, lit)
+        # X3: the enumerator (the piano roll's list) is on our table and count word too; stock's count word is left, 23
+        self.assertEqual(word(IMG, S.MX_WT_DEST_COUNT), 23)
+        self.assertEqual(IMG[S.MX_WT_ROWS_N - BASE:S.MX_WT_ROWS_N - BASE + 2], bytes(KS.asm("movs r2, #26", S.MX_WT_ROWS_N)[0]))
+        self.assertEqual(IMG[S.MX_WT_ROWS_END - BASE:S.MX_WT_ROWS_END - BASE + 4],
+                         bytes(KS.asm(f"addw r7, r4, #{26 * 24}", S.MX_WT_ROWS_END)[0]))
+        self.assertEqual(IMG[S.MX_WT_DEST_TAB - BASE:S.MX_WT_DEST_TAB - BASE + 23 * 24],
+                         STOCK[S.MX_WT_DEST_TAB - BASE:S.MX_WT_DEST_TAB - BASE + 23 * 24], "stock's table itself untouched")
+
+    def test_the_rows_on_the_page(self):
+        """Stock's row filler: 26 rows, ours after each oscillator's Position, named OSC1 / OSC2 (Q7: stock and BE4.44 show
+        'WT1: ..', run here on stock), the oscillators' handles, a blank CC column on ours; the other rows as stock's."""
+        a, b = Rig(), Rig(img=STOCK, wrap=False)
+        rows = []
+        for r in (a, b):
+            t, w1, w2 = r.wavetable()
+            rows.append((mx_rows(r, t), r.handle(w1), r.handle(w2)))
+        (got, h1, h2), (old, s1, s2) = rows
+        self.assertEqual(len(got), 26); self.assertEqual(len(old), 23)
+        self.assertEqual([n for _, _, _, n in old[:6]], STOCK_NAMES_T6, "Q7: stock's rows say WT1 / WT2")
+        self.assertEqual([n for _, _, _, n in got[:9]], OUR_NAMES_T6)
+        self.assertEqual([k for k, _, _, _ in got], [k for _, _, k in OUR_DEST])
+        self.assertEqual([h for _, h, _, _ in got[:9]], [h1] * 4 + [h2] * 5)
+        self.assertEqual([c for k, _, c, _ in got[:9]], [c for _, _, c, _ in old[:3]] + [0] + [c for _, _, c, _ in old[3:6]] + [0, 0])
+        self.assertEqual([(k, c, n) for k, _, c, n in got[9:]], [(k, c, n) for k, _, c, n in old[6:]], "the other rows: stock's")
+        self.assertEqual(len({h for _, h, _, _ in got[9:]}), len({h for _, h, _, _ in old[6:]}))
+
+    def test_dest_name_names_them_from_our_table(self):
+        """DEST_NAME (callers: the piano roll's list 0x08159DCC and 0x0815A002) names ours, reading our table. The name alone
+        cannot tell the tables apart (with stock's, DEST_NAME falls back to the registry title, the same words), so the
+        test also requires DEST_NAME to read our table's rows."""
+        from unicorn import UC_HOOK_MEM_READ
+        r = Rig(); t, w1, w2 = r.wavetable()
+        view = r.buf(0x120000)
+        r.w32(view + 0x11CD08, r.handle(t))
+        at = SYM["mx_dest"]
+        seen = []
+        r.u.hook_add(UC_HOOK_MEM_READ, lambda uc, acc, a, sz, v, _: seen.append(a), begin=at, end=at + 26 * 24 - 1)
+        got = []
+        for o, key in ((w1, SUBFM), (w2, FM12), (w2, SUBFM)):
+            hp = r.buf(4); r.w32(hp, r.handle(o)); out = r.buf(64)
+            seen.clear()
+            r.call(S.DEST_NAME, view, hp, key, out, 0x40, 0)
+            got.append(r.e.text(out, 64))
+            self.assertTrue(seen, f"DEST_NAME read our table for {key:#x}")
+        self.assertEqual(got, ["OSC1: Sub FM", "OSC2: FM 1>2", "OSC2: Sub FM"])
+
+    # ---- X3: piano-roll lanes on the three (docs/plan-fm-targets.md "X3")
+    def roles(self, r, t, w1, w2): return {r.handle(w1): "osc1", r.handle(w2): "osc2", r.handle(t): "track"}
+
+    def test_the_piano_roll_list_offers_ours_on_their_own_oscillator(self):
+        """X3: PR_DEST_LIST on our table, its type match replaced by pr_dest_skip: stock's entries (T0's 'OSC1: / OSC2:' rename
+        of DEST_NAME's format), plus OSC1: Sub FM after OSC1's Position and OSC2: FM 1>2, OSC2: Sub FM after OSC2's (the Mod
+        Matrix's order); no 'OSC1: FM 1>2'. The enumerator's code is stock's; the site is the bl and cmp, then stock's bne."""
+        lists = []
+        for img in (IMG, STOCK):
+            r = Rig(img=img, wrap=img is IMG)
+            t, w1, w2 = r.wavetable()
+            lists.append(Piano(r, t, self.roles(r, t, w1, w2)).dests())
+        got, old = lists
+        self.assertEqual(len(old), 23, "stock's list (control)")
+        self.assertIn(("osc1", 0xC9, "WT1: Position"), old, "the control names the oscillator entries")
+        want = [(h, k, re.sub(r"^WT([12]):", r"OSC\1:", n)) for h, k, n in old]
+        want.insert(want.index(("osc1", 0xC9, "OSC1: Position")) + 1, ("osc1", SUBFM, "OSC1: Sub FM"))
+        at = want.index(("osc2", 0xC9, "OSC2: Position")) + 1
+        want[at:at] = [("osc2", FM12, "OSC2: FM 1>2"), ("osc2", SUBFM, "OSC2: Sub FM")]
+        self.assertEqual(got, want)
+        self.assertNotIn(("osc1", FM12), [(h, k) for h, k, _ in got])
+        code = S.PR_DEST_ENUM_LEN - 0x18                                  # its six literal words after the code
+        self.assertEqual(IMG[S.PR_DEST_ENUM - BASE:S.PR_DEST_ENUM - BASE + code],
+                         STOCK[S.PR_DEST_ENUM - BASE:S.PR_DEST_ENUM - BASE + code], "the enumerator's code")
+        self.assertEqual(IMG[S.PR_DEST_MATCH - BASE:S.PR_DEST_MATCH - BASE + 8],
+                         bytes(KS.asm(f"bl {SYM['wrap_pr_dest']:#x}; cmp r0, #0", S.PR_DEST_MATCH)[0]) +
+                         STOCK[S.PR_DEST_MATCH + 6 - BASE:S.PR_DEST_MATCH + 8 - BASE], "bl, cmp, stock's bne")
+
+    def test_every_other_tracks_list_is_stocks(self):
+        """X3: every other track type keeps stock's list, entry for entry: the tracks of three device projects (logs/: Granular,
+        multisample and one-shot tracks with a list; loop and type 0x16 tracks with none), read by stock's reader on this build and on stock and made live
+        (STORE_COPY_ALL); and a Wavetable track's other children (the sub, filters, envelopes, LFOs)."""
+        seen, types = set(), set()
+        for f in ("v322_HUBauto_project.xml", "be422dev_SPACED_COPY_project.xml", "v322_HUB_project.xml"):
+            text = (HERE / "logs" / f).read_text(encoding="latin1")
+            lists = []
+            for img in (IMG, STOCK):
+                r = Rig(img=img, wrap=img is IMG)
+                r.call(S.STORE_COPY_ALL, r.live, r.load(text))
+                lists.append([(r.vtype(t), Piano(r, t, {}).dests()) for t in r.tracks(r.live)])
+            self.assertEqual(lists[0], lists[1], f)
+            seen |= {ty for ty, l in lists[0] if l}
+            types |= {ty for ty, l in lists[0]}
+        self.assertTrue({0x13, 0xE, 0xF} <= seen, f"the projects' track types with a list: {sorted(map(hex, seen))}")
+        self.assertTrue({0x11, 0x16} <= types - seen, "the loop and type 0x16 tracks have none, here as on stock")
+        r = Rig(); t, w1, w2 = r.wavetable()
+        s = Rig(img=STOCK, wrap=False); ts, s1, s2 = s.wavetable()
+        others = lambda l: [(h, k, n) for h, k, n in l if h not in ("osc1", "osc2")]
+        mine = others(Piano(r, t, self.roles(r, t, w1, w2)).dests())
+        self.assertEqual(mine, others(Piano(s, ts, self.roles(s, ts, s1, s2)).dests()))
+        self.assertEqual(len(mine), 17, "the sub, two filters, two envelopes, two LFOs (control)")
+
+    LANES = ((0, "osc1", SUBFM, 0), (1, "osc2", FM12, 1), (3, "osc2", SUBFM, 1))   # (lane, oscillator, key, instance)
+
+    def test_a_lane_on_each_destination(self):
+        """X3: stock's lane toggle (PR_LANE_TOGGLE) on each of our entries: the 0xD1 {handle, key, seq id (9 + lane) | matrix
+        slot 0 << 16, amount} into the model's handler stores a routing on that oscillator (source seq1..seq4, slot 0); the
+        model posts the M7 its 0x3F {track, key, slot 0, source 9 + lane, amount, instance} (X2's WT_ROUTE puts a seq source
+        in connect slot 3); the list then shows the entry on that lane (state 1, the amount). Off: the routing is removed and
+        the 0x3F is {key, slot 3, source 0} (stock's rule for a seq source), which X2 takes as the removal."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        p = Piano(r, t, self.roles(r, t, w1, w2))
+        osc = {"osc1": w1, "osc2": w2}
+        for lane, role, key, inst in self.LANES:
+            evs, posts = p.toggle(lane, role, key, 1000)
+            self.assertEqual([struct.unpack("<H2xIHHHHi", e) for e in evs],
+                             [(0xD1, r.handle(osc[role]), key, 0, SEQ1 + lane, 0, 1000)], f"lane {lane}: the 0xD1")
+            self.assertIn((key, SEQ1 + lane, 0, 1000), routes(r, osc[role]))
+            self.assertEqual(posts, [(r.handle(t), key, 0, SEQ1 + lane, 1000, inst)], f"lane {lane}: the 0x3F")
+            l = p.dests(lane)
+            i = [(x[0], x[1]) for x in l].index((role, key))
+            self.assertEqual(p.state[i], (key, 0, 1000, 1), "the list shows it on this lane")
+        self.assertEqual(routes(r, w1), [(SUBFM, SEQ1, 0, 1000)])
+        self.assertEqual(routes(r, w2), sorted([(FM12, SEQ1 + 1, 0, 1000), (SUBFM, SEQ1 + 3, 0, 1000)]))
+        for lane, role, key, inst in self.LANES:
+            evs, posts = p.toggle(lane, role, key, 0)
+            self.assertEqual([struct.unpack("<H2xIHHHHi", e)[1:] for e in evs], [(r.handle(osc[role]), key, 0, 0, 0, 0)])
+            self.assertEqual(posts, [(r.handle(t), key, 3, 0, 0, inst)], f"lane {lane} off: slot 3, source 0")
+        self.assertEqual(routes(r, w1) + routes(r, w2), [])
+
+    def test_a_lane_beside_a_matrix_routing_takes_the_next_slot(self):
+        """X3 review (R1-2): with matrix slot 0 of OSC1 Sub FM already routed from velocity, stock's toggle takes slot 1: the
+        0xD1 and the model's 0x3F carry slot 1, source seq1 (the M7 still puts it in connect slot 3: test_analog
+        FmLanesX3.test_a_lane_beside_a_matrix_routing). Off: the lane's node goes, the 0x3F is {slot 3, source 0}, and
+        velocity's routing in slot 0 is untouched."""
+        VEL = 0xD
+        r = Rig(); t, w1, w2 = r.wavetable()
+        set_route(r, r.handle(w1), SUBFM, VEL, 0, 500)
+        p = Piano(r, t, self.roles(r, t, w1, w2))
+        evs, posts = p.toggle(0, "osc1", SUBFM, 1000)
+        self.assertEqual([struct.unpack("<H2xIHHHHi", e) for e in evs], [(0xD1, r.handle(w1), SUBFM, 0, SEQ1, 1, 1000)])
+        self.assertEqual(posts, [(r.handle(t), SUBFM, 1, SEQ1, 1000, 0)], "the 0x3F: matrix slot 1")
+        self.assertEqual(routes(r, w1), sorted([(SUBFM, VEL, 0, 500), (SUBFM, SEQ1, 1, 1000)]))
+        l = p.dests(0)
+        self.assertEqual(p.state[[(x[0], x[1]) for x in l].index(("osc1", SUBFM))], (SUBFM, 1, 1000, 1), "on lane A, slot 1")
+        evs, posts = p.toggle(0, "osc1", SUBFM, 0)
+        self.assertEqual([struct.unpack("<H2xIHHHHi", e)[1:] for e in evs], [(r.handle(w1), SUBFM, 0, 0, 1, 0)], "off: slot 1")
+        self.assertEqual(posts, [(r.handle(t), SUBFM, 3, 0, 0, 0)], "off: the M7's slot 3, source 0")
+        self.assertEqual(routes(r, w1), [(SUBFM, VEL, 0, 500)], "velocity's routing stays")
+
+    def test_the_toggle_refuses_a_second_lane_and_a_full_key(self):
+        """X3 review (R2-3a, open 3): an entry already laned from another lane is in state 2, and one with matrix slots 0..2
+        all routed (no seq source) in state 3; stock's toggle does nothing on either (0x0815A1FC): no 0xD1, no 0x3F, the
+        routings as they were."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        p = Piano(r, t, self.roles(r, t, w1, w2))
+        p.toggle(0, "osc1", SUBFM, 1000)
+        for slot, src in enumerate((LFO1, 5, 0xD)):
+            set_route(r, r.handle(w2), FM12, src, slot, 100 + slot)
+        before = (routes(r, w1), routes(r, w2))
+        for lane, role, key, state in ((1, "osc1", SUBFM, 2), (2, "osc2", FM12, 3)):
+            l = p.dests(lane)
+            self.assertEqual(p.state[[(x[0], x[1]) for x in l].index((role, key))][3], state, f"{role} {key:#x}: state {state}")
+            evs, posts = p.toggle(lane, role, key, 1000)
+            self.assertEqual((evs, posts), ([], []), f"state {state}: the toggle posts nothing")
+            self.assertEqual((routes(r, w1), routes(r, w2)), before)
+
+    def test_the_instance_counts_oscillators_only(self):
+        """X3 review (R2-4): a track whose second oscillator is not its second child (the sub between them): pr_dest_skip
+        counts type-6 children, as DEST_NAME does, so OSC1 still gets Sub FM and OSC2 FM 1>2 and Sub FM, and the names agree
+        (DEST_NAME's instance); on stock the same layout lists stock's entries for both oscillators (control)."""
+        lists = []
+        for img in (IMG, STOCK):
+            r = Rig(img=img, wrap=img is IMG)
+            t = r.create(r.live, S.TYPE_WAVETABLE)
+            for k in bytes.fromhex("0608060a0a09090b0b0c0d"):
+                assert r.child(r.live, k, t)
+            c = r.children(t)
+            self.assertEqual([r.vtype(o) for o in c[:3]], [6, 8, 6], "OSC1, the sub, OSC2")
+            l = Piano(r, t, {r.handle(c[0]): "osc1", r.handle(c[2]): "osc2"}).dests()
+            lists.append([(h, k, n) for h, k, n in l if h in ("osc1", "osc2")])
+        got, old = lists
+        self.assertEqual([(h, k) for h, k, _ in old], [("osc1", 3), ("osc1", 0xC4), ("osc1", 0xC9),
+                                                       ("osc2", 3), ("osc2", 0xC4), ("osc2", 0xC9)], "stock's (control)")
+        self.assertEqual(got, [("osc1", 3, "OSC1: Pitch"), ("osc1", 0xC4, "OSC1: Level"), ("osc1", 0xC9, "OSC1: Position"),
+                               ("osc1", SUBFM, "OSC1: Sub FM"), ("osc2", 3, "OSC2: Pitch"), ("osc2", 0xC4, "OSC2: Level"),
+                               ("osc2", 0xC9, "OSC2: Position"), ("osc2", FM12, "OSC2: FM 1>2"), ("osc2", SUBFM, "OSC2: Sub FM")])
+
+    def test_lanes_save_and_load(self):
+        """X3: the lanes are ordinary routings: stock's writer writes <modsource dest="bento_subfm|bento_fm12" src="seqN">,
+        stock's reader restores them on their oscillators, and the loaded project's list shows each on its lane."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        p = Piano(r, t, self.roles(r, t, w1, w2))
+        for lane, role, key, inst in self.LANES:
+            p.toggle(lane, role, key, 700)
+        text = r.save()
+        ms = re.findall(r"<modsource[^>]*>", text)
+        self.assertEqual(sorted(ms), sorted(['<modsource dest="bento_subfm" src="seq1" slot="0" amount="700"/>',
+                                             '<modsource dest="bento_fm12" src="seq2" slot="0" amount="700"/>',
+                                             '<modsource dest="bento_subfm" src="seq4" slot="0" amount="700"/>']))
+        x = Rig(); x.call(S.STORE_COPY_ALL, x.live, x.load(text))
+        xt = x.wt_tracks(x.live)[0]; c = x.children(xt)
+        self.assertEqual(routes(x, c[0]), routes(r, w1)); self.assertEqual(routes(x, c[1]), routes(r, w2))
+        q = Piano(x, xt, self.roles(x, xt, c[0], c[1]))
+        for lane, role, key, inst in self.LANES:
+            l = q.dests(lane)
+            i = [(e[0], e[1]) for e in l].index((role, key))
+            self.assertEqual(q.state[i], (key, 0, 700, 1), f"lane {lane} after the load")
+
+    def test_the_per_type_key_post_carries_our_keys(self):
+        """MX_TYPE_KEYS_POST (model, obj, type, r3): one 0x3F {obj, key, slot 3} per table row of the type (MX_KEY_POST). For type 6 it
+        now carries ours (stock's M7 slot 10 ignores any key it does not route until X2). It matches rows by type only, so
+        one object gets every type-6 key, the other oscillator's too (OSC1 gets a post for FM 1>2): X2's slot-10 hook must
+        ignore 0x132 on instance 0."""
+        for img, base, want in ((IMG, S, [3, 0xC4, 0xC9, SUBFM, 3, 0xC4, 0xC9, FM12, SUBFM]), (STOCK, S, [3, 0xC4, 0xC9] * 2)):
+            r = Rig(img=img, wrap=img is IMG)
+            keys = []
+            def log(uc, a, sz, _):
+                keys.append(uc.reg_read(UC_ARM_REG_R2))
+                uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+            r.u.hook_add(UC_HOOK_CODE, log, begin=S.MX_KEY_POST, end=S.MX_KEY_POST)
+            r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+            r.call(S.MX_TYPE_KEYS_POST, S.MODEL, 0x1234, 6, 0)
+            self.assertEqual(keys, want)
+
+    def make(self, r):
+        t, w1, w2 = r.wavetable()
+        osc = {1: w1, 2: w2}
+        for o, key, src, slot, amt in ROUTED:
+            set_route(r, r.handle(osc[o]), key, src, slot, amt)
+        set_route(r, r.handle(w1), 0xC9, LFO1, 0, 300)                    # a stock routing (Position), the control
+        return t, w1, w2
+
+    def test_a_routing_is_created_and_read_back(self):
+        r = Rig(); t, w1, w2 = self.make(r)
+        self.assertEqual(routes(r, w1), sorted([(SUBFM, LFO1, 0, 500), (0xC9, LFO1, 0, 300)]))
+        self.assertEqual(routes(r, w2), sorted([(FM12, LFO1, 1, -250), (SUBFM, 5, 2, 1000)]))
+        for o, key, src, slot, amt in ROUTED:                           # the matrix reads it back through MX_ROUTE
+            h = r.buf(4); r.w32(h, r.handle({1: w1, 2: w2}[o])); out = r.buf(8)
+            sp = r.buf(4)
+            got = r.call(S.MX_ROUTE, S.MODEL, h, key, slot, out)
+            self.assertEqual(got, 1, f"found {key:#x} slot {slot}")
+            self.assertEqual(struct.unpack("<iH", bytes(r.u.mem_read(out, 6))), (amt, src))
+        set_route(r, r.handle(w2), SUBFM, 0, 2, 0)                       # source None: removed
+        self.assertEqual(routes(r, w2), [(FM12, LFO1, 1, -250)])
+
+    def test_save_and_load(self):
+        r = Rig(); t, w1, w2 = self.make(r)
+        text = r.save()
+        ms = re.findall(r"<modsource[^>]*>", text)
+        self.assertIn('dest="bento_subfm"', " ".join(ms))
+        self.assertEqual(sum('dest="bento_subfm"' in m for m in ms), 2)
+        self.assertEqual(sum('dest="bento_fm12"' in m for m in ms), 1)
+        x = Rig(); st = x.load(text)
+        c = x.children(x.wt_tracks(st)[0])
+        self.assertEqual(routes(x, c[0]), routes(r, w1))
+        self.assertEqual(routes(x, c[1]), routes(r, w2))
+        self.__class__.text = text
+
+    def test_stock_168_loads_them_as_key_0(self):
+        """Stock 1.6.8 has no bento_subfm / bento_fm12 token: the reader's lookup (0x08168580) gives 0, so each routing is a
+        node of key 0 (no destination routes key 0: inert); the stock one is kept as it was; stock's save writes no dest."""
+        r = Rig(); self.make(r); text = r.save()
+        s = Rig(img=STOCK, wrap=False); st = s.load(text)
+        c = s.children(s.wt_tracks(st)[0])
+        self.assertEqual(routes(s, c[0]), sorted([(0, LFO1, 0, 500), (0xC9, LFO1, 0, 300)]))
+        self.assertEqual(routes(s, c[1]), sorted([(0, LFO1, 1, -250), (0, 5, 2, 1000)]))
+        again = s.save(st)
+        self.assertNotIn("bento_", again)
+        ms = re.findall(r"<modsource[^>]*>", again)
+        self.assertEqual(sum("dest=" not in m for m in ms), 3, f"three dead routings written without a dest: {ms}")
+        x = Rig(); c = x.children(x.wt_tracks(x.load(again))[0])
+        self.assertEqual(routes(x, c[0]), sorted([(0, LFO1, 0, 500), (0xC9, LFO1, 0, 300)]), "and BE reads them back as key 0")
+
+    def test_be444_loads_them_and_keeps_them(self):
+        """BE4.44 (the rollback) has our tokens (N2), so the routings load with their keys; it has no row for them and its M7
+        ignores the keys: inert, and its next save keeps them."""
+        img = REF444 / "bento1.bin"
+        if not img.exists():
+            self.skipTest(f"no BE4.44 build at {REF444} (BE_REF444)")
+        man = json.loads((REF444 / "manifest.json").read_text())
+        self.assertEqual(man["version"], "4.44")
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        r = Rig(); self.make(r); text = r.save()
+        b = Rig(img=img.read_bytes(), sym=sym); st = b.load(text)
+        c = b.children(b.wt_tracks(st)[0])
+        self.assertEqual(routes(b, c[0]), sorted([(SUBFM, LFO1, 0, 500), (0xC9, LFO1, 0, 300)]))
+        self.assertEqual(routes(b, c[1]), sorted([(FM12, LFO1, 1, -250), (SUBFM, 5, 2, 1000)]))
+        t = b.wt_tracks(st)[0]
+        self.assertEqual(len(mx_rows(b, t)), 23, "no row for them on BE4.44")
+        again = b.save(st)
+        self.assertEqual(again.count('dest="bento_subfm"'), 2); self.assertEqual(again.count('dest="bento_fm12"'), 1)
+
+
+# ---- BE4.46 S2 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 (source ids 3 / 6) in a Wavetable track's Mod Matrix
+# Typed from stock (be446 s2 lists.py, independently of build.py): the Wavetable page's 16 sources and the registry's names.
+FE1, FE2 = 3, 6                    # stock's env3 / lfo3: FM Env 1 / FM Env 2 on a Wavetable voice (S1)
+FE_STOCK_SRC = [0, 13, 32, 1, 2, 4, 5, 8, 14, 26, 30, 31, 9, 10, 11, 12]
+FE_OUR_SRC = [0, 13, 32, 1, 2, FE1, FE2, 4, 5, 8, 14, 26, 30, 31, 9, 10, 11, 12]
+FE_NAMES = {0: "[None]", 1: "Envelope 1", 2: "Envelope 2", 3: "Envelope 3", 4: "LFO 1", 5: "LFO 2", 6: "LFO 3", 8: "Mod Seq",
+            9: "Auto A", 10: "Auto B", 11: "Auto C", 12: "Auto D", 13: "Velocity", 14: "Key", 26: "Mod Wheel",
+            30: "Macro X", 31: "Macro Y", 32: "Pressure"}
+FE_TYPES = list(range(0x15)) + [0x20, 0xFF]   # every view type the validator / name test (<= 0x13), and past them
+MXV_VIEW = 0x8C000                 # the Mod Matrix view's size the harness gives (its fields up to +0x8AE04 + 60 x 16)
+MXV_SEL = 0x86B5C                  # MX_EDIT / MX_BAR: the selected row (-1 none) (MX_EDIT's first load)
+MXV_ROWS, MXV_KEYS, MXV_HANDLES = 0x8AC4D, 0x8AC50, 0x8ACCC
+UI_POST_VIEW = 0x08171D94          # MX_EDIT's post of the 0xD1 (view, event)  # addr-ok: S2 tests (MX_EDIT's last call)
+INST_REPLACE = 0x0813F730          # stock's instrument replace (model, kind, position)  # addr-ok: S2 tests (plan-drum-synth-track)
+MX_EDIT_FN = 0x0814DBF8            # MX_EDIT (the mx group's entry is a 1.6.8 draft; hand-checked: be446 s2)  # addr-ok: S2 tests
+KEY_POSITION = 0x73                # a track's position (instrument replace's key)
+# instrument replace's calls the rig cannot run (each stops the emulation: voices / UI), stubbed: before the old track's
+# destroy, the stop of its handle (0x0813F796); after the new track's children, its two set-ups (0x0813F858, 0x0813F860)
+INST_REPLACE_STUBS = (0x08133C08, 0x0813E4B8, 0x0813D430)  # addr-ok: S2 tests (called by INST_REPLACE)
+
+
+def fe_view(r, track, kind=None):
+    view = r.buf(MXV_VIEW)
+    r.w32(view + 0x8AC44, r.handle(track) if track else 0)
+    r.u.mem_write(view + S.MXV_TYPE, bytes([S.TYPE_WAVETABLE if kind is None else kind]))
+    return view
+
+
+def bl_target(img, at):
+    h1, h2 = struct.unpack_from("<HH", img, at - BASE)
+    assert h1 & 0xF800 == 0xF000 and h2 & 0xD000 == 0xD000, f"bl at {at:#x}"
+    s, j1, j2 = h1 >> 10 & 1, h2 >> 13 & 1, h2 >> 11 & 1
+    off = s << 24 | (1 - (j1 ^ s)) << 23 | (1 - (j2 ^ s)) << 22 | (h1 & 0x3FF) << 12 | (h2 & 0x7FF) << 1
+    return at + 4 + off - ((1 << 25) if s else 0)
+
+
+def fe_rows(r, view, img):
+    """MX_BUILD's Wavetable case from its list store on: stock's list and 16 into the view, then the call at MX_WT_ROWS_SITE
+    (ours: mx_wt_rows; stock: the filler). (list address, its ids, [(key, handle)] of the rows)"""
+    r.w32(view + S.MXV_SRC_LIST, S.MX_WT_SRC_LIST)
+    r.u.mem_write(view + S.MXV_SRC_N, bytes([16]))
+    r.call(bl_target(img, S.MX_WT_ROWS_SITE), view)
+    lst, n = r.r32(view + S.MXV_SRC_LIST), r.u.mem_read(view + S.MXV_SRC_N, 1)[0]
+    ids = list(struct.unpack(f"<{n}H", bytes(r.u.mem_read(lst, 2 * n))))
+    rows = [(struct.unpack("<H", bytes(r.u.mem_read(view + MXV_KEYS + 2 * i, 2)))[0], r.r32(view + MXV_HANDLES + 4 * i))
+            for i in range(r.u.mem_read(view + MXV_ROWS, 1)[0])]
+    return lst, ids, rows
+
+
+def fe_edit(r, view, row, key, value):
+    """Stock's MX_EDIT (view, {+8 key, +0xC value}) on a selected row: the 0xD1 it posts (UI_POST_VIEW logged and returned)
+    as (handle, key, source, slot, amount), or None."""
+    posted = []
+    def log(uc, a, sz, _):
+        posted.append(bytes(uc.mem_read(uc.reg_read(UC_ARM_REG_R1), 0x14)))
+        uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+    h = r.u.hook_add(UC_HOOK_CODE, log, begin=UI_POST_VIEW, end=UI_POST_VIEW)
+    r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+    r.w32(view + MXV_SEL, row)
+    ev = r.buf(0x20)
+    r.u.mem_write(ev, struct.pack("<IIIi", 0, 0, key, value))
+    r.call(MX_EDIT_FN, view, ev)
+    r.u.hook_del(h)
+    if not posted:
+        return None
+    assert len(posted) == 1
+    code, _, hh, k, src, amt = struct.unpack("<HHIIIi", posted[0])
+    assert code == 0xD1 and k >> 16 in (1, 2), posted[0].hex()   # 1 a new routing, 2 an existing one's edit
+    return hh, k & 0xFFFF, src & 0xFFFF, src >> 16, amt, k >> 16
+
+
+def fe_post(r, ev):
+    """The 0xD1 fe_edit logged, to the model as MX_EDIT posted it."""
+    hh, key, src, slot, amt, mode = ev
+    r.u.mem_write(EV, struct.pack("<HHIIIi", 0xD1, 0, hh, key | mode << 16, src | slot << 16, amt))
+    r.call(S.MX_SET_ROUTE, S.MODEL, EV)
+
+
+@unittest.skipUnless(HAVE, "no analog group in this image (or BE_DISABLE=analog)")
+class FmEnvMatrix(unittest.TestCase):
+    """S2: on a Wavetable track's Mod Matrix page the source list is stock's with FM Env 1 / FM Env 2 (ids 3 / 6) right after
+    Env 2, the validator keeps them and the names say "FM Env 1" / "FM Env 2"; everything else (Granular, the validator's
+    other types, every other id) is stock's. Stock's MX_EDIT, row filler and model routing set run with the image's three
+    sites; the project writer and reader of this build, stock 1.6.8 and BE4.44 read the routings back."""
+
+    def test_the_sites_and_stocks_list(self):
+        self.assertEqual(bl_target(IMG, S.MX_WT_ROWS_SITE), SYM["mx_wt_rows"])
+        self.assertEqual(bl_target(STOCK, S.MX_WT_ROWS_SITE), S.MX_WT_ROWS, "stock's call (control)")
+        for site, fn in (("MX_SRC_VALID", "mx_src_valid"), ("MX_SRC_NAME", "mx_src_name")):
+            a = getattr(S, site)
+            self.assertEqual(IMG[a - BASE:a - BASE + 4], bytes(KS.asm(f"b.w {SYM[fn]:#x}", a)[0]), site)
+        lst = S.MX_WT_SRC_LIST
+        self.assertEqual(list(struct.unpack_from("<16H", STOCK, lst - BASE)), FE_STOCK_SRC, "stock's list as typed")
+        self.assertEqual(IMG[lst - BASE:lst - BASE + 32], STOCK[lst - BASE:lst - BASE + 32], "stock's list stays")
+        for lit in ("MX_WT_SRC_LIT", "MX_SRC_VALID_LIT"):
+            self.assertEqual(struct.unpack_from("<I", IMG, getattr(S, lit) - BASE)[0], lst, f"{lit}: Granular / types 15, 19")
+        # the validator's and the name's bodies (past the replayed entry) are stock's bytes (the filler's are not S2's to
+        # check: be445x's X1 patches its bounds)
+        for lo, hi in ((S.MX_SRC_VALID + 4, S.MX_SRC_VALID + 0x60), (S.MX_SRC_NAME + 4, S.MX_SRC_NAME + 0x48)):
+            self.assertEqual(IMG[lo - BASE:hi - BASE], STOCK[lo - BASE:hi - BASE], f"{lo:#x}..{hi:#x}")
+
+    def test_the_wavetable_page_lists_them_after_env_2(self):
+        got = []
+        for img in (IMG, STOCK):
+            r = Rig(img=img, wrap=img is IMG)
+            t, w1, w2 = r.wavetable()
+            view = fe_view(r, t)
+            lst, ids, rows = fe_rows(r, view, img)
+            names = [r.e.text(r.call(S.MX_SRC_NAME, view, i), 32) for i in ids]
+            end = struct.unpack("<H", bytes(r.u.mem_read(lst + 2 * len(ids), 2)))[0]
+            plain = fe_view(r, t)                                    # the same image's filler called directly
+            r.call(S.MX_WT_ROWS, plain)
+            direct = [(struct.unpack("<H", bytes(r.u.mem_read(plain + MXV_KEYS + 2 * i, 2)))[0], r.r32(plain + MXV_HANDLES + 4 * i))
+                      for i in range(r.u.mem_read(plain + MXV_ROWS, 1)[0])]
+            got.append((lst, ids, names, end, rows, direct))
+        (lst, ids, names, end, rows, direct), (slst, sids, snames, _, srows, sdirect) = got
+        self.assertEqual((slst, sids), (S.MX_WT_SRC_LIST, FE_STOCK_SRC), "stock (control)")
+        self.assertEqual(snames, [FE_NAMES[i] for i in FE_STOCK_SRC])
+        self.assertNotEqual(lst, S.MX_WT_SRC_LIST, "our own copy")
+        self.assertEqual(ids, FE_OUR_SRC)
+        self.assertEqual(end, 0, "then a 0 (None): what MX_EDIT reads at index == count")
+        self.assertEqual(names, [FE_NAMES[i] for i in FE_OUR_SRC[:5]] + ["FM Env 1", "FM Env 2"] +
+                         [FE_NAMES[i] for i in FE_OUR_SRC[7:]])
+        self.assertEqual(rows, direct, "the rows are the image's filler's (mx_wt_rows adds only the list)")
+        self.assertEqual(srows, sdirect, "(control)")
+        self.assertGreater(len(rows), 20)
+
+    def test_every_other_page_type_and_id_is_stocks(self):
+        """The validator and the names of every view type but Wavetable are stock's for every id 0..35, and a Wavetable
+        page's other ids too: only (Wavetable, 3) and (Wavetable, 6) differ. Granular (0x13) and type 0x0F still erase them
+        (stock's list, which Granular's page also shows: MX_BUILD's 0x13 case is not our site)."""
+        res = []
+        for img in (IMG, STOCK):
+            r = Rig(img=img, wrap=img is IMG)
+            out = {}
+            view = fe_view(r, None)
+            rec = r.buf(8)
+            for kind in FE_TYPES:
+                r.u.mem_write(view + S.MXV_TYPE, bytes([kind]))
+                for src in range(36):
+                    r.u.mem_write(rec, struct.pack("<IHH", 0x12345678, src, 0xBEEF))
+                    r.call(S.MX_SRC_VALID, view, rec)
+                    after = struct.unpack("<IHH", bytes(r.u.mem_read(rec, 8)))
+                    # (the copy, the name of the id (MX_ROWS_BUILD's one-row refresh), the name of the copy's id (its full
+                    # rebuild: the validator, then the name; S2 review: what a stock rollback shows for an FM Env slot))
+                    out[kind, src] = (after, r.e.text(r.call(S.MX_SRC_NAME, view, src), 32),
+                                      r.e.text(r.call(S.MX_SRC_NAME, view, after[1]), 32))
+            res.append(out)
+        ours, stock = res
+        self.assertEqual({k for k in stock if ours[k] != stock[k]}, {(S.TYPE_WAVETABLE, FE1), (S.TYPE_WAVETABLE, FE2)})
+        for src, nm in ((FE1, "FM Env 1"), (FE2, "FM Env 2")):
+            self.assertEqual(stock[S.TYPE_WAVETABLE, src], ((0x12345678, 0, 0xBEEF), FE_NAMES[src], "[None]"),
+                             "stock erases the copy: a full rebuild shows [None], a one-row refresh Envelope 3 / LFO 3")
+            self.assertEqual(ours[S.TYPE_WAVETABLE, src], ((0x12345678, src, 0xBEEF), nm, nm))
+            for kind in (0x0F, 0x13):
+                self.assertEqual(ours[kind, src][0][1], 0, f"type {kind:#x} erases {src}")
+        self.assertEqual(stock[S.TYPE_WAVETABLE, 4], ((0x12345678, 4, 0xBEEF), "LFO 1", "LFO 1"), "a listed source is kept (control)")
+
+    def test_the_source_encoder_picks_them(self):
+        """Stock's MX_EDIT on the first row (OSC1 Pitch): the Source encoder's index i posts list[i] as the source (index 18,
+        the count, reads our 0: None; 19 posts nothing). The posted 0xD1 makes the routing (MX_SET_ROUTE)."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        view = fe_view(r, t)
+        _, ids, rows = fe_rows(r, view, IMG)
+        self.assertEqual(rows[0], (3, r.handle(w1)), "row 0 is OSC1 Pitch")
+        srcs = [fe_edit(r, view, 0, S.KEY_MX_FIRST, i) for i in range(20)]
+        self.assertEqual([s[2] for s in srcs[:19]], FE_OUR_SRC + [0])
+        self.assertIsNone(srcs[19])
+        self.assertEqual({(s[0], s[1], s[3]) for s in srcs[:19]}, {(r.handle(w1), 3, 0)}, "OSC1 Pitch, slot 0")
+        fe_post(r, srcs[5])
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in routes(r, w1)], [(3, FE1, 0)])
+        row = rows.index((0xC4, r.handle(w2)))                          # slot 2's source on OSC2's Level row
+        e = fe_edit(r, view, row, S.KEY_MX_FIRST + 4, 6)
+        self.assertEqual(e[:4], (r.handle(w2), 0xC4, FE2, 2))
+        fe_post(r, e)
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in routes(r, w2)], [(0xC4, FE2, 2)])
+
+    def test_an_amount_edit_keeps_them_here_and_drops_them_on_stock(self):
+        """With an FM Env routing in the model, an amount edit of its slot posts it back with its source here. On stock 1.6.8
+        (BE4.44 has the same validator) the validator has zeroed MX_EDIT's copy, so the post carries source 0, which
+        MX_SET_ROUTE takes as 'remove'. A LFO 1 routing (stock's list) is kept on both (control)."""
+        for img, keeps in ((IMG, True), (STOCK, False)):
+            r = Rig(img=img, wrap=img is IMG)
+            t, w1, w2 = r.wavetable()
+            view = fe_view(r, t)
+            fe_rows(r, view, img)
+            set_route(r, r.handle(w1), 3, FE1, 0, 400)
+            set_route(r, r.handle(w1), 3, 4, 1, 200)
+            e = fe_edit(r, view, 0, S.KEY_MX_FIRST + 1, 700)             # slot 0's amount
+            self.assertEqual(e, (r.handle(w1), 3, FE1 if keeps else 0, 0, 700, 2))
+            fe_post(r, e)
+            fe_post(r, fe_edit(r, view, 0, S.KEY_MX_FIRST + 3, -300))  # slot 1's amount (LFO 1)
+            want = [(3, FE1, 0, 700)] if keeps else []
+            self.assertEqual(routes(r, w1), sorted(want + [(3, 4, 1, -300)]), "ours" if keeps else "stock")
+
+    def make(self, r):
+        """A Wavetable track: OSC1 Pitch <- FM Env 1 (slot 0, 400), OSC2 Position <- FM Env 2 (slot 1, -250), the first
+        filter's 0xCE <- FM Env 1 (slot 2, 1000), and OSC1 Position <- LFO 1 (slot 0, 300) as the control."""
+        t, w1, w2 = r.wavetable()
+        filt = [c for c in r.children(t) if r.vtype(c) == 10][0]
+        for o, key, src, slot, amt in ((w1, 3, FE1, 0, 400), (w2, 0xC9, FE2, 1, -250), (filt, 0xCE, FE1, 2, 1000),
+                                       (w1, 0xC9, 4, 0, 300)):
+            set_route(r, r.handle(o), key, src, slot, amt)
+        return t
+
+    def routed(self, r, t):
+        c = r.children(t)
+        filt = [o for o in c if r.vtype(o) == 10][0]
+        return routes(r, c[0]), routes(r, c[1]), routes(r, filt)
+
+    WANT = ([(3, FE1, 0, 400), (0xC9, 4, 0, 300)], [(0xC9, FE2, 1, -250)], [(0xCE, FE1, 2, 1000)])
+
+    def test_save_and_load(self):
+        """The save format is stock's: src="env3" / "lfo3" on the destination's element; this build reads it back."""
+        r = Rig(); t = self.make(r)
+        self.assertEqual(self.routed(r, t), self.WANT)
+        text = r.save()
+        ms = re.findall(r"<modsource[^>]*>", text)
+        self.assertEqual([sum(f'src="{s}"' in m for m in ms) for s in ("env3", "lfo3", "lfo1")], [2, 1, 1], ms)
+        self.assertNotIn("bento_", " ".join(ms), "no token of ours")
+        x = Rig(); st = x.load(text)
+        self.assertEqual(self.routed(x, x.wt_tracks(st)[0]), self.WANT)
+
+    def test_stock_168_and_be444_load_them_and_keep_them(self):
+        """Stock 1.6.8 (and BE4.44, the rollback) read env3 / lfo3 as ids 3 / 6 and keep them (their M7 gives a Wavetable voice
+        no source for either: S1's FmEnvSrc), and their next save writes them again: there the routing is lost only by an
+        edit of its slot (test_an_amount_edit_keeps_them_here_and_drops_them_on_stock) or a new source."""
+        r = Rig(); self.make(r); text = r.save()
+        imgs = [("stock 1.6.8", STOCK, None)]
+        if (REF444 / "bento1.bin").exists():
+            imgs.append(("BE4.44", (REF444 / "bento1.bin").read_bytes(), REF444))
+        else:
+            print(f"  (no BE4.44 build at {REF444}: stock 1.6.8 only)")
+        for what, img, ref in imgs:
+            sym = None
+            if ref is not None:
+                man = json.loads((ref / "manifest.json").read_text())
+                sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+            s = Rig(img=img, wrap=ref is not None, sym=sym)
+            st = s.load(text)
+            self.assertEqual(self.routed(s, s.wt_tracks(st)[0]), self.WANT, what)
+            again = s.save(st)
+            ms = re.findall(r"<modsource[^>]*>", again)
+            self.assertEqual([sum(f'src="{x}"' in m for m in ms) for x in ("env3", "lfo3")], [2, 1], what)
+            x = Rig(); self.assertEqual(self.routed(x, x.wt_tracks(x.load(again))[0]), self.WANT, f"{what}'s save, read here")
+
+    def test_the_source_encoder_puts_them_on_the_fm_depth_rows(self):
+        """BE4.46 merge (review): S2's sources on X1's rows, the combination only the merge makes. Stock's MX_EDIT on the
+        OSC1 Sub FM row (key 0x18B, WT1's handle) posts FM Env 1 at list index 5 (slot 0's Source); on OSC2 FM 1>2 (0x132)
+        and OSC2 Sub FM (0x18B, WT2's handle) it posts FM Env 2 at index 6 (slot 2's / slot 1's Source). Each post makes the
+        routing on its oscillator (MX_SET_ROUTE), with nothing on the other."""
+        r = Rig(); t, w1, w2 = r.wavetable()
+        view = fe_view(r, t)
+        _, ids, rows = fe_rows(r, view, IMG)
+        self.assertEqual(ids, FE_OUR_SRC)
+        cases = ((w1, SUBFM, 0, 5, FE1), (w2, FM12, 2, 6, FE2), (w2, SUBFM, 1, 6, FE2))
+        for o, key, slot, idx, src in cases:
+            row = rows.index((key, r.handle(o)))
+            e = fe_edit(r, view, row, S.KEY_MX_FIRST + 2 * slot, idx)
+            self.assertEqual(e[:4], (r.handle(o), key, src, slot), f"{key:#x} slot {slot}")
+            fe_post(r, e)
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in routes(r, w1)], [(SUBFM, FE1, 0)])
+        self.assertEqual([(k, s, sl) for k, s, sl, _ in routes(r, w2)], sorted([(FM12, FE2, 2), (SUBFM, FE2, 1)]))
+
+    def test_on_the_fm_depths_they_save_and_load_here_on_stock_and_be444(self):
+        """BE4.46 merge (review): FM Env 1 / 2 routed to X1's three depths save as `<modsource dest="bento_subfm" src="env3">`
+        (and bento_fm12 / lfo3) and load back here. Stock 1.6.8 reads them as key 0 with the source kept (X1's rule for our
+        tokens) and saves them without a dest; BE4.44 has our tokens and the ids, so it keeps key and source and saves both
+        again."""
+        RT = ((0, SUBFM, FE1, 0, 400), (1, FM12, FE2, 1, -250), (1, SUBFM, FE1, 2, 1000))
+        def make(r):
+            t, w1, w2 = r.wavetable()
+            for o, key, src, slot, amt in RT:
+                set_route(r, r.handle((w1, w2)[o]), key, src, slot, amt)
+            return t
+        want = [sorted((k, s, sl, a) for o, k, s, sl, a in RT if o == i) for i in (0, 1)]
+        def got(x, t):
+            c = x.children(t)
+            return [routes(x, c[0]), routes(x, c[1])]
+        r = Rig(); t = make(r)
+        self.assertEqual(got(r, t), want)
+        text = r.save()
+        ms = re.findall(r"<modsource[^>]*>", text)
+        pairs = sorted((re.search(r'dest="([^"]*)"', m).group(1), re.search(r'src="([^"]*)"', m).group(1))
+                       for m in ms if "bento_" in m)
+        self.assertEqual(pairs, [("bento_fm12", "lfo3"), ("bento_subfm", "env3"), ("bento_subfm", "env3")], ms)
+        x = Rig(); self.assertEqual(got(x, x.wt_tracks(x.load(text))[0]), want, "this build reads them back")
+        s = Rig(img=STOCK, wrap=False); st = s.load(text)
+        self.assertEqual(got(s, s.wt_tracks(st)[0]),
+                         [sorted((0, s_, sl, a) for o, k, s_, sl, a in RT if o == i) for i in (0, 1)], "stock: key 0")
+        again = s.save(st)
+        self.assertNotIn("bento_", again)
+        ms = re.findall(r"<modsource[^>]*>", again)
+        self.assertEqual([sum(f'src="{v}"' in m and "dest=" not in m for m in ms) for v in ("env3", "lfo3")], [2, 1], ms)
+        if not (REF444 / "bento1.bin").exists():
+            print(f"  (no BE4.44 build at {REF444}: stock 1.6.8 only)")
+            return
+        man = json.loads((REF444 / "manifest.json").read_text())
+        sym = {k[6:]: int(v, 16) for k, v in man["m4_symbols"].items() if k.startswith("synth.")}
+        b = Rig(img=(REF444 / "bento1.bin").read_bytes(), sym=sym); st = b.load(text)
+        self.assertEqual(got(b, b.wt_tracks(st)[0]), want, "BE4.44 keeps key and source")
+        again = b.save(st)
+        self.assertEqual((again.count('dest="bento_subfm" src="env3"') + again.count('src="env3" dest="bento_subfm"'),
+                          again.count('dest="bento_fm12" src="lfo3"') + again.count('src="lfo3" dest="bento_fm12"')),
+                         (2, 1), "BE4.44's save keeps them")
+        x = Rig(); self.assertEqual(got(x, x.wt_tracks(x.load(again))[0]), want, "BE4.44's save, read here")
+
+    def test_an_instrument_replace_drops_them(self):
+        """Risk 4: a track whose type changes (stock's instrument replace, the menu's kinds) is a new object with new children,
+        so no routing (and no FM Env one) carries over into a type whose M7 has a real Env 3 / LFO 3; a replace by a
+        Wavetable track again (kind 6) gives a clean matrix too."""
+        for kind in (1, 6):
+            r = Rig(); t = self.make(r)
+            def ret0(uc, a, sz, _): uc.reg_write(UC_ARM_REG_R0, 0); uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+            for a in INST_REPLACE_STUBS:
+                r.u.hook_add(UC_HOOK_CODE, ret0, begin=a, end=a)
+            r.u.ctl_remove_cache(0x08000000, 0x08400000)  # addr-ok: harness
+            pos, h = r.prop(t, KEY_POSITION), r.handle(t)
+            self.assertEqual(len(self.routed(r, t)[0]), 2, "routed (control)")
+            r.call(INST_REPLACE, S.MODEL, kind, pos, count=200_000_000)
+            now = [o for o in r.tracks(r.live) if r.prop(o, KEY_POSITION) == pos]
+            self.assertEqual(len(now), 1, f"kind {kind}: one track at the position")
+            self.assertNotEqual(r.handle(now[0]), h, "a new object (the pool may reuse the memory)")
+            self.assertEqual(r.vtype(now[0]), {1: 0x13, 6: S.TYPE_WAVETABLE}[kind])
+            self.assertGreater(len(r.children(now[0])), 8, "with its new children")
+            left = [n for o in [now[0]] + r.children(now[0]) for n in routes(r, o)]
+            self.assertEqual(left, [], f"kind {kind} (type {r.vtype(now[0]):#x}): no routing")
 
 
 if __name__ == "__main__":

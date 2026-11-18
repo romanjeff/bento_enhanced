@@ -10,8 +10,8 @@ and so is a table with unreviewed (REVIEW) entries. Checks original bytes at
 every patch site, the table's fingerprints of every stock address it names, its
 offsets / keys / event ids against the independent record (expected_values.py),
 writes bento1.bin + manifest.json, and proves that undoing every write
-reproduces the base exactly. Run with Lab's venv (ziglang +
-keystone). Earlier versions (<= v2.2) were built on Lab's CH10; CH10 itself
+reproduces the base exactly. Needs the packages in requirements.txt at the repo root (ziglang +
+keystone + capstone; tools/make_kit.py runs this for you). Earlier versions (<= v2.2) were built on Lab's CH10; CH10 itself
 crashed on the device without any of this code, so M1 moved to stock.
 """
 import argparse, hashlib, json, os, re, struct, subprocess, sys
@@ -37,8 +37,9 @@ FORBIDDEN_FROM = 0x081E0000
 # large projects (Jeff: SPACED). Since v3.16 the heap is stock and the slice
 # lives in unlinked D2 SRAM2 (S.D2_SLICE; both cores' MPUs map it).
 
-# Our M7 code sits in stock's zero gap after the M7 image's data: S.CTRL_INPUT, S.CTRL_STARTUP,
-# then S.M7_TRAMP (trampolines, 1 KB since v3.59), S.M7_CODE .. S.M7_LIMIT (19 KB since v3.59).
+# Our M7 code sits in stock's zero gap after the M7 image's data: S.M7_TRAMP (trampolines, 1 KB since v3.59),
+# S.M7_CODE .. S.M7_LIMIT (19 KB since v3.59) and the hold shortcuts' S.CTRL_INPUT, S.CTRL_STARTUP (1.6.1: below
+# M7_TRAMP; 1.6.8 since BE4.44 W0: the page above M7_LIMIT, so the DSP window reaches M7_TRAMP; check_ctrl_placement).
 # M4 code is appended after stock's image end, from S.APPEND_FROM (see layout() for the blocks).
 # Per-base settings (S2): each stock firmware has its own version line, so a build's version
 # comes from its base, never from an edit before the build. Bump the base's "version" for every
@@ -73,7 +74,7 @@ GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_en
 BASE_SETTINGS = {
     "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0", "drums"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.41", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.46", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
                               "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx", "drums"), omit_off=("drums",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
@@ -92,6 +93,40 @@ VERSION = DISPLAY = None              # set by use_base() from BASE_SETTINGS (di
 # Code stays in the image, unreachable. BE_ENABLE="stall,irq30" turns them back on.
 DEFAULT_OFF = {"stall", "irq30", "modtest"}   # modtest: F1 fixed routing (test builds only)
 ENABLED = {g for g in os.environ.get("BE_ENABLE", "").split(",") if g}
+# BE4.44 W2 (docs/plan-wt-fm.md D5, decided: "in between, leaning bright"): the Wavetable FM mip threshold is one constant
+# (dsp/analog.cpp WT_MIP_THR, its hysteresis derived from it). BE_WT_MIP builds another value (W3 / W4's cleaner and brighter
+# alternate device images); the manifest records it (wt_mip), and a value other than the default suffixes the version
+# (-mip2.0, after any BE_TAG) so an alternate image is never mistaken for the default on the device. Stock's own ladder is
+# 1.25 (clean). This is the one place the default lives: analog.cpp has no fallback (#error), the tests read the manifest.
+WT_MIP_DEFAULT = 1.75
+WT_MIP_OFF = "off"   # BE4.44 W3 (D5's bright alternate, Jeff 2026-11-17 "never go darker"): the reader stays at stock's level for the note
+def wt_mip_threshold(text=None):
+    """BE_WT_MIP as a float in [1.0, 4.0] (below 1 is brighter than the table holds; 4 skips two levels' worth), or "off"
+    (W3: never coarser than stock's level for the note under any FM, the D5 rows' "note level" column)."""
+    text = os.environ.get("BE_WT_MIP", "") if text is None else text
+    if not text:
+        return WT_MIP_DEFAULT
+    if text.strip().lower() == WT_MIP_OFF:
+        return WT_MIP_OFF
+    try:
+        v = float(text)
+    except ValueError:
+        raise SystemExit(f"BE_WT_MIP={text!r}: not a number (or off)")
+    if not 1.0 <= v <= 4.0:
+        raise SystemExit(f"BE_WT_MIP={text!r}: outside 1.0 .. 4.0")
+    return v
+WT_MIP = wt_mip_threshold()
+def wt_mip_suffix(v=None):
+    """The version's suffix for a non-default threshold ('' at the default; -mipoff for off)."""
+    v = WT_MIP if v is None else v
+    if v == WT_MIP_OFF:
+        return "-mipoff"
+    return "" if v == WT_MIP_DEFAULT else f"-mip{v:g}" if v != int(v) else f"-mip{v:.1f}"
+def wt_mip_defines(v=None):
+    """The compiler's view of it: WT_MIP_THR always (analog.cpp #errors without it); off adds WT_MIP_OFF=1 (the threshold is
+    then not read; stock's 1.25 is passed only so the one source compiles the same way)."""
+    v = WT_MIP if v is None else v
+    return ["-DWT_MIP_THR=1.25f", "-DWT_MIP_OFF=1"] if v == WT_MIP_OFF else [f"-DWT_MIP_THR={v!r}f"]
 DISABLED = (DEFAULT_OFF - ENABLED) | {g for g in os.environ.get("BE_DISABLE", "").split(",") if g}
 # S3 split poly, cond and inta into the part S3 ports (M7 only) and the part a later sprint does, so the
 # S3 part builds on 1.6.8 alone: poly_cap (S3) + poly_at (S5: External handler h_poly and the M4 MIDI
@@ -264,6 +299,8 @@ SOURCES = [  # (source, ELF, groups that need it; () = core), in compile order
     ("m7_controls_input.s", "asm", ("hold",)), ("m4_controls.c", "m4_controls", ("hold",)),
     ("m4_step.c", "m4_step", ("step", "mx")),
     ("dsp/analog.cpp", "dsp", ("analog",)), ("dsp/analog_kernel.cpp", "dsp", ("analog",)),   # S6a: hard-float DSP ELF
+    ("dsp/wt_reader.cpp", "dsp", ("analog",)),                                           # BE4.44 W2: the WT FM reader loops
+    ("dsp/wt_mipx.cpp", "dsp", ("analog",)),                                             # BE4.44 W2: its mip-change loop (-Os)
     ("dsp/dsp_lib.cpp", "dsp", ("analog", "drums")),                                     # S6c: memset / memcpy, math
     ("dsp/drums.cpp", "dsp", ("drums",)), ("dsp/drum_kick.cpp", "dsp", ("drums",)),      # S6c: the drum synths
     ("dsp/daisysp/Source/Drums/synthbassdrum.cpp", "dsp", ("drums",)),                   # S6c: DaisySP (MIT, unmodified)
@@ -305,22 +342,41 @@ GROUP_NAMES = {
     "mx": ("EXT_BUILD", "EXT_EVENT", "EV_ENCODER", "MX_BUILD", "MX_ROUTE", "MX_EDIT", "MX_BAR", "MX_EVENT"),
     "analog": ("M7_DSP", "M7_DSP_LIMIT", "DSP_WINDOW_WORDS", "WT_VOICE_VT_SLOT", "WT_VOICE_RENDER", "WT_OSC_VT_SLOT", "WT_OSC_RENDER",
                "PAGE_KEYS_COPY", "M4_MEMCPY", "PANE_TEXT_1", "PANE_TEXT_3", "PANE_TEXT_5",   # A7: the hints (T2: 2 / 4 stock)
-               "PANE_TEXT_6", "SLOT_TITLE", "CTRL_INPUT", "EXT_POOL_END", "PROBE_SCRATCH",
+               "PANE_TEXT_6", "SLOT_TITLE", "M7_TRAMP", "EXT_POOL_END", "PROBE_SCRATCH",   # M7_TRAMP: S6a's guard (BE4.44 W0)
                "SYNTH_VIEW_TICK_SLOT", "SYNTH_VIEW_TICK", "M7_DATA_END",   # S6a review
                # BE4.40 native properties (docs/plan-native-props.md): N1 the template copy (2 literal words, 3 immediates),
                # N2 the registry build's bl, N3 the oscillator's slot 8 (BE4.22's handle sites and the menu are gone)
                "PROP_TEMPLATE", "PROP_TEMPLATE_LIT_A", "PROP_TEMPLATE_LIT_B", "PROP_TEMPLATE_CMP_A", "PROP_TEMPLATE_CMP_B",
                "PROP_TEMPLATE_LAST", "REG_BUILD_SITE", "REG_BUILD", "WT_OSC_PROP_SLOT", "WT_OSC_PROPERTY",
                "KEY_OSC_TYPE", "KEY_OSC_SHAPE", "KEY_OSC_SYNC", "KEY_OSC_GLIDE",
-               "KEY_OSC_SUBFM", "KEY_OSC_BITS", "KEY_OSC_FM12",   # P3 Q1 (docs/plan-p3-fm-bits.md 2.1): Sub FM, Bit Depth, FM 1>2
+               "KEY_OSC_SUBFM", "KEY_OSC_FM12",   # P3 Q1 (docs/plan-p3-fm-bits.md 2.1): Sub FM, FM 1>2 (BE4.42: Bit Depth gone)
+               "KEY_OSC_FMATK", "KEY_OSC_FMDEC",  # BE4.43 (docs/plan-p3-fm-bits.md BE4.43): the FM envelope, per oscillator
                # BE4.40 mixed sync (docs/plan-be440-sync-identity.md Track S): S1 the oscillator's slot 2 (note start)
                "WT_OSC_NOTE_SLOT", "WT_NOTE_START",
+               # BE4.45 X2 (docs/plan-fm-targets.md): the oscillator's slots 9 (clear) and 10 (connect), the route handler
+               "WT_OSC_CLEAR_SLOT", "WT_OSC_CLEAR", "WT_OSC_CONNECT_SLOT", "WT_OSC_CONNECT", "WT_ROUTE", "WT_ROUTE_LEN",
+               "WT_ROUTE_SHA",
                # BE4.40 identity (docs/plan-be440-sync-identity.md track I): T0 the strings and their one literal each, T1 the
                # title site, D1 the pane paint slot, B1' the 0x3F post; the review fixes: V1 / Y1 the value-text sites and the
                # step position, D2 the frames' redraw
                "STR_PREFIX_OSC1", "STR_PREFIX_OSC2", "STR_DEST_OSC_FMT", "PREFIX_LIT_OSC1", "PREFIX_LIT_OSC2", "DEST_FMT_LIT",
                "PANE_TITLE_SITE", "WT_PANE_PAINT_SLOT", "WT_PANE_PAINT", "BROWSE_POST_SITE", "UI_POST",
-               "VALUE_TEXT_1", "VALUE_TEXT_2", "VALUE_TEXT_3", "ENC_POS_SET", "WT_PANE_FRAMES_DIRTY"),
+               "VALUE_TEXT_1", "VALUE_TEXT_2", "VALUE_TEXT_3", "ENC_POS_SET", "WT_PANE_FRAMES_DIRTY",
+               # BE4.45 X1 (docs/plan-fm-targets.md): the Wavetable Mod Matrix destination table, its users, the row filler's bounds
+               "MX_WT_DEST_TAB", "MX_WT_DEST_COUNT", "MX_WT_DEST_LIT_1", "MX_WT_DEST_LIT_2", "MX_WT_DEST_LIT_3", "MX_WT_DEST_LIT_4",
+               "MX_WT_DEST_N_LIT_1", "MX_WT_DEST_N_LIT_3", "MX_WT_DEST_N_LIT_4", "MX_WT_ROWS_N", "MX_WT_ROWS_END",
+               # BE4.45 X3: the piano roll's destination list (its type match, the enumerator and its index rule), the lane
+               # toggle and the Wavetable root's lane read (tests)
+               "PR_DEST_LIST", "PR_DEST_MATCH", "PR_DEST_ENUM", "PR_DEST_ENUM_LEN", "PR_DEST_ENUM_SHA", "MX_GRAN_DEST_COUNT",
+               "PR_LANE_TOGGLE", "WT_ROOT_BLOCK", "WT_ROOT_LANES_END",
+               # X3 review: the builder's bytes (its frame), the root's clear-all (message 0x48) and the loop's next message (tests)
+               "PR_DEST_LIST_LEN", "PR_DEST_LIST_SHA", "WT_ROOT_CLEAR_ALL", "WT_ROOT_MSG_NEXT",
+               # BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6 (fmenv_connect)
+               "FMENV_IDX_TBH", "FMENV_IDX_PAD", "FMENV_IDX_NEXT", "FMENV_SUB_TBH", "FMENV_SUB_PAD", "FMENV_SUB_NEXT",
+               "WT_VOICE_ALLOC", "WT_VOICE_OSC1",   # (S1 fix: the connect's Wavetable-voice gate)
+               # BE4.46 S2: the Wavetable Mod Matrix page lists them (the source list, the validator, the names)
+               "MX_WT_SRC_LIST", "MX_WT_SRC_LIT", "MX_SRC_VALID_LIT", "MX_WT_ROWS_SITE", "MX_WT_ROWS", "MX_SRC_VALID",
+               "MX_SRC_NAME", "MXV_TYPE", "MXV_SRC_LIST", "MXV_SRC_N", "TYPE_WAVETABLE"),
     # S6c (1.6.8): the M7 site (D1, the render entry; review B1 retired the two voice-start sites) and the synth area / DSP
     # window it shares with analog. The shared blocks are checked and built under whichever synth group is in the image
     # (build(): synth_g); a BE_DISABLE bisect of one of them leaves the other's code and memory working.
@@ -331,7 +387,7 @@ GROUP_NAMES = {
               # P4-1 (docs/plan-p4-drums.md 3.3 N1): the drum keys' template runs (pads, type 1; One-Shot tracks)
               "KEY_DR_ENGINE", "KEY_DR_TRACK", "TYPE_ONESHOT",
               "INST_SAVE_SITE", "INST_LOAD", "CONTEXT_GET", "OBJ_CTOR", "OBJ_BASE_VT", "OBJ_HANDLE_CTR", "NODE_VT_DESTROY",
-              "NODE_DESTROY", "NODE_VT_CLONE", "NODE_CLONE", "DSP_WINDOW_WORDS", "M7_DATA_END", "PROBE_SCRATCH", "CTRL_INPUT"),
+              "NODE_DESTROY", "NODE_VT_CLONE", "NODE_CLONE", "DSP_WINDOW_WORDS", "M7_DATA_END", "PROBE_SCRATCH", "M7_TRAMP"),
     "note0": ("NOTE0_SEQ_ON_MAP", "NOTE0_SEQ_ON_BACK", "NOTE0_SEQ_OFF_MAP", "NOTE0_SEQ_OFF_BACK", "NOTE0_PAD_ON_MAP",
               "NOTE0_PAD_ON_BACK", "NOTE0_PAD_OFF_MAP", "NOTE0_PAD_OFF_BACK", "NOTE0_ALL_OFF_MAP", "NOTE0_ALL_OFF_BACK"),
 }
@@ -399,7 +455,7 @@ def source_refs(base, src, disabled, flags=()):
         cmd = [sys.executable, "-m", "ziglang", "cc", "-target", "thumb-freestanding-eabi", f"-mcpu={cpu}", "-E", "-P",
                "-ffreestanding", "-nostdlib", "-include", str(hdr), f"-I{d}",
                *([f"-I{HERE / x}" for x in DSP_INCLUDES] if src.startswith("dsp/") else []),
-               *[f"-DBE_NO_{g.upper()}" for g in sorted(disabled)], *flags, str(path)]
+               *[f"-DBE_NO_{g.upper()}" for g in sorted(disabled)], *wt_mip_defines(), *flags, str(path)]
         out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
     return set(re.findall(r"__S_REF_([A-Za-z0-9_]+)", out))
 
@@ -504,6 +560,7 @@ def use_base(s):
         raise SystemExit(f"build.py has no BASE_SETTINGS for {S.module} (version line, M4 flags)")
     SETTINGS = BASE_SETTINGS[S.module]
     VERSION = SETTINGS["version"] + (f"-{os.environ['BE_TAG']}" if os.environ.get("BE_TAG") else "")
+    VERSION += wt_mip_suffix()
     DISPLAY = os.environ.get("BE_LABEL", f"BE{SETTINGS['version']}")
     globals().update(layout(s))
     MARKER = f"BENTO_MOD:bento_enhanced:v{VERSION}:{S.label}".encode() + bytes(1)
@@ -648,7 +705,7 @@ def compile_elf(srcs, cpu, ld, out, origin, limit, extra=()):
 # vtables can point at them and our soft-float m7.elf never calls a float function. -O2 for the kernel file, -Os for the
 # rest (clang ignores optimize attributes). `defines`: measurement builds only (test_analog.py's before / after runs).
 DSP_CPU = ("-target", "thumb-freestanding-eabihf", "-mcpu=cortex_m7+fp_armv8d16sp", "-mfloat-abi=hard")
-DSP_OPT = {"analog_kernel.cpp": "-O2", "drum_kick.cpp": "-O2", "synthbassdrum.cpp": "-O2", "svf.cpp": "-O2"}
+DSP_OPT = {"analog_kernel.cpp": "-O2", "wt_reader.cpp": "-O2", "drum_kick.cpp": "-O2", "synthbassdrum.cpp": "-O2", "svf.cpp": "-O2"}
 # S6c: the vendored DaisySP files (dsp/daisysp, unmodified) find their includes here; dsp/shim stands in for the C / C++ library
 # headers they name (searched before the compiler's own), so no libc / libm declaration (and no double overload) reaches them.
 DSP_INCLUDES = ("dsp/shim", "dsp/daisysp/Source", "dsp/daisysp/Source/Utility")
@@ -680,7 +737,7 @@ def compile_dsp(srcs, ld, out, origin, limit, defines=()):
               "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections",
               "-Wall", "-Werror", "-Wdouble-promotion", "-include", str(syms_h), f"-I{out.parent}",
               *[f"-I{HERE / d}" for d in DSP_INCLUDES],
-              *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *defines]
+              *[f"-DBE_NO_{g.upper()}" for g in sorted(DISABLED)], *wt_mip_defines(), *defines]
     objs = []
     for src in srcs:
         o = out.parent / ("dsp_" + Path(src).stem + ".o")
@@ -734,13 +791,18 @@ def check_dsp_elf(e, origin, limit):
         raise SystemExit(f"DSP ELF: .text at {text and hex(text[1])} + {text and text[2]} is not at its origin {origin:#x} inside {limit:#x}")
 
 
+M7_IMAGE_END = 0x080E0000      # the M7 image's flash ends here; the disk-mode image starts (docs/architecture.md)
+
+
 def check_dsp_assumptions(img, S):
     """S6a: the DSP window (M7_DSP .. M7_DSP_LIMIT) is in stock's zero gap after the M7 image's data, below our M7 slice,
-    and nothing in the image points into it (a literal, or a movt of its upper half)."""
+    and nothing in the image points into it (a literal, or a movt of its upper half). BE4.44 W0: the bound is our M7 slice's
+    start, M7_TRAMP (it was CTRL_INPUT, which then sat right below M7_TRAMP; above M7_LIMIT that bound would let the window
+    run over the trampolines and the C slice)."""
     def fail(what): raise SystemExit(f"DSP window ({S.label}, S6a): {what}; re-verify M7_DSP for this firmware")
     lo, hi = S.M7_DSP, S.M7_DSP_LIMIT
-    if lo & 0xFFF or hi & 0xFFF or not lo < hi <= S.CTRL_INPUT:
-        fail(f"{lo:#x}..{hi:#x} is not a 4 KB aligned window below our M7 slice ({S.CTRL_INPUT:#x})")
+    if lo & 0xFFF or hi & 0xFFF or not lo < hi <= S.M7_TRAMP:
+        fail(f"{lo:#x}..{hi:#x} is not a 4 KB aligned window below our M7 slice (M7_TRAMP {S.M7_TRAMP:#x})")
     if any(img[lo - 0x300 - BASE:hi - BASE]):
         fail("the window (and the 0x300 B guard below it) is not all zero in the base image")
     data_end = struct.unpack_from("<I", img, S.M7_DATA_END - BASE)[0]     # review N3: zeros alone can be a .data tail
@@ -768,6 +830,25 @@ def check_dsp_assumptions(img, S):
             v = (h1 & 15) << 12 | (h1 >> 10 & 1) << 11 | (h2 >> 12 & 7) << 8 | h2 & 255
             if v == lo >> 16:
                 fail(f"movt #{v:#x} at {BASE + k:#x} may build an address in the window")
+
+def check_ctrl_placement(S, window):
+    """BE4.44 W0: the hold shortcuts' M7 stubs, [CTRL_INPUT, CTRL_STARTUP + 0x100) (the input hook below CTRL_STARTUP, the
+    startup stub's 0x100 B slot: hold_shortcuts' own bounds), lie clear of our M7 slice [M7_TRAMP, M7_LIMIT) and of the DSP
+    window (window: (M7_DSP, M7_DSP_LIMIT) when the build has one, else None), and end at or below the M7 image's end.
+    (Zero in the base image: patch() checks the bytes it replaces.)"""
+    def fail(what): raise SystemExit(f"hold-shortcut stubs ({S.label}, BE4.44 W0): {what}")
+    lo, mid, hi = S.CTRL_INPUT, S.CTRL_STARTUP, S.CTRL_STARTUP + 0x100
+    if lo & 3 or mid & 3 or not lo < mid:
+        fail(f"CTRL_INPUT {lo:#x} / CTRL_STARTUP {mid:#x}: not word aligned, in order")
+    spans = [("our M7 slice (M7_TRAMP .. M7_LIMIT)", S.M7_TRAMP, S.M7_LIMIT)]
+    if window:
+        spans.append(("the DSP window (M7_DSP .. M7_DSP_LIMIT)", *window))
+    for what, a, b in spans:
+        if lo < b and a < hi:
+            fail(f"{lo:#x}..{hi:#x} overlaps {what} {a:#x}..{b:#x}")
+    if hi > M7_IMAGE_END:
+        fail(f"{lo:#x}..{hi:#x} runs past the M7 image's end {M7_IMAGE_END:#x} (the disk-mode image)")
+
 
 def elf_load(e, lo, hi):
     """Return (load address, bytes) of the single loadable segment inside [lo, hi), plus symbols.
@@ -821,6 +902,97 @@ def synth_bytes():
     if not m:
         raise SystemExit("synth_shared.h: no SYNTH_BYTES")
     return int(m.group(1), 16)
+
+def synth_define(name):
+    m = re.search(rf"^#define {name} (0x[0-9A-Fa-f]+)u", (HERE / "synth_shared.h").read_text(), re.M)
+    if not m:
+        raise SystemExit(f"synth_shared.h: no {name}")
+    return int(m.group(1), 16)
+
+def fmenv_offsets():
+    """BE4.46 S1: the voice-tail layout of FM Env 1 / 2 (synth_shared.h FMENV_*, the DSP's): (src, val, on, slack end)."""
+    o = tuple(synth_define(n) for n in ("FMENV_SRC", "FMENV_VAL", "FMENV_ON", "FMENV_SLACK_END"))
+    src, val, on, end = o
+    if not (val == src + 4 and on >= val + 8 and on + 4 <= end and src % 4 == 0 and on < 0x1000):
+        raise SystemExit(f"synth_shared.h FMENV_*: layout {[hex(x) for x in o]} is not src, src + 4 (two values), flag")
+    return o
+
+# BE4.46 S1 (docs/feasibility-fm-env-sources.md, "Recommended route", M7): stock's Wavetable routing connect (WT_ROUTE,
+# message 0x3F) picks the source object by id in two tbh tables, the oscillator / envelope / LFO / filter path (instances
+# 0 / 1, indexed by id - 1, the voice in r5) and the sub path (instances 2.., indexed by id - 2, the voice in r3); ids 3 and
+# 6 (Env 3 / LFO 3, which a Wavetable voice does not have) go to "no source" (movs r1, #0) in both. Their four entries are
+# repointed at a stub in each table's alignment padding (nops, no branch into them: S): r1 = the voice's tail (FMENV_SRC,
+# + 4 for 6), then on to a body among the DSP trampolines (fmenv_body). S1 fix (review, S): the same connect also serves the
+# class-0x5A root (ROOT_5A_CTOR: voices of 0xFE8 B whose OSC1 lives at + 0x7A8, so voice + 0xB84.. is inside a live
+# oscillator there), so the body first checks the voice is a Wavetable one ([voice + VOICE_OSC1] == voice + 0x7A4, as
+# WT_ROOT_CTOR leaves it: WT_VOICE_OSC1) and otherwise takes stock's own movs r1, #0 (no source: stock's behaviour, byte for
+# byte). On a Wavetable voice it sets FMENV_ON on the first connect only and then writes 1.0 into both values (the unset
+# value, until the next an_enter / an_note publishes), so a later connect (an amount step) never overwrites a published
+# value. Scratch: r3 (idx path) / r2 (sub path), written before any read on every path from the join (S); the flags are set
+# before any read there too (idx: adds r0, r5, r0; sub: cmp r6, #2).
+FMENV_STUB_BYTES = 14
+FMENV_OSC1_PTR, FMENV_OSC1_AT = 0x178, 0x7A4          # the voice's OSC1 pointer and where a Wavetable voice's OSC1 is (S)
+def fmenv_stub(at, voice, body):
+    """(bytes, offset of id 6's entry, offset of id 3's entry): addw r1, voice, #src + 4 (id 6); b.n join; addw r1, voice,
+    #src (id 3); join: b.w body."""
+    src = fmenv_offsets()[0]
+    parts = [asm(f"addw r1, {voice}, #{src + 4:#x}", at), b"", asm(f"addw r1, {voice}, #{src:#x}", at + 6)]
+    join = at + 10
+    parts[1] = struct.pack("<H", 0xE000 | ((join - (at + 4 + 4)) >> 1 & 0x7FF))         # b.n join (T2, encoded by hand)
+    parts.append(asm(f"b.w #{body:#x}", join))
+    code = b"".join(parts)
+    if [len(p) for p in parts] != [4, 2, 4, 4] or len(code) != FMENV_STUB_BYTES:
+        raise SystemExit(f"FM Env stub at {at:#x}: unexpected encoding {[len(p) for p in parts]}")
+    check_branches(code, at, {join, body}, f"FM Env stub at {at:#x}")
+    return code, 0, 6
+
+def fmenv_body(voice, tmp, nxt):
+    """The connect's body for one path (r1 = the stub's pointer): not a Wavetable voice -> stock's movs r1, #0 (nxt - 2);
+    else FMENV_ON 0 (first connect) -> FMENV_ON = r1 and both values 1.0; then the join (nxt). 42 B."""
+    src, val, on, end = fmenv_offsets()
+    return (f"ldr.w {tmp}, [{voice}, #{FMENV_OSC1_PTR:#x}]; subw {tmp}, {tmp}, #{FMENV_OSC1_AT:#x}; cmp {tmp}, {voice}; "
+            f"bne other; ldr.w {tmp}, [{voice}, #{on:#x}]; cbnz {tmp}, done; str.w r1, [{voice}, #{on:#x}]; "
+            f"mov.w {tmp}, #0x3f800000; str.w {tmp}, [{voice}, #{val:#x}]; str.w {tmp}, [{voice}, #{val + 4:#x}]; "
+            f"done: b.w #{nxt:#x}; other: b.w #{nxt - 2:#x}")
+
+def fmenv_connect(img_base, S, patch, tramp):
+    """BE4.46 S1: place the two bodies (tramp: among the DSP trampolines), patch the two tables and place the two stubs (see
+    FMENV_STUB_BYTES). Refuses a base where the entries do not go to stock's "no source" path, the join is not right after
+    its movs r1, #0, the padding is not all nops, the voice is not allocated as 0xB88 B (the slack: synth_shared.h), or a
+    Wavetable voice's OSC1 is not at + 0x7A4 (the gate). Returns {name: body address}."""
+    src, val, on, end = fmenv_offsets()
+    def fail(what): raise SystemExit(f"FM Env sources (BE4.46 S1, {S.label}): {what}")
+    if img_base[S.WT_VOICE_ALLOC - BASE:S.WT_VOICE_ALLOC - BASE + 4] != asm("movw r2, #0xb88", S.WT_VOICE_ALLOC) or end != 0xBA0:
+        fail("the Wavetable voice is not allocated as 0xB88 B (its slack 0xB88..0xBA0 is FM Env's)")
+    o1 = S.WT_VOICE_OSC1
+    if img_base[o1 - BASE:o1 - BASE + 4] != asm(f"addw r7, r4, #{FMENV_OSC1_AT:#x}", o1) or \
+            img_base[o1 + 0x18 - BASE:o1 + 0x1C - BASE] != asm(f"strd r7, r6, [r4, #{FMENV_OSC1_PTR:#x}]", o1 + 0x18):
+        fail(f"WT_ROOT_CTOR does not place OSC1 at voice + {FMENV_OSC1_AT:#x} (the gate's test)")
+    bodies = {}
+    for tbh, n, pad, padn, nxt, voice, tmp, first, name in (
+            ("FMENV_IDX_TBH", 6, "FMENV_IDX_PAD", 28, "FMENV_IDX_NEXT", "r5", "r3", 1, "idx"),
+            ("FMENV_SUB_TBH", 5, "FMENV_SUB_PAD", 26, "FMENV_SUB_NEXT", "r3", "r2", 2, "sub")):
+        t, p, x = getattr(S, tbh), getattr(S, pad), getattr(S, nxt)
+        if img_base[x - 2 - BASE:x - BASE] != b"\x00\x21":
+            fail(f"{nxt} {x:#x} does not follow stock's movs r1, #0")
+        nops = img_base[p - BASE:p - BASE + padn]
+        if nops != (b"\x00\xbf" if padn % 4 else b"") + b"\xaf\xf3\x00\x80" * (padn // 4):
+            fail(f"{pad} {p:#x} is not {padn} B of nops")
+        ent = list(struct.unpack_from(f"<{n}H", img_base, t - BASE))
+        i3, i6 = 3 - first, 6 - first
+        if t + 2 * ent[i3] != x - 2 or t + 2 * ent[i6] != x - 2:
+            fail(f"{name} table: ids 3 / 6 do not go to stock's no-source path {x - 2:#x}")
+        body = bodies[name] = tramp(fmenv_body(voice, tmp, x), {x, x - 2}, f"FM Env connect body, {name} path")
+        code, o6, o3 = fmenv_stub(p, voice, body)
+        if len(code) > padn:
+            fail(f"the stub does not fit {pad}")
+        ent[i3], ent[i6] = (p + o3 - t) // 2, (p + o6 - t) // 2
+        # (the rest of the padding: nop.n, so no half of a stock nop.w is left after the stub's b.w; never reached)
+        patch(p, code + b"\x00\xbf" * ((padn - len(code)) // 2), S.orig(pad),
+              f"FM Env sources (BE4.46 S1): routing connect stub, {name} path (ids 3 / 6 -> voice + {src:#x} / {src + 4:#x})")
+        patch(t, struct.pack(f"<{n}H", *ent), S.orig(tbh),
+              f"FM Env sources (BE4.46 S1): routing connect {name} table, ids 3 / 6 -> the stub")
+    return bodies
 
 def check_region_assumptions(img, S, synth=False):
     """Refuse a base whose ext pool no longer has room for the Region where we put it. S6a (synth): the same
@@ -957,6 +1129,8 @@ def build(base_img, out):
     if synth:
         with S.group(synth_g):
             check_dsp_assumptions(base_img, S)
+            window = (S.M7_DSP, S.M7_DSP_LIMIT)
+    check_ctrl_placement(S, window if synth else None)    # core entries (+ the window read above under its group)
     check_slice_assumptions(base_img, S)
     check_sites(base_img, S)
     out.mkdir(parents=True, exist_ok=False)
@@ -1327,7 +1501,8 @@ def build(base_img, out):
                m7_symbols={k: hex(v) for k, v in s7.items()}, m4_symbols={k: hex(v) for k, v in s4.items()},
                m7_code_bytes=len(code7), m4_code_bytes=len(code4), trampoline_bytes=len(tramps), writes=writes)
     if synth:                                    # S6a / S6c
-        man.update(dsp_symbols={k: hex(v) for k, v in sd.items()}, dsp_code_bytes=dsp_bytes, synth_code_bytes=synth_bytes_)
+        man.update(dsp_symbols={k: hex(v) for k, v in sd.items()}, dsp_code_bytes=dsp_bytes, synth_code_bytes=synth_bytes_,
+                   wt_mip=WT_MIP)
     if omitted:                                  # S2: groups left out of the image (not only unpatched)
         man["omitted"] = sorted(omitted)
         man["uses"] = {g: sorted(n for n in needs[g] if s.syms.get(n)) for g in sorted(included)}
@@ -1640,7 +1815,8 @@ def per_step(base_img, img, patch, extend, sources, s4, sh, out, inc):
     s4.update({f"step.{k}": v for k, v in ss.items()})
 
 
-DSP_TRAMP_BYTES = 0x100                           # M7_DSP: our trampolines, then the DSP ELF
+DSP_TRAMP_BYTES = 0x140                           # M7_DSP: our trampolines, then the DSP ELF (BE4.46: 0x100 -> 0x140, the
+# merge of S1's FM Env connect bodies and X2's slot 9 / 10 trampolines needs 0x102 B; 0x140 leaves the drums' D1 its 0x1E B)
 
 
 def m7_dsp(base_img, patch, sources, out, inc):
@@ -1684,6 +1860,29 @@ def m7_dsp(base_img, patch, sources, out, inc):
         note_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_note']:#x}; pop {{r0, r1, r2, r3, r4, lr}}; "
                         f"b.w {S.WT_NOTE_START:#x}", {sd["an_note"], S.WT_NOTE_START}, "Analog note start trampoline")
         sd.update(tramp_voice=voice, tramp_osc=osc_at, tramp_prop=prop_at, tramp_note=note_at)
+        # BE4.46 S1: FM Env 1 / 2 as routing sources 3 / 6 (its two connect bodies are trampolines here, right after the
+        # note trampoline: S1 fix), then BE4.45 X2's slot 9 / 10 trampolines
+        fe = fmenv_connect(base_img, S, patch, tramp)
+        sd.update(tramp_fmenv_idx=fe["idx"], tramp_fmenv_sub=fe["sub"])
+        # BE4.45 X2 (docs/plan-fm-targets.md): the oscillator's slot 10, connect (osc r0, source r1, key r2, slot r3, amount
+        # s0), and slot 9, clear (osc r0). Ours first, then stock's always (it ignores our keys and keeps its own). The
+        # connect passes the root: WT_ROUTE's r4 (its r0, kept there throughout: the sha below holds it to the bytes that
+        # were read), only when the call returns into WT_ROUTE, else 0; and the key and slot in one word. s0 is kept for
+        # stock's (s1 pads the push to 8 B).
+        for name, slot, fn in (("WT_OSC_CLEAR_SLOT", "WT_OSC_CLEAR", "x2_clear"), ("WT_OSC_CONNECT_SLOT", "WT_OSC_CONNECT", "x2_connect")):
+            if bytes(base_img[getattr(S, name) - BASE:getattr(S, name) - BASE + 4]) != struct.pack("<I", getattr(S, slot) | 1):
+                raise SystemExit(f"Wavetable oscillator {name} does not hold stock's {slot}")
+        route = bytes(base_img[S.WT_ROUTE - BASE:S.WT_ROUTE - BASE + S.WT_ROUTE_LEN])
+        if hashlib.sha256(route).hexdigest() != S.WT_ROUTE_SHA:
+            raise SystemExit("WT_ROUTE is not the route handler whose r4 was read (WT_ROUTE_SHA)")
+        clear_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['x2_clear']:#x}; pop {{r0, r1, r2, r3, r4, lr}}; "
+                         f"b.w {S.WT_OSC_CLEAR:#x}", {sd["x2_clear"], S.WT_OSC_CLEAR}, "X2 clear trampoline")
+        conn_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; vpush {{s0, s1}}; orr.w r2, r2, r3, lsl #16; "
+                        f"movw r12, #{S.WT_ROUTE & 0xFFFF:#x}; movt r12, #{S.WT_ROUTE >> 16:#x}; sub.w r12, lr, r12; "
+                        f"movw r3, #{S.WT_ROUTE_LEN:#x}; cmp r12, r3; ite lo; movlo r3, r4; movhs r3, #0; "
+                        f"bl {sd['x2_connect']:#x}; vpop {{s0, s1}}; pop {{r0, r1, r2, r3, r4, lr}}; b.w {S.WT_OSC_CONNECT:#x}",
+                        {sd["x2_connect"], S.WT_OSC_CONNECT}, "X2 connect trampoline")
+        sd.update(tramp_clear=clear_at, tramp_conn=conn_at)
     an_end = len(tramps)
     if inc("drums"):
         with S.group("drums"):
@@ -1697,9 +1896,10 @@ def m7_dsp(base_img, patch, sources, out, inc):
             # sample is open, so D1 recognises a start by it; DRUM_VSTART_A/B_SITE stay reviewed facts, unpatched.)
             sd.update(tramp_render=d1)
     if len(tramps) > DSP_TRAMP_BYTES:
-        raise SystemExit("DSP trampolines overrun their block")
+        raise SystemExit(f"DSP trampolines overrun their block ({len(tramps):#x} > {DSP_TRAMP_BYTES:#x}; ends {[hex(v) for k, v in sd.items() if k.startswith('tramp_')]})")
     if an_end:
-        patch(lo, bytes(tramps[:an_end]), bytes(an_end), "Analog (S6a): M7 trampolines (voice enter, oscillator render, property, note start)")
+        patch(lo, bytes(tramps[:an_end]), bytes(an_end),
+              "Analog (S6a): M7 trampolines (voice enter, oscillator render, property, note start; BE4.46 S1: FM Env connect bodies; X2: clear, connect)")
     if len(tramps) > an_end:
         patch(lo + an_end, bytes(tramps[an_end:]), bytes(len(tramps) - an_end),
               "Drums (S6c): M7 trampoline (D1 render entry)")
@@ -1713,6 +1913,10 @@ def m7_dsp(base_img, patch, sources, out, inc):
               "Analog: Wavetable oscillator slot 8 (set property, N3) -> an_prop, else stock's")
         patch(S.WT_OSC_NOTE_SLOT, struct.pack("<I", sd["tramp_note"] | 1), S.orig("WT_OSC_NOTE_SLOT"),
               "Analog: Wavetable oscillator slot 2 (note start, S1) -> an_note, then stock's")
+        patch(S.WT_OSC_CLEAR_SLOT, struct.pack("<I", sd["tramp_clear"] | 1), S.orig("WT_OSC_CLEAR_SLOT"),
+              "Analog: Wavetable oscillator slot 9 (clear routings, X2) -> x2_clear, then stock's")
+        patch(S.WT_OSC_CONNECT_SLOT, struct.pack("<I", sd["tramp_conn"] | 1), S.orig("WT_OSC_CONNECT_SLOT"),
+              "Analog: Wavetable oscillator slot 10 (connect a routing, X2) -> x2_connect, then stock's")
     if inc("drums"):
         with S.group("drums"):
             patch(S.DRUM_RENDER, asm(f"b.w {sd['tramp_render']:#x}", S.DRUM_RENDER), S.orig("DRUM_RENDER"),
@@ -1723,17 +1927,21 @@ def m7_dsp(base_img, patch, sources, out, inc):
 # BE4.40 N1 (docs/plan-native-props.md 3.1 / 3.2): our oscillator keys, appended to the type-6 run of stock's property
 # template in this order (Type first: stock's push sends a child's properties in template order, and the M7 keeps the
 # others only once the oscillator is Analog), with their defaults (Shape 48 = saw, NP6). P3 Q1 (docs/plan-p3-fm-bits.md
-# 3.1): Sub FM 0x18B, Bit Depth 0x1A4 and FM 1>2 0x132 after Glide, all 0 (no FM, Full): 0x2FC + 7 = 0x303, padded to
-# 0x304 with one type-0xFF entry, the first kit that ships one (test_native_props: no reader path makes a type-0xFF object).
+# 3.1): Sub FM 0x18B and FM 1>2 0x132 after Glide, both 0 (no FM). BE4.41 had Bit Depth 0x1A4 between them (0x2FC + 7 =
+# 0x303, one pad); BE4.42 removed it: 0x2FC + 6 = 0x302, padded to 0x304 with two type-0xFF entries (the same count, so the
+# patched immediates are BE4.41's; test_native_props: no reader path makes a type-0xFF object). BE4.43 (plan BE4.43): FM Atk
+# 0x1A4 (0: instant) and FM Dec 0x1A0 (128: Inf) after FM 1>2, so a new oscillator and a BE4.42 project (no such attribute:
+# the default) play env 1, BE4.42's sound: 0x2FC + 8 = 0x304, the same count, and no pad entry any more.
 NP_TEMPLATE_KEYS = (("KEY_OSC_TYPE", 0), ("KEY_OSC_SHAPE", 48), ("KEY_OSC_SYNC", 0), ("KEY_OSC_GLIDE", 0),
-                    ("KEY_OSC_SUBFM", 0), ("KEY_OSC_BITS", 0), ("KEY_OSC_FM12", 0))
+                    ("KEY_OSC_SUBFM", 0), ("KEY_OSC_FM12", 0), ("KEY_OSC_FMATK", 0), ("KEY_OSC_FMDEC", 128))
 NP_OSC_TYPE = 6                       # the Wavetable oscillator objects' template type (WT1 / WT2)
 NP_PAD_TYPE = 0xFF                    # pad entries (an encodable count): no object type stock reads or makes (test_native_props)
 # P4-1 (docs/plan-p4-drums.md 3.1 / 3.3 N1), drums builds only: the engine index and the seven knobs after the type-1 run
 # (saminst: a One-Shot pad; type 2 loopinst and type 5 samasst stay stock's), all 0 (engine 0 = none: a plain sample pad;
 # the Drum Synth builder sets the Kick and its defaults, P4-3), and the Drum Synth flag after the One-Shot track's run
-# (S.TYPE_ONESHOT), 0. BE4.41's 0x2FC + 7 = 0x303 + 9 = 0x30C: a multiple of 4, so no pad entry in a drums build; the
-# default build keeps BE4.41's 0x304 with its one pad (M1).
+# (S.TYPE_ONESHOT), 0. (P4-1 was written on BE4.41's 0x2FC + 7 = 0x303 + 9 = 0x30C, no pad entry.) Since BE4.43 the analog
+# keys make 0x2FC + 8 = 0x304; with the drums' 9 that is 0x30D, padded to 0x310 with three type-0xFF entries; the default
+# build keeps v4.46's 0x304, no pad (M1).
 DR_PAD_TYPE = 1                       # saminst, the One-Shot pad object (tpl.txt, plan 0.2)
 
 
@@ -1769,6 +1977,187 @@ def np_template(base_img, stock_n, runs=None):
         raise SystemExit(f"N1: {n:#x} entries: no cmp.w encoding")
     new += [struct.pack("<BBHI", NP_PAD_TYPE, 0, 0, 0)] * (n - len(new))
     return b"".join(new), n
+
+
+# BE4.45 X1 (docs/plan-fm-targets.md): FM amounts as Mod Matrix destinations. Stock's Wavetable destination table
+# (MX_WT_DEST_TAB, 23 entries) is copied into the synth UI block with three rows more, each after its oscillator's last
+# stock row (Position): OSC1 Sub FM, OSC2 FM 1>2, OSC2 Sub FM. Names: the oscillator rows' format is ours, "OSC1: %s" /
+# "OSC2: %s" (stock's "WT1: %s" / "WT2: %s" at 0x0818EAB8, now unreferenced: the identity T0 / J2 rename, which T0 left out
+# because it was not DEST_NAME's), and our three rows carry their own name (+0x10) so the row filler never asks the registry
+# (whose title would be null if N2 ever left our keys out). CC column (+0x14): 0, which the page shows blank (MX_ROWS_BUILD
+# 0x0814E798: ids are read only there, for display; the column names the CC stock maps to a row, and none maps to ours).
+# Users: the row filler (the Mod Matrix page), DEST_NAME and 0x08134700 (the per-type 0x3F posts) read our copy, which has
+# its own count word (after the strings). The destination enumerator 0x08159358 (PR_DEST_ENUM) is the piano roll's
+# destination list (PR_DEST_LIST, called from the piano roll), which matches rows by type only and takes no instance: X1
+# kept it on stock's table (X1 review: 'OSC1: FM 1>2' and the knobless OSC2 Sub FM). BE4.45 X3 (Jeff: piano-roll lanes on
+# the three) puts it on our copy too and replaces its type match with pr_dest_skip (m4_synth.c), which keeps our rows only on
+# their own oscillator (pr_dest_patch below).
+MX_DEST_NEW = ((0, "KEY_OSC_SUBFM", "Sub FM"), (1, "KEY_OSC_FM12", "FM 1>2"), (1, "KEY_OSC_SUBFM", "Sub FM"))
+MX_DEST_STOCK_N = 23
+MX_DEST_STOCK_T6 = [(0, 3), (0, 0xC4), (0, 0xC9), (1, 3), (1, 0xC4), (1, 0xC9)]   # (instance, key): Pitch, Level, Position
+MX_DEST_FMT = (b"OSC1: %s", b"OSC2: %s")
+MX_DEST_ENT = 24
+
+
+def mx_dest_table(base_img, at):
+    """X1: (bytes at `at`: the 26 entries, our strings, then the u32 entry count (our count word, the last 4 bytes);
+    the entry count)."""
+    t, n = S.MX_WT_DEST_TAB - BASE, struct.unpack_from("<I", base_img, S.MX_WT_DEST_COUNT - BASE)[0]
+    if n != MX_DEST_STOCK_N:
+        raise SystemExit(f"X1: stock's Wavetable destination count is {n}, not {MX_DEST_STOCK_N}")
+    ents = [bytearray(base_img[t + MX_DEST_ENT * i:t + MX_DEST_ENT * (i + 1)]) for i in range(n)]
+    for e in ents:   # {u8 type, 3 zero, u32 instance, u16 key, 2 zero, fmt, name, u8 id, 3 zero}
+        if e[1:4] != bytes(3) or e[10:12] != bytes(2) or e[0x15:0x18] != bytes(3) or struct.unpack_from("<I", e, 4)[0] > 1:
+            raise SystemExit(f"X1: stock's destination entry {bytes(e).hex()} is not the expected layout")
+    t6 = [i for i, e in enumerate(ents) if e[0] == NP_OSC_TYPE]
+    if t6 != list(range(t6[0], t6[0] + 6)) or [(struct.unpack_from("<I", ents[i], 4)[0], struct.unpack_from("<H", ents[i], 8)[0])
+                                               for i in t6] != MX_DEST_STOCK_T6:
+        raise SystemExit("X1: stock's oscillator destinations are not Pitch / Level / Position of WT1, then WT2")
+    keys = {getattr(S, k) for _, k, _ in MX_DEST_NEW}
+    if any(struct.unpack_from("<H", e, 8)[0] in keys for e in ents):
+        raise SystemExit("X1: one of our keys is already a stock destination")
+    total = n + len(MX_DEST_NEW)
+    strs, addr = bytearray(), {}
+    for s in list(MX_DEST_FMT) + sorted({x for _, _, x in MX_DEST_NEW}):
+        b = s if isinstance(s, bytes) else s.encode()
+        addr[b] = at + MX_DEST_ENT * total + len(strs)
+        strs += b + bytes(4 - len(b) % 4)
+    for i in t6:                                          # the oscillator rows read "OSC1: .." / "OSC2: .."
+        struct.pack_into("<I", ents[i], 0xC, addr[MX_DEST_FMT[struct.unpack_from("<I", ents[i], 4)[0]]])
+    out = list(ents)
+    # each after its oscillator's last stock row, in MX_DEST_NEW's order: inserted last first, instance 1 before 0, so
+    # every insert lands at a stock index (OSC1's after its Position at +3, OSC2's after its Position at +6)
+    for inst, k, name in reversed(MX_DEST_NEW):
+        e = bytearray(MX_DEST_ENT)
+        e[0] = NP_OSC_TYPE
+        struct.pack_into("<IHxxIIB", e, 4, inst, getattr(S, k), addr[MX_DEST_FMT[inst]], addr[name.encode()], 0)
+        out.insert(t6[0] + 3 * (inst + 1), e)
+    return b"".join(bytes(x) for x in out) + bytes(strs) + struct.pack("<I", total), total
+
+
+# (table literal, its count literal) per user; X1 kept the enumerator's pair (LIT_3 / N_LIT_3) stock's, X3 moves it too
+MX_DEST_USERS = (("MX_WT_DEST_LIT_1", "MX_WT_DEST_N_LIT_1"), ("MX_WT_DEST_LIT_2", None),
+                 ("MX_WT_DEST_LIT_3", "MX_WT_DEST_N_LIT_3"), ("MX_WT_DEST_LIT_4", "MX_WT_DEST_N_LIT_4"))
+MX_DEST_KEEP = ()
+PR_GLOBAL_ROWS = 30          # PR_DEST_ENUM: 3 groups of 10 global keys before Granular's rows (m4_synth.c PR_GLOBAL_ROWS)
+
+
+def pr_dest_patch(base_img, patch, wrap):
+    """X3: PR_DEST_LIST's type match (ldrb.w r3, [sp, #0x26]; cmp r3, r8; then stock's bne to the next row) -> bl wrap;
+    cmp r0, #0 (wrap: pr_dest_skip(frame, r4 the enumerator index, r8 the child's type, sb the track handle's address)).
+    Refused unless the site is stock's, the bne after it is the one to the next row, and the enumerator is the code whose
+    index rule (30 global rows, then Granular's count, then the Wavetable table) pr_dest_skip relies on (PR_DEST_ENUM_SHA),
+    and (X3 review) the builder is the code whose frame pr_dest_skip reads ([sp + 0x26] type, [sp + 0x28] key, [sp + 0x2C]
+    the child's handle, r4 the index, r8 the child's type, sb the track handle's address: PR_DEST_LIST_SHA)."""
+    lst = bytes(base_img[S.PR_DEST_LIST - BASE:S.PR_DEST_LIST - BASE + S.PR_DEST_LIST_LEN])
+    if hashlib.sha256(lst).hexdigest() != S.PR_DEST_LIST_SHA:
+        raise SystemExit("X3: PR_DEST_LIST is not the builder whose frame was read (PR_DEST_LIST_SHA)")
+    site = S.PR_DEST_MATCH
+    if asm("ldrb.w r3, [sp, #0x26]; cmp r3, r8", site) != S.orig("PR_DEST_MATCH"):
+        raise SystemExit("X3: PR_DEST_MATCH is not stock's type match")
+    if base_img[site + 6 - BASE:site + 8 - BASE] != asm(f"bne {site - 0x10:#x}", site + 6):
+        raise SystemExit("X3: PR_DEST_MATCH is not followed by the bne to the next row (16 B back)")
+    enum = bytes(base_img[S.PR_DEST_ENUM - BASE:S.PR_DEST_ENUM - BASE + S.PR_DEST_ENUM_LEN])
+    if hashlib.sha256(enum).hexdigest() != S.PR_DEST_ENUM_SHA:
+        raise SystemExit("X3: PR_DEST_ENUM is not the enumerator whose index rule was read (PR_DEST_ENUM_SHA)")
+    lits = ((S.PR_DEST_ENUM + 0xB0, S.MX_GRAN_DEST_COUNT), (S.PR_DEST_ENUM + 0xBC, S.MX_WT_DEST_COUNT),
+            (S.PR_DEST_ENUM + 0xC4, S.MX_WT_DEST_TAB))
+    for a, want in lits:
+        if struct.unpack_from("<I", base_img, a - BASE)[0] != want:
+            raise SystemExit(f"X3: the enumerator's literal at {a:#x} is not {want:#x}")
+    c = asm(f"bl {wrap:#x}; cmp r0, #0", site)
+    if len(c) != 6:
+        raise SystemExit("X3: the type match's replacement is not 6 bytes")
+    patch(site, c, S.orig("PR_DEST_MATCH"), "FM targets (BE4.45 X3): piano-roll destination list, our rows on their own oscillator")
+
+
+def mx_dest_patches(base_img, patch, at, data, n):
+    """X1: the table literals of the row filler, DEST_NAME and 0x08134700 -> our copy, their count literals -> our count
+    word, the row filler's two bounds (it hard-codes 23); the enumerator's two literals, stock's table and stock's count
+    word stay as they are. Refused unless, on the base image, the four table literals are every reference to the table
+    (no other aligned word holds it or points inside it, no movw / movt pair builds it) and the three count literals,
+    each 4..8 B before its table literal, are every reference to the count word."""
+    tab, cnt = S.MX_WT_DEST_TAB, S.MX_WT_DEST_COUNT
+    refs = one_reference(base_img, {tab, cnt})
+    lits = sorted(getattr(S, x) for x, _ in MX_DEST_USERS)
+    if sorted(refs[tab]) != lits:
+        raise SystemExit(f"X1: the table is referenced at {[hex(a) for a in refs[tab]]}, not only by {MX_DEST_USERS}")
+    for k in range(0, len(base_img) - 3, 4):
+        w = struct.unpack_from("<I", base_img, k)[0]
+        if tab < w < tab + MX_DEST_ENT * MX_DEST_STOCK_N:
+            raise SystemExit(f"X1: the word at {BASE + k:#x} points inside the table ({w:#x})")
+    nlits = [(getattr(S, l), getattr(S, c)) for l, c in MX_DEST_USERS if c]
+    if sorted(refs[cnt]) != sorted(c for _, c in nlits) or any(not 0 < l - c <= 8 for l, c in nlits):
+        raise SystemExit(f"X1: the count word's references {[hex(a) for a in refs[cnt]]} are not "
+                         f"{[x for _, x in MX_DEST_USERS if x]}, each before its table literal")
+    for x in [y for u in MX_DEST_USERS for y in u if y]:
+        if S.orig(x) != struct.pack("<I", tab if x in dict(MX_DEST_USERS) else cnt):
+            raise SystemExit(f"X1: {x} does not hold stock's {'table' if x in dict(MX_DEST_USERS) else 'count word'}")
+    if struct.unpack_from("<I", data, len(data) - 4)[0] != n:
+        raise SystemExit("X1: our table's count word is not its last word")
+    for site, src in (("MX_WT_ROWS_N", f"movs r2, #{MX_DEST_STOCK_N:#x}"),
+                      ("MX_WT_ROWS_END", f"add.w r7, r4, #{MX_DEST_ENT * MX_DEST_STOCK_N:#x}")):
+        if asm(src, getattr(S, site)) != S.orig(site):
+            raise SystemExit(f"X1: {site} is not stock's '{src}'")
+    patch(at, data, b"\xff" * len(data), f"FM targets (BE4.45 X1): Wavetable Mod Matrix destinations ({n} entries, names)")
+    for lit, nlit in MX_DEST_USERS:
+        if lit in MX_DEST_KEEP:
+            continue
+        patch(getattr(S, lit), struct.pack("<I", at), S.orig(lit), f"FM targets: destination table literal ({lit})")
+        if nlit:
+            patch(getattr(S, nlit), struct.pack("<I", at + len(data) - 4), S.orig(nlit),
+                  f"FM targets: destination count literal ({nlit}) -> our count word ({n})")
+    for site, src in (("MX_WT_ROWS_N", f"movs r2, #{n:#x}"), ("MX_WT_ROWS_END", f"addw r7, r4, #{MX_DEST_ENT * n:#x}")):
+        c = asm(src, getattr(S, site))
+        if len(c) != len(S.orig(site)):
+            raise SystemExit(f"X1: '{src}' is not {len(S.orig(site))} bytes")
+        patch(getattr(S, site), c, S.orig(site), f"FM targets: row filler bound ({site}: {src})")
+
+
+# BE4.46 S2 (docs/feasibility-fm-env-sources.md): FM Env 1 / FM Env 2 (stock's source ids 3 / 6, which S1's M7 connect
+# gives to the oscillators' FM envelopes) in a Wavetable track's Mod Matrix: the page's source list, the routing validator and
+# the source names (m4_synth.c mx_wt_rows, mx_src_valid, mx_src_name). The list is our copy (stock's stays, with its two
+# literals, for Granular and the validator's other types); MX_BUILD's bl of the Wavetable row filler is the one site that
+# installs it, so the filler's own bytes (which BE4.45 X1 patches for the destinations) stay stock's here.
+FMENV_SOURCES = (3, 6)          # FM Env 1, FM Env 2, in that order
+FMENV_AFTER = 2                 # right after Env 2 (source id 2)
+FMENV_STOCK_N = 16              # stock's Wavetable list (MX_WT_SRC_LIST)
+
+
+def fmenv_matrix(base_img, patch, code, ss):
+    """S2: refused unless stock's list, its literals, the filler's call and both entries are what m4_synth.c assumes."""
+    lst = S.MX_WT_SRC_LIST
+    stock = list(struct.unpack_from(f"<{FMENV_STOCK_N}H", base_img, lst - BASE))
+    if stock[0] != 0 or FMENV_AFTER not in stock or any(s in stock for s in FMENV_SOURCES):
+        raise SystemExit(f"S2: stock's Wavetable source list {stock} is not None first, with Env 2 and without ids 3 / 6")
+    refs = one_reference(base_img, {lst})[lst]
+    if sorted(refs) != sorted([S.MX_WT_SRC_LIT, S.MX_SRC_VALID_LIT]):
+        raise SystemExit(f"S2: the source list is referenced at {[hex(a) for a in refs]}, not only by its two literals")
+    i = stock.index(FMENV_AFTER) + 1
+    ours = stock[:i] + list(FMENV_SOURCES) + stock[i:] + [0]          # + the None MX_EDIT reads at index == count
+    blob = struct.pack(f"<{len(ours)}H", *ours)
+    if code.count(blob) != 1:
+        raise SystemExit(f"S2: m4_synth.c's mx_wt_sources is not {ours} (stock's list with 3 / 6 after Env 2, then 0)")
+    if S.orig("MX_WT_ROWS_SITE") != asm(f"bl {S.MX_WT_ROWS:#x}", S.MX_WT_ROWS_SITE):
+        raise SystemExit("S2: MX_WT_ROWS_SITE is not stock's bl MX_WT_ROWS")
+    # the C stubs (stock_valid / stock_src_name) replay stock's first instructions and resume at site + 5 (Thumb): their
+    # bytes must be exactly stock's entry, then movw / movt r3 = site + 5, bx r3 (S2 review: one check ties the C to stock)
+    for site, displaced, stub in (("MX_SRC_VALID", "mov ip, r1; ldrh r1, [r1, #4]", "stock_valid"),
+                                  ("MX_SRC_NAME", "push {lr}; mov lr, r0", "stock_src_name")):
+        replays(site, displaced)
+        at, back = ss[stub] & ~1, getattr(S, site) + 5
+        want = asm(f"{displaced}; movw r3, #{back & 0xFFFF:#x}; movt r3, #{back >> 16:#x}; bx r3", at)
+        got = code[at - SYNTH_CODE:at - SYNTH_CODE + len(want)]
+        if got != want or got[:4] != S.orig(site):
+            raise SystemExit(f"S2: {stub} at {at:#x} is {got.hex()}, not stock's {site} entry replayed, resuming at {back:#x}")
+    patch(S.MX_WT_ROWS_SITE, asm(f"bl {ss['mx_wt_rows']:#x}", S.MX_WT_ROWS_SITE), S.orig("MX_WT_ROWS_SITE"),
+          "FM Env sources (BE4.46 S2): a Wavetable Mod Matrix page lists FM Env 1 / 2 after Env 2 (mx_wt_rows)")
+    for site, fn, why in (("MX_SRC_VALID", "mx_src_valid", "sources 3 / 6 valid on a Wavetable track"),
+                          ("MX_SRC_NAME", "mx_src_name", "3 / 6 named FM Env 1 / FM Env 2 on a Wavetable track")):
+        c = asm(f"b.w {ss[fn]:#x}", getattr(S, site))
+        if len(c) != 4:
+            raise SystemExit(f"S2: {site}'s branch is not 4 bytes")
+        patch(getattr(S, site), c, S.orig(site), f"FM Env sources (BE4.46 S2): {why} ({fn})")
 
 
 def one_reference(img, addrs):
@@ -1807,6 +2196,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
     marker = b"BENTO_MOD:synth-ui(Analog oscillators as native properties, drum page; after bento-playground A1, K7)\0"
     end = (SYNTH_CODE + len(code) + len(marker) + 7) & ~7
     tpl_data, tpl_n, tpl_at = b"", 0, end
+    mx_at = mx_n = 0                     # X1 (analog): the relocated Mod Matrix destination table
     an, dr = inc("analog"), inc("drums")
     if dr and not an:
         raise SystemExit("drums (P4-1 N1 / N2): the native drum keys use the analog group's template and registry sites")
@@ -1831,6 +2221,9 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                         runs += dr_template_runs()
             tpl_data, tpl_n = np_template(base_img, stock_n, runs or None)
             end = tpl_at + len(tpl_data)
+            mx_at = (end + 3) & ~3                               # X1: the destination table after the template
+            mx_data, mx_n = mx_dest_table(base_img, mx_at)
+            end = mx_at + len(mx_data)
     if end > SYNTH_LIMIT:
         raise SystemExit(f"synth UI block ends at {end:#x}, past the proven image size ({SYNTH_LIMIT:#x})")
     extend(end, "Analog (S6a): extend image with erased (0xFF) flash for the synth UI block")
@@ -1846,7 +2239,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
         check_branches(c, a, exits, what)
         wrap.extend(c)
         return a
-    n2 = t1 = b1 = None
+    n2 = t1 = b1 = pr = None
     if an:
         with S.group("analog"):
             # N2: model init's bl REG_BUILD (its only call) -> stock's builder, then np_keys (our four descriptors), r0 kept
@@ -1861,6 +2254,11 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
             # T1 / B1' (BE4.40 identity): reached by stock's bl, so sp is still the caller's: the row's handle from its frame
             t1 = block(f"ldr.w r2, [sp, #0x32c]; b.w {ss['an_pane_title']:#x}", {ss["an_pane_title"]}, "Analog pane title")
             b1 = block(f"ldr r2, [sp, #0x20]; b.w {ss['an_browse']:#x}", {ss["an_browse"]}, "Analog double-tap 0x3F")
+            # X3: PR_DEST_LIST's type match (reached by bl, so the builder's frame is at sp + 24 after the push): r0 the frame,
+            # r1 = r4 the enumerator index, r2 = r8 the child's type, r3 = sb the track handle's address; r1-r3, ip kept
+            pr = block(f"push.w {{r1, r2, r3, r12, lr}}; sub sp, #4; add r0, sp, #24; mov r1, r4; mov r2, r8; mov r3, sb; "
+                       f"bl {ss['pr_dest_skip']:#x}; add sp, #4; pop.w {{r1, r2, r3, r12, pc}}", {ss["pr_dest_skip"]},
+                       "FM targets X3: piano-roll row test")
     x1 = x2 = x3 = h1 = None
     if inc("drums"):
         with S.group("drums"):
@@ -1906,6 +2304,8 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                 if len(c) != 4:
                     raise SystemExit(f"N1: '{src}' is not one 4-byte instruction")
                 patch(getattr(S, site), c, S.orig(site), f"{np_why} N1 template bound ({site}: {src})")
+            mx_dest_patches(base_img, patch, mx_at, mx_data, mx_n)
+            pr_dest_patch(base_img, patch, pr)
             patch(S.REG_BUILD_SITE, asm(f"bl {n2:#x}", S.REG_BUILD_SITE), S.orig("REG_BUILD_SITE"),
                   f"{np_why} N2 registry build -> stock's, then our oscillator keys' descriptors" + (" and the drum keys'" if dr else ""))
             # A10: the synth view's tick slot (vtable word); A6 / A7: bl sites
@@ -1942,6 +2342,7 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                 was = orig.split(b"\0")[0].decode()
                 patch(getattr(S, site), text.ljust(len(orig), b"\0"), orig, f"Analog (identity T0): {was!r} -> {text.decode()!r}",
                       site=True)                         # (12 bytes: a site all the same, stock's under BE_DISABLE=analog)
+            fmenv_matrix(base_img, patch, code, ss)
             # D1: the Wavetable pane class's paint slot -> an_wave_paint (the Shape dial on an Analog pane, else stock's paint)
             if S.orig("WT_PANE_PAINT_SLOT") != struct.pack("<I", S.WT_PANE_PAINT | 1):
                 raise SystemExit("WT_PANE_PAINT_SLOT does not hold stock's WT_PANE_PAINT")
@@ -1975,11 +2376,13 @@ def synth_ui(base_img, img, patch, extend, sources, s4, out, inc):
                   "Drums: handles (H4): a pad's child copy carries its knobs")
     s4.update({f"synth.{k}": v for k, v in ss.items()})
     s4.update({"synth.np_template": tpl_at if an else 0, "synth.np_template_n": tpl_n})
+    s4.update({"synth.mx_dest": mx_at, "synth.mx_dest_n": mx_n,
+               "synth.mx_dest_count": mx_at + len(mx_data) - 4 if mx_at else 0})
     if n2 is not None:
-        s4.update({"synth.wrap_reg_build": n2, "synth.wrap_pane_title": t1, "synth.wrap_browse": b1})
+        s4.update({"synth.wrap_reg_build": n2, "synth.wrap_pane_title": t1, "synth.wrap_browse": b1, "synth.wrap_pr_dest": pr})
     if inc("drums"):
         s4.update({"synth.wrap_save": x1, "synth.wrap_load": x2, "synth.wrap_context": x3, "synth.wrap_ctor": h1})
-    return len(code) + len(tpl_data)
+    return len(code) + len(tpl_data) + (len(mx_data) if an else 0)   # X1: the destination table counts too
 
 
 def note_on_case(status, two_data=True, native=False, guard=False):
