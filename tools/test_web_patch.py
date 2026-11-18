@@ -146,7 +146,8 @@ def main():
             with tempfile.TemporaryDirectory() as td:
                 r = subprocess.run([sys.executable, str(TOOLS / "export_patch.py"), a.stock, str(kits[v]), "--out", td],
                                    capture_output=True, text=True)
-                same = r.returncode == 0 and (Path(td) / f"v{v}.json").read_bytes() == (WEB / "patches" / f"v{v}.json").read_bytes()
+                lf = lambda f: f.read_bytes().replace(b"\r\n", b"\n")   # noqa: E731  (a checkout with core.autocrlf)
+                same = r.returncode == 0 and lf(Path(td) / f"v{v}.json") == lf(WEB / "patches" / f"v{v}.json")
                 check(same, f"v{v}: export_patch.py from the make_kit image reproduces the committed patch byte for byte"
                       + ("" if r.returncode == 0 else f" (exit {r.returncode}: {r.stderr.strip()[-300:]})"))
         else:

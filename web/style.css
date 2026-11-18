@@ -29,7 +29,7 @@ section.notice p { margin: .3rem 0; }
   display: inline-grid; place-items: center; width: 1.6rem; height: 1.6rem; border-radius: 50%;
   background: var(--accent); color: var(--accent-fg); font-size: .9rem;
 }
-code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .92em; }
+code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: .92em; overflow-wrap: anywhere; }
 .sha { word-break: break-all; }
 .drop {
   border: 2px dashed var(--line); border-radius: 10px; background: var(--drop); padding: 1.4rem 1rem;
