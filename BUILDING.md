@@ -18,6 +18,10 @@ touches the Bento's bootloader, so the official way back to stock always works (
 - **Python 3.12** and **git**. Step 1 installs both.
 - About 1 GB of disk space and 15 minutes (plus 15 to 25 more for the optional tests).
 
+**Patch in your browser** (once the site is live): the same firmware files, without installing anything, from
+the project's web patcher. It applies the release to your own stock files in the page and checks the
+result against the same published hash. How it works: [docs/web-patcher.md](docs/web-patcher.md).
+
 You build a specific release, identified by its **tag** (for example `v4.46`). Each release says
 which stock firmware it needs. **v4.46 needs stock Bento firmware 1.6.8**, exactly that version.
 
