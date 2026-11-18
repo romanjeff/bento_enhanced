@@ -1,7 +1,10 @@
-# bento_enhanced firmware mods (stock Bento 1.6.1)
+# bento_enhanced firmware mods (stock Bento 1.6.8)
 
-**Current release: [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40)**
-(shows as `BE3.40` on the boot screen). Built directly on **stock Bento 1.6.1**. Since
+**Current version: v4.44** (shows as `BE4.44` on the boot screen), built directly on **stock Bento
+1.6.8** ([release notes](../../docs/release-notes-v4.44.md)); to build and install it yourself, see
+[`BUILDING.md`](../../BUILDING.md). Since BE4.00 the base is 1.6.8 ([`docs/plan-168-port.md`](../../docs/plan-168-port.md));
+the v3.x builds (the last published release [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40),
+`BE3.40`) were on stock 1.6.1, and the sections below that name 1.6.1 are that history. Since
 v2.3 nothing here depends on
 [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s
 images. Several features are ports of Lab's work (GPL-3.0-or-later) and are credited
@@ -26,8 +29,8 @@ Verified on hardware unless marked otherwise.
 | **Hold shortcuts** (TRACKS / LAUNCH / MIXER / INST + pads) | everywhere | v2.6 |
 | **Black box**: crash and stall records on the SD card | `BENTO_DIAG.log`, `BENTO_CRASHES.log` | v2.1+ |
 
-**Stock compatibility.** Projects saved with these features still open on stock 1.6.1
-(checked on hardware). Stock plays recorded-aftertouch notes as plain notes and ignores
+**Stock compatibility.** Projects saved with these features still open on stock 1.6.8 (and, for
+the v3.x builds, on stock 1.6.1; checked on hardware). Stock plays recorded-aftertouch notes as plain notes and ignores
 `curves.bnt`; it ignores trigger conditions and retriggers, and keeps velocities.
 
 ## Using aftertouch sequencing
@@ -58,8 +61,9 @@ counted in the log (`skipped`).
 Use the normal bootloader procedure. **This never touches the bootloader**, so
 reinstalling stock always works.
 
-1. Build (below) and package. `package_m1.sh` writes `flash/bento_enhanced-v<ver>/` with
-   `01_TEST_FIRMWARE/` (this build) and `03_RESTORE_STOCK/` (your stock pair).
+1. Build and package: `python tools/make_kit.py <stock 1.6.8 zip or folder> <out dir>` writes
+   `<out dir>/bento_enhanced-v<ver>/` with `01_TEST_FIRMWARE/` (this build) and
+   `03_RESTORE_STOCK/` (your stock pair). Step by step: [`BUILDING.md`](../../BUILDING.md).
 2. Copy `bento1.bin` and `bento2.bin` to the SD card root.
 3. Hold power to start the bootloader, then press **REC** to install.
 4. To go back, install the stock pair the same way.
@@ -69,18 +73,28 @@ this repository.
 
 ## Build and test
 
-You need a POSIX host (WSL Ubuntu 24.04 works) with Lab's pinned toolchain: zig cc,
-keystone, Unicorn 2.1.3. See [`tools/lab-build-wsl/`](../../tools/lab-build-wsl/). The
-scripts there hard-code this checkout's `/mnt/c/...` path, so edit it for yours.
+Python 3.12 with the pinned packages: [`requirements.txt`](../../requirements.txt) for the build
+(zig cc via `ziglang`, keystone, capstone), [`requirements-test.txt`](../../requirements-test.txt)
+for the suites (adds Unicorn 2.1.3, numpy, pillow). No compiler or shell beyond that: the build
+runs on Linux, WSL and (checked once, build only) native Windows. The friendly route is
+[`BUILDING.md`](../../BUILDING.md); underneath it, [`tools/make_kit.py`](../../tools/make_kit.py)
+checks the stock pair, runs build.py, packages the kit, compares the image with
+[`tools/release_hashes.json`](../../tools/release_hashes.json) and, with `--test`, runs the suites.
 
 ```
-python build.py --base <stock 1.6.1 bento1.bin> --out <new dir>
-python test_<suite>.py <stock 1.6.1 bento1.bin> <out dir>     # or test_m1.sh: all suites
+python tools/make_kit.py <stock 1.6.8 zip / folder / bento1.bin> <out dir> [--test] [--set BE_DISABLE=...]
+python build.py --base <stock bento1.bin> --out <new dir>          # mods/m1: the build alone
+python test_<suite>.py <stock bento1.bin> <out dir>                # one suite
 ```
 
-The suites are `test_diag`, `test_polyat`, `test_conditions`, `test_holdstep`,
-`test_controls`, `test_retrig`, `test_step` and `test_mod`: 279 emulated tests (5 skipped in a
-default build). They run the patched image's real code under Unicorn, including stock functions,
+`make_kit.py --set` passes the knobs below (`BE_DISABLE`, `BE_ENABLE`, `BE_LABEL`, `BE_TAG`,
+`BE_WT_MIP`); it ignores `BE_*` variables already in the environment. The shell scripts in
+[`tools/lab-build-wsl/`](../../tools/lab-build-wsl/) are the author's dev setup (hard-coded paths),
+not needed for any of this. When a release changes the image, add its default build's `bento1.bin`
+SHA-256 to `tools/release_hashes.json`.
+
+The suites are the `SUITES` list in `tools/make_kit.py` (the same as `test_m1.sh`'s, with the
+feature groups each needs: a build that leaves a group out skips its suites). They run the patched image's real code under Unicorn, including stock functions,
 with hardware, FatFS and a few stock functions stubbed.
 
 **Base tables (S1 of the 1.6.8 port).** Every stock address, RAM address, struct offset,

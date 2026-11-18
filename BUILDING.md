@@ -81,7 +81,8 @@ python -m pip install -r requirements.txt
 
 The first line makes a private Python folder for this project (`~/be-venv`), the second switches to
 it (your prompt now starts with `(be-venv)`), the third downloads the exact tool versions the
-release was built with (zig, keystone-engine, capstone; about 60 MB).
+release was built with (zig, keystone-engine, capstone; about 60 MB). A notice that "a new release
+of pip is available" is harmless: ignore it.
 
 **Every time you open a new terminal** later, run `cd ~/bento_enhanced` and
 `source ~/be-venv/bin/activate` again before step 5.
@@ -99,7 +100,8 @@ python tools/make_kit.py /mnt/c/Users/<you>/Downloads/bento-1.6.8.zip /mnt/c/Use
 ```
 
 `make_kit.py` first checks that both stock files are the genuine 1.6.8 (it refuses anything else and
-says why), then builds (about a minute; it prints many lines), then packages the kit.
+says why), then builds (under a minute on a recent computer; it prints many lines, including addresses like
+`0x808ea34`: that is normal), then packages the kit.
 
 ## 6. Check the result
 
@@ -126,7 +128,7 @@ The kit folder `bento_enhanced-v4.44` holds:
 | `manifest.json`, `SHA256SUMS.txt` | what the image contains; the hash of every file |
 
 Optional, for the curious: `python -m pip install -r requirements-test.txt` and then the step 5
-command with `--test` at the end also runs the emulated test suites (several more minutes, a fresh
+command with `--test` at the end also runs the emulated test suites (about 15 more minutes, a fresh
 output folder or `--force`).
 
 ## 7. Install it on the Bento
@@ -182,8 +184,23 @@ Projects saved with the mod open on stock; stock just ignores the extra settings
 
 ### Native Windows (without WSL)
 
-<!-- native-windows-result -->
-Not covered yet: use WSL.
+WSL (above) is the supported route on Windows. Building directly in Windows also works: it was
+checked once (Python 3.11.7, build only, no `--test`) and gave the same MATCH. If you want to try:
+
+1. Install Python 3.12 from <https://www.python.org/downloads/windows/> (tick *Add python.exe to
+   PATH*) and Git from <https://git-scm.com/download/win>.
+2. In PowerShell, clone and check out as in step 3 (`cd ~`, then the same `git` lines).
+3. Then, still in `~\bento_enhanced`:
+
+```
+py -3.12 -m venv $HOME\be-venv
+& $HOME\be-venv\Scripts\python.exe -m pip install -r requirements.txt
+& $HOME\be-venv\Scripts\python.exe tools\make_kit.py $HOME\Downloads\bento-1.6.8.zip $HOME\Desktop\bento-kit
+```
+
+The `manifest.json` in a kit built this way has Windows line endings, so its line in
+`SHA256SUMS.txt` differs from a Linux build's; only the `bento1.bin` hash matters. The test suites
+need Python 3.12 (`requirements-test.txt`) and have not been run on native Windows.
 
 ---
 

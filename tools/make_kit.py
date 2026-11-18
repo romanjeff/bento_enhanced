@@ -23,7 +23,7 @@ A default build (no --set) prints whether the built bento1.bin matches the publi
 hash for this version. --set passes a build knob (BE_DISABLE, BE_ENABLE, BE_LABEL, BE_TAG,
 BE_WT_MIP; see mods/m1/README.md) to build.py; any BE_* variable already in your environment is
 ignored unless given with --set, so a stray variable can never change a default build.
---test runs the emulated test suites against the build (several minutes).
+--test runs the emulated test suites against the build (about 15 minutes; test_analog is most of it).
 
 Pure Python, no shell: the same on Linux, macOS, WSL and Windows.
 """
@@ -87,7 +87,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("stock", help="the stock firmware: folder, bento1.bin / bento2.bin, or the download's .zip")
     ap.add_argument("out", help="output folder (created if missing): the build and the kit go in here")
-    ap.add_argument("--test", action="store_true", help="also run the emulated test suites (several minutes)")
+    ap.add_argument("--test", action="store_true", help="also run the emulated test suites (about 15 minutes)")
     ap.add_argument("--set", action="append", default=[], metavar="BE_KNOB=value", help="a build knob (developers)")
     ap.add_argument("--force", action="store_true", help="replace an existing kit folder of the same version")
     a = ap.parse_args()

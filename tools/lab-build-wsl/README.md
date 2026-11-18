@@ -1,5 +1,9 @@
 # Reproducing bento-community-lab builds (WSL / Ubuntu 24.04)
 
+> **Dev-only.** These scripts are the author's own setup (hard-coded `/mnt/c/Users/...` and
+> `~/bento` paths, Lab's requirements). To build bento_enhanced you don't need any of them:
+> follow [`BUILDING.md`](../../BUILDING.md) (`requirements.txt` + `tools/make_kit.py`).
+
 Lab's build assumes a POSIX host with Python 3.12, `cc`/`g++` and git. Ubuntu
 24.04 ships Python 3.12.3, so WSL is the low-friction route on Windows.
 
