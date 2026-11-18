@@ -1,4 +1,4 @@
-# bento_enhanced v4.46 (stock 1.6.8): FM amounts in the Mod Matrix, FM Env 1 / 2 as sources
+# bento_enhanced v4.46 (stock 1.6.8): the Analog / Wavetable / FM synth engine, feature complete
 
 BE4.46 lets the Mod Matrix move the FM amounts, gives the piano roll lanes on them, and adds each oscillator's FM envelope
 as a modulation source. It builds on BE4.44 (FM on Wavetable and Analog oscillators) and combines two lanes that were
@@ -9,8 +9,7 @@ built and checked apart:
 - **FM Env 1 / FM Env 2 as sources** (built as a separate 4.46 kit, `-envsrc`). Plan and measurements:
   `docs/feasibility-fm-env-sources.md` (S1, S2 and their reviews).
 
-Device checklist: `docs/checklist-v4.46.txt`. Everything below was measured in the emulator; nothing in this release has
-been run on a device yet.
+Device checklist: `docs/checklist-v4.46.txt`, passed on hardware (2026-11-18). CPU figures below were measured in the emulator.
 
 ## What it does
 
@@ -85,7 +84,7 @@ voice state byte for byte).
 - **CPU, the other two rows** stay within the ceiling on one routed track (35.15k from velocity, 35.21k from FM Env).
   In the worst layout (every matrix slot used, routings on 8 tracks) with the FM envelopes running they are up to 83
   instructions (0.24 %) over it: 35.39k from FM Env, 35.32k from velocity (so not from FM Env alone). Same
-  8-voice-only case as above; recorded, not ruled on separately.
+  8-voice-only case as above; accepted as a known limit (Jeff, 2026-11-18): an edge case.
 - seq1..seq4 routed to the same FM row share one slot, as on every stock destination: the last one wins. Removing one of
   two such routings silences the other until the project is reloaded (stock's rule too).
 - A lane whose routing is edited on the Mod Matrix page to another source keeps playing next to it, even after that

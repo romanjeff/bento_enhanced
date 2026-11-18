@@ -1,7 +1,7 @@
 # bento_enhanced firmware mods (stock Bento 1.6.8)
 
-**Current version: v4.44** (shows as `BE4.44` on the boot screen), built directly on **stock Bento
-1.6.8** ([release notes](../../docs/release-notes-v4.44.md)); to build and install it yourself, see
+**Current version: v4.46** (shows as `BE4.46` on the boot screen), built directly on **stock Bento
+1.6.8** ([release notes](../../docs/release-notes-v4.46.md)); to build and install it yourself, see
 [`BUILDING.md`](../../BUILDING.md). Since BE4.00 the base is 1.6.8 ([`docs/plan-168-port.md`](../../docs/plan-168-port.md));
 the v3.x builds (the last published release [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40),
 `BE3.40`) were on stock 1.6.1, and the sections below that name 1.6.1 are that history. Since

@@ -18,8 +18,8 @@ touches the Bento's bootloader, so the official way back to stock always works (
 - **Python 3.12** and **git**. Step 1 installs both.
 - About 1 GB of disk space and 15 minutes (plus 15 to 25 more for the optional tests).
 
-You build a specific release, identified by its **tag** (for example `v4.44`). Each release says
-which stock firmware it needs. **v4.44 needs stock Bento firmware 1.6.8**, exactly that version.
+You build a specific release, identified by its **tag** (for example `v4.46`). Each release says
+which stock firmware it needs. **v4.46 needs stock Bento firmware 1.6.8**, exactly that version.
 
 ## 1. Install the tools
 
@@ -70,7 +70,7 @@ This file is 1010music's, and this project never includes it: everyone downloads
 cd ~
 git clone https://github.com/romanjeff/bento_enhanced.git
 cd bento_enhanced
-git checkout v4.44
+git checkout v4.46
 ```
 
 `git checkout` prints a note about a "detached HEAD": that is normal. Keep the clone in your Linux
@@ -113,15 +113,15 @@ lines, and these are all normal:
 
 - addresses like `0x808ea34`;
 - `left out of the image (not ported to stock-1.6.8 yet): ['drums', 'mx']`, and a few stock sites
-  "left unpatched" (Stall snapshot, watchdog and so on): those features are not part of v4.44.
+  "left unpatched" (Stall snapshot, watchdog and so on): those features are not part of v4.46.
 
 ## 6. Check the result
 
 The last lines look like this:
 
 ```
-kit: /mnt/c/bento-kit/bento_enhanced-v4.44
-built BE4.44 (bento_enhanced v4.44 on stock 1.6.8)
+kit: /mnt/c/bento-kit/bento_enhanced-v4.46
+built BE4.46 (bento_enhanced v4.46 on stock 1.6.8)
   01_TEST_FIRMWARE/bento1.bin sha256 fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff
   reference      sha256 fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff
   MATCH: byte for byte the image the author tested on hardware.
@@ -131,7 +131,7 @@ built BE4.44 (bento_enhanced v4.44 on stock 1.6.8)
 **MISMATCH** no kit is made at all: see Troubleshooting.
 
 To open the folder in Windows Explorer, run `explorer.exe /mnt/c/bento-kit` (or browse to
-`C:\bento-kit`). The kit folder `bento_enhanced-v4.44` holds:
+`C:\bento-kit`). The kit folder `bento_enhanced-v4.46` holds:
 
 | | |
 |---|---|
@@ -166,7 +166,7 @@ the firmware).
    Explorer, *Eject*) before you take it out.
 3. Put the card in the Bento. **Long-press power** to start the bootloader, then press **REC** to
    install.
-4. The boot screen shows **BE4.44**. Then go through `DEVICE_CHECKLIST.txt` if you like.
+4. The boot screen shows **BE4.46**. Then go through `DEVICE_CHECKLIST.txt` if you like.
 
 ## 8. Going back to stock
 
@@ -206,7 +206,7 @@ mod's features behave as they always did.
   shows if OneDrive moved it; use `/mnt/c/bento-kit`.
 - **`already exists`**: you built this version into that folder before. Delete the old kit folder,
   pick another output folder, or add `--force` (it is refused before building, so nothing is lost).
-- **MISMATCH** (no kit is made): check you are on the tag (`git describe --tags` prints `v4.44`) with no changes
+- **MISMATCH** (no kit is made): check you are on the tag (`git describe --tags` prints `v4.46`) with no changes
   (`git status` says *nothing to commit*), and that `python -m pip freeze` shows exactly the
   versions in `requirements.txt`. Also make sure no `BE_` setting was passed with `--set`. If it still
   doesn't match, tell the person who sent you this page. The `build-<time>` folder it leaves is
