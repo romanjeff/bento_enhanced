@@ -5,7 +5,7 @@
  * as in m7.ld; real unwind data (.ARM.extab) is refused. */
 MEMORY { CODE (rx) : ORIGIN = 0x0, LENGTH = 0x0 }   /* set per build by build.py (compile_dsp) */
 SECTIONS {
-  .text : { KEEP(*(.text.an_enter .text.an_osc .text.an_prop .text.an_note .text.dr_render)) *(.text*) *(.rodata*) } > CODE
+  .text : { KEEP(*(.text.an_enter .text.an_osc .text.an_prop .text.an_note .text.dr_render .text.x2_clear .text.x2_connect)) *(.text*) *(.rodata*) } > CODE
   .data : { *(.data*) } > CODE
   .bss  : { *(.bss*) *(COMMON) } > CODE
   .init_array : { KEEP(*(.init_array*)) KEEP(*(.ctors*)) } > CODE   /* kept, so a constructor is refused, not dropped */

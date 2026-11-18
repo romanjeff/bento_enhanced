@@ -125,7 +125,9 @@ struct Root {                      /* per Wavetable root, M7 private: the glide'
 };
 static_assert(sizeof(Root) == 32, "one line per root");
 struct Run {                       /* the hooks' running state, M7 private (two lines) */
-    u32 idx, r1, voice, r3;
+    u32 idx;
+    u32 x2n;                       /* BE4.45 X2: the X2Root entries in use (SA_X2, from the front; 0: no routing anywhere) */
+    u32 voice, r3;
     Root *root;
     u32 cyc, oscs, voices;
     u32 victim;
@@ -135,7 +137,12 @@ struct Run {                       /* the hooks' running state, M7 private (two 
     u32 inc_sub;                   /* P3: buffer A's sub increment x 2^-32 (float bits), for the golden checks (Q4: set) */
     u32 peak_b;                    /* BE4.44 W3 review: B's known peak (float bits): OSC1's increment x its Shape's peak
                                     * (an_peak), set with fmtag B by the Analog OSC1 that wrote B (wt_body's pa for B) */
-    u32 r12, r13, r14, r15;
+    /* BE4.45 X2 (docs/plan-fm-targets.md): this voice-block's routed FM amounts (x2_enter, at every an_enter that names a
+     * voice; meaningful only while voice is the voice rendering): xm the keys with a routing (X2_SUB1 / X2_FM12 / X2_SUB2),
+     * xv their amounts 0..1000 (knob travel plus the routed sum, clamped) */
+    u32 xm;
+    u16 xv[4];
+    u32 r15;
 };
 static_assert(sizeof(Run) == 64, "two lines");
 #define AN_FMTAG_A 1u
@@ -153,6 +160,31 @@ static_assert(SA_RUN + sizeof(Run) <= SA_ANCACHE && SA_ANCACHE + SA_ANCACHE_N * 
 static_assert(SA_FMBUF_A + 4u * AN_FM_FRAMES == SA_FMBUF_B && SA_FMBUF_B + 4u * AN_FM_FRAMES == SA_DKTAB, "FM buffers A, B");
 static_assert(sizeof(SaFmStats) == 32 && SA_DSTATS + sizeof(SaDrumStats) <= SA_FMSTATS && SA_FMSTATS + sizeof(SaFmStats) <= 0x200u,
               "FM stats line");
+/* BE4.45 X2 (docs/plan-fm-targets.md): one Wavetable root's Mod Matrix routings on our three destinations, as stock's connect
+ * (WT_ROUTE, 0x0807C8A0) resolved them for its voices: key k (X2_K_*) slot s at [4 k + s], s the matrix's 0..2 or stock's
+ * fixed slot 3 (PARAM slot 4: WT_ROUTE connects the mod seq lanes, seq1..seq4, ids 9..12, there whatever the matrix slot,
+ * and 0x08134700's per-type post clears it: as stock's PARAMs keep it, so do we). src: 0 none;
+ * else where the source's value sits, less 4 (PARAM_VALUE reads [src + 4]): in the voice (its offset, 1 .. X2_VOICE_BYTES - 1,
+ * the same for every voice of the root: test_analog FmTargetsX2) or in the root (X2_ROOT_REL | its offset). amt: the
+ * routing's amount as the message carried it (-1000 .. 1000; stock plays it as f32(amt) x f32(0.001), as we do). */
+struct X2Root {
+    u32 root, handle;              /* the root, and its handle (root + 0x0C) when the entry was made: stock reuses roots */
+    u16 src[12];
+    short amt[12];
+};
+static_assert(sizeof(X2Root) == 56 && SA_RUN + sizeof(Run) <= SA_X2 && SA_X2 + SA_X2_N * sizeof(X2Root) <= SA_ANCACHE, "X2 store");
+#define X2 ((X2Root *)SA(SA_X2))
+enum { X2_K_SUB1 = 0, X2_K_FM12 = 1, X2_K_SUB2 = 2 };   /* OSC1 Sub FM, OSC2 FM 1>2, OSC2 Sub FM */
+#define X2_SUB1 1u
+#define X2_FM12 2u
+#define X2_SUB2 4u
+#define X2_SLOTS 4u                /* stock's connect slots 0..3 (PARAM slots 1..4) */
+#define X2_N (3u * X2_SLOTS)
+#define X2_ROOT_REL 0x8000u
+#define X2_VOICE_BYTES 0xBA0u      /* a voice's allocation: the root ctor's 0xB88, which the pool allocator rounds to 32 B */
+#define X2_ROOT_BYTES 0x2F0u       /* a root's (its ctor's caller) */
+#define X2_VOICES 10u              /* a Wavetable root's voices, root + 0x14 + 4 i (the ctor; its vtable 0x50 returns 10) */
+#define ROOT_VOICES 0x14u
 
 static inline void dsb() { __asm volatile("dsb" ::: "memory"); }
 static inline void clean(u32 a, u32 n) {
@@ -336,6 +368,150 @@ extern "C" __attribute__((used)) int an_prop(void *osc, void *msg) {
     return 1;
 }
 
+/* ---- BE4.45 X2 (docs/plan-fm-targets.md): Sub FM / FM 1>2 as Mod Matrix destinations ------------------------------------
+ * Stock's connect (WT_ROUTE: per voice, the source resolved for that voice) calls the oscillator class's slot 10 (osc,
+ * source, key, slot, amount) for oscillator[instance]; stock's slot 10 keeps 0xC4 / 0xC9 / 3 in the oscillator's parameter
+ * objects and ignores every other key. Our three destinations have no parameter object (and no room in the voice), so the
+ * X2 trampoline on slot 10 hands 0x18B / 0x132 here first and every call goes on to stock's: an entry per root (X2Root),
+ * which the voice render reads back per voice-block (x2_enter). Slot 9 (the root's clear of all its routings, message 0x48,
+ * per voice and oscillator) clears ours the same way (x2_clear). Runs in the M7's synth message loop, between renders. */
+/* the entry of a root, or 0; an entry whose root now has another handle (a track freed, the root reused) is dropped */
+__attribute__((noinline, minsize)) static void x2_drop(u32 i) {
+    Run *r = RUN;
+    u32 n = r->x2n - 1u;
+    if (i != n) X2[i] = X2[n];
+    r->x2n = n;
+}
+__attribute__((noinline, minsize)) static X2Root *x2_find(const u8 *root) {
+    Run *r = RUN;
+    for (u32 i = 0; i < r->x2n; i++) {
+        X2Root *e = &X2[i];
+        if (e->root != (u32)root) continue;
+        if (e->handle == W(root, S_ROOT_HANDLE)) return e;
+        x2_drop(i);
+        return 0;
+    }
+    return 0;
+}
+__attribute__((noinline, minsize)) static u32 x2_mask(const X2Root *e) {
+    u32 m = 0;
+    for (u32 j = 0; j < X2_N; j++)
+        if (e->src[j]) m |= 1u << (j / X2_SLOTS);
+    return m;
+}
+__attribute__((noinline, minsize)) static int x2_has_voice(const u8 *root, const u8 *v) {
+    for (u32 i = 0; i < X2_VOICES; i++)
+        if (W(root, ROOT_VOICES + 4u * i) == (u32)v) return 1;
+    return 0;
+}
+/* after a routing went: on every voice of the entry's root (the connect and the clear come per voice; this runs at the
+ * first, so the entry can go here once it routes nothing), a Wavetable oscillator tagged for routings no longer there
+ * untags if nothing else holds it (wt_settle's rule), and OSC1, which fed B for OSC2's routed FM 1>2, goes back to what
+ * the knobs ask (wt_feed: it keeps feeding while OSC2's m12 still ramps down, as after a knob turned to 0). */
+__attribute__((noinline, minsize)) static void x2_tidy(X2Root *e) {
+    u32 m = x2_mask(e);
+    const u8 *root = (const u8 *)e->root;
+    for (u32 i = 0; i < X2_VOICES; i++) {
+        u8 *v = (u8 *)W(root, ROOT_VOICES + 4u * i);
+        if (!v) continue;
+        void *o1 = v + S_VOICE_WT1, *o2 = v + S_VOICE_WT2;
+        if (!(m & X2_FM12)) wt_feed(v);
+        if (!(m & (X2_SUB1 | X2_FM12)) && wt_tagged(o1)) wt_settle(o1);
+        if (!(m & (X2_FM12 | X2_SUB2)) && wt_tagged(o2)) wt_settle(o2);
+    }
+    if (!m) x2_drop((u32)(e - X2));
+}
+/* Slot 10, ours first (osc, source pointer, key | slot << 16, root, amount): root is the trampoline's r4 when the call
+ * comes from inside WT_ROUTE (which keeps its r0, the root, in r4 throughout: S), else 0, and is taken only if this
+ * oscillator's voice is one of its voices. OSC1's FM 1>2 is not a destination (0x08134700's per-type post sends it to both
+ * oscillators): ignored. Slot 3 is kept as stock keeps it (the mod seq lanes; that post's source 0 clears it, as stock's).
+ * Source 0 (a null pointer) clears the slot. A source the encoding cannot hold, or a new root with the store full: not
+ * kept, counted (x2_lost: once a routing, at its root's first voice). */
+__attribute__((noinline, minsize)) static void x2_lose(const u8 *root, const u8 *v) {
+    if (W(root, ROOT_VOICES) == (u32)v) FMSTATS->x2_lost++;
+}
+extern "C" __attribute__((used, minsize)) void x2_connect(void *osc, u32 src, u32 ks, u8 *root, float amt) {
+    u32 key = ks & 0xFFFFu, slot = ks >> 16;
+    if ((key != S_KEY_OSC_SUBFM && key != S_KEY_OSC_FM12) || slot >= X2_SLOTS || !root || !area_ok()) return;
+    u32 which = 2;
+    u8 *v = voice_of(osc, &which);
+    if (!v || (key == S_KEY_OSC_FM12 && which == 0) || !x2_has_voice(root, v)) return;
+    u32 c = 0;
+    if (src) {
+        if (src - (u32)v - 1u < X2_VOICE_BYTES - 1u) c = src - (u32)v;
+        else if (src - (u32)root < X2_ROOT_BYTES) c = X2_ROOT_REL | (src - (u32)root);
+        else { x2_lose(root, v); return; }
+    }
+    float f = amt * 1000.f;
+    int a = (int)(f + (f < 0.f ? -.5f : .5f));
+    a = a < -1000 ? -1000 : a > 1000 ? 1000 : a;
+    u32 j = (key == S_KEY_OSC_FM12 ? X2_K_FM12 : which ? X2_K_SUB2 : X2_K_SUB1) * X2_SLOTS + slot;
+    X2Root *e = x2_find(root);
+    Run *r = RUN;
+    if (!e) {
+        if (!c) return;
+        for (u32 i = r->x2n; i-- > 0;)                         /* full: first drop entries whose root is another's now */
+            if (r->x2n >= SA_X2_N && X2[i].handle != W((const u8 *)X2[i].root, S_ROOT_HANDLE)) x2_drop(i);
+        if (r->x2n >= SA_X2_N) { x2_lose(root, v); return; }
+        e = &X2[r->x2n++];
+        for (u32 i = 0; i < sizeof(X2Root) / 4u; i++) ((volatile u32 *)e)[i] = 0;
+        e->root = (u32)root; e->handle = W(root, S_ROOT_HANDLE);
+    }
+    u32 was = e->src[j];
+    e->src[j] = (u16)c; e->amt[j] = (short)(c ? a : 0);
+    if (!c && was) x2_tidy(e);
+}
+/* Slot 9, ours first (osc): the root's clear of its routings (stock's slot 9 clears the matrix slots of Position, Pitch and
+ * Level, slot 3 kept): this oscillator's keys of its root's entry (OSC1: Sub FM; OSC2: FM 1>2 and Sub FM). The caller's
+ * registers are not relied on: the entry is the one whose root holds this voice. */
+extern "C" __attribute__((used, minsize)) void x2_clear(void *osc) {
+    if (!area_ok() || !RUN->x2n) return;
+    u32 which = 2;
+    u8 *v = voice_of(osc, &which);
+    if (!v) return;
+    for (u32 i = 0; i < RUN->x2n; i++) {
+        X2Root *e = &X2[i];
+        const u8 *root = (const u8 *)e->root;
+        if (e->handle != W(root, S_ROOT_HANDLE) || !x2_has_voice(root, v)) continue;
+        u32 any = 0;
+        for (u32 j = which ? X2_K_FM12 * X2_SLOTS : 0u; j < (which ? X2_N : X2_SLOTS); j++) {
+            any |= e->src[j];
+            e->src[j] = 0; e->amt[j] = 0;
+        }
+        if (any) x2_tidy(e);
+        return;
+    }
+}
+/* Per voice-block (an_enter, while some root has routings): this voice's three amounts. Q4 (Jeff): the routings move the
+ * knob's travel, then the existing law: v = clamp(knob + 1000 sum amt_i src_i, 0, 1000), in float32 as
+ * m = fma(f32(amt_i) x f32(0.001), src_i, m) over the slots in order, then fma(m, 1000, knob), rounded to the nearest whole
+ * amount (msub / m12 keep whole amounts: the next block's ramp starts where this one ends). The knob: the oscillator's
+ * stored Sub FM / FM 1>2 (OSC2's Sub FM has no knob: its stored value, normally 0; a Wavetable OSC2 keeps none, so 0). A
+ * Wavetable oscillator a routing needs (its own key; OSC1 also for OSC2's FM 1>2, which it feeds) is tagged here, before
+ * this voice-block's renders, so it plays FM with its knob at 0 (the gates read xm). */
+__attribute__((noinline)) static void x2_enter(Run *r, u8 *root, u8 *v) {
+    X2Root *e = x2_find(root);
+    if (!e) return;
+    void *o1 = v + S_VOICE_WT1, *o2 = v + S_VOICE_WT2;
+    u32 xm = x2_mask(e);
+    if (xm & (X2_SUB1 | X2_FM12) && state(o1)->magic != AN_MAGIC && !wt_tagged(o1)) wt_init(o1);
+    if (xm & (X2_FM12 | X2_SUB2) && state(o2)->magic != AN_MAGIC && !wt_tagged(o2)) wt_init(o2);
+    for (u32 k = 0; k < 3u; k++) {
+        if (!(xm >> k & 1u)) continue;
+        float m = 0.f;
+        for (u32 s = 0; s < X2_SLOTS; s++) {
+            u32 c = e->src[k * X2_SLOTS + s];
+            if (!c) continue;
+            const u8 *p = c & X2_ROOT_REL ? root + (c & ~X2_ROOT_REL) : v + c;
+            m = wtr::fma32((float)e->amt[k * X2_SLOTS + s] * .001f, F(p, 4), m);
+        }
+        const AnProps *p = props(k ? o2 : o1);
+        float f = wtr::fma32(m, 1000.f, (float)(k == X2_K_FM12 ? p->fm12 : p->subfm));
+        r->xv[k] = (u16)(!(f > 0.f) ? 0u : f >= (float)AN_FM_MAX ? AN_FM_MAX : (u32)(f + .5f));
+    }
+    r->xm = xm;
+}
+
 /* Shape 0..127 to the kernel's shape (-1 sine, -0.5 triangle, 0 saw, 0.5 square, 1 an 8 % pulse). Above 48 BE4.40's map,
  * bit for bit: 48..88 morphs saw to square, 88..127 narrows the square to the pulse. P3 Q3 (docs/plan-p3-fm-bits.md 4.6,
  * OD6): below it the kernel's LOW regime, linear between one-sided plateaus: 0..2 the sine, 22..26 the triangle, 45..48 the
@@ -436,6 +612,8 @@ extern "C" __attribute__((used)) void an_enter(void *root, void *voice) {
     int a1 = is_analog(o1), a2 = is_analog(o2);
     r->voice = (u32)voice; r->root = 0;
     r->fmtag = 0;                                             /* P3: no FM buffer is this voice's yet (before any return) */
+    r->xm = 0;                                                /* BE4.45 X2: no routed amount yet (before any return) */
+    if (__builtin_expect(r->x2n != 0, 0)) x2_enter(r, (u8 *)root, v);   /* (some root has routings: this voice's amounts) */
     if (!a1 && !a2) { r->cyc += CYCCNT - c0; return; }
     r->voices++;
     if (a1) {
@@ -585,6 +763,16 @@ __attribute__((noinline)) static int fm_setup(Run *r, u8 *v, AnOsc *self, const 
     float e0 = 1.f, e1 = 1.f;
     if (p->envf) { e0 = env[0]; e1 = env[1]; }
     int mine = r->voice == (u32)v, fs = 0, fb = 0;
+    /* BE4.45 X2: a routed key plays its routed amount (x2_enter) in place of the knob's, this voice's only; OSC2's Sub FM,
+     * which plays nothing unrouted (D2), plays then as a second term next to FM 1>2 (A on Sub FM's line, B on FM 1>2's) */
+    u32 xm = mine ? r->xm : 0u;
+    if (__builtin_expect(xm != 0, 0)) {
+        if (!twelve) { if (xm & X2_SUB1) v1 = r->xv[X2_K_SUB1]; }
+        else {
+            if (xm & X2_FM12) x1 = r->xv[X2_K_FM12];
+            if (xm & X2_SUB2) v1 = r->xv[X2_K_SUB2];
+        }
+    }
     if (!(v1 | v0 | x1 | x0)) ;                               /* (OSC1 feeding B only: no FM of its own) */
     else if (n > AN_FM_FRAMES) FMSTATS->fm_skipped++;
     else {
@@ -626,7 +814,9 @@ __attribute__((noinline)) static float *feeds(Run *r, u8 *v, u32 which, int a2, 
     if (p->envf) fm_env_step(self, p, env);
     /* BE4.44 W3 (docs/plan-wt-fm.md 8 W3): also for a Wavetable OSC2 with FM 1>2 (tagged: its fm12 / m12 at AnProps / AnOsc's
      * offsets), a carrier of B through the reader (wt_body) */
-    return which == 0 && (a2 || wt_tagged(o2)) && (props(o2)->fm12 || state(o2)->m12) && n <= AN_FM_FRAMES && r->voice == (u32)v
+    /* (BE4.45 X2: or OSC2's FM 1>2 routed, this voice-block: x2_enter) */
+    return which == 0 && (a2 || wt_tagged(o2)) && (props(o2)->fm12 || state(o2)->m12 || (r->xm & X2_FM12)) && n <= AN_FM_FRAMES &&
+                   r->voice == (u32)v
                ? (float *)SA(SA_FMBUF_B) : 0;
 }
 
@@ -975,8 +1165,9 @@ __attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out
     AnOsc *g = state(osc);
     void *o2 = v + S_VOICE_WT2;
     float *bo = 0;                                            /* W4: B to feed */
-    if (g->wt.wflags & WT_FEED_B) {                           /* (set on OSC1 only, wt_feed) */
-        if (!(is_analog(o2) || wt_tagged(o2)) || !(props(o2)->fm12 | state(o2)->m12)) {
+    u32 rb = which == 0 && r->voice == (u32)v ? r->xm & X2_FM12 : 0u;   /* BE4.45 X2: OSC2's FM 1>2 routed (x2_enter) */
+    if ((g->wt.wflags & WT_FEED_B) | rb) {                    /* (set on OSC1 only, wt_feed) */
+        if (!(is_analog(o2) || wt_tagged(o2)) || !(props(o2)->fm12 | state(o2)->m12 | rb)) {
             g->wt.wflags &= (u8)~WT_FEED_B;                   /* OSC2's FM 1>2 and its ramp are over */
             wt_settle(osc);
         } else if (bk.n <= AN_FM_FRAMES && r->voice == (u32)v) {
@@ -994,6 +1185,7 @@ __attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out
     if (which == 0) {                                         /* D3: an Analog OSC2 synced to this OSC1 */
         if (is_analog(o2) && props(o2)->sync == 1u) {
             d3 = *p; d3.subfm = 0; p = &d3; g->msub = 0;
+            r->xm &= ~X2_SUB1;                                /* (BE4.45 X2: a routed OSC1 Sub FM too) */
             /* W3 review: with no mip held and nothing to feed, stock's render: the index-0 reader's Q32 step would drift WT1's
              * phase off the slave's copy (W4: feeding, stock's kernel below, the same samples). A held mip still gets its one
              * mip-home block */
@@ -1058,6 +1250,13 @@ __attribute__((noinline)) static int wt_body(void *osc, void *scratch, void *out
     return 1;
 }
 
+/* BE4.45 X2: the FM gate's routed part for a Wavetable oscillator, this voice-block (x2_enter): its own keys (OSC1 also
+ * OSC2's FM 1>2: it feeds B) while its voice is the one rendering */
+__attribute__((noinline)) static u32 x2_gate(Run *r, void *osc) {
+    u32 which = 2;
+    u8 *v = voice_of(osc, &which);
+    return v && r->voice == (u32)v ? r->xm & (which ? X2_FM12 | X2_SUB2 : X2_SUB1 | X2_FM12) : 0u;
+}
 __attribute__((noinline)) static int wt_fm_osc(void *osc, void *scratch, void *out) {
     AnOsc *g = state(osc);
     u32 t = wt_tag(osc);
@@ -1069,6 +1268,8 @@ __attribute__((noinline)) static int wt_fm_osc(void *osc, void *scratch, void *o
     /* the gate (plan 3.3): an amount, ramp memory, or a mip held (the mip-home block) */
     u32 x;
     __builtin_memcpy(&x, &g->msub, 4);
+    Run *r = RUN;
+    if (__builtin_expect(r->xm != 0, 0)) x |= x2_gate(r, osc);   /* (BE4.45 X2: or routed) */
     /* (W4: or feeding B, wt_body) */
     if ((x | p->subfm | p->fm12 | (g->wt.wflags & WT_FEED_B) | (wt_mip(g) != WT_HOME)) && wt_body(osc, scratch, out, env))
         return 1;
@@ -1145,6 +1346,8 @@ extern "C" __attribute__((used)) int an_osc(void *osc, void *scratch, void *out)
      * bytes are stock's, so at worst a stray feeds call that finds nothing) */
     if (which == 0) { x |= pp->subfm; if (a2 || slave->magic >> 16 == WT_TAG_HI >> 16) x |= props(o2)->fm12 | slave->m12; }
     else x |= pp->fm12;                                       /* OSC2's one amount: FM 1>2 (BE4.44 W4, D2: next to either OSC1) */
+    /* BE4.45 X2: or routed, this voice-block (x2_enter): its own keys, OSC1 also OSC2's FM 1>2 (it feeds B) */
+    if (__builtin_expect(r->xm != 0, 0) && r->voice == (u32)v) x |= r->xm & (which ? X2_FM12 | X2_SUB2 : X2_SUB1 | X2_FM12);
     float env[2];                                             /* (feeds writes it while envf; in memory: no float live here) */
     /* (feeding B; BE4.43: feeds also steps the FM envelope while it is set, AnProps.envf, so it keeps time without an
      * amount too; FM itself is x's alone, below) */

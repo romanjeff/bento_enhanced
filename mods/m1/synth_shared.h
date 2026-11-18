@@ -90,10 +90,18 @@ typedef struct {
     unsigned wt;              /* BE4.44 W3: Wavetable renders through our reader (dsp/analog.cpp wt_body: tier 3, FM or a mip
                                * held), the black box's wt= */
     unsigned wt_mip;          /* BE4.44 W3: of those, the blocks that changed the mip level (rd_qm), wt=.../mip */
-    unsigned r6, r7;
-} SaFmStats;                  /* 32 bytes: fm +0, fm_skipped +8, fm_missed +12, wt +16, wt_mip +20 */
+    unsigned x2_lost;         /* BE4.45 X2: Mod Matrix routings on Sub FM / FM 1>2 the M7 could not keep (its store full:
+                               * SA_X2_N routed roots; or a source neither in the voice nor in the root) */
+    unsigned r7;
+} SaFmStats;                  /* 32 bytes: fm +0, fm_skipped +8, fm_missed +12, wt +16, wt_mip +20, x2_lost +24 */
 /* +0x0400 M7 private: the DSP's running state (two lines) */
 #define SA_RUN 0x0400u
+/* +0x0440 M7 private (BE4.45 X2, docs/plan-fm-targets.md): the Mod Matrix routings on Sub FM (key 0x18B) and FM 1>2 (0x132),
+ * per Wavetable root (stock keeps a destination's routings in the voice's own parameter object; these keys have none):
+ * SA_X2_N entries of 56 B (8 tracks: one per Wavetable root), used from the front (dsp/analog.cpp X2Root; their count is in the run state). Inside what the
+ * M7 zeroes at its take (+0x400..+0x800); free on main too (its run state is the same two lines) */
+#define SA_X2 0x0440u
+#define SA_X2_N 8u
 /* +0x0200 (BE4.21..BE4.31: the M4's Analog track table, published; unused since BE4.40, when an oscillator's Type, Shape,
  * Sync and Glide became stock properties that reach the M7 as set_property messages: docs/plan-native-props.md) */
 #define AN_GLIDE_MAX 1000u                                  /* Glide 0..1000 = 0..2 s, stock's encoder units */

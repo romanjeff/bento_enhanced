@@ -353,6 +353,9 @@ GROUP_NAMES = {
                "KEY_OSC_FMATK", "KEY_OSC_FMDEC",  # BE4.43 (docs/plan-p3-fm-bits.md BE4.43): the FM envelope, per oscillator
                # BE4.40 mixed sync (docs/plan-be440-sync-identity.md Track S): S1 the oscillator's slot 2 (note start)
                "WT_OSC_NOTE_SLOT", "WT_NOTE_START",
+               # BE4.45 X2 (docs/plan-fm-targets.md): the oscillator's slots 9 (clear) and 10 (connect), the route handler
+               "WT_OSC_CLEAR_SLOT", "WT_OSC_CLEAR", "WT_OSC_CONNECT_SLOT", "WT_OSC_CONNECT", "WT_ROUTE", "WT_ROUTE_LEN",
+               "WT_ROUTE_SHA",
                # BE4.40 identity (docs/plan-be440-sync-identity.md track I): T0 the strings and their one literal each, T1 the
                # title site, D1 the pane paint slot, B1' the 0x3F post; the review fixes: V1 / Y1 the value-text sites and the
                # step position, D2 the frames' redraw
@@ -1750,7 +1753,26 @@ def m7_dsp(base_img, patch, sources, out, inc):
             raise SystemExit("Wavetable oscillator slot 2 does not hold stock's note start")
         note_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['an_note']:#x}; pop {{r0, r1, r2, r3, r4, lr}}; "
                         f"b.w {S.WT_NOTE_START:#x}", {sd["an_note"], S.WT_NOTE_START}, "Analog note start trampoline")
-        sd.update(tramp_voice=voice, tramp_osc=osc_at, tramp_prop=prop_at, tramp_note=note_at)
+        # BE4.45 X2 (docs/plan-fm-targets.md): the oscillator's slot 10, connect (osc r0, source r1, key r2, slot r3, amount
+        # s0), and slot 9, clear (osc r0). Ours first, then stock's always (it ignores our keys and keeps its own). The
+        # connect passes the root: WT_ROUTE's r4 (its r0, kept there throughout: the sha below holds it to the bytes that
+        # were read), only when the call returns into WT_ROUTE, else 0; and the key and slot in one word. s0 is kept for
+        # stock's (s1 pads the push to 8 B).
+        for name, slot, fn in (("WT_OSC_CLEAR_SLOT", "WT_OSC_CLEAR", "x2_clear"), ("WT_OSC_CONNECT_SLOT", "WT_OSC_CONNECT", "x2_connect")):
+            if bytes(base_img[getattr(S, name) - BASE:getattr(S, name) - BASE + 4]) != struct.pack("<I", getattr(S, slot) | 1):
+                raise SystemExit(f"Wavetable oscillator {name} does not hold stock's {slot}")
+        route = bytes(base_img[S.WT_ROUTE - BASE:S.WT_ROUTE - BASE + S.WT_ROUTE_LEN])
+        if hashlib.sha256(route).hexdigest() != S.WT_ROUTE_SHA:
+            raise SystemExit("WT_ROUTE is not the route handler whose r4 was read (WT_ROUTE_SHA)")
+        clear_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; bl {sd['x2_clear']:#x}; pop {{r0, r1, r2, r3, r4, lr}}; "
+                         f"b.w {S.WT_OSC_CLEAR:#x}", {sd["x2_clear"], S.WT_OSC_CLEAR}, "X2 clear trampoline")
+        conn_at = tramp(f"push {{r0, r1, r2, r3, r4, lr}}; vpush {{s0, s1}}; orr.w r2, r2, r3, lsl #16; "
+                        f"movw r12, #{S.WT_ROUTE & 0xFFFF:#x}; movt r12, #{S.WT_ROUTE >> 16:#x}; sub.w r12, lr, r12; "
+                        f"movw r3, #{S.WT_ROUTE_LEN:#x}; cmp r12, r3; ite lo; movlo r3, r4; movhs r3, #0; "
+                        f"bl {sd['x2_connect']:#x}; vpop {{s0, s1}}; pop {{r0, r1, r2, r3, r4, lr}}; b.w {S.WT_OSC_CONNECT:#x}",
+                        {sd["x2_connect"], S.WT_OSC_CONNECT}, "X2 connect trampoline")
+        sd.update(tramp_voice=voice, tramp_osc=osc_at, tramp_prop=prop_at, tramp_note=note_at, tramp_clear=clear_at,
+                  tramp_conn=conn_at)
     an_end = len(tramps)
     if inc("drums"):
         with S.group("drums"):
@@ -1766,7 +1788,8 @@ def m7_dsp(base_img, patch, sources, out, inc):
     if len(tramps) > DSP_TRAMP_BYTES:
         raise SystemExit("DSP trampolines overrun their block")
     if an_end:
-        patch(lo, bytes(tramps[:an_end]), bytes(an_end), "Analog (S6a): M7 trampolines (voice enter, oscillator render, property, note start)")
+        patch(lo, bytes(tramps[:an_end]), bytes(an_end),
+              "Analog (S6a): M7 trampolines (voice enter, oscillator render, property, note start; X2: clear, connect)")
     if len(tramps) > an_end:
         patch(lo + an_end, bytes(tramps[an_end:]), bytes(len(tramps) - an_end),
               "Drums (S6c): M7 trampoline (D1 render entry)")
@@ -1780,6 +1803,10 @@ def m7_dsp(base_img, patch, sources, out, inc):
               "Analog: Wavetable oscillator slot 8 (set property, N3) -> an_prop, else stock's")
         patch(S.WT_OSC_NOTE_SLOT, struct.pack("<I", sd["tramp_note"] | 1), S.orig("WT_OSC_NOTE_SLOT"),
               "Analog: Wavetable oscillator slot 2 (note start, S1) -> an_note, then stock's")
+        patch(S.WT_OSC_CLEAR_SLOT, struct.pack("<I", sd["tramp_clear"] | 1), S.orig("WT_OSC_CLEAR_SLOT"),
+              "Analog: Wavetable oscillator slot 9 (clear routings, X2) -> x2_clear, then stock's")
+        patch(S.WT_OSC_CONNECT_SLOT, struct.pack("<I", sd["tramp_conn"] | 1), S.orig("WT_OSC_CONNECT_SLOT"),
+              "Analog: Wavetable oscillator slot 10 (connect a routing, X2) -> x2_connect, then stock's")
     if inc("drums"):
         with S.group("drums"):
             patch(S.DRUM_RENDER, asm(f"b.w {sd['tramp_render']:#x}", S.DRUM_RENDER), S.orig("DRUM_RENDER"),
