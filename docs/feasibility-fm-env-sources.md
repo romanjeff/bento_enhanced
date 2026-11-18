@@ -268,3 +268,169 @@ Two reviews of f5c5756. Commit 245b345 has the code and tests; this section is t
 - the M4 list, names and validator.
 
 **Next: S2 (M4: the 18-entry WT list with FM Env 1 / 2 after Env 2, names, the validator), then the device check.**
+
+## S2 as built (BE4.46, branch be445, 2026-11-17)
+
+Commit 859a914 has the M4 code, base entries and tests. The next commit has this section, the checklist, the release
+notes and a test robustness fix. Images: ~/bento/out/be446-s2 (BE_TAG=s2) and ~/bento/out/be446-s2-rel (no tag: the
+kit).
+
+**What was built (S: the built image's disassembly).** All of it is in m4_synth.c, in the synth UI block. No M7 or DSP
+byte changes.
+- **The list.**
+  - Stock: MX_BUILD's Wavetable case (type 0x12 of its tbh at 0x0814E94A, at 0x0814ECF6) stores stock's list
+    (0x081A1304) and 16 at view + 0x8ACC8 / + 0x8AC4E, then calls the row filler (bl at 0x0814ED08).
+  - That bl now calls mx_wt_rows. It stores our list and 18, then calls the filler.
+  - Our list is stock's with 3, 6 after Env 2, plus a trailing 0 ("Plan items found wrong", item 4):
+    [0, 13, 32, 1, 2, **3, 6**, 4, 5, 8, 14, 26, 30, 31, 9, 10, 11, 12, 0].
+  - Untouched: stock's list and both of its literals. One is MX_BUILD's 0x0814EDF8, which Granular's case (0x0814ECB4)
+    also loads; the other is the validator's 0x0814DBF0.
+  - build.py refuses a base whose list does not start with None, contains id 3 or 6, lacks Env 2, or is referenced by
+    anything other than these two literals (one_reference).
+  - It also refuses a build whose C list is not the one derived from stock's.
+- **The validator** (0x0814DB94; its entry `mov ip, r1; ldrh r1, [r1, #4]` is replayed). mx_src_valid returns at once
+  for source 3 / 6 when [view + 0x8AC4C] is 0x12. Every other case goes through stock's body.
+- **The names** (0x0814D8F0; its entry `push {lr}; mov lr, r0` is replayed). mx_src_name returns "FM Env 1" (3) or
+  "FM Env 2" (6) on a Wavetable page. Elsewhere stock's name is returned: the registry's display name, "Envelope 3" /
+  "LFO 3" for these ids.
+- **Callers.** No word of the image holds the address of the filler, the validator or the name function. Each has only
+  bl callers: the filler 1, the validator 3, the name 2. The entry patches therefore cover every caller.
+- **New base entries** (stock_168; absent in stock_161; facts.py; CHECKS regenerated):
+  - MX_WT_SRC_LIST, MX_WT_SRC_LIT, MX_SRC_VALID_LIT, MX_WT_ROWS_SITE, MX_WT_ROWS_FILL, MX_SRC_VALID, MX_SRC_NAME;
+  - MXV_TYPE, MXV_SRC_LIST and MXV_SRC_N (offsets, also recorded in expected_values.py).
+- **The save format** is stock's, with no hook: `<modsource ... src="env3" | "lfo3">`.
+
+**Tests (test_native_props FmEnvMatrix, 8; M).**
+1. **The sites.** Stock's list is as typed; the list and its literals are untouched; the validator's and name's bodies are
+   stock's.
+2. **The Wavetable page.**
+   - It shows our list with its trailing 0. The names are "[None]", "Velocity", ..., "Envelope 2", "FM Env 1",
+     "FM Env 2", "LFO 1", ..., "Auto D".
+   - The rows are what the image's own filler gives. This holds after the merge too, when the filler is X1's.
+   - Control: on stock the page keeps 0x081A1304 and 16.
+3. **Validator and names**, for every view type 0..0x14, 0x20 and 0xFF, each with every id 0..35:
+   - they equal stock's except at (0x12, 3) and (0x12, 6);
+   - types 0x0F and 0x13 (Granular) still erase 3 / 6.
+4. **The Source encoder** (stock's MX_EDIT on OSC1 Pitch):
+   - index i posts list[i] for i 0..17;
+   - index 18 (the count) posts 0, and index 19 posts nothing;
+   - the posted 0xD1 makes the routing (slot 0, and slot 2 on OSC2 Level).
+5. **An amount edit of an FM Env slot** keeps its source here. On stock it posts source 0, so the routing is removed. A
+   LFO 1 routing is kept on both (control).
+6. **Save / load.** The file has src="env3" x 2, "lfo3" x 1 and the LFO 1 control, and no bento_ token. This build reads
+   it back.
+7. **Stock 1.6.8 and BE4.44** (~/bento/out/be444w4f) load the routings as ids 3 / 6 and keep them. Their next save writes
+   them again, and this build reads that save back.
+8. **Instrument replace** (stock's 0x0813F730) on a routed track, kind 1 (to Granular, 0x13) and kind 6 (to Wavetable):
+   - each gives a new track, with a new handle and its own children;
+   - no routing is left on the track or on any child;
+   - three of its calls stop the rig and are stubbed: 0x08133C08 before the destroy, and 0x0813E4B8 / 0x0813D430 after
+     the new children. None of them can carry a routing from the destroyed track.
+
+**Mutation check (M, scratch be446/s2/mut.sh, each on a copy of the worktree):**
+- T (no Wavetable-type test): RED in test_every_other_page_type_and_id_is_stocks.
+- L (list not installed): RED in test_the_source_encoder_picks_them and test_the_wavetable_page_lists_them_after_env_2.
+- V (validator always stock's): RED in test_an_amount_edit_... and test_every_other_....
+- N (names always stock's): RED in test_every_other_... and test_the_wavetable_page_....
+- Z (trailing 0 changed): the build refuses it (fmenv_matrix's list check).
+
+**Suites (M, ~/bento/out/be446-s2, BE_TAG=s2, sha256 2cc8bb81...c514; from the worktree's mods/m1; skips in brackets).**
+All OK: diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20),
+notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10, **native_props 30** (22 +
+FmEnvMatrix 8), analog 219, inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32, p3_golden self-test 52. drums and
+drum_ui were not run: the default image leaves drums out.
+
+**Sizes (M).**
+- Synth UI 16,054 B (S1: 15,846). The +208 B are three functions, the 38 B list and two strings; the plan estimated
+  0.15-0.2 KB.
+- Image 0x189520 (S1: 0x189450), 15,892 B to PROVEN_MAX.
+- DSP 31,084 B, **9,620 B free** of 40,704 (unchanged; the >= 1 KB rule holds).
+- M4 code 24,424 B and M7 C slice 15,368 B (unchanged).
+- Byte diff of the S1-fix image (be446-s1f) against be446-s2: below the synth UI block, only the three sites and the
+  version label's sites differ (BE_TAG s1f vs s2). No byte differs in the M7, DSP or trampoline areas.
+- The 1.6.1 build (analog absent) builds: 0x182500.
+
+**CPU (M).** S2 changes no M7 or DSP byte (the diff above), so the audio path is S1's. Re-measured on be446-s2:
+- P3Identity, 48 cases: worst **1.0170** (mod dev=False, 111,768 / 109,899), total 1.0091. The stop line is 1.95 %.
+- FmEnvSrc.test_cost (median / max) is the same as S1 in every row:
+
+  | Voice | No route | With a route on 3 / 6 |
+  |---|---|---|
+  | stock WT voice | 14,160 / 14,394 | 14,209 / 14,443 |
+  | Analog full FM, FM Atk 3 / Dec 8 | 28,115 / 28,863 | 28,168 / 28,914 |
+  | full WT voice, FM Atk 3 | 27,266 / 43,738 | 27,339 / 43,813 |
+  | full WT voice, note 24, light FM, Position every block | 34,765 / 39,397 | 34,826 / 39,458 |
+
+  The heaviest steady routed voice is 483 under the 35,309 ceiling. No DSP or CPU ceiling was raised.
+- The M4 hooks run only when the matrix page builds, refreshes or edits its rows. The validator and the name add about 10
+  instructions a call on top of stock's.
+
+**Plan items found wrong.**
+1. **The validator does not erase the model's routing (S, M).** The plan said "the validator stores 0 into the routing ...
+   after that, the routing is erased in memory and the next save drops it", and the S2 test plan said the routing is
+   "inert and kept until the page is opened". Both are wrong.
+   - The validator writes its caller's copy. MX_EDIT, MX_BAR and MX_ROWS_BUILD each pass a stack copy that MX_ROUTE
+     filled (0x08132266..72 copies amount, source | key and slot out).
+   - So opening or refreshing the page on stock or BE4.44 changes nothing in the model. The slot shows [None], and a save
+     keeps the routing.
+   - The routing is lost only by an edit of that slot:
+     - an amount edit posts the zeroed source, and MX_SET_ROUTE removes a source-0 routing (test_an_amount_edit_...);
+     - a source edit replaces it.
+   - The release notes and checklist section 6 say this.
+2. **The row filler does not write the list (S).** The plan said to "install it with investigation 2's wrapper on the row
+   filler 0x0814DA70, which rewrites view + 0x8ACC8 and the count at + 0x8AC4E". The filler writes neither: its clear
+   starts at + 0x8ACCC (`str r1, [r3, #4]!` from + 0x8ACC8). MX_BUILD's Wavetable case stores both before its bl.
+   - S2 patches that bl (0x0814ED08), not the filler.
+   - **No byte overlaps the destinations lane.** X1 patches inside the filler (0x0814DA92, 0x0814DA9E, its literal
+     0x0814DB8C) and the destination table's other users.
+   - So the task's note "S2 must wrap that function after the destinations' patch lands" is not needed.
+   - mx_wt_rows calls whatever filler the image has. After the merge the page gets X1's 26 rows and S2's 18 sources,
+     whichever merges first.
+3. **"Repointing the shared literal 0x0814EDF8 would also change types 15 and 19" is half right (S).**
+   - That literal is shared by MX_BUILD's 0x12 and 0x13 (Granular) cases.
+   - Type 0x0F never gets a list from MX_BUILD: it falls to the switch's default case. It shares only the validator's
+     list, through its own literal 0x0814DBF0.
+   - Neither literal is patched.
+4. **MX_EDIT reads one past the list (S, M; not in the plan).**
+   - Its bound is `cmp count, index; blt` (0x0814DC34), so index == count is read.
+   - On stock that reads the next list's first halfword, 0 (None).
+   - Our list keeps this with its trailing 0. The encoder's range is count - 1 (MX_BAR 0x0814E266).
+5. **Risk 4, does a type change keep routes: no** (M with three calls stubbed; S for the path).
+   - The instrument replace destroys the old track (0x0812E43E). It creates the new type with fresh children
+     (0x0812E7C4, 0x0812F878).
+   - Also S: **no stock source list holds 3 or 6** (the lists at 0x081A1304, 0x081A1324 and 0x081A1334). So no stock
+     page offers or keeps Env 3 / LFO 3. On the M4 these ids were unused everywhere, which lowers the reuse risk further.
+6. **Names.** The registry's display names for these ids are "Envelope 3" / "LFO 3", not "Env 3". Stock's list says
+   "Envelope 1" / "Envelope 2", and the new entries read "FM Env 1" / "FM Env 2" as decided.
+7. **Kit naming.** The sprint brief said "BE4.45 kit". The label is 4.46 (4.45 is the destinations lane's), so the kit is
+   flash\bento_enhanced-v4.46, boot label BE4.46.
+
+**Overlap with the destinations lane (be445x, BE4.45) at the merge.**
+- **No shared bytes in the image** (item 2). Untouched here: the destination table 0x081A0D1C, its four literals, its
+  count and the filler's bounds.
+- **Text merge points:**
+  - build.py GROUP_NAMES: both add lines at the end of the analog tuple;
+  - synth_ui's patch list: X1's mx_dest_patches next to S2's fmenv_matrix;
+  - stock_168 / stock_161 SYMS and CHECKS: adjacent new entries;
+  - facts.py and expected_values.py;
+  - m4_synth.c: S2's block sits before the CPU indicator;
+  - test_native_props.py: both append a class at the end.
+- **Fold at the merge:**
+  - **MX_WT_ROWS_FILL is X1's MX_WT_ROWS** (the same address): keep one name;
+  - the tests' MX_SET_ROUTE_FN, fe_routes and fe_set duplicate X1's MX_SET_ROUTE, routes and set_route;
+  - MX_EDIT_FN stands in for the mx group's draft MX_EDIT entry.
+- **Size.** Synth UI bytes grow in both lanes. The image stays far under PROVEN_MAX (X1 alone adds about 0.7 KB).
+- **CPU.** S2 adds nothing to an_enter, so S1's bounds in test_cost are the ones to re-measure on the merged base.
+
+**Kit (built from be446-s2-rel; git-ignored, never committed).** flash\bento_enhanced-v4.46, boot label BE4.46.
+Contents:
+- 01_TEST_FIRMWARE: the image and stock 1.6.8's bento2.bin;
+- 03_RESTORE_STOCK;
+- manifest.json;
+- DEVICE_CHECKLIST.txt (= docs/checklist-v4.46.txt);
+- SHA256SUMS.txt (verified).
+
+bento1.bin sha256 ae671b35a3cc183542568c8d3f20509786372f492738902e5000ebe19d5ec985 (be446-s2-rel; the tagged be446-s2 is
+2cc8bb81...c514).
+
+**Next:** the device check (checklist-v4.46.txt), then the merge with be445x (destinations first).

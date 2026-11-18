@@ -770,9 +770,9 @@ class FmEnvMatrix(unittest.TestCase):
         self.assertEqual(IMG[lst - BASE:lst - BASE + 32], STOCK[lst - BASE:lst - BASE + 32], "stock's list stays")
         for lit in ("MX_WT_SRC_LIT", "MX_SRC_VALID_LIT"):
             self.assertEqual(struct.unpack_from("<I", IMG, getattr(S, lit) - BASE)[0], lst, f"{lit}: Granular / types 15, 19")
-        # the validator's and the name's bodies (past the replayed entry) and the filler are stock's bytes
-        for lo, hi in ((S.MX_SRC_VALID + 4, S.MX_SRC_VALID + 0x60), (S.MX_SRC_NAME + 4, S.MX_SRC_NAME + 0x48),
-                       (S.MX_WT_ROWS_FILL, S.MX_WT_ROWS_FILL + 0x124)):
+        # the validator's and the name's bodies (past the replayed entry) are stock's bytes (the filler's are not S2's to
+        # check: be445x's X1 patches its bounds)
+        for lo, hi in ((S.MX_SRC_VALID + 4, S.MX_SRC_VALID + 0x60), (S.MX_SRC_NAME + 4, S.MX_SRC_NAME + 0x48)):
             self.assertEqual(IMG[lo - BASE:hi - BASE], STOCK[lo - BASE:hi - BASE], f"{lo:#x}..{hi:#x}")
 
     def test_the_wavetable_page_lists_them_after_env_2(self):
@@ -784,8 +784,12 @@ class FmEnvMatrix(unittest.TestCase):
             lst, ids, rows = fe_rows(r, view, img)
             names = [r.e.text(r.call(S.MX_SRC_NAME, view, i), 32) for i in ids]
             end = struct.unpack("<H", bytes(r.u.mem_read(lst + 2 * len(ids), 2)))[0]
-            got.append((lst, ids, names, end, rows, {r.handle(w1): "osc1", r.handle(w2): "osc2"}))
-        (lst, ids, names, end, rows, h), (slst, sids, snames, _, srows, sh) = got
+            plain = fe_view(r, t)                                    # the same image's filler called directly
+            r.call(S.MX_WT_ROWS_FILL, plain)
+            direct = [(struct.unpack("<H", bytes(r.u.mem_read(plain + MXV_KEYS + 2 * i, 2)))[0], r.r32(plain + MXV_HANDLES + 4 * i))
+                      for i in range(r.u.mem_read(plain + MXV_ROWS, 1)[0])]
+            got.append((lst, ids, names, end, rows, direct))
+        (lst, ids, names, end, rows, direct), (slst, sids, snames, _, srows, sdirect) = got
         self.assertEqual((slst, sids), (S.MX_WT_SRC_LIST, FE_STOCK_SRC), "stock (control)")
         self.assertEqual(snames, [FE_NAMES[i] for i in FE_STOCK_SRC])
         self.assertNotEqual(lst, S.MX_WT_SRC_LIST, "our own copy")
@@ -793,8 +797,8 @@ class FmEnvMatrix(unittest.TestCase):
         self.assertEqual(end, 0, "then a 0 (None): what MX_EDIT reads at index == count")
         self.assertEqual(names, [FE_NAMES[i] for i in FE_OUR_SRC[:5]] + ["FM Env 1", "FM Env 2"] +
                          [FE_NAMES[i] for i in FE_OUR_SRC[7:]])
-        role = lambda rr, hh: [(k, hh.get(x, "other")) for k, x in rr]
-        self.assertEqual(role(rows, h), role(srows, sh), "the rows are stock's filler's")
+        self.assertEqual(rows, direct, "the rows are the image's filler's (mx_wt_rows adds only the list)")
+        self.assertEqual(srows, sdirect, "(control)")
         self.assertGreater(len(rows), 20)
 
     def test_every_other_page_type_and_id_is_stocks(self):
