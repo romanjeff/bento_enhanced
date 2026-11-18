@@ -106,3 +106,80 @@ Do sources first: they are cheaper and higher value, and they build the M4 page 
 4. Publish e0.
 5. Raise the DSP and CPU ceilings only by what S1 measures, reported before it is spent.
 6. Envelopes on Wavetable oscillators come with WT FM (BE4.44), not separately.
+
+## S1 as built (BE4.46, branch be445, 2026-11-17)
+
+Commits 5f9951e (stubs, publish, tests; labelled BE4.45 then), 37f49f2 (label 4.46: 4.45 is the parallel destinations
+lane's; the write-trace test's harness pool literals marked addr-ok, which the build's literal check had refused, so
+5f9951e did not build), and this section. Image: ~/bento/out/be446-s1 (BE_TAG=s1).
+
+**What was built (S).**
+- M7 (build.py fmenv_connect): ids 3 / 6 of both tbh tables (idx 0x0807CA7E entries [2] / [5], sub 0x0807C926 entries
+  [1] / [4]) point at a 24 B stub in each table's padding (0x0807CAC4, 0x0807C966): `addw r1, voice, #0xB88` (id 6) /
+  `#0xB84` (id 3), then `str.w r1, [voice, #0xB90]` (FMENV_ON), `mov.w tmp, #1.0; str tmp, [r1, #4]`, `b.w` stock's join
+  after its `movs r1, #0`. FM Env 1 is the float at voice + 0xB88, FM Env 2 at + 0xB8C, FMENV_ON at + 0xB90
+  (synth_shared.h FMENV_*, which build.py reads). The movw at 0x0809CB40 is not patched (the slack is the pool's rounding;
+  fmenv_connect refuses a base where it is not #0xB88). The build refuses a base whose tables, padding or joins are not
+  stock's.
+- DSP: an_enter calls fm_env_publish only while FMENV_ON is nonzero (sticky per voice once any route to 3 / 6 is
+  connected); fm_env_e0 is fm_env_step's first line, read only: START 0 (1 for FM Atk 0), DEC at j 0 1, else fme; 1 for
+  an unset envelope and for an untagged Wavetable oscillator. Analog and tagged Wavetable oscillators alike (BE4.44's WT FM
+  envelopes): the plan's "a WT oscillator gives 0" is replaced by decision 6. an_note writes the note's start value when
+  FMENV_ON is set. fm_env_step and the FmEnv goldens are untouched.
+- Tests (test_analog FmEnvSrc, 6): the stubs and tables against stock's; the connect for every id 0..35 on both paths
+  against stock's (only 3 / 6 differ, by exactly the slot, FMENV_ON and 1.0); the published values against p3_golden
+  fm_env's f32 e0 block by block (Analog, tagged and untagged Wavetable, mixed) and Filter 1 / OSC2 Pitch / an Analog OSC1's
+  Shape reading them; the publish changes nothing else (output and voice bytes); a write trace of the slack over a root's
+  life (stock and this build: no write until 3 / 6 are routed, then only the stubs, fm_env_publish and an_note); the cost.
+  P3Identity and FmEnv stay green (nothing routed).
+
+**Sizes (M).**
+- DSP 31,084 B, **9,620 B free** of 40,704 (BE4.44 30,884 / 9,820: +200 B: fm_env_e0 100, fm_env_publish 34, an_note
+  +40, an_enter +24, alignment). The doc's 60-100 B estimate was low: e0 covers the tagged-Wavetable case and the
+  Analog / WT type test, and an_note's write. No ceiling raised: the >= 1 KB rule holds with 8.6 KB to spare.
+- M7 stubs 48 B in existing padding; image size unchanged, 0x189450, 16,100 B to PROVEN_MAX; M4 code 24,424 B, synth UI
+  15,846 B, M7 C slice 15,368 B (unchanged: S1 has no M4 change).
+
+**CPU (M, instructions).**
+- P3Identity, 48 cases: worst **1.0170** (mod dev=False, 111,768 / 109,899; BE4.44 1.0165, 111,708), total 1.0091
+  (1.0087). Under the 1.95 % stop line; no ceiling raised.
+- Per voice-block (FmEnvSrc.test_cost; an_enter and both renders; median / max), without a route to 3 / 6 / with one:
+
+  | Voice | No route | Routed | Publish a call | an_enter no route / routed |
+  |---|---|---|---|---|
+  | stock WT voice | 14,160 / 14,394 | 14,209 / 14,443 | 46 | 64 / 113 |
+  | Analog full FM, FM Atk 3 / Dec 8 | 28,115 / 28,863 | 28,168 / 28,914 | 50 | 163 / 216 |
+  | full WT voice, FM Atk 3 | 27,266 / 43,738 | 27,339 / 43,813 | 71 | 105 / 178 |
+  | full WT voice, note 24, light FM, Position every block | 34,765 / 39,397 | **34,826** / 39,458 | 58 | 105 / 166 |
+
+  No route: +5 a voice-block against BE4.44 (14,155 -> 14,160; the heaviest steady voice 34,760 -> 34,765: the load and
+  branch). Routed: +49 .. +73. The heaviest steady voice routed is 34,826, 483 under the 35,309 ceiling (every block but
+  its one level-change block, 39,458 <= W4_ATK_MAX 46,000). No CPU ceiling raised.
+
+**Plan items found wrong.**
+- DSP size: 200 B, not 60-100 B (above).
+- "A Wavetable oscillator gives 0": superseded by decision 6 (tagged WT oscillators publish their own e0; untagged ones 1,
+  as an unset envelope).
+- The early-return write for an all-Wavetable voice is not needed: fm_env_publish runs before an_enter's `!a1 && !a2`
+  return, so both values are written on every routed voice-block.
+- The stub also writes FMENV_ON and 1.0 (not in the doc's 32 B sketch): the flag is what makes the unrouted cost +5, and
+  1.0 keeps a reader before the next an_enter off the slack's old bytes.
+- On an S1-only image ids 3 / 6 cannot be reached from the UI: the M4 picker does not list them and the validator
+  (0x0814DB94) erases them on a WT track. S1 is device-inert until S2.
+
+**Overlap with the destinations lane (be445x, BE4.45).** S1 changes only the M7 routing connect's two tables and padding
+(0x0807C922 / 0x0807CA7A paths), the DSP (an_enter / an_note, two new functions) and the base tables (WT_ROUTE, FMENV_*,
+WT_VOICE_ALLOC). The destinations patch oscillator slots 9 / 10 (0x08081B60) on M7 and relocate the WT destination table
+(0x081A0D1C) and the row filler 0x0814DA70 on M4: no shared bytes in S1. Merge points: build.py GROUP_NAMES (the WT group's
+list) and m7_dsp, stock_168.py SYMS / CHECKS (adjacent new entries), analog.cpp an_enter, and the DSP window (both add
+code: 9,620 B free here before theirs). S2 will touch the same M4 page: the source list rides on the row filler
+0x0814DA70 that the destinations lane also patches (its `#0x17` / `#0x228`), so S2 must wrap that function after the
+destinations' patch lands (merge destinations first), keeping the source-list change in its own wrapper.
+
+**Suites (M, ~/bento/out/be446-s1, built from 37f49f2, sha256 1dca5f27...f170; from the worktree's mods/m1; skips in
+brackets).** All OK: diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24
+(20), notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10, native_props 22, **analog
+216** (210 + FmEnvSrc 6), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32, p3_golden self-test 52; drums /
+drum_ui not run (drums is left out of the default image).
+
+**Next: S2 (M4: the 18-entry WT list with FM Env 1 / 2 after Env 2, names, the validator), then the device check.**
