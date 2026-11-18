@@ -1813,7 +1813,8 @@ def per_step(base_img, img, patch, extend, sources, s4, sh, out, inc):
     s4.update({f"step.{k}": v for k, v in ss.items()})
 
 
-DSP_TRAMP_BYTES = 0x100                           # M7_DSP: our trampolines, then the DSP ELF
+DSP_TRAMP_BYTES = 0x140                           # M7_DSP: our trampolines, then the DSP ELF (BE4.46: 0x100 -> 0x140, the
+# merge of S1's FM Env connect bodies and X2's slot 9 / 10 trampolines needs 0x102 B; 0x140 leaves the drums' D1 its 0x1E B)
 
 
 def m7_dsp(base_img, patch, sources, out, inc):
@@ -1893,7 +1894,7 @@ def m7_dsp(base_img, patch, sources, out, inc):
             # sample is open, so D1 recognises a start by it; DRUM_VSTART_A/B_SITE stay reviewed facts, unpatched.)
             sd.update(tramp_render=d1)
     if len(tramps) > DSP_TRAMP_BYTES:
-        raise SystemExit("DSP trampolines overrun their block")
+        raise SystemExit(f"DSP trampolines overrun their block ({len(tramps):#x} > {DSP_TRAMP_BYTES:#x}; ends {[hex(v) for k, v in sd.items() if k.startswith('tramp_')]})")
     if an_end:
         patch(lo, bytes(tramps[:an_end]), bytes(an_end),
               "Analog (S6a): M7 trampolines (voice enter, oscillator render, property, note start; BE4.46 S1: FM Env connect bodies; X2: clear, connect)")

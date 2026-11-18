@@ -8830,7 +8830,7 @@ class FmEnvSrc(unittest.TestCase):
                     ("b.w", f"#{x:#x}"), ("b.w", f"#{x - 2:#x}")]
             self.assertEqual(got, want, f"{pad}: its body")
             self.assertEqual(STOCK_IMG[x - 2 - BASE:x - BASE], b"\x00\x21", "control: x - 2 is stock's movs r1, #0")
-            self.assertTrue(S.M7_DSP <= body < S.M7_DSP + 0x100, "the body among the DSP trampolines")
+            self.assertTrue(S.M7_DSP <= body < S.M7_DSP + build.DSP_TRAMP_BYTES, "the body among the DSP trampolines")
         self.assertEqual(IMG[S.WT_VOICE_ALLOC - BASE:S.WT_VOICE_ALLOC - BASE + 4], bytes.fromhex("40f68832"), "movw r2, #0xb88")
         self.assertEqual(IMG[S.WT_VOICE_ALLOC - BASE:S.WT_VOICE_ALLOC - BASE + 4],
                          STOCK_IMG[S.WT_VOICE_ALLOC - BASE:S.WT_VOICE_ALLOC - BASE + 4], "the allocation is not patched")
@@ -9122,9 +9122,9 @@ class FmEnvSrc(unittest.TestCase):
             (p0, pub0, en0), (p1, pub1, en1) = self.voice_cost(0, **kw), self.voice_cost(1, **kw)
             self.assertEqual(pub0.calls, 0, f"{name}: no route, no publish")
             # (review: "~0 without a route" at its own granularity: an_enter a call and the voice-block median within
-            # BE4.44's + NO_ROUTE_TOL, a load and a branch. A merge that adds to an_enter, e.g. the destinations lane, moves
-            # these bounds: re-measure BE4.44 + that lane, not this feature)
-            en_base, med_base = self.NO_ROUTE_BE444[name]
+            # the base's + NO_ROUTE_TOL, a load and a branch. BE4.46 merge: the base is BE4.45, the destinations lane this
+            # feature was merged onto (its an_enter is BE4.44's + 8: X2's xm store and x2n test), re-measured, not loosened)
+            en_base, med_base = self.NO_ROUTE_BASE[name]
             self.assertLessEqual(en0.total / en0.calls, en_base + self.NO_ROUTE_TOL, f"{name}: no route, an_enter a call")
             self.assertLessEqual(med(p0), med_base + self.NO_ROUTE_TOL, f"{name}: no route, the voice-block median")
             self.assertEqual(pub1.calls, len(p1), f"{name}: routed, one publish a voice-block")
@@ -9143,7 +9143,140 @@ class FmEnvSrc(unittest.TestCase):
     NO_ROUTE_BE444 = {"stock WT voice": (59.0, 14155), "Analog full FM, FM Atk 3 / Dec 8": (156.62, 28109),
                       "full WT voice, FM Atk 3": (99.56, 27261),
                       "full WT voice, note 24, light FM, Position every block": (99.56, 34760)}
+    # BE4.46 merge: the base this feature now sits on is BE4.45 (be445x 7d72495, ~/bento/out/be445x3r), measured with the
+    # same harness (scratch b446/en.py, M; it reproduces NO_ROUTE_BE444 exactly on be444w4f). The merged build measured
+    # 70.00 / 14,166, 166.62 / 28,135, 110.56 / 27,310, 110.56 / 34,809: BE4.45's + 2..3
+    NO_ROUTE_BASE = {"stock WT voice": (67.0, 14163), "Analog full FM, FM Atk 3 / Dec 8": (164.62, 28133),
+                     "full WT voice, FM Atk 3": (107.56, 27307),
+                     "full WT voice, note 24, light FM, Position every block": (107.56, 34806)}
     NO_ROUTE_TOL = 8
+
+
+# ---- BE4.46 (the merge of BE4.45 X1..X3 and BE4.46 S1 / S2): FM Env 1 / 2 routed to the three FM depths
+@unittest.skipUnless(HAVE and S.has("WT_ROUTE") and "x2_connect" in DSP, "no analog group with X2 in this image")
+class FmEnvToFmDepth(unittest.TestCase):
+    """FM Env 1 / 2 (sources 3 / 6: S1's pseudo-sources voice + FE_SRC / + FE_SRC + 4, their floats at + FE_VAL / + 4) routed
+    to OSC1 Sub FM, OSC2 FM 1>2 and OSC2 Sub FM (X2): WT_ROUTE gives X2's slot-10 hook the pseudo-source like any per-voice
+    source, the store keeps it (voice-relative, inside X2's bound: dsp/analog.cpp static_assert), and per voice-block the
+    depth is X2's law of **this block's** published e0 (an_enter publishes before x2_enter: plan-fm-targets X2 open 3), on
+    Analog and Wavetable oscillators. For OSC1 Sub FM / OSC2 FM 1>2 the voice is bit for bit the knob turned to that v every
+    block. The cost on the heaviest voice."""
+    ENVS = {(1, 1): {0: (2, 5), 1: (1, 4)}, (0, 0): {0: (2, 4), 1: (1, 6)}}   # (FM Atk, FM Dec) per oscillator
+    N = 14
+
+    def run_route(self, types, inst, key, src, how, base=200, amount=600):
+        """One voice, FM envelopes on both oscillators, the other FM knob at 300; how: 'fmenv' (the depth routed from source
+        src, matrix slot 0) or 'knob' (nothing routed; the knob turned to x2_law(base, amount x e0) before each block).
+        (outputs, the depth after each block, FM Env 1 / 2 after each block, the store, e0 of both oscillators)."""
+        env = self.ENVS[types]
+        e0 = [G.fm_env(*env[i], self.N, notes=(0,), law="f32")[0] for i in (0, 1)]
+        w = WtVoice(self, types=types, env=env, capture=False, frames=G.wt_saw_frames(200))
+        other = (1, K_FM12) if (inst, key) == (0, K_SUBFM) else (0, K_SUBFM)
+        w.prop(other[1], 300, other[0])
+        w.prop(key, base, inst)
+        if how == "fmenv":
+            wt_route(w.r, w.root, inst, key, 0, src, amount)
+        depth, pub = [], []
+        for b in range(self.N):
+            if how == "knob":
+                w.prop(key, x2_law(base, [(amount, e0[0 if src == 3 else 1][b])]), inst)
+            w.block()
+            msub, m12 = struct.unpack("<HH", w.r.u.mem_read(w.o[inst] + S.OSC_KERNEL + MSUB_AT, 4))
+            depth.append(m12 if key == K_FM12 else msub)
+            pub.append((w.r.rf(w.v + FE_VAL), w.r.rf(w.v + FE_VAL + 4)))
+        return w.outs, depth, pub, x2_store(w.r), e0, w
+
+    def test_fm_env_moves_each_fm_depth_per_block(self):
+        """FM Env 1 on each of the three depths, and FM Env 2 on OSC2 FM 1>2 and OSC2 Sub FM, Analog and Wavetable: the
+        store holds voice + FE_SRC (+ 4) in slot 0 with the amount; the published value after block b is the golden's f32 e0
+        of block b; the depth after block b is x2_law(base, 600 x e0[b]) (this block's value, not the last block's) and it
+        moves; nothing is lost. OSC1 Sub FM / OSC2 FM 1>2: the output is the knob turned to that v, bit for bit."""
+        cases = [(0, K_SUBFM, 3), (1, K_FM12, 3), (1, K_SUBFM, 3), (1, K_FM12, 6), (1, K_SUBFM, 6)]
+        for types in ((1, 1), (0, 0)):
+            for inst, key, src in cases:
+                with self.subTest(types=types, inst=inst, key=hex(key), src=src):
+                    outs, depth, pub, st, e0, w = self.run_route(types, inst, key, src, "fmenv")
+                    want = e0[0 if src == 3 else 1]
+                    self.assertTrue(any(0.0 < x < 1.0 for x in want), "control: the envelope moves")
+                    (e,) = st
+                    j = X2_K[(inst, key)] * X2_SLOTS
+                    self.assertEqual((e[2][j], e[3][j]), (FE_SRC + (4 if src == 6 else 0), 600),
+                                     "the store: the FM Env pseudo-source, voice-relative, slot 0")
+                    self.assertEqual([c for i, c in enumerate(e[2]) if c and i != j], [], "nothing else stored")
+                    self.assertEqual(w.r.r32(SA + SA_FMSTATS + FM_X2_LOST_AT), 0, "not lost (inside X2's bound)")
+                    self.assertNotEqual(w.r.r32(w.v + FE_ON), 0, "the connect set FE_ON")
+                    self.assertEqual([p[0 if src == 3 else 1] for p in pub], [f32(x) for x in want],
+                                     "the published value is the golden's e0, block by block")
+                    base = 200 if (inst, key) != (1, K_SUBFM) or types[1] else 0     # a Wavetable OSC2's Sub FM base: 0 (X2)
+                    self.assertEqual(depth, [x2_law(base, [(600, x)]) for x in want], "the depth per block: this block's e0")
+                    self.assertGreater(len(set(depth)), 3, "it moves")
+                    if (inst, key) != (1, K_SUBFM):
+                        k_outs, k_depth, _, k_st, _, _ = self.run_route(types, inst, key, src, "knob")
+                        self.assertEqual(k_st, [], "control: nothing routed")
+                        self.assertEqual(depth, k_depth)
+                        same(self, outs, k_outs, "FM Env routed = the knob turned to v every block")
+
+    def test_removal_ramps_out_and_keeps_fm_env_published(self):
+        """Source 0 on the routed slot (the Mod Matrix's removal) at block 6: the store empties and the depth goes to the
+        knob's base as the knob would (X2's ramp); FE_ON stays set (S1: sticky per voice), so FM Env keeps publishing."""
+        for types in ((1, 1), (0, 0)):
+            with self.subTest(types=types):
+                w = WtVoice(self, types=types, env=self.ENVS[types], capture=False, frames=G.wt_saw_frames(200))
+                w.prop(K_SUBFM, 200, 0)
+                wt_route(w.r, w.root, 0, K_SUBFM, 0, 3, 600)
+                for b in range(self.N):
+                    if b == 6:
+                        wt_route(w.r, w.root, 0, K_SUBFM, 0, 0, 0)
+                        self.assertEqual(x2_store(w.r), [], "removed")
+                    w.block()
+                msub = struct.unpack("<H", w.r.u.mem_read(w.o[0] + S.OSC_KERNEL + MSUB_AT, 2))[0]
+                self.assertEqual(msub, 200, "the depth back at the knob")
+                self.assertNotEqual(w.r.r32(w.v + FE_ON), 0, "FE_ON sticky")
+                want = G.fm_env(*self.ENVS[types][0], self.N, notes=(0,), law="f32")[0]
+                self.assertEqual(w.r.rf(w.v + FE_VAL), f32(want[self.N - 1]), "still published")
+
+    def test_cost_heaviest_voice_fm_env_routes(self):
+        """The heaviest existing voice (Wavetable both, Position every block, notes 24 / 36: X2's) with FM Env 1 on OSC1 Sub
+        FM and FM Env 2 on OSC2 FM 1>2 at 1000 (envelopes unset: e0 is 1, so the same sound as both knobs at 1000,
+        asserted); the same with OSC2 Sub FM from FM Env 2 too; and with FM envelopes on both (Atk 3, Dec Inf: the FM Env
+        itself running). Instructions per voice-block (an_enter and both renders), steady median / max. Two keys: every
+        block within HEAVIEST_VOICE; with the envelopes running, every block but one (the level change) within it and that
+        one within W4_ATK_MAX; + OSC2 Sub FM within X2's SUB2_HEAVY_MAX (X2 open 5, Jeff's)."""
+        lfo = lambda b: (b * 7 % 200) / 255
+        two = [(0, K_SUBFM, 0, 3, 1000), (1, K_FM12, 0, 6, 1000)]
+        def cost(note, knobs, routes=(), env=None):
+            w = WtVoice(self, types=(0, 0), frames=G.wt_saw_frames(200), capture=False, note=note, env=env)
+            if knobs:
+                w.prop(K_SUBFM, 1000, 0); w.prop(K_FM12, 1000, 1)
+            for rt in routes:
+                wt_route(w.r, w.root, *rt)
+            sp = [Span(w.r, DSP["an_enter"])] + [Span(w.r, a) for a in {w.r.r32(w.r.r32(o)) & ~1 for o in w.o}]
+            xs = []
+            for b in range(16):
+                for o in w.o:
+                    w.r.wf(o + OSC_POS_SRC, lfo(b))
+                t0 = sum(s.total for s in sp); w.block(); xs.append(sum(s.total for s in sp) - t0)
+            return sorted(xs[4:])[len(xs[4:]) // 2], max(xs), w.outs, xs
+        env = {0: (3, FM_DEC_INF), 1: (3, FM_DEC_INF)}
+        rows = {}
+        for note in (24, 36):
+            k = cost(note, True)
+            rows[f"note {note}: knobs"] = k
+            rows[f"note {note}: FM Env 1 / 2 on 2 depths"] = r2 = cost(note, False, two)
+            same(self, r2[2], k[2], f"note {note}: FM Env (unset: 1) at 1000 = the knobs at 1000")
+            rows[f"note {note}: + OSC2 Sub FM from FM Env 2"] = cost(note, False, two + [(1, K_SUBFM, 0, 6, 1000)])
+            rows[f"note {note}: knobs, envelopes on"] = cost(note, True, (), env)
+            rows[f"note {note}: FM Env on 2 depths, envelopes on"] = cost(note, False, two, env)
+        print("\n  FM Env -> FM depth, heaviest voice (instructions per voice-block, Position every block; steady median / "
+              "max): " + "; ".join(f"{k} {a} / {b}" for k, (a, b, _, _) in rows.items()), file=sys.stderr)
+        for k, (a, b, _, xs) in rows.items():
+            if "OSC2 Sub FM" in k:
+                self.assertLessEqual(b, FmTargetsX2.SUB2_HEAVY_MAX, k)
+            elif "envelopes on" in k:
+                self.assertLessEqual(sorted(xs)[-2], HEAVIEST_VOICE, f"{k}: every block but one")
+                self.assertLessEqual(b, WtFmW4.W4_ATK_MAX, f"{k}: the level change block")
+            else:
+                self.assertLessEqual(b, HEAVIEST_VOICE, k)
 
 
 def r_settings(r, osc):

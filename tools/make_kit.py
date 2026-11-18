@@ -45,7 +45,7 @@ SUITES = [("test_diag.py", ""), ("test_polyat.py", "poly_cap"), ("test_condition
           ("test_holdstep.py", "step"), ("test_controls.py", "hold"), ("test_retrig.py", "retrig"),
           ("test_step.py", "step"), ("test_mod.py", "retrig"), ("test_notemod.py", "nmod retrig"),
           ("test_notemod_route.py", "nmod retrig"), ("test_notemod_real.py", "step nmod"), ("test_slice.py", ""),
-          ("test_s3_m7.py", "poly_cap retrig cond_engine nmod"), ("test_step_xml.py", "step"), ("test_keys.py", ""),
+          ("test_s3_m7.py", "poly_cap retrig cond_engine nmod"), ("test_step_xml.py", "step"), ("test_keys.py", ""), ("test_native_props.py", "analog"),
           ("test_analog.py", "analog"), ("test_inst_xml.py", "analog"), ("test_synth_ui.py", "analog"),
           ("test_handles.py", "analog"), ("test_note0.py", "poly_cap retrig cond_engine nmod"),
           ("test_drums.py", "drums"), ("test_drum_ui.py", "drums")]

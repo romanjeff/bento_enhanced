@@ -679,7 +679,6 @@ SYMS = dict(
     WT_OSC_NOTE_SLOT=data(None, note="M7 Wavetable oscillator class slot 2: note start (osc, ?, &note) (BE4.40 mixed sync site)", status='absent'),
     WT_ENGINE_INIT=code(None, note="M7 Wavetable engine init (root): connects the voices' modulation, rate divider osc+0x108 = 2; tests", status='absent'),
     # BE4.46 S1 (docs/feasibility-fm-env-sources.md): FM Env 1 / 2 as routing sources 3 / 6, 1.6.8 only
-    WT_ROUTE=code(None, note="M7 Wavetable root's routing connect (root, msg 0x3F); tests", status='absent'),
     FMENV_IDX_TBH=data(None, note="WT_ROUTE's instance 0 / 1 source table, entries 0..5 (FM Env: ids 3 / 6)", status='absent'),
     FMENV_IDX_PAD=code(None, note="the idx path's padding: the FM Env stub", status='absent'),
     FMENV_IDX_NEXT=code(None, note="the idx path's join after its no-source movs r1, #0", status='absent'),

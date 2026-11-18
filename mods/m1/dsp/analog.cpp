@@ -183,6 +183,12 @@ enum { X2_K_SUB1 = 0, X2_K_FM12 = 1, X2_K_SUB2 = 2 };   /* OSC1 Sub FM, OSC2 FM 
 #define X2_ROOT_REL 0x8000u
 #define X2_VOICE_BYTES 0xBA0u      /* a voice's allocation: the root ctor's 0xB88, which the pool allocator rounds to 32 B */
 #define X2_ROOT_BYTES 0x2F0u       /* a root's (its ctor's caller) */
+/* BE4.46 merge: the voice's bytes are S1's slack end (both from the root ctor's movw r2, #0xb88 at 0x0809CB40 and the pool's
+ * rounding at 0x080A05E6..F4: lsls r2, #27; bic r2, #0x1f; adds r2, #0x20, so 0xB88 -> 0xBA0: S), and the FM Env pseudo-sources
+ * (voice + FMENV_SRC, + FMENV_SRC + 4; their floats at + FMENV_VAL, + FMENV_VAL + 4) are inside the bound x2_connect keeps:
+ * a route from FM Env 1 / 2 to an FM depth is held like any per-voice source. X2 itself writes nothing in the voice. */
+static_assert(X2_VOICE_BYTES == FMENV_SLACK_END && FMENV_SRC + 4u - 1u < X2_VOICE_BYTES - 8u && FMENV_SRC + 4u == FMENV_VAL &&
+              FMENV_VAL + 8u <= FMENV_ON, "X2's voice bound admits FM Env 1 / 2");
 #define X2_VOICES 10u              /* a Wavetable root's voices, root + 0x14 + 4 i (the ctor; its vtable 0x50 returns 10) */
 #define ROOT_VOICES 0x14u
 
