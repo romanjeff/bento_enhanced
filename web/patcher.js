@@ -53,8 +53,9 @@
 
   // The output starts as stock bento1.bin truncated / zero-extended to output_size; the ops run in order.
   // W [dst, len]: the next len bytes of the payload. C [dst, src, len]: from the ORIGINAL stock bento1.bin.
-  // F [dst, len, byte]: a constant run. Any op out of bounds rejects the whole patch.
-  function applyPatch(stock1, patch, payload) {
+  // D [dst, src, len]: from stock bento2.bin. F [dst, len, byte]: a constant run. Any op out of bounds rejects
+  // the whole patch.
+  function applyPatch(stock1, patch, payload, stock2) {
     if (patch.format !== FORMAT || patch.format_version !== FORMAT_VERSION)
       throw new Error("unknown patch format (this page is older or newer than the patch)");
     const size = patch.output_size;
@@ -70,11 +71,12 @@
         if (!inOut(dst, n) || p + n > payload.length) throw new Error("bad WRITE op " + JSON.stringify(op));
         out.set(payload.subarray(p, p + n), dst);
         p += n;
-      } else if (kind === "C") {
+      } else if (kind === "C" || kind === "D") {
         const [, dst, src, n] = op;
-        if (!inOut(dst, n) || !Number.isInteger(src) || src < 0 || src + n > stock1.length)
+        const from = kind === "C" ? stock1 : stock2;
+        if (!from || !inOut(dst, n) || !Number.isInteger(src) || src < 0 || src + n > from.length)
           throw new Error("bad COPY op " + JSON.stringify(op));
-        out.set(stock1.subarray(src, src + n), dst);
+        out.set(from.subarray(src, src + n), dst);
       } else if (kind === "F") {
         const [, dst, n, v] = op;
         if (!inOut(dst, n) || !Number.isInteger(v) || v < 0 || v > 255) throw new Error("bad FILL op " + JSON.stringify(op));
@@ -87,14 +89,16 @@
     return out;
   }
 
-  // Stock in, verified image out, or an Error that says why. Nothing is produced unless every hash matches.
-  async function patchImage(stock1, patch) {
+  // Stock in, verified image out, or an Error that says why. Nothing is produced unless every hash matches,
+  // and only for a release marked tested on hardware.
+  async function patchImage(stock1, patch, stock2) {
+    if (patch.device_tested !== true) throw new Error("v" + patch.version + " is not marked tested on hardware: refused");
     const want = patch.stock_sha256["bento1.bin"];
     const got = await sha256(stock1);
     if (got !== want) throw new Error("bento1.bin is not the official stock " + patch.base + " file (sha256 " + got + ")");
     const payload = b64decode(patch.payload_b64);
     if ((await sha256(payload)) !== patch.payload_sha256) throw new Error("the patch file is damaged (payload sha256)");
-    const image = applyPatch(stock1, patch, payload);
+    const image = applyPatch(stock1, patch, payload, stock2);
     const h = await sha256(image);
     if (h !== patch.output_sha256)
       throw new Error("the result is not the published v" + patch.version + " image (sha256 " + h + "): nothing to download");
@@ -105,9 +109,6 @@
 
   function readme(patch, imageSha) {
     const v = patch.version, base = patch.base, kit = patch.kit.name;
-    const tested = patch.device_tested === true
-      ? "byte for byte the image the author tested on hardware."
-      : "byte for byte the published image (NOT yet tested on hardware: DEVICE_CHECKLIST.txt is that test).";
     return [
       kit + ": flashing kit made in your browser",
       patch.label,
@@ -116,17 +117,18 @@
       "It CONTAINS 1010music's firmware: it is for your own Bento only. Keep it private: never share, upload,",
       "post or attach it anywhere.",
       "",
-      "Not affiliated with 1010music. Installing modified firmware is at your own risk. The mod never touches",
-      "the Bento's bootloader, so going back to stock (below) always works. Please don't ask 1010music support",
-      "about it.",
+      "Not affiliated with 1010music. Installing modified firmware is at your own risk and may affect your",
+      "warranty. bento_enhanced is free software (GPL-3.0-or-later) and comes with NO WARRANTY. The mod never",
+      "touches the Bento's bootloader, which is what keeps the official way back to stock (below) working.",
+      "Please don't ask 1010music support about it.",
       "",
       "01_TEST_FIRMWARE/bento1.bin sha256 " + imageSha,
-      "  " + tested,
+      "  byte for byte the published v" + v + " image, the one the author tested on hardware.",
       "",
       "WHAT'S IN IT",
       "  01_TEST_FIRMWARE/      bento1.bin (bento_enhanced v" + v + ") + bento2.bin (stock " + base + ", unchanged): what you install",
       "  03_RESTORE_STOCK/      your stock " + base + " bento1.bin + bento2.bin: the way back",
-      "  DEVICE_CHECKLIST.txt   what's new in this release and what to try on the device",
+      "  DEVICE_CHECKLIST.txt   the author's hardware test list for this release (what changed, how to try it)",
       "  SHA256SUMS.txt         the sha256 of every file in the kit",
       "",
       "INSTALL",
@@ -134,6 +136,7 @@
       "  2. Copy BOTH files from 01_TEST_FIRMWARE (bento1.bin and bento2.bin) to the ROOT of the SD card",
       "     (not into a folder), replacing any there. Eject the card properly before you take it out.",
       "  3. Put the card in the Bento. Long-press power to start the bootloader, then press REC to install.",
+      "     Don't switch the Bento off while it installs.",
       "  4. The boot screen shows BE" + v + ".",
       "",
       "BACK TO STOCK",
@@ -147,6 +150,20 @@
     ].join("\n");
   }
 
+  // The checklist as the repository keeps it, with a preface: it was written for the developer's kit.
+  function checklistText(patch) {
+    return [
+      "This is the author's device checklist for bento_enhanced v" + patch.version + ", as kept in the source",
+      "repository (docs/checklist-v" + patch.version + ".txt). It passed on hardware before the release was published.",
+      "It was written for the developer kit that tools/make_kit.py builds: the folder names, Windows paths,",
+      "manifest.json and docs\\... files it mentions are that kit's and the repository's, not this kit's",
+      "(https://github.com/romanjeff/bento_enhanced). \"Measured in the emulator\" notes date from before the",
+      "hardware test. Its \"What changed\" section is the useful part: what is new and how to try it.",
+      "",
+      "",
+    ].join("\n") + patch.kit.checklist;
+  }
+
   // The kit's files, laid out as tools/make_kit.py lays them out (manifest.json is left out: the build's
   // manifest lists stock bytes at the patch sites, so it is never published; the README is added).
   async function kitFiles(patch, image, imageSha, stock1, stock2) {
@@ -157,7 +174,7 @@
       { path: "03_RESTORE_STOCK/bento2.bin", data: stock2 },
       { path: "README.txt", data: utf8(readme(patch, imageSha)) },
     ];
-    if (patch.kit.checklist) files.push({ path: "DEVICE_CHECKLIST.txt", data: utf8(patch.kit.checklist) });
+    if (patch.kit.checklist) files.push({ path: "DEVICE_CHECKLIST.txt", data: utf8(checklistText(patch)) });
     files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));   // make_kit's order ("./" + path)
     let sums = "";
     for (const f of files) sums += (await sha256(f.data)) + "  ./" + f.path + "\n";
@@ -205,7 +222,7 @@
     const want2 = patch.stock_sha256["bento2.bin"];
     const got2 = await sha256(stock2);
     if (got2 !== want2) throw new Error("bento2.bin is not the official stock " + patch.base + " file (sha256 " + got2 + ")");
-    const { image, sha256: imageSha } = await patchImage(stock1, patch);
+    const { image, sha256: imageSha } = await patchImage(stock1, patch, stock2);
     const files = await kitFiles(patch, image, imageSha, stock1, stock2);
     const zip = makeZip(files.map((f) => ({ name: patch.kit.name + "/" + f.path, data: f.data })), date);
     return { image, imageSha, files, zip, zipName: patch.kit.name + "-kit.zip" };
@@ -216,11 +233,21 @@
   // bento1.bin / bento2.bin out of the 1010music download's zip (stored or deflated entries; deflate needs
   // DecompressionStream, in every current browser). Returns {"bento1.bin": bytes, ...} for those found.
   async function filesFromZip(bytes) {
+    try {
+      return await readZip(bytes);
+    } catch (e) {
+      if (e instanceof RangeError) throw new Error("the zip is damaged or incomplete: download it again, or extract it and pick the files");
+      throw e;
+    }
+  }
+
+  async function readZip(bytes) {
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     let eocd = -1;
+    // The end record is the last 22 bytes plus its comment: a "PK\5\6" inside the comment is not it.
     for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--)
-      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
-    if (eocd < 0) throw new Error("not a zip file");
+      if (dv.getUint32(i, true) === 0x06054b50 && i + 22 + dv.getUint16(i + 20, true) === bytes.length) { eocd = i; break; }
+    if (eocd < 0) throw new Error("not a zip file, or a damaged one");
     const count = dv.getUint16(eocd + 10, true);
     let p = dv.getUint32(eocd + 16, true);
     const found = {}, dec = new TextDecoder();
@@ -235,12 +262,14 @@
       if (base !== "bento1.bin" && base !== "bento2.bin") continue;
       if (found[base]) throw new Error("the zip holds more than one " + base + ": extract it and pick the files");
       const start = lho + 30 + dv.getUint16(lho + 26, true) + dv.getUint16(lho + 28, true);
+      if (start + csize > bytes.length) throw new RangeError("entry past the end");
       const raw = bytes.subarray(start, start + csize);
       if (method === 0) found[base] = raw.slice();
       else if (method === 8) {
-        if (typeof root.DecompressionStream !== "function")
-          throw new Error("this browser can't unzip: extract the zip and pick bento1.bin and bento2.bin");
-        const s = new Blob([raw]).stream().pipeThrough(new root.DecompressionStream("deflate-raw"));
+        let ds = null;
+        try { ds = new root.DecompressionStream("deflate-raw"); } catch (e) { ds = null; }   // absent, or no deflate-raw
+        if (!ds) throw new Error("this browser can't unzip: extract the zip and pick bento1.bin and bento2.bin");
+        const s = new Blob([raw]).stream().pipeThrough(ds);
         found[base] = new Uint8Array(await new Response(s).arrayBuffer());
       } else throw new Error("unsupported zip compression: extract the zip and pick the files");
     }
@@ -248,16 +277,22 @@
   }
 
   // What a file is, by its sha256 (names don't matter): {role: "bento1.bin" | "bento2.bin" | null, sha, note}.
+  // For a refused file the note says what it is, when the hash is known, and what to do.
   async function identify(bytes, index) {
     const sha = await sha256(bytes);
     for (const role of ["bento1.bin", "bento2.bin"])
       if (index.stock_sha256[role] === sha) return { role, sha, note: "stock " + index.base + " " + role };
-    const known = index.known_sha256[sha];
-    return { role: null, sha, note: known ? known + ", not stock " + index.base : "not a stock " + index.base + " Bento file" };
+    const known = index.known_sha256[sha], base = index.base;
+    let note;
+    if (known && /already modded/.test(known)) note = known;
+    else if (known) note = known + ": this page needs firmware " + base + " exactly. Download " + base + " from 1010music";
+    else note = "not an official " + base + " Bento file. This page needs firmware " + base + " exactly, unmodified " +
+      "(newer versions are refused until a release supports them)";
+    return { role: null, sha, note };
   }
 
   Object.assign(BEP, { FORMAT, FORMAT_VERSION, hex, sha256, b64decode, crc32, applyPatch, patchImage, readme,
-    kitFiles, makeZip, buildKit, filesFromZip, identify });
+    checklistText, kitFiles, makeZip, buildKit, filesFromZip, identify });
 
   if (typeof module === "object" && module.exports) module.exports = BEP;
   else root.BEPatcher = BEP;
@@ -266,7 +301,8 @@
   if (typeof document === "undefined") return;
 
   const $ = (id) => document.getElementById(id);
-  const state = { index: null, patches: {}, stock: {}, result: null, urls: [] };
+  const state = { index: null, patches: {}, stock: {}, result: null, urls: [], busy: false, ready: false };
+  const MAX_BIN = 4 * 1024 * 1024, MAX_ZIP = 64 * 1024 * 1024;   // a stock file is ~1.5 MB, the download ~2 MB
 
   function setStatus(el, text, kind) {
     el.textContent = text;
@@ -277,6 +313,11 @@
 
   async function loadPatches() {
     const st = $("load-status");
+    if (!root.isSecureContext || !root.crypto || !root.crypto.subtle) {
+      setStatus(st, "This page must be opened over https (or http://localhost): only there can the browser check " +
+        "files (SHA-256). Nothing can be made here.", "bad");
+      return;
+    }
     try {
       const r = await fetch("patches/index.json", { cache: "no-cache" });
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -289,44 +330,54 @@
     }
     const sel = $("release");
     sel.textContent = "";
-    for (const rel of state.index.releases) {
+    const offered = state.index.releases.filter((rel) => rel.device_tested === true);   // tested on hardware only
+    for (const rel of offered) {
       const o = document.createElement("option");
       o.value = rel.version;
-      o.textContent = "v" + rel.version + (rel.version === state.index.default ? " (latest)" : "") +
-        (rel.device_tested ? "" : " (not yet tested on hardware)");
+      o.textContent = "v" + rel.version + (rel === offered[0] ? " (latest)" : "");
       sel.appendChild(o);
     }
-    sel.value = state.index.default;
+    if (offered.some((r) => r.version === state.index.default)) sel.value = state.index.default;
     $("base-version").textContent = state.index.base;
     // Fetch every patch now, so the page keeps working offline once loaded.
     let ok = 0;
-    await Promise.all(state.index.releases.map(async (rel) => {
+    await Promise.all(offered.map(async (rel) => {
       try {
         const r = await fetch("patches/" + rel.file, { cache: "no-cache" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const p = await r.json();
-        if (p.version !== rel.version || p.output_sha256 !== rel.output_sha256) throw new Error("patch does not match the list");
+        if (p.version !== rel.version || p.output_sha256 !== rel.output_sha256 || p.device_tested !== true)
+          throw new Error("patch does not match the list");
         state.patches[rel.version] = p;
         ok++;
       } catch (e) {
         console.warn("patch v" + rel.version + ": " + e.message);
       }
     }));
-    setStatus(st, ok === state.index.releases.length
-      ? "Ready. Everything is loaded: this page works offline from here on."
-      : "Loaded " + ok + " of " + state.index.releases.length + " releases (see the browser console).",
-    ok === state.index.releases.length ? "ok" : "bad");
+    setStatus(st, ok && ok === offered.length
+      ? "Ready. Everything is loaded: you can go offline now, as long as you don't reload this page."
+      : "Loaded " + ok + " of " + offered.length + " releases (see the browser console).",
+    ok && ok === offered.length ? "ok" : "bad");
+    state.ready = true;
     update();
   }
 
   async function addFiles(fileList) {
-    if (!state.index) return;
     const list = $("files");
+    if (!state.ready) {
+      const li = document.createElement("li");
+      li.className = "bad";
+      li.textContent = state.index ? "Still loading: try again in a second." : $("load-status").textContent;
+      list.appendChild(li);
+      return;
+    }
     for (const f of fileList) {
       const li = document.createElement("li");
       li.textContent = f.name + ": checking...";
       list.appendChild(li);
       try {
+        if (f.size > MAX_ZIP || (f.size > MAX_BIN && !/\.zip$/i.test(f.name)))
+          throw new Error("too big for a Bento firmware file (" + fmtSize(f.size) + "): pick bento1.bin and bento2.bin, or the 1010music zip");
         let bytes = new Uint8Array(await f.arrayBuffer());
         let parts = [[f.name, bytes]];
         if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 3 && bytes[3] === 4) {
@@ -363,7 +414,9 @@
     $("have-2").className = have2 ? "ok" : "";
     $("have-2").textContent = have2 ? "bento2.bin: stock, OK" : "bento2.bin: not yet";
     const v = $("release").value;
-    $("make").disabled = !(have1 && have2 && state.patches[v]);
+    $("make").disabled = state.busy || !(have1 && have2 && state.patches[v]);
+    $("release").disabled = state.busy;
+    $("reset").disabled = state.busy;
   }
 
   function clearResult() {
@@ -381,22 +434,27 @@
   }
 
   async function make() {
+    if (state.busy) return;
     clearResult();
     const st = $("make-status");
-    const patch = state.patches[$("release").value];
+    const version = $("release").value, patch = state.patches[version];
+    state.busy = true;                                 // the release and the files can't change mid-build
+    update();
     setStatus(st, "Patching and checking...", "");
     try {
       const k = await buildKit(state.stock["bento1.bin"], state.stock["bento2.bin"], patch);
+      if ($("release").value !== version) return;      // (defensive: the select is disabled while building)
       link("dl-zip", k.zip, k.zipName);
       $("dl-zip-name").textContent = k.zipName + " (" + fmtSize(k.zip.length) + ")";
-      link("dl-bin", k.image, "bento1.bin");
-      $("dl-bin-name").textContent = "bento1.bin (" + fmtSize(k.image.length) + ")";
       $("out-sha").textContent = k.imageSha;
-      setStatus(st, "Done. The result is byte for byte the published " + patch.label + " image" +
-        (patch.device_tested ? ", the one tested on hardware." : " (not yet tested on hardware)."), "ok");
+      setStatus(st, "Done. The result is byte for byte the published " + patch.label +
+        " image, the one tested on hardware.", "ok");
       $("downloads").hidden = false;
     } catch (e) {
       setStatus(st, "Stopped: " + e.message, "bad");
+    } finally {
+      state.busy = false;
+      update();
     }
   }
 
@@ -407,10 +465,19 @@
     drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
     drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
     drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); addFiles(e.dataTransfer.files); });
+    drop.addEventListener("drop", (e) => {
+      e.preventDefault(); e.stopPropagation(); drop.classList.remove("over"); addFiles(e.dataTransfer.files);
+    });
+    // A file dropped next to the drop zone would make the browser open (or download) it and leave the page.
+    document.addEventListener("dragover", (e) => e.preventDefault());
+    document.addEventListener("drop", (e) => {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+    });
     $("release").addEventListener("change", () => { clearResult(); setStatus($("make-status"), "", ""); update(); });
     $("make").addEventListener("click", make);
     $("reset").addEventListener("click", () => {
+      if (state.busy) return;
       state.stock = {};
       $("files").textContent = "";
       clearResult();

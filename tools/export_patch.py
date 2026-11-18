@@ -10,12 +10,13 @@ folder (bento_enhanced-v<ver>/). Its sha256 must be the published one in tools/r
 
 Writes web/patches/v<ver>.json and adds the release to web/patches/index.json. The patch holds only bytes we
 authored (the WRITE payload) plus offsets: every run of >= MIN_COPY bytes that also occurs anywhere in stock
-becomes a COPY op from the user's own stock image, and so does every run of 4..N-1 bytes equal to stock bytes the
-release overwrote (a stock instruction relocated out of a patch site); constant runs become FILL ops.
-See docs/web-patcher.md.
+bento1.bin or bento2.bin becomes a COPY op from the user's own stock file, and so does every run of 4..N-1 bytes
+equal to stock bytes the release overwrote (a stock instruction relocated out of a patch site); constant runs become
+FILL ops. See docs/web-patcher.md.
 
-The patch is self-verified before it is written: applying it to stock must give the release's sha256, and the
-zero-stock-bytes check (check_zero_stock) must find nothing. Never writes or commits any firmware.
+The patch is self-verified before it is written: applying it to stock must give the release's sha256, and every
+zero-stock-bytes check (check_policy) must find nothing. Only device-tested releases go to web/ (--allow-untested
+writes elsewhere only). Never writes or commits any firmware.
 """
 import argparse, base64, hashlib, json, sys
 from collections import Counter
@@ -31,6 +32,11 @@ MIN_COPY = 8          # N: see docs/web-patcher.md, "The zero-stock-bytes rule"
 MERGE_GAP = 3         # unchanged bytes (< 4, below the reported short-run floor) bridged between two changed ranges
 SHORT_FLOOR = 4       # matching runs of SHORT_FLOOR..N-1 bytes are reported, not removed
 MAX_CANDIDATES = 64   # stock positions kept per N-gram when choosing the longest COPY
+NEAR_GRAM = 4         # near-copy check: 4-byte matches ...
+NEAR_MAX_OCC = 64     # ... of grams occurring 1..this many times in a stock file (rarer grams locate a region)
+NEAR_WIN = 64         # in any window of this many bytes (or the whole sequence, if shorter, from 16 bytes),
+NEAR_BAND = 16        # matches against one stock region (diagonals within two adjacent bands of this width)
+NEAR_FRAC = 0.5       # must cover less than this fraction of the window
 
 
 def sha(b):
@@ -44,8 +50,9 @@ def base_image(stock1, size):
     return bytearray(stock1[:size]) + bytearray(max(0, size - len(stock1)))
 
 
-def apply_patch(stock1, patch):
-    """The reference implementation of web/patcher.js applyPatch: ops in order, COPY reads the ORIGINAL stock."""
+def apply_patch(stock1, patch, stock2=None):
+    """The reference implementation of web/patcher.js applyPatch: ops in order, COPY reads the ORIGINAL stock
+    (C from bento1.bin, D from bento2.bin)."""
     out = base_image(stock1, patch["output_size"])
     payload = base64.b64decode(patch["payload_b64"])
     if sha(payload) != patch["payload_sha256"]:
@@ -62,6 +69,11 @@ def apply_patch(stock1, patch):
             if src + n > len(stock1):
                 raise ValueError(f"COPY source out of stock: {op}")
             out[dst:dst + n] = stock1[src:src + n]
+        elif kind == "D":
+            _, dst, src, n = op
+            if stock2 is None or src + n > len(stock2):
+                raise ValueError(f"COPY (bento2) source out of stock: {op}")
+            out[dst:dst + n] = stock2[src:src + n]
         elif kind == "F":
             _, dst, n, v = op
             out[dst:dst + n] = bytes([v]) * n
@@ -75,16 +87,20 @@ def apply_patch(stock1, patch):
 
 
 def write_spans(patch):
-    """The WRITE payload as maximal contiguous output spans [(dst, bytes)]: adjacent WRITE ops are joined, so
-    splitting a stock run across two WRITEs cannot hide it from the check."""
+    """The WRITE payload as maximal contiguous output spans [(dst, bytes)], in output order: WRITEs adjacent in
+    the output are joined whatever their order in the op list, so splitting a stock run across several WRITEs
+    (in any order) cannot hide it from the checks."""
     payload = base64.b64decode(patch["payload_b64"])
-    spans, p = [], 0
+    pieces, p = [], 0
     for op in patch["ops"]:
         if op[0] != "W":
             continue
         _, dst, n = op
-        data = payload[p:p + n]
+        pieces.append((dst, payload[p:p + n]))
         p += n
+    pieces.sort(key=lambda t: t[0])
+    spans = []
+    for dst, data in pieces:
         if spans and spans[-1][0] + len(spans[-1][1]) == dst:
             spans[-1] = (spans[-1][0], spans[-1][1] + data)
         else:
@@ -107,24 +123,25 @@ def stock_grams(stock1, wanted, n, cap=MAX_CANDIDATES):
 
 
 def displaced_grams(stock1, out, n, lo=SHORT_FLOOR):
-    """{k: {gram: stock pos}} for k in lo..n-1: the k-byte windows of stock lying wholly inside a range the
-    release changed (a patch site or a region it overwrites). Such a run in a WRITE is a relocated stock
-    instruction, not a coincidence, so it is COPYed like a long run."""
+    """{k: {gram: stock pos}} for k in lo..n-1: the k-byte windows of stock that overlap a range the release
+    changed (a patch site or a region it overwrites), including windows straddling its edges (a byte of the
+    overwritten instruction may happen to equal the new one, so the range starts later). Such a run in a WRITE
+    is a relocated stock instruction, not a coincidence, so it is COPYed like a long run."""
     ranges = diff_ranges(base_image(stock1, len(out)), out)
     res = {}
     for k in range(lo, n):
         d = {}
         for a, b in ranges:
-            for j in range(a, min(b, len(stock1)) - k + 1):
+            for j in range(max(0, a - k + 1), min(b + k - 1, len(stock1)) - k + 1):
                 d.setdefault(stock1[j:j + k], j)
         res[k] = d
     return res
 
 
-def check_relocated(stock1, patch, out=None):
+def check_relocated(stock1, patch, out=None, stock2=None):
     """Violations of the relocated-instruction rule: [(dst, stock_pos, hex)] for WRITE runs of 4..N-1 bytes equal
     to stock bytes the release overwrote."""
-    out = out if out is not None else apply_patch(stock1, patch)
+    out = out if out is not None else apply_patch(stock1, patch, stock2)
     dg = displaced_grams(stock1, out, patch["min_copy"])
     bad = []
     for dst, d in write_spans(patch):
@@ -136,19 +153,160 @@ def check_relocated(stock1, patch, out=None):
     return bad
 
 
-def check_zero_stock(stock1, patch, n=None):
-    """Violations of the rule: [(dst, stock_pos, hex)] for every n-byte window of a WRITE span found in stock."""
+def payload_stream(patch):
+    return base64.b64decode(patch["payload_b64"])
+
+
+def _seqs(patch):
+    """What the checks scan: every WRITE span (output order) and the raw payload stream as one sequence."""
+    return [("dst 0x%x" % dst, d) for dst, d in write_spans(patch)] + [("payload", payload_stream(patch))]
+
+
+def _stock(stock):
+    return stock if isinstance(stock, dict) else {"bento1.bin": stock}
+
+
+def check_zero_stock(stock, patch, n=None):
+    """Rule 1 violations: [(where, stock file, stock pos, hex)] for every n-byte window, of a WRITE span (joined in
+    output order) or of the raw payload stream (so WRITEs scattered over distant offsets, which the stream holds
+    side by side, cannot hide a run), that occurs in a stock file. stock: {name: bytes}, or bento1's bytes."""
     n = n or patch["min_copy"]
-    spans = write_spans(patch)
-    wanted = {d[i:i + n] for _, d in spans for i in range(len(d) - n + 1)}
-    hits = stock_grams(stock1, wanted, n, cap=1)
+    seqs = _seqs(patch)
+    wanted = {d[i:i + n] for _, d in seqs for i in range(len(d) - n + 1)}
     bad = []
-    for dst, d in spans:
-        for i in range(len(d) - n + 1):
-            g = d[i:i + n]
-            if g in hits:
-                bad.append((dst + i, hits[g][0], g.hex()))
+    for name, sb in _stock(stock).items():
+        hits = stock_grams(sb, wanted, n, cap=1)
+        for where, d in seqs:
+            for i in range(len(d) - n + 1):
+                g = d[i:i + n]
+                if g in hits:
+                    bad.append((f"{where}+{i}", name, hits[g][0], g.hex()))
     return bad
+
+
+def check_structure(patch, stock_size=None):
+    """Op-shape violations [(op index, why)]: every op inside the output and its source inside its stock file;
+    no two ops writing the same output byte (a later op could put stock bytes back between WRITEs); every FILL
+    at least N long (a short FILL could do the same)."""
+    n, size = patch["min_copy"], patch["output_size"]
+    stock_size = stock_size or patch.get("stock_size", {})
+    bad, iv = [], []
+    for k, op in enumerate(patch["ops"]):
+        kind = op[0]
+        if kind == "W":
+            dst, ln = op[1], op[2]
+        elif kind in ("C", "D"):
+            dst, src, ln = op[1], op[2], op[3]
+            lim = stock_size.get("bento1.bin" if kind == "C" else "bento2.bin")
+            if src < 0 or lim is None or src + ln > lim:
+                bad.append((k, f"source out of stock: {op}"))
+        elif kind == "F":
+            dst, ln = op[1], op[2]
+            if ln < n:
+                bad.append((k, f"FILL shorter than N={n}: {op}"))
+        else:
+            bad.append((k, f"unknown op {op!r}"))
+            continue
+        if ln <= 0 or dst < 0 or dst + ln > size:
+            bad.append((k, f"out of the output: {op}"))
+        iv.append((dst, dst + ln, k))
+    iv.sort()
+    end, end_k = -1, None
+    for a, b, k in iv:
+        if a < end:
+            bad.append((k, f"overlaps op {end_k}"))
+        if b > end:
+            end, end_k = b, k
+    return bad
+
+
+def near_index(sb, wanted, k=NEAR_GRAM, max_occ=NEAR_MAX_OCC):
+    """{gram: [positions]} in stock bytes sb, for the wanted k-grams occurring 1..max_occ times there."""
+    found = {}
+    for j in range(len(sb) - k + 1):
+        g = sb[j:j + k]
+        if g in wanted:
+            found.setdefault(g, []).append(j)
+    return {g: p for g, p in found.items() if len(p) <= max_occ}
+
+
+def near_copies(seq, idx, k=NEAR_GRAM, win=NEAR_WIN, band=NEAR_BAND, frac=NEAR_FRAC):
+    """Windows of seq in which k-gram matches against ONE stock region cover >= frac of the window: a stock run
+    with sparse edits (a byte changed every few), or pieces of one stock region drifting slowly against it.
+    A region is a diagonal (stock pos - seq pos) within two adjacent bands. [(seq pos, diagonal, covered)]."""
+    if len(seq) < 16:
+        return []
+    by_band = {}
+    for i in range(len(seq) - k + 1):
+        for p in idx.get(seq[i:i + k], ()):
+            by_band.setdefault((p - i) // band, []).append((i, p - i))
+    w = min(win, len(seq))
+    need = max(1, int(w * frac))
+    bad = []
+    for b in sorted(by_band):
+        hits = sorted(by_band[b] + by_band.get(b + 1, []))
+        if len(hits) * k < need:
+            continue
+        # A window worth flagging can be taken to start at a hit: try each hit as the start. Covered = the bytes
+        # the hits inside [start, start + w) cover on BOTH sides (the union of their seq intervals, and of their
+        # stock intervals): a copy maps distinct bytes to distinct bytes, while a repeated pattern of ours
+        # ("CC 90", "CC 80", ...; a nop sled) matching one short stock spot again and again covers only that spot.
+        for j, (s0, diag) in enumerate(hits):
+            win_hits = [(i, i + d) for i, d in hits[j:j + 4 * w] if i < s0 + w]
+            if len(win_hits) * k < need:
+                continue
+            cov = min(_union([a for a, _ in win_hits], k, s0 + w), _union([b for _, b in win_hits], k))
+            if cov >= need:
+                bad.append((s0, diag, cov, win_hits))
+                break
+    return bad
+
+
+def _union(starts, k, limit=None):
+    """Bytes covered by the intervals [s, s + k) (clipped below limit when given)."""
+    cov, reach = 0, None
+    for s in sorted(starts):
+        lo = s if reach is None else max(s, reach)
+        hi = s + k if limit is None else min(s + k, limit)
+        if hi > lo:
+            cov += hi - lo
+            reach = hi
+    return cov
+
+
+def check_near_copy(stock, patch, detail=False):
+    """Near-copy violations over the WRITE spans (output order) and the payload stream, against each stock file:
+    [(where, stock file, diagonal, covered bytes)]; with detail, also the matches [(output dst, stock pos)]."""
+    k = NEAR_GRAM
+    spans = write_spans(patch)
+    seqs = [("dst 0x%x" % dst, d, dst) for dst, d in spans] + [("payload", payload_stream(patch), None)]
+    wanted = {d[i:i + k] for _, d, _ in seqs for i in range(len(d) - k + 1)}
+    pay_dst = []                                        # payload offset -> output offset
+    for op in patch["ops"]:
+        if op[0] == "W":
+            pay_dst.extend(range(op[1], op[1] + op[2]))
+    bad = []
+    for name, sb in _stock(stock).items():
+        idx = near_index(sb, wanted)
+        for where, d, base in seqs:
+            for s0, diag, cov, hits in near_copies(d, idx):
+                v = (f"{where}+{s0}", name, diag, cov)
+                if detail:                              # the matches, in output offsets, where a gram is contiguous there
+                    to = (lambda i: base + i) if base is not None else (lambda i: pay_dst[i])
+                    v += ([(to(i), sp) for i, sp in hits if to(i + k - 1) == to(i) + k - 1],)
+                bad.append(v)
+    return bad
+
+
+def check_policy(stock, patch, out=None):
+    """Every zero-stock-bytes check as {rule: [violations]}; all lists empty when the patch is clean.
+    stock: {"bento1.bin": ..., "bento2.bin": ...}."""
+    return {
+        "structure": check_structure(patch, {k: len(v) for k, v in stock.items()}),
+        "no_stock_run": check_zero_stock(stock, patch),
+        "no_relocated": check_relocated(stock["bento1.bin"], patch, out, stock.get("bento2.bin")),
+        "no_near_copy": check_near_copy(stock, patch),
+    }
 
 
 def short_runs(stock1, patch, lo=SHORT_FLOOR):
@@ -198,11 +356,14 @@ def diff_ranges(base, out, gap=MERGE_GAP):
     return ranges
 
 
-def make_ops(stock1, out, n):
+def make_ops(stock1, out, n, stock2=b"", forced=None):
+    """forced: {output offset: (op kind "C" / "D", stock pos, len)}: matches the near-copy check flagged, COPYed."""
+    forced = forced or {}
     base = base_image(stock1, len(out))
     ranges = diff_ranges(base, out)
     wanted = {out[i:i + n] for a, b in ranges for i in range(a, b - n + 1)}
     grams = stock_grams(stock1, wanted, n)
+    grams2 = stock_grams(stock2, wanted, n)
     dgrams = displaced_grams(stock1, out, n)
     ops, payload = [], bytearray()
     wstart, wbuf = None, bytearray()
@@ -217,6 +378,12 @@ def make_ops(stock1, out, n):
     for a, b in ranges:
         i = a
         while i < b:
+            f = forced.get(i)
+            if f and i + f[2] <= b:                     # part of a near copy of a stock region: COPY it
+                flush()
+                ops.append([f[0], i, f[1], f[2]])
+                i += f[2]
+                continue
             r = 1
             while i + r < b and out[i + r] == out[i]:
                 r += 1
@@ -241,6 +408,18 @@ def make_ops(stock1, out, n):
                 ops.append(["C", i, best_src, best_len])
                 i += best_len
                 continue
+            if g is not None and g in grams2:           # occurs only in bento2.bin: COPY from there (D)
+                best_src, best_len = None, 0
+                for s in grams2[g]:
+                    L = n
+                    while i + L < b and s + L < len(stock2) and out[i + L] == stock2[s + L]:
+                        L += 1
+                    if L > best_len:
+                        best_src, best_len = s, L
+                flush()
+                ops.append(["D", i, best_src, best_len])
+                i += best_len
+                continue
             k = next((k for k in range(n - 1, SHORT_FLOOR - 1, -1) if i + k <= b and out[i:i + k] in dgrams[k]), 0)
             if k:                                       # a relocated stock instruction: COPY it from its site
                 flush()
@@ -256,7 +435,21 @@ def make_ops(stock1, out, n):
 
 
 def build_patch(stock, out, version, n, label, extra):
-    ops, payload, ranges = make_ops(stock["bento1.bin"], out, n)
+    forced = {}
+    for _ in range(8):                                  # COPY what the near-copy check flags, until it flags nothing
+        patch, stats = _build_patch(stock, out, version, n, label, extra, forced)
+        bad = check_near_copy(stock, patch, detail=True)
+        new = {dst: ("C" if name == "bento1.bin" else "D", sp, NEAR_GRAM)
+               for _, name, _, _, hits in bad for dst, sp in hits if dst not in forced}
+        if not new:
+            break
+        forced.update(new)
+    stats["copy_ops_near"] = len(forced)
+    return patch, stats
+
+
+def _build_patch(stock, out, version, n, label, extra, forced):
+    ops, payload, ranges = make_ops(stock["bento1.bin"], out, n, stock["bento2.bin"], forced)
     patch = {
         "format": FORMAT, "format_version": FORMAT_VERSION,
         "version": version, "label": label, "base": extra["base"],
@@ -267,7 +460,8 @@ def build_patch(stock, out, version, n, label, extra):
         "min_copy": n,
         "notes": "Ops in order on a copy of stock bento1.bin truncated / zero-extended to output_size. "
                  "W [dst, len]: the next len payload bytes (ours). C [dst, src, len]: from the ORIGINAL stock "
-                 "bento1.bin. F [dst, len, byte]: a constant run. See docs/web-patcher.md.",
+                 "bento1.bin. D [dst, src, len]: from stock bento2.bin. F [dst, len, byte]: a constant run. "
+                 "See docs/web-patcher.md.",
         "ops": ops,
         "payload_sha256": sha(payload),
         "payload_b64": base64.b64encode(payload).decode(),
@@ -277,6 +471,7 @@ def build_patch(stock, out, version, n, label, extra):
         "changed_ranges": len(ranges), "changed_bytes": sum(b - a for a, b in ranges),
         "write_ops": counts["W"], "write_bytes": len(payload),
         "copy_ops": counts["C"], "copy_bytes": sum(op[3] for op in ops if op[0] == "C"),
+        "copy2_ops": counts["D"], "copy2_bytes": sum(op[3] for op in ops if op[0] == "D"),
         "copy_ops_short": sum(1 for op in ops if op[0] == "C" and op[3] < n),
         "copy_bytes_short": sum(op[3] for op in ops if op[0] == "C" and op[3] < n),
         "fill_ops": counts["F"], "fill_bytes": sum(op[2] for op in ops if op[0] == "F"),
@@ -308,6 +503,8 @@ def update_index(db, patch, path):
     known = {s: f"stock {' / '.join(v)} {name}" for (s, name), v in vers.items()}
     for v, r in db["releases"].items():
         known[r["bento1.bin"]] = f"bento_enhanced v{v} bento1.bin (already modded: use your stock {base} file)"
+    if patch["device_tested"] is not True:
+        sys.exit("ERROR: index.json lists device-tested releases only")
     rels = {r["version"]: r for r in idx.get("releases", [])}
     rels[patch["version"]] = {"version": patch["version"], "label": patch["label"],
                               "file": f"v{patch['version']}.json", "output_sha256": patch["output_sha256"],
@@ -332,8 +529,13 @@ def main():
     ap.add_argument("--min-copy", type=int, default=MIN_COPY, help=f"N, the zero-stock-bytes run length (default {MIN_COPY})")
     ap.add_argument("--checklist", help="DEVICE_CHECKLIST text (default docs/checklist-v<ver>.txt)")
     ap.add_argument("--survey", action="store_true", help="print patch size against N (4..16) and exit")
-    ap.add_argument("--allow-untested", action="store_true", help="export a release not yet device_tested")
+    ap.add_argument("--allow-untested", action="store_true",
+                    help="export a release not yet device_tested, to an --out outside web/ only (never published)")
     a = ap.parse_args()
+    if a.allow_untested and not a.survey:
+        o = Path(a.out).resolve()
+        if o == WEB.resolve() or WEB.resolve() in o.parents:
+            sys.exit("ERROR: --allow-untested writes only outside web/ (the site offers device-tested releases only)")
 
     db = json.loads(HASHES.read_text(encoding="utf-8"))
     base = db["base"]
@@ -369,14 +571,11 @@ def main():
                     "checklist": cl.read_bytes().replace(b"\r\n", b"\n").decode("utf-8") if cl.is_file() else None}
 
     # Self-verification: the patch reproduces the release, and publishes no stock run.
-    if sha(apply_patch(stock["bento1.bin"], patch)) != h:
+    if sha(apply_patch(stock["bento1.bin"], patch, stock["bento2.bin"])) != h:
         sys.exit("ERROR: applying the exported patch to stock does not reproduce the release (not written)")
-    bad = check_zero_stock(stock["bento1.bin"], patch)
-    if bad:
-        sys.exit(f"ERROR: {len(bad)} WRITE window(s) of {a.min_copy} bytes occur in stock, e.g. {bad[:3]} (not written)")
-    bad = check_relocated(stock["bento1.bin"], patch, out)
-    if bad:
-        sys.exit(f"ERROR: {len(bad)} relocated stock run(s) left in WRITEs, e.g. {bad[:3]} (not written)")
+    for rule, bad in check_policy(stock, patch, out).items():
+        if bad:
+            sys.exit(f"ERROR: zero-stock-bytes rule {rule}: {len(bad)} violation(s), e.g. {bad[:3]} (not written)")
     hist, covered = short_runs(stock["bento1.bin"], patch)
     stats["short_runs"] = {str(k): hist[k] for k in sorted(hist)}
     stats["short_run_bytes"] = covered
@@ -390,8 +589,9 @@ def main():
     print(f"v{version}: {label}")
     print(f"  output {patch['output_size']} bytes sha256 {h}: reproduced from stock by the patch (verified)")
     print(f"  N={a.min_copy}: {stats['write_ops']} WRITE ops / {stats['write_bytes']} bytes ours, "
-          f"{stats['copy_ops']} COPY ops / {stats['copy_bytes']} bytes from stock, "
-          f"{stats['fill_ops']} FILL ops / {stats['fill_bytes']} bytes; no WRITE window of {a.min_copy} bytes occurs in stock")
+          f"{stats['copy_ops']} COPY ops / {stats['copy_bytes']} bytes from stock bento1, "
+          f"{stats['copy2_ops']} / {stats['copy2_bytes']} from bento2, "
+          f"{stats['fill_ops']} FILL ops / {stats['fill_bytes']} bytes; every zero-stock-bytes check clean")
     print(f"  of the COPYs, {stats['copy_ops_short']} ({stats['copy_bytes_short']} bytes) are relocated stock "
           f"instructions shorter than {a.min_copy} bytes (from the sites the release overwrote)")
     print(f"  short runs ({SHORT_FLOOR}..{a.min_copy - 1} bytes) also in stock, by length: {stats['short_runs']} "

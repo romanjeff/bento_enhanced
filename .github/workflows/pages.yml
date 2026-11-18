@@ -1,15 +1,12 @@
 # Deploys web/ (the browser patcher, docs/web-patcher.md) to GitHub Pages.
 # INERT until the repository variable PAGES_ENABLED is set to "true" (Settings > Secrets and variables >
 # Actions > Variables) and Pages' source is "GitHub Actions" (Settings > Pages). Until then every run is skipped.
-# web/ holds only our own bytes; the guard step refuses firmware-like or unexpectedly large files.
+# Deploys only by hand (Actions > Pages (web patcher) > Run workflow), from main, AFTER the local check:
+# CI has no stock firmware, so it cannot check the zero-stock-bytes rule itself; tools/test_web_patch.py, run
+# locally against stock, is that check (docs/web-patcher.md, "Deploying").
 name: Pages (web patcher)
 
 on:
-  push:
-    branches: [main]
-    paths: ["web/**", ".github/workflows/pages.yml"]
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -23,7 +20,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: vars.PAGES_ENABLED == 'true'
+    if: vars.PAGES_ENABLED == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -31,22 +28,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Refuse to publish firmware
+      - name: Refuse to publish firmware, or an untested release
         run: |
-          bad=$(find web -type f \( -iname '*.bin' -o -iname '*.zip' -o -iname '*.hex' -o -iname '*.dfu' -o -iname '*.elf' \) -print)
-          if [ -n "$bad" ]; then echo "firmware-like files in web/: $bad"; exit 1; fi
-          big=$(find web -type f -size +1M -print)
-          if [ -n "$big" ]; then echo "unexpectedly large files in web/ (a patch is ~200 KB): $big"; exit 1; fi
           python3 - <<'PY'
-          import json, pathlib
-          d = pathlib.Path("web/patches")
+          import hashlib, json, pathlib, sys
+          web = pathlib.Path("web")
+          allowed = {".html", ".js", ".css", ".json"}
+          files = [p for p in web.rglob("*") if p.is_file()]
+          bad = [str(p) for p in files if p.suffix.lower() not in allowed]
+          big = [str(p) for p in files if p.stat().st_size > 1024 * 1024]
+          if bad: sys.exit(f"files in web/ that are not .html/.js/.css/.json: {bad}")
+          if big: sys.exit(f"unexpectedly large files in web/ (a patch is ~200 KB): {big}")
+          d = web / "patches"
           idx = json.loads((d / "index.json").read_text())
+          db = json.loads(pathlib.Path("tools/release_hashes.json").read_text())
+          firmware = set(idx["known_sha256"]) | set(idx["stock_sha256"].values())
+          for s in db["stock"].values(): firmware |= set(s.values())
+          for r in db["releases"].values(): firmware.add(r["bento1.bin"])
+          for p in files:
+              if hashlib.sha256(p.read_bytes()).hexdigest() in firmware: sys.exit(f"{p} is a firmware file")
           assert idx["format"] == "bento_enhanced-webpatch", "index format"
+          assert idx["stock_sha256"] == db["stock"][idx["base"]], "index stock hashes != tools/release_hashes.json"
           for r in idx["releases"]:
               p = json.loads((d / r["file"]).read_text())
+              rel = db["releases"].get(r["version"])
+              assert rel is not None, f"v{r['version']} not in tools/release_hashes.json"
+              assert rel.get("device_tested") is True, f"v{r['version']} is not device_tested in release_hashes.json"
+              assert r.get("device_tested") is True and p.get("device_tested") is True, f"v{r['version']}: not device_tested"
               assert p["format"] == "bento_enhanced-webpatch" and p["version"] == r["version"], r
-              assert p["output_sha256"] == r["output_sha256"], r
+              assert p["output_sha256"] == r["output_sha256"] == rel["bento1.bin"], f"v{r['version']}: sha != published"
               assert p["min_copy"] >= 8, "zero-stock-bytes N below the documented policy"
+              assert {op[0] for op in p["ops"]} <= {"W", "C", "D", "F"}, "unknown op"
           print("patches:", [r["version"] for r in idx["releases"]])
           PY
 
