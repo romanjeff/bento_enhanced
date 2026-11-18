@@ -9,25 +9,29 @@ Kit:
   manifest.json      what the image contains (groups, addresses, every write)
   DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.45.txt)
 
-Plan: docs\plan-fm-targets.md (X1 and X2 as built). Release notes: docs\release-notes-v4.45.md. Everything below was
-measured in the emulator only. This is a delta on BE4.44: docs\checklist-v4.44.txt still applies in full (nothing
-unrouted changed: the emulator shows BE4.44's output byte for byte with nothing routed to the new rows).
+Plan: docs\plan-fm-targets.md (X1 and X2 as built, the X2 review). Release notes: docs\release-notes-v4.45.md.
+Everything below was measured in the emulator only. This is a delta on BE4.44: docs\checklist-v4.44.txt still applies
+in full (nothing unrouted changed: the emulator shows BE4.44's output byte for byte with nothing routed to the new rows).
 
 What changed since BE4.44:
   - A Wavetable track's Mod Matrix has three more rows: OSC1: Sub FM (after OSC1: Position), OSC2: FM 1>2 and
     OSC2: Sub FM (after OSC2: Position). 26 rows. The oscillator rows now read "OSC1: ..." / "OSC2: ..." (BE4.44 showed
     "WT1: ..." / "WT2: ..."). The CC column of the new rows is blank.
   - A routing moves the knob: amount 100 % with the source at full moves the knob by the whole travel (0..100 %), then
-    the usual depth curve. The knob is where the travel starts; the result is held to 0..100 %.
+    the usual depth curve. The knob is where the travel starts; the result is held to 0..100 %. Several routings on one
+    row add up.
   - OSC2: Sub FM has no knob (since BE4.43). It plays only while routed, starting from 0, next to FM 1>2.
   - The depth follows the source once per block (2.7 ms), ramped across the block (no zipper).
   - Works on Analog and Wavetable oscillators; with the knob at 0 a routing alone turns FM on.
+  - The FM envelope (FM Atk / FM Dec) shapes the routed depth exactly as it shapes the knob's.
+  - The ANALOG line has a new field x2lost= (routings the M7 could not keep; should stay 0).
   - The piano roll's destination list is unchanged (stock's): no lanes on these.
 What to expect that is not a bug:
   - The modulation is block rate: an LFO above about 100 Hz on an FM amount aliases (folds above 187 Hz). Use the FM
     rows' own audio-rate sources (Sub FM, FM 1>2) for audio-rate effects.
   - seq1..seq4 routed to the same FM row share one slot (stock's rule for every destination): the last one wins.
   - A Wavetable OSC2's Sub FM starts from 0 even if an old project stored a value for it (an Analog OSC2 starts from it).
+  - A project saved on stock 1.6.8 loses these routings (stock drops their destination when it saves).
 
 0. Gate
 [ ] Back up the SD card (folder copy), as before.
@@ -35,7 +39,7 @@ What to expect that is not a bug:
 
 1. Boot and old projects
 [ ] Flash 01_TEST_FIRMWARE. The boot screen shows BE4.45. New empty project FMT_A, save: BENTO_SAVES.log says
-    "firmware BE4.45"; the ANALOG line has keys=ok.
+    "firmware BE4.45"; the ANALOG line has keys=ok and x2lost=0.
 [ ] Load FMT_A44: no crash; every track sounds as on BE4.44 (A/B by ear on two tracks with FM).
 
 2. The rows (FMT_A, a new Wavetable track, Mod Matrix page)
@@ -44,30 +48,44 @@ What to expect that is not a bug:
 [ ] Scroll to the end and back: nothing cut off, no stray text.
 
 3. The sound (track 1: OSC1 Analog Shape 0, OSC2 Analog; sub Sine an octave below; one held note C3)
-[ ] OSC1 Sub FM knob 0. Route LFO1 (slow, 1 Hz) to OSC1: Sub FM, amount 50 %: the FM depth swings 0..50 % and back,
-    smooth, no clicks or zipper. Amount -50 %: nothing (held at 0) except when the knob is up: knob 50 %, amount -50 %:
-    the depth swings 0..50 % the other way round.
-[ ] Knob 80 %, LFO amount 50 %: the top is held at 100 % (a flat top in the swing). Write down how it sounds.
-[ ] Velocity to OSC1: Sub FM, 70 %: soft notes plain, hard notes bright.
-[ ] Env 2 (short decay) to OSC2: FM 1>2, 100 %, OSC1 Level 0: a plucked FM tone on OSC2; each note retriggers it.
-[ ] OSC2: Sub FM, from LFO1 50 %: OSC2 gets the sub's FM (on top of FM 1>2 if that is up). Remove the routing: it goes
-    back to plain within a block, no click.
-[ ] The same three rows on a track with both oscillators Wavetable (factory WAVs): each works, knob 0 plus a routing
-    turns FM on.
-[ ] seq1 to OSC1: Sub FM: steps of depth, each a 2.7 ms glide.
-[ ] Remove each routing (source None) during a held note: the depth goes back to the knob, no click.
+    Do 3a..3f on this track, then again on a track with both oscillators Wavetable (factory WAVs).
+[ ] 3a LFO. OSC1 Sub FM knob 0. Route LFO1 (slow, 1 Hz) to OSC1: Sub FM, amount 50 %: the FM depth swings 0..50 % and
+    back, smooth, no clicks or zipper. Amount -50 %: nothing (held at 0). Knob 50 %, amount -50 %: the depth swings
+    0..50 % the other way round. Knob 80 %, amount 50 %: the top is held at 100 % (a flat top). Write down how it sounds.
+[ ] 3b Velocity. Velocity to OSC1: Sub FM, 70 %: soft notes plain, hard notes bright.
+[ ] 3c Pressure (aftertouch). Pressure to OSC2: FM 1>2, 100 %, knob 0: press into a held note, the FM 1>2 brightness
+    follows the pressure up and back to plain on release, no steps or clicks. Two notes held with different pressure
+    (if the keyboard sends polyphonic pressure): each note follows its own.
+[ ] 3d Env. Env 2 (short decay) to OSC2: FM 1>2, 100 %, OSC1 Level 0: a plucked FM tone on OSC2; each note
+    retriggers it. Env 1 to OSC1: Sub FM 60 %: the same pluck shape on OSC1's FM.
+[ ] 3e OSC2: Sub FM (no knob, base 0). With nothing routed on it, the row does nothing. Route LFO1 50 %: OSC2 gets the
+    sub's FM (on top of FM 1>2 if that is up). Pressure 100 % on it: pressure alone turns OSC2's sub FM on. Remove the
+    routing: plain within a block, no click.
+[ ] 3f Sum and seq. Velocity 50 % and LFO1 30 % both to OSC1: Sub FM: the two add (hard notes swing higher). seq1 to
+    OSC1: Sub FM: steps of depth, each a 2.7 ms glide.
+[ ] 3g FM envelope. OSC1 Sub FM from velocity 100 % (knob 0), then OSC1 FM Atk 60 / FM Dec 60: hard notes swell in and
+    decay as with the knob at the same depth (A/B: routing removed, knob turned to about the same depth).
+[ ] 3h Remove each routing (source None) during a held note: the depth goes back to the knob, no click.
 
 4. Save, load, rollback
 [ ] Save FMT_A with all three rows routed, load another project and FMT_A again: the routings and the sound are back.
+[ ] Cold boot: with FMT_A the last project, power off and on (let it auto-load), play WITHOUT touching the Mod Matrix:
+    the routed FM rows move as before. Note it if they do not (and whether loading FMT_A again brings them back): the
+    M7 keeps these routings in its own memory, set up at boot (plan: X2 review, R1-4).
+[ ] Store: route OSC1: Sub FM from velocity on 8 Wavetable tracks (all tracks): each plays; save, the ANALOG line shows
+    x2lost=0.
 [ ] (End of session) Flash BE4.44's kit, load FMT_A: it opens, the three routings do nothing (BE4.44 has no such rows),
-    the rest plays. Flash stock 1.6.8, load FMT_A: it opens and plays; the routings do nothing.
+    the rest plays. Flash stock 1.6.8, load FMT_A: it opens and plays; the routings do nothing. Do NOT save FMT_A on
+    stock (stock drops these routings' destination when it saves); if you want to check that, save a copy FMT_A_STOCK.
 
 5. CPU (write down "DSP nn%" on OSC1's title, OVER or not; the ANALOG line after a save)
-[ ] An 8-voice chord around C2, both oscillators Wavetable, OSC1 Sub FM 50 % and OSC2 FM 1>2 50 % from knobs, an LFO on
-    Position: note the DSP %. Then the same depths from routings (knobs 0, velocity 100 % on both, play hard) plus
-    LFO1 on OSC2: Sub FM 50 %: note the DSP %. Offline the routing adds about 400 instructions a voice-block and OSC2's
-    Sub FM a second FM term (about 3k): the heaviest offline voice is 32.2k (the ceiling 35.3k).
-[ ] The same on Analog oscillators. No reset, no freeze, no "!!!" in the log, no OVER that stays on.
+[ ] An 8-voice chord around C1..C2, both oscillators Wavetable, OSC1 Sub FM 100 % and OSC2 FM 1>2 100 % from knobs, an
+    LFO on both Positions: note the DSP %. Offline this is the heaviest existing voice (34.9k instructions a voice-block).
+[ ] The same depths from pressure (knobs 0, Pressure 100 % on OSC1: Sub FM and OSC2: FM 1>2, press hard): note the
+    DSP %. Offline 35.3k a voice-block, within 50 of the 35,309 ceiling.
+[ ] Then add Pressure 100 % on OSC2: Sub FM too (a second FM term OSC2 never had on BE4.44): note the DSP % and any
+    OVER. Offline 37.3k a voice-block, about 5.6 % over the ceiling (reported to Jeff).
+[ ] The same on Analog oscillators. No reset, no freeze, no "!!!" in the log, no OVER that stays on; x2lost=0.
 
-Bring back: BENTO_SAVES.log, BENTO_CRASHES.log if any, the row photo (section 2), notes on section 3 (how the clamp and
-the block-rate depth sound), section 5's figures.
+Bring back: BENTO_SAVES.log, BENTO_CRASHES.log if any, the row photo (section 2), notes on section 3 (how the clamp,
+pressure and the block-rate depth sound), section 4's cold boot result, section 5's figures.

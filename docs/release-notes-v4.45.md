@@ -9,20 +9,25 @@ measurements: `docs/plan-fm-targets.md`. Device checklist: `docs/checklist-v4.45
   - **OSC1: Sub FM**, after OSC1: Position;
   - **OSC2: FM 1>2** and **OSC2: Sub FM**, after OSC2: Position.
 
-  They work on Analog and on Wavetable oscillators.
+  They work on Analog and on Wavetable oscillators, from any source of the list (velocity, pressure, envelopes, LFOs,
+  the seq lanes, modwheel, macros).
 - **A routing moves the knob's travel.** The depth played is `knob + amount x source`, in knob units, held to 0..100 %,
-  then the usual depth curve. With the knob at 0, a routing alone turns FM on. With nothing routed, every track sounds
-  exactly as on BE4.44.
+  then the usual depth curve. Several routings on one destination add up. With the knob at 0, a routing alone turns FM
+  on. With nothing routed, every track sounds exactly as on BE4.44.
 - **OSC2: Sub FM plays only routed.** It has had no knob since BE4.43. Routed, the sub modulates OSC2 alongside FM 1>2.
+- **The FM envelope still applies.** FM Atk / FM Dec shape the routed depth as they shape the knob's.
 - **Smooth.** The depth follows its source once per audio block (2.7 ms) and ramps across each block, so slow LFOs,
-  envelopes and velocity sound continuous. An LFO above about 100 Hz on a depth aliases; that is what the audio-rate FM
-  sources are for.
+  envelopes, pressure and velocity sound continuous. An LFO above about 100 Hz on a depth aliases; that is what the
+  audio-rate FM sources are for.
 - **The oscillator rows read "OSC1: ..." / "OSC2: ...".** Stock and BE4.44 showed "WT1: ..." / "WT2: ..." on this page.
+- **Black box:** the ANALOG line in BENTO_SAVES.log has `x2lost=`, the routings the M7 could not keep (more routed
+  Wavetable roots than it has room for: 8). It should read 0.
 
 ## Compatibility
 
 - Projects save these routings as stock saves any routing. BE4.44 loads them and keeps them (they do nothing there).
-  Stock 1.6.8 loads them as routings to nothing (inert) and drops their destination when it saves.
+  Stock 1.6.8 loads them as routings to nothing (inert) and **drops them when it saves**: a project saved on stock comes
+  back to BE4.45 without them.
 - Nothing else in the save format changed.
 - The piano roll's destination list is stock's (no lanes on these destinations).
 
@@ -30,11 +35,18 @@ measurements: `docs/plan-fm-targets.md`. Device checklist: `docs/checklist-v4.45
 
 - seq1..seq4 routed to the same FM destination share one slot, as on every stock destination: the last one wins.
 - A Wavetable OSC2's Sub FM routing starts from 0 even if an old project stored a value for it.
+- **CPU:** routing OSC2: Sub FM adds a whole second FM term to OSC2. On the heaviest voice (both oscillators Wavetable,
+  full FM, Position moving every block) that is about 37.3k instructions a voice-block, about 5.6 % over the heaviest
+  voice of BE4.44 (35.3k). The other two destinations stay within it.
+- The routings are kept in the M7's own memory, set up when it starts. A project loaded before that point would play
+  them as unrouted until it is loaded again (not seen offline; the device checklist has a cold-boot check).
 
 ## Measured (emulator)
 
 - Nothing routed: BE4.44's output and voice state byte for byte (8 cases, all type pairs).
-- Routed: bit for bit the same as turning the knob to the same depth, including the clamps and the ramp out on removal.
-- CPU: about 400 instructions per voice-block for the routings themselves; with OSC2: Sub FM routed (a second FM term)
-  the heaviest voice is 32.2k, within the heaviest existing voice (35.3k).
-- DSP code 32,652 B (8,052 B free); the M4 room is unchanged (15,432 B to the proven maximum).
+- Routed: bit for bit the same as turning the knob to the same depth, including the clamps, several routings summed,
+  root sources (modwheel, seq lanes), mixed sync, several voices of one track each with its own source, and the ramp out
+  on removal.
+- CPU: about 260 instructions per voice-block for two routed destinations on the heaviest voice (35.26k, within its
+  35.31k ceiling, also with every slot used and the store full); with nothing routed, unchanged within about 0.2 %.
+- DSP code 32,860 B (7,844 B free); 15,408 B of M4 room left to the proven image maximum.

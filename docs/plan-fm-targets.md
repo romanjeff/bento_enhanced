@@ -352,6 +352,9 @@ today's: X2Identity (below) shows it byte for byte against BE4.44.
 
 ### Results (M, ~/bento/out/be445x2a unless named)
 
+(These are the numbers from before the review. For CPU, sizes, suites and the kit, "X2 as built after the review"
+below supersedes them.)
+
 **Identity, nothing routed** (`X2Identity`, new): BE4.44 (be444w4f, its own image and DSP symbols) and this build run the
 same 8 cases on the device's path (stock's root, voice render and sub). The cases are the four type pairs, with FM knobs,
 FM envelopes, a stock Position routing moving every block, a retrigger, and a stored OSC2 Sub FM. Every output sample,
@@ -379,7 +382,9 @@ the max; `FmTargetsX2.test_cost`):
 
 - **The routed cost**, two routed destinations, the same sound: **+354 (Analog) / +404 (Wavetable) instructions per
   voice-block** (x2_enter, its tags and the gates). Gated at 600. OSC2 Sub FM routed adds an FM term today has none of
-  (+2.4k / +2.8k), still within the heaviest existing voice (35,309): max 32,202.
+  (+2.4k / +2.8k), still within the heaviest existing voice (35,309): max 32,202. **(Wrong as a claim about the
+  heaviest voice, and superseded: this voice is a light one. See "X2 review" below: on the heaviest voice the routing
+  went over the ceiling; after the fix two routed keys stay within it and OSC2 Sub FM routed is 5.6 % over.)**
 - **The cost with nothing routed:** X2Identity's instructions, this build / BE4.44, are 1.0006 .. 1.0021 over the 8
   cases (worst: a Wavetable OSC1 next to an Analog OSC2 with OSC2's Sub FM stored). That is about 15..60 instructions per
   voice-block: the loads and branches above, and the compiler's layout of the functions that grew.
@@ -428,6 +433,145 @@ BE4.44 keeps them with their keys, inert. On BE4.45 a project's push brings them
    routed to an FM amount reads the previous block's value.
 4. **Device check** (checklist-v4.45.txt): the routings at the device's message order (a project's push, the clear
    before a resend), CPU at 8 voices with routings, the sound of block-rate FM depth.
+5. **(X2 review) OSC2 Sub FM routed on the heaviest voice is 37.3k, 5.6 % over the 35,309 ceiling.** It is a whole FM
+   term BE4.44 never plays. The choices: accept it as a known miss (as W3/W4's FM Atk peaks were; gated at its measured
+   level); restrict it (for example, play OSC2's routed Sub FM only while OSC2 is Analog: the second review measured
+   that within the ceiling, 31.9k with both Analog and 34.7k next to a Wavetable OSC1, before the fix); or a
+   cheaper two-term kernel later (its own sprint). The device's 8-voice figure (checklist 5) should decide.
+6. **(X2 review) A routing that reaches the M7 before it takes its area is lost until the project is loaded again.**
+   The window is probably closed (the take comes at the first audio block after the M4's config line), but that order is
+   device behaviour. If the checklist's cold-boot item fails: an M4 re-push of the Wavetable tracks' FM routings on a
+   generation change, shared with the drums' re-push (plan-p4-drums 3.6).
+
+### X2 review: dispositions (two reviews of 2472b8e; M on ~/bento/out/be445x2r unless named)
+
+Each issue was checked against the code and, where it was about CPU or a missing test, measured or mutated first.
+
+**R2-1 (high), CPU on the heaviest voice: holds, fixed for two of the three destinations.**
+- Verified. Wavetable both, Sub FM and FM 1>2 at 1000, Position every block, note 24: knobs 34,889. Before the fix,
+  the same sound routed was 35,295, and over the 35,309 ceiling with every slot used (35,369) or with 7 routed roots ahead
+  in the store (35,351). The plan's "max 32,202" above came from a light voice (knobs 300, no Position modulation).
+- Where it went (Span per function, before): x2_enter 340 per voice-block. Of that, x2_mask's loop over the 12 slots was
+  118, x2_find 15, the tag tests 21, and the per-key slot loops the rest.
+- Fix (dsp/analog.cpp x2_enter, the per-voice-block path only):
+  - a plain scan for the entry (4 instructions per entry ahead);
+  - a key's four slots tested as two words (no x2_mask);
+  - the slot loop unrolled.
+  - x2_find / x2_mask stay for the message loop.
+  - x2_enter is now 193 a voice-block on this voice (228 before the unroll).
+- After the fix (`FmTargetsX2.test_cost_heaviest_voice_routed`, new; every block gated at HEAVIEST_VOICE), notes 24 / 36,
+  steady median / max:
+
+| Heaviest voice, Position every block | note 24 | note 36 | gate |
+|---|---|---|---|
+| knobs (today's path) | 34,889 / 34,891 | 34,879 / 34,881 | |
+| the same sound routed (2 keys, velocity) | 35,148 / 35,150 | 35,138 / 35,140 | 35,309 |
+| 2 keys x 4 slots (velocity, env 1, env 2, seq1 in slot 3) | 35,216 / 35,218 | 35,206 / 35,208 | 35,309 |
+| that, with 7 routed roots ahead in the store | 35,258 / 35,260 | 35,248 / 35,250 | 35,309 |
+| unrouted voice, 8 routed roots in the store | 34,954 / 34,956 | 34,944 / 34,946 | 35,309 |
+| + OSC2 Sub FM routed (3 keys) | 37,288 / 37,290 | 37,288 / 37,290 | 37,700 |
+
+- Two routed keys now cost +259 a voice-block on this voice (was +406). The worst two-key case is 49 under the ceiling.
+  That margin is thin, but it is the worst of this sweep: all slots used and the store full at once.
+- **OSC2 Sub FM routed is 37.3k, 5.6 % over the ceiling.** That is not overhead. It is a whole second FM term on OSC2
+  (A on Sub FM's line, B on FM 1>2's), which BE4.44 never plays on any voice (BE4.43 removed it: "OSC2's Sub FM term is
+  gone", 31,412 -> 28,929). Making it cheaper means a cheaper two-term kernel, not a change to X2. It is gated at its
+  measured level (SUB2_HEAVY_MAX 37,700), the way W3/W4 gated their known misses, and it goes to Jeff (below).
+- Corrected: the plan line above, the release notes ("within the heaviest existing voice (35.3k)" had mixed the voice
+  with the ceiling), and checklist section 5, which now aims at this worst case with pressure as the source.
+
+**R2-4, cost while some other root is routed: holds, reported, made smaller.** Once any root has an entry (x2n != 0),
+every voice runs x2_enter's scan. Before: +86 for an unrouted voice with 8 entries in the store. After the scan change:
++65 (34,954 vs 34,889 above). A per-root flag was not built. The only per-root line the M7 keeps (lookup()'s Root) exists
+only for an Analog OSC1, and keeping a flag in step with the store costs more code than the 4 instructions per entry it
+would save.
+
+**R1-1, R1-2, R1-3, R1-6 (a, b), R2-2, R2-3: the gaps in the tests hold; tests added.** The reviewers' surviving
+mutations, re-run on a copy against this build (scratchpad be445x/x2r/mut, FmTargetsX2 + X2Identity):
+
+| Mutation | What it breaks | Caught by |
+|---|---|---|
+| VOICE0 (every voice reads voice 0's source) | per-voice sources | test_each_voice_reads_its_own_sources |
+| ROOTREL (root sources read as voice offsets) | modwheel, macros, seq1..4 | test_root_sources_seq_slot_and_the_sum_play_as_the_law |
+| SLOT3 (slots 0..2 only) | the seq lanes' slot | the same |
+| SUM (only the last slot plays) | the sum over slots | the same |
+| XMOR (OSC1 Sub FM forced routed whenever any key is) | the other key's knob | the same (the other knob at 300) |
+| ROUND (truncation) | rounding to nearest | the same (0.7 of a unit), and the pair tests |
+| FMAORDER2 (`m x 1000` then `+ knob`, two roundings) | the final fused rounding | the same ("the final FMA's rounding": 764, not 765) |
+| FMAORDER (`m * 1000.f + knob` in one expression) | none: **equivalent**. clang's default -ffp-contract=on fuses it into the same VFMA (FMAORDER2 is the real change) | survives, as it must |
+| D3 (routed OSC1 Sub FM kept under mixed sync) | D3 | test_routed_osc1_sub_fm_follows_mixed_sync_as_the_knob |
+| TIDY1 (tidy only voice 0) | voice 1's feed of B on the ramp out | test_removal_tidies_every_voice_of_the_root |
+| AMTCLAMP (no clamp to +-1000) | the amount's range | test_amounts_keep_their_value_through_the_route_handler |
+| MASKWORD (a key's slots 2..3 not seen) | the new word-wise mask | test_a_key_routed_only_in_its_upper_slots_plays (added after the sweep showed it) |
+| HANDLE (no handle check in x2_enter) | a reused root | test_routes_follow_the_root_and_its_handle |
+| HASVOICE (no x2_has_voice) | a root that does not hold the voice | test_connect_guards |
+| TRAMPLR (r4 passed whatever lr is) | the lr check | test_connect_guards (r4 = the real root, lr outside) |
+| TRAMPS0 (no vpush / vpop of s0, s1) | s0 for stock's slot 10 | test_connect_guards (the bytes) |
+| none (control) | | all green |
+
+- R1-6 (c), x2_clear clearing all keys on either oscillator: **not a test, by design.** Stock's 0x48 clear calls slot 9
+  for both oscillators of every voice (0x0807B242..5C), so the per-oscillator split cannot be seen from stock's path. The
+  reviewer said the same.
+- R2-3, TRAMPS0: x2_connect does not touch s0 on stock's keys at this build's layout, so dropping vpush / vpop changes
+  nothing anyone can hear. The test pins the trampoline's bytes, and Position's stored amount next to our keys' connects.
+
+**R2-6, the over-read: holds, fixed.** A source is kept only if the float at src + 4 lies inside the voice's 0xBA0 bytes
+(offset 1..0xB98) or the root's 0x2F0 (0..0x2E8). Stock's 15 sources are at most voice + 0x79C and root + 0x2E4. FM Env's
+later voice + 0xB84 / 0xB88 still fit.
+
+**R1-5, R2-5, x2_lost not visible on the device: holds, fixed.** The ANALOG line prints ` x2lost=` after `wt=`
+(m4_synth.c, +28 B). The checklist routes all 8 tracks and reads it. It also states that a save on stock drops these
+routings (test_native_props' stock-load test shows the destination dropped).
+
+**R1-4, a routing that arrives before the M7 takes its area: holds in part. Checklist item added; the re-push goes to
+Jeff.**
+- Verified. x2_connect returns early when !area_ok(), without counting (the counter is itself in the area). synth_take
+  zeroes +0x400..+0x800, the store included.
+- When it can happen. The take runs from h_consume at the first queue read after the M4 publishes its config line
+  (m7_diag.c -> m1_region_poll -> region_reserve -> synth_take). So it comes before any routing message, unless the M4
+  posts a project's routings before it publishes that line. The drums plan allows for exactly that ("a project load before
+  the handshake", plan-synths-168), and the order is device behaviour (I).
+- After an M7-only reset, stock's own engine state is rebuilt too, so stock's routings would be just as lost there.
+- Applied: a cold-boot item in the checklist (auto-load, then play without touching the matrix), and the limit in the
+  release notes.
+- Not built: an M4 re-push on a generation change. That means walking each Wavetable object's routing list (obj + 0x14)
+  for keys 0x18B / 0x132 and posting them again (MX_KEY_POST 0x081346B8). It is the same mechanism the drums plan (3.6,
+  on main, paused) needs, so it should be one shared feature, built after the device shows whether the window exists.
+
+**R1-7, a Wavetable OSC2's routed Sub FM base is 0, not its saved value: holds as a deviation, already disclosed; Jeff
+decides.** The reviewers' cheap alternative (keep the value per root next to the X2 entry) needs the value before any
+routing exists. It arrives as a property message, possibly with no entry yet, so it would mean a second per-root store
+that also exists unrouted. Today the value only comes from a pre-BE4.43 project. Not built; open 1 stands.
+
+### X2 as built after the review (M, ~/bento/out/be445x2r; release build be445x2rrel byte-identical)
+
+- **CPU.**
+  - The heaviest-voice table above.
+  - `FmTargetsX2.test_cost` (light voice, note 60), knobs / routed / + OSC2 Sub FM, median / max: Analog 28,071 /
+    28,385, 28,278 / 28,592, 30,652 / 31,047; Wavetable 27,181 / 29,793, 27,438 / 30,050, 30,197 / 32,039. The
+    routing's own cost is +207 / +257 (was +354 / +404).
+  - Nothing routed:
+    - X2Identity (vs BE4.44, all byte for byte) worst 1.00209, the same as before the fix (the change is on the routed
+      path only).
+    - P3Identity worst **1.0177** (111,848 / 109,899), total 1.0098: unchanged, 0.18 % under the 1.95 % stop line.
+    - WtFmW4's heaviest steady voice 34,806 (unchanged).
+- **Sizes.**
+  - DSP 32,860 B, **7,844 B free** of 40,704 (+208 B over X2: the lean x2_enter, its unroll +136, the source bounds).
+  - Synth UI block 16,542 B (+28: `x2lost=`).
+  - M7 C slice 15,368 B and M4 24,424 B: unchanged.
+  - Image 0x189704: **15,408 B to PROVEN_MAX** (0x18D334), the M4 room.
+- **Suites** (from the worktree's mods/m1; skips in brackets). All OK:
+  - diag 92 (6), polyat 51 (2), conditions 18, holdstep 18, controls 62, retrig 43, step 95 (16), mod 24 (20);
+  - notemod 16, notemod_route 8, notemod_real 14, slice 20, s3_m7 25, step_xml 11, keys 10;
+  - native_props 31, **analog 233** (232 in the suite run, plus `test_a_key_routed_only_in_its_upper_slots_plays`, added
+    after the mutation sweep and run on its own: OK), inst_xml 5 (5), synth_ui 64 (2), handles 16 (16), note0 32;
+  - p3_golden 52. Drums: not run (the default build leaves them out).
+- **Mutation sweep**: the table above. 16 mutants and a control. All killed but FMAORDER, which is equivalent.
+- **Images.**
+  - Release `~/bento/out/be445x2rrel` (label BE4.45): bento1.bin sha256
+    f87e3d0c95a2b0e9150890e3d1ae0b96093b4381d0158748bee4b1950c240245. It is the kit's 01_TEST_FIRMWARE.
+  - Sprint image `BE_TAG=X2R` (`~/bento/out/be445x2rt`): 8dbcd1fe04a77db79389e46e55b2b977639c0e36c979afce536a68272b30cacc.
+  - The X2 images and kit above (dd78cd75..., 0f3fd528...) are superseded.
 
 ## Tests added in X1
 
@@ -459,6 +603,14 @@ BE4.44 keeps them with their keys, inert. On BE4.45 a project's push brings them
   ~/bento/out/be444w4f); `WtVoice` takes a rig for it.
 - **test_analog `ShapeMod`:** X1's inert test is now `test_slot_10_called_from_outside_the_route_handler_keeps_nothing`
   (the same checks: a direct call stores and writes nothing).
+- **X2 review, test_analog `FmTargetsX2` (+9, now 21):** each voice reads its own sources (two voices of one root);
+  root sources, seq1 in slot 3, three slots summed and the rounding against `x2_law` (the law in float32, with a
+  searched case where the final fused rounding gives 764 and two roundings 765), the other key's knob at 300; a key
+  routed only in slot 2 or by a seq lane; routed OSC1 Sub FM under mixed sync (D3); every amount -1000..1000 through
+  WT_ROUTE, and +-1000 past it; OSC2 Sub FM's removal; the tidy over all the root's voices (two voices, remove and
+  clear, three type pairs); the connect guards; the heaviest voice routed (`test_cost_heaviest_voice_routed`). `pair()`
+  takes OSC2's Sync and extra knobs. test_analog takes test names after its two paths.
+- **X2 review, test_synth_ui `BlackBox`:** the ANALOG line's `x2lost=` (+24), +28 still not printed.
 
 ## Plan items found wrong (feasibility-wt-fm-matrix.md, part b)
 
