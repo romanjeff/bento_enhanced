@@ -49,9 +49,11 @@
   <label for="release">bento_enhanced version</label>
   <select id="release"><option>loading...</option></select>
   <p id="load-status" class="status" aria-live="polite">Loading the release list...</p>
-  <p class="known"><strong>BE4.46's reset loop is fixed in BE4.47:</strong> use 4.47. BE4.46 can sometimes
-  reset-loop before the boot screen. To recover: unplug USB, hold power past the bootloader screen until the Bento
-  switches off, leave it off a while, then power on, and install BE4.47.</p>
+  <p class="known"><strong>Use BE4.47, not BE4.46:</strong> BE4.46 can sometimes reset-loop before the boot screen.
+  BE4.47 removes the cause found, and no loop has been seen on it. To recover a looping BE4.46: unplug USB, hold power
+  past the bootloader screen until the Bento switches off, leave it off a while, then power on. If it still loops,
+  install stock 1.6.8 once from the kit's <code>03_RESTORE_STOCK</code> (bootloader screen, REC) and boot it. Then
+  install BE4.47.</p>
   <div id="test-builds" class="testbuild" hidden>
     <p><strong>Test builds:</strong> <span id="test-builds-list"></span>, in the list under "Test builds".
     A test build is published <strong>before</strong> it has been tested on hardware, so that it can be tested.

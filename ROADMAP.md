@@ -26,7 +26,9 @@ everything below are in [`mods/m1/`](https://github.com/romanjeff/bento_enhanced
   velocity; hold-to-inspect steps.
 - **UI:** hold shortcuts (TRACKS / LAUNCH / MIXER / INST).
 - **Diagnostics:** black box on the SD card (crash records, audio stall records). **Clean start** on every boot (v4.47):
-  nothing of ours is carried over in RAM from an earlier run, which fixed BE4.46's boot loop.
+  nothing of ours is carried over in RAM from an earlier run, which removes the cause of BE4.46's boot loop found in the
+  emulator (no loop or reset seen on BE4.47 since; stock's crash counter rising 525 -> 532 before the first BE4.47 boot
+  is still being decoded).
 - **Build it yourself:** one command builds a kit from your own stock 1.6.8 and checks it is byte for byte the image
   tested on hardware.
 

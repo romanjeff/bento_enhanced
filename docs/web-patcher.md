@@ -41,8 +41,10 @@ Tested releases are unaffected: same patch, same kit, same README. When the test
 set `device_tested: true` in `release_hashes.json` and re-export it without the flag: it becomes an ordinary
 release (and the default, if newest), its kit loses `-UNTESTED`.
 
-The page also carries a static one-line note under the release list: BE4.46's reset loop is fixed in BE4.47, and
-how to recover a Bento looping on BE4.46 (`web/index.html`, class `known`); edit or drop it by hand.
+The page also carries a static note under the release list: use BE4.47, not BE4.46 (BE4.47 removes the cause of
+BE4.46's reset loop), and how to recover a Bento looping on BE4.46, in both steps (power off with USB unplugged; if
+it still loops, stock once from `03_RESTORE_STOCK`), then install BE4.47 (`web/index.html`, class `known`); edit or
+drop it by hand. The note is not tied to picking 4.46 in the list: v4.46 stays listed as a tested release.
 
 v4.47 went this way: published as a test build, device-tested (2026-11-18), then re-exported without the flag; it is
 the default since, and v4.46 stays listed as a tested release.
