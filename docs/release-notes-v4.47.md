@@ -4,8 +4,9 @@ BE4.47 fixes the boot. On BE4.46 the Bento could get stuck in a reset loop befor
 code trusting memory that an earlier run had left behind. BE4.47 starts every boot from scratch. Everything a project
 does is unchanged from BE4.46.
 
-Plan, measurements and review: `docs/plan-v4.47-clean-start.md`. Device checklist: `docs/checklist-v4.47.txt` (not yet
-run on hardware; `device_tested` is false in `tools/release_hashes.json` until it passes).
+Plan, measurements and review: `docs/plan-v4.47-clean-start.md`. Device checklist: `docs/checklist-v4.47.txt`,
+passed on hardware (2026-11-18): the unit boots, sessions on two projects played and saved, and the black-box logs
+were recreated with the BE4.47 header.
 
 ## The symptom, and how to get out of it
 
@@ -68,4 +69,9 @@ in every save. It names what caused the last reset.
 - **Once per boot**, at the audio core's first traced event (usually the first note), it zeroes 41 KB of its own
   memory. This was estimated at 0.1..0.2 ms and not measured. With a heavy project already playing, that may make one
   audio block late, once. The checklist asks for it.
+- **Open item: stock's crash counter.** Stock's own crash count (in its backup registers) rose from 525 to 532
+  between the last BE4.46 log and the first BE4.47 boot, at the same audio-core instruction (`0x080659e8`) as the BE4.46
+  reset loop. The logs show that count only when a project is saved, so when those resets happened is not known
+  yet. No crash or reboot has been seen on BE4.47. A decode of that instruction is in progress; if it points at
+  something still in BE4.47, a fix follows.
 - **1.6.1 builds** (legacy) do not get the clean start; nothing ships on 1.6.1.
