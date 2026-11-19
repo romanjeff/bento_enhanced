@@ -12,10 +12,10 @@ run on hardware; `device_tested` is false in `tools/release_hashes.json` until i
 On BE4.46 the reset loop looked like this: the unit lights up briefly, resets, and repeats, never reaching the boot
 screen. It happened with or without USB and with the card out. Stock 1.6.8 booted.
 
-**Recovery (BE4.46):** while it loops, the power button only reaches the bootloader screen, so the power never really
-cuts. Hold power to reach the bootloader screen, press REC and install stock 1.6.8 (the kit's `03_RESTORE_STOCK/`),
-boot stock once, then install the BE firmware again the same way. Reinstalling BE4.46 straight away was not always
-enough on the test unit; going through stock always worked (stock's boot overwrites that RAM).
+**Recovery (BE4.46):** unplug USB, hold the power button and keep holding past the bootloader screen until the
+Bento switches off, leave it off with USB unplugged for a while, then power on (confirmed on the test unit: off with USB
+connected kept looping, off with USB unplugged booted). If it still loops: from the bootloader screen (REC) install
+stock 1.6.8 (the kit's `03_RESTORE_STOCK/`), boot stock once, then install the BE firmware again.
 
 ## What changed
 
