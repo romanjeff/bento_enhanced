@@ -1,0 +1,95 @@
+bento_enhanced v4.47: clean start on every boot (stock 1.6.8) - delta checklist on top of v4.46
+==============================================================================================
+
+Kit: flash\bento_enhanced-v4.47, boot label BE4.47 (made by tools\make_kit.py; its SHA256SUMS.txt covers every file).
+  01_TEST_FIRMWARE   bento1.bin = the test image on 1.6.8, bento2.bin = stock 1.6.8 Controller
+  03_RESTORE_STOCK   stock 1.6.8 (bento1.bin, bento2.bin)
+  SHA256SUMS.txt     hashes of every file in the kit
+  manifest.json      what the image contains (groups, addresses, every write)
+  DEVICE_CHECKLIST.txt  this file (docs\checklist-v4.47.txt)
+
+Why: BE4.46 sometimes reset-looped before the boot screen (a quick light-up, reset, again), with or without USB and with
+the card out, until a real power cut. The likeliest cause, reproduced in the emulator: our code trusted RAM that an
+earlier run left behind (it survives a reset, and the "off on USB" state, while power stays on). Plan and measurements:
+docs\plan-v4.47-clean-start.md. Release notes: docs\release-notes-v4.47.md. Everything below was measured in the
+emulator only. Nothing a project does changed: docs\checklist-v4.46.txt still applies; this checks what the boot touches.
+
+What changed since BE4.46:
+  - Every boot starts from zeroed RAM of ours, whatever an earlier run left there. What persists is the project file.
+  - The RTC date / time and its backup registers are only printed in the logs, never used for anything.
+  - A project loaded at boot (the auto-load) keeps its AT curves, AT Rec / Out settings and External / Note Mod settings.
+    (Found in the review: on a cold boot of earlier versions those could be dropped if the load ran before the UI's
+    first pass. Section 4 checks it.)
+  - BENTO_SAVES.log / BENTO_CRASHES.log that are missing (or empty) start over with this boot's header / line at the
+    next save.
+What to expect that is not a bug:
+  - The log files are written at the FIRST PROJECT SAVE of a boot, never at boot itself (as since v3.21: card writes
+    outside stock's own save were what corrupted cards in v3.19..v3.21). A boot without a save writes nothing.
+  - Every boot's header says "boot gen 1" and "clean start (BE4.47)". There is no "previous boot" section any more: the
+    last run's RAM is gone by design. The last reset's cause is still there, as stock's crash record (cause=, pc=) on
+    every BENTO_CRASHES.log line and in every save.
+
+0. Gate
+[ ] Back up the SD card (folder copy), as before.
+[ ] ON THE COMPUTER: copy DUNGEONS (AT curves) to a NEW folder DUNGEONS_47, and a v4.46 project with routed FM rows /
+    FM Env routings and External or Note Mod settings to FM_47 (keep the originals). Note what each plays.
+
+1. Cold boot
+[ ] USB unplugged, power off with a long hold, wait 10 s, power on. The boot screen shows BE4.47. It boots.
+[ ] Wait 25 s, make a new empty project BE47_A, save. BENTO_SAVES.log has a block starting
+    "BENTO black box, firmware BE4.47, boot gen 1" with the line "clean start (BE4.47): ...", and BENTO_CRASHES.log a
+    line "boot fw=BE4.47 ... gen=1 ...". The ANALOG line says keys=ok, x2lost=0.
+
+2. Boot after power-down on USB (the path that kept RAM in v4.46)
+[ ] USB connected (computer or charger). Power off with the button (the "off on USB" state), wait 5 s, power on: boots
+    to BE4.47. Save: a new header, again "boot gen 1".
+[ ] The same five times in a row, with 1 s, 5 s and 30 s off. Boots every time.
+[ ] Twice: power off DURING the boot (as soon as the screen lights), then on again. Boots every time.
+
+3. Log files recreated
+[ ] Power off, take the card to the computer, delete BENTO_SAVES.log and BENTO_CRASHES.log (and BENTO_DIAG*.log if
+    present). Put the card back, boot.
+[ ] BEFORE saving: no log files on the card yet (expected; check on the computer only if you want, then boot again).
+[ ] Save any project: both files are back. BENTO_SAVES.log starts with "BENTO black box, firmware BE4.47"; BENTO_CRASHES.log
+    starts with "boot fw=BE4.47". Save again: SAVES grows by a summary, no second header; CRASHES gets no second line.
+    IF NO FILE APPEARS AFTER A SAVE, write it down: that is a card write that failed, not the design (bring the card).
+[ ] Boot with NO card in the slot: boots to the screen (stock's "insert card" message is fine), no reset loop. Power off,
+    put the card back.
+
+4. The auto-loaded project, powered down on USB (the closest to what started the loop on BE4.46)
+[ ] Load DUNGEONS_47, play its AT curves (they play as on BE4.46), save. Power off on USB (button), power on: it
+    auto-loads. WITHOUT touching anything else, play: the AT curves play, AT Rec / AT Out per track are as saved.
+[ ] Repeat ten times: power off on USB, on, play a curve note. Vary the off time (1 s .. 30 s), and twice power off
+    while the project is still loading. Every boot reaches the project and the curves play.
+[ ] The same three times with FM_47 the last project: after the auto-load (no touching), the routed FM rows and FM Env
+    routings play, and the External / Note Mod settings are there (the track's Note Mod / LFO rows show the saved
+    values). Write down anything that comes back only after loading the project again by hand.
+[ ] If a reset loop happens at any point: write down what you did just before, then end it with a power cut (USB
+    unplugged, long-hold power off). Boot, save, and bring BENTO_CRASHES.log (its cause= / pc= name the reset).
+
+5. Projects save / load
+[ ] Save BE47_A with an AT curve note, AT Rec Off on one track, AT Out Channel on another, a Note Mod setting and an
+    External LFO routing. Load DUNGEONS_47, then BE47_A again: everything is back. Cold boot (section 1) with BE47_A the
+    last project: everything is back after the auto-load.
+[ ] Open a v4.46 project (a copy): it opens and plays as on BE4.46; save it as a new name and reopen.
+
+6. From v4.46, what the boot touches (spot checks)
+[ ] Analog and Wavetable oscillators sound as on BE4.46 (A/B by ear on a track with FM, and an Analog Shape sweep).
+[ ] Hold shortcuts work right after a boot (their state is set up by the same start-up code).
+[ ] Step conditions and retrig play as before after a boot (their counters start over at boot).
+[ ] Poly aftertouch out (AT Out Poly) sends after a boot.
+[ ] Piano-roll lanes on FM rows play after a cold boot (v4.46 checklist section 6 COLD BOOT item).
+
+7. First note after boot (record, not a gate)
+[ ] With a heavy project auto-loaded and playing (8 voices of Wavetable FM), the first pad press after boot: listen for
+    one click or late block. The M7 zeroes 41 KB of its own once per boot at its first traced event (estimated 0.1..0.2 ms,
+    not measured). Write down if you hear it.
+
+8. Rollback (on COPIES)
+[ ] Flash BE4.46's kit, open BE47_A (a copy): it opens and plays as on BE4.47 (the file format did not change).
+[ ] Flash 03_RESTORE_STOCK, open a copy of BE47_A: it opens; the mod's features do not play (stock does not support them).
+[ ] Flash BE4.47 again.
+
+Bring back: BENTO_SAVES.log, BENTO_CRASHES.log, notes on sections 2 and 4 (every boot that did not reach the project or
+needed a power cut, with what came before), section 3 (whether the files came back at the save), section 4's FM_47 notes
+(anything that needed a manual reload), section 7.
