@@ -276,20 +276,24 @@ class RegionReservation(unittest.TestCase):
         self.assertEqual(self.take_word(), 0xA5 << 24 | 1, "SYNTH_TAKE: both taken, no Region-only take")
         b = bytes(self.u.mem_read(SA, 0x800))
         self.assertEqual(b[0x14:0x20] + b[0x40:0x200] + b[0x400:0x800], bytes(0xC + 0x1C0 + 0x400), "the M7's lines zeroed")
-        self.assertEqual(b[0x20:0x40] + b[0x200:0x400], bytes([0xA5]) * 0x220, "the M4's lines left alone")
-        self.assertEqual(bytes(self.u.mem_read(SA + 0x800, 0x7800)), bytes([0xA5]) * 0x7800, "nothing else written")
+        # BE4.47 R1: the whole area starts over at the take, the M4's lines and the drums' too (v4.46 left them as SDRAM
+        # held them, and moved the generation from the old header)
+        self.assertEqual(b[0x20:0x40] + b[0x200:0x400], bytes(0x220), "the M4's lines zeroed too")
+        self.assertEqual(bytes(self.u.mem_read(SA + 0x800, 0x7800)), bytes(0x7800), "and the rest of the area")
 
-    def test_m7_only_reset_moves_the_synth_generation(self):
+    def test_a_second_take_starts_the_area_over(self):
+        """BE4.47: every reset is a system reset, so a take is a boot's; were the pool restored anyway, the area starts over
+        (zeroed, generation 1: v4.46 moved it to 2 and kept the M4's table, its "M7-only reset" case)."""
         if not SYNTH:
             self.skipTest("no synth groups in this image")
         self.touch()
         self.u.mem_write(SA + 0x200, b"M4TABLE!")
         pool(self.u); self.touch()                  # stock's startup restored the counters: taken again
         self.assertEqual(self.state(), self.reserved())
-        self.assertEqual(self.synth_head()[:2], (0x37534542, 2), "generation 2: the M4 republishes")
-        self.assertEqual(bytes(self.u.mem_read(SA + 0x200, 8)), b"M4TABLE!", "the M4's table survives an M7-only reset")
+        self.assertEqual(self.synth_head()[:2], (0x37534542, 1), "generation 1, as every take")
+        self.assertEqual(bytes(self.u.mem_read(SA + 0x200, 8)), bytes(8), "nothing of an earlier take kept")
         self.v.on(60); self.touch()
-        self.assertEqual(self.synth_head()[1], 2, "no new generation without a new take")
+        self.assertEqual(self.synth_head()[1], 1, "no new take without the pool restored")
 
     def test_synth_reservation_keeps_a_megabyte_else_the_region_alone(self):
         """Review S1 (build): a pool with less than 1 MB to spare still gets the Region (poly cap, curves, Note Mod), as

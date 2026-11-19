@@ -387,12 +387,14 @@ class LabInput(unittest.TestCase):
    f.packet();self.assertEqual(f.events(),[])
  def test_disabled_preserves_note_input(self):
   f=Input();f.u.mem_write(STATE+12,b'\0');f.packet(0x2000,[1000]+[0]*15);self.assertEqual(f.events(),[(172,0,1000),(174,0,1000)]);self.assertEqual(f.custom(),[])
- def test_startup_zeroes_only_m7_cache_line(self):
+ def test_startup_inits_the_m7_state_line(self):
+  # BE4.47: the startup stub (build.py clean_start) zeroes all of our RAM first (test_clean_start), then this line
   f=Input();f.u.mem_write(STATE,bytes([0xa5])*256);f.u.reg_write(UC_ARM_REG_SP,0x2407e000)  # addr-ok: harness
   f.u.emu_start(CTRL_STARTUP|1,S.CTRL_STARTUP_SITE + 4,count=200000)
   self.assertEqual(f.u.reg_read(UC_ARM_REG_PC),S.CTRL_STARTUP_SITE + 4)
-  self.assertEqual(bytes(f.u.mem_read(STATE+32,224)),bytes([0xa5])*224)
+  self.assertEqual(bytes(f.u.mem_read(STATE+32,224)),bytes(224))
   self.assertEqual(bytes(f.u.mem_read(STATE+16,16)),bytes(range(16)))
+  self.assertEqual(f.readword(STATE),0x31534d42);self.assertEqual(f.u.mem_read(STATE+12,1),b'\x01')
 
 class Ours(unittest.TestCase):
     def test_proj_press_and_release_are_stock(self):
@@ -430,14 +432,15 @@ class Ours(unittest.TestCase):
         f.event(0xab, 0); f.event(176, 3)
         self.assertEqual(f.page(), 30, "stale hold not acted on after reboot")
 
-    def test_startup_leaves_our_diag_and_condition_ram_alone(self):
+    def test_startup_zeroes_our_diag_and_condition_ram(self):
+        """BE4.47 R1: the M7 startup stub zeroes all of our RAM (until v4.46 it left all but this line alone)."""
         f = Input(); u = f.u
         u.mem_write(D2, bytes([0x5a]) * (STATE - D2))
         u.mem_write(STATE + 32, bytes([0x5a]) * (D2 + 0x9A0 - STATE - 32))
         u.reg_write(UC_ARM_REG_SP, 0x2407e000)  # addr-ok: harness
         u.emu_start(CTRL_STARTUP | 1, S.CTRL_STARTUP_SITE + 4, count=200000)
-        self.assertEqual(bytes(u.mem_read(D2, STATE - D2)), bytes([0x5a]) * (STATE - D2))
-        self.assertEqual(bytes(u.mem_read(STATE + 32, D2 + 0x9A0 - STATE - 32)), bytes([0x5a]) * (D2 + 0x9A0 - STATE - 32))
+        self.assertEqual(bytes(u.mem_read(D2, STATE - D2)), bytes(STATE - D2))
+        self.assertEqual(bytes(u.mem_read(STATE + 32, D2 + 0x9A0 - STATE - 32)), bytes(D2 + 0x9A0 - STATE - 32))
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0], "-v"])

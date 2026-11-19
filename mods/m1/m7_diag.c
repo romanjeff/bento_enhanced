@@ -308,12 +308,8 @@ static void load_block(void) {
     D0A->prev_start = start;
 }
 
-/* Stock's block count only rises within a boot. Lower than our copy means a reset the M4
- * hasn't reported yet: leave the previous run's figures for its boot print. GEN moves soon
- * after that print, and the new-boot path in d0_publish then clears them. */
-static int d0_unreported_reset(void) {
-    return D0A->magic == D0_MAGIC && D0A->gen == GEN && G(S_AUDIO_BLOCK_STATS) < D0C->blocks;
-}
+/* (BE4.47: d0_unreported_reset is gone. It kept the last run's figures for the next boot's print when stock's block count
+ * fell below our copy; our RAM is zeroed at every reset now, and the next boot prints nothing of the last run.) */
 
 /* One read-only price check: cycles for 8 Device reads (M4 pool) and 8 cached fills (free ext pool
  * space; clean + invalidate keeps any data there). Interrupts off for about 3 us, a few times a second.
@@ -358,7 +354,7 @@ static void d0_publish(void) {
     DCIMVAC = (u32)LOADREQ;                      /* M4-written line: never dirty here */
     dsb();
     u32 req = LOADREQ->magic == D0_MAGIC ? LOADREQ->req : 0u;
-    if (d->magic != D0_MAGIC || d->gen != GEN) { /* new boot; D2 holds garbage after a cold start */
+    if (d->magic != D0_MAGIC || d->gen != GEN) { /* this boot's first publish (zeroed at reset since BE4.47) */
         d->magic = D0_MAGIC; d->gen = GEN; d->heap_min = 0xFFFFFFFFu;
         c->missed = 0;
         load_clear(l); l->ack = req;
@@ -404,14 +400,13 @@ __attribute__((used, retain)) void h_consume(u32 queue, u32 idx, u32 lr) {
     (void)queue; (void)lr;
     if (idx != 0 || M7H->magic != DIAG_MAGIC) return;
     diag_sp();
-    int stale = d0_unreported_reset();
 #if !defined(BE_OMIT_SYNTH) && !(defined(BE_NO_ANALOG) && defined(BE_NO_DRUMS))   /* S6c: either synth needs the area */
     m1_region_poll();                            /* S6a: the reservation (and the synth area) once the M4 is up */
 #endif
-    if (!stale) load_block();
+    load_block();
     RINGSTAT->heartbeat++;
     if ((RINGSTAT->heartbeat & 63u) == 0) clean(RINGSTAT, sizeof(RingStat));
-    if (!stale && (RINGSTAT->heartbeat & 255u) == 0) d0_publish();
+    if ((RINGSTAT->heartbeat & 255u) == 0) d0_publish();
 }
 
 /* For m7_polyat.c: voice-action records and counters for the M4 trailer line. Kept in a black-box-only

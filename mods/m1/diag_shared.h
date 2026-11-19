@@ -180,8 +180,8 @@ typedef struct { u8 seq[16]; u8 vel[16]; } Strikes;
 /* The on/off setting (header button "Strike Vel", m4_step.c); M4-only.
  * pads: per-pad UI state block (bump-allocated once per boot, m4_step.c), trusted
  * only while r[2] == ~pads; r[0], r[1]: header-button diagnostics.
- * Reserved RAM survives resets: change the magic whenever this layout changes
- * (v3.12 kept v3.11's magic, read its old tick field as a pointer: boot loop). */
+ * (Until v4.46 reserved RAM survived resets, and a layout change needed a new magic: v3.12 kept v3.11's magic, read
+ * its old tick field as a pointer: boot loop. Since BE4.47 the M7 startup zeroes all of it at every reset.) */
 typedef struct { u32 magic, off, pads, r[3]; } StrikeSet;
 /* Sequence-page late velocity (v3.54 diagnostics): at PadState + 4 (after gen). */
 typedef struct { u32 queued, applied, s_press, s_vel0, s_lookup, s_notfound, s_same, last; } LateStats;

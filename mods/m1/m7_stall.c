@@ -9,13 +9,14 @@
  *   stall_check     bl 0x080816C0 at 0x0808DFB4 (message pump: no progress)
  * and, once per boot, when there has been no progress for STALL_MS, record
  * the M7's own view: interrupt masking, the NVIC state of the DMA2 stream 5/7
- * interrupts (IRQ 68/70), the active/pending vector, and the DMA flags. The
- * record lives in reset-surviving RAM; the M4 prints it at the next boot.
+ * interrupts (IRQ 68/70), the active/pending vector, and the DMA flags. Until
+ * v4.46 the M4 printed the record at the next boot from reset-surviving RAM;
+ * since BE4.47 (clean start) the reset zeroes it, so it is boot-local and not
+ * printed (the stall group is off by default).
  *
  * RAM SLICE(0x080)..SLICE(0x100): line SLICE(0x080) = M7 tracking (M7 only); lines
  * SLICE(0x0A0).. = the record, written and cleaned by the M7 only when it snaps.
- * The M4 reads the record after the reset and clears its magic; the M7 never
- * dirties those lines otherwise, so a stale cached copy is never written back.
+ * The M7 never dirties those lines otherwise, so a stale cached copy is never written back.
  */
 #include "diag_shared.h"
 

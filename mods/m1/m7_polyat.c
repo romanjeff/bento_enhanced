@@ -286,25 +286,22 @@ static inline void stats_clean(void) {
 #endif
 
 #ifndef BE_OMIT_SYNTH
-/* The reservation was just taken (a new M7 boot, or an M7-only reset), with interrupts masked: our synth lines start
- * over and the generation moves, which tells the M4 to republish its table (synth_shared.h). The M4's lines are left
- * alone: the M7 never writes them, so no stale copy of them can be in this cache. */
+/* The reservation was just taken (once per boot: every reset is a system reset, BE4.47), with interrupts masked.
+ * BE4.47 R1 (docs/plan-v4.47-clean-start.md): the whole area starts over, the M4's lines and the drums' run state too,
+ * whatever the SDRAM still holds from the last run (v4.46 zeroed only the M7's lines and moved the generation from the old
+ * header: with the generation now the same on every boot, a header, an M4 line or a drum run state left in SDRAM would
+ * read as this boot's). The M4 writes nothing here before SYNTH_TAKE (set after this returns) says the area is taken
+ * (m4_synth.c ready), so no M4 write can be lost to the zeroing. Every line is cleaned and invalidated, so this cache keeps
+ * no copy of an M4 line. */
 static void synth_take(void) {
-    static const u32 OURS[][2] = {{SA_M7, 0x20u}, {SA_STATS, 0x1C0u}, {0x0400u, 0x400u}};
     volatile SaM7 *h = (volatile SaM7 *)SA(SA_M7);
-    DCIMVAC = (u32)h;
-    __asm volatile("dsb" ::: "memory");
-    u32 gen = h->magic == SA_M7_MAGIC ? h->gen + 1u : 1u;
-    if (!gen) gen = 1u;
-    for (u32 k = 0; k < sizeof(OURS) / sizeof(OURS[0]); k++)
-        for (u32 a = SA(OURS[k][0]); a < SA(OURS[k][0] + OURS[k][1]); a += 4u) *(volatile u32 *)a = 0;
-    h->gen = gen; h->layout = SA_LAYOUT; h->total = SYNTH_TOTAL;
+    for (u32 a = SYNTH_AREA; a < SYNTH_AREA + SYNTH_BYTES; a += 4u) *(volatile u32 *)a = 0;
+    h->gen = 1u; h->layout = SA_LAYOUT; h->total = SYNTH_TOTAL;
     h->boot = CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u;     /* the M4 boot this take is for (region() restamps) */
     __asm volatile("dmb" ::: "memory");
     h->magic = SA_M7_MAGIC;
     __asm volatile("dsb" ::: "memory");
-    for (u32 k = 0; k < sizeof(OURS) / sizeof(OURS[0]); k++)
-        for (u32 a = SA(OURS[k][0]); a < SA(OURS[k][0] + OURS[k][1]); a += 32u) *(volatile u32 *)SA_DCCMVAC = a;
+    for (u32 a = SYNTH_AREA; a < SYNTH_AREA + SYNTH_BYTES; a += 32u) *(volatile u32 *)SA_DCCIMVAC = a;
     __asm volatile("dsb" ::: "memory");
 }
 /* A new M4 boot generation with the reservation unchanged (an M4-only reset, or the M7 took it while the config

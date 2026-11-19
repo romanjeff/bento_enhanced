@@ -74,7 +74,7 @@ GROUPS_V372 = ("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_en
 BASE_SETTINGS = {
     "stock_161": dict(version="3.72", m4_flags=(), m7_flags=(), groups=GROUPS_V372, default_off=("analog", "note0", "drums"),
                       m4_note_on=dict(msg="", ch="r8", note="r7", val="r11", port="r9", sink="r6", sink_lit=False)),
-    "stock_168": dict(version="4.46", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
+    "stock_168": dict(version="4.47", cond_ui_bytes=0x200, m4_flags=("-mstrict-align", "-DBE_REC_WORD_LOG"), prop_template_n=0x2FC, m7_flags=("-DBE_NOTES_ABOVE_127", "-DBE_PLAY_COUNT_WRAP"),
                       groups=("trace", "stall", "irq30", "bbox", "poly_cap", "retrig", "cond_engine", "nmod", "inta_curve",
                               "poly_at", "inta_live", "cond_ui", "step", "hold", "analog", "note0", "drums"), default_off=("mx", "drums"), omit_off=("drums",),
                       m4_note_on=dict(msg="add r5, sp, #4; ", ch="r9", note="r6", val="r4", port="r7", sink="r4", sink_lit=True)),
@@ -314,7 +314,7 @@ GROUP_NAMES = {
              "M7_HEAP_END_LITS", "M7_HEAP_END", "VERSION_STR", "REGION", "EXT_POOL_END", "POOL_INIT_FLASH",
              "POOL_LEFT_INIT", "POOL_CUR_INIT", "ALLOC_BUMP", "ALLOC_BUMP_LEN", "ALLOC_BUMP_SHA", "POOL_LEFT_RAM",
              "POOL_LEFT_LITS", "POOL_CUR_RAM", "POOL_CUR_LITS", "MPU_SETUP", "MPU_SETUP_END", "MPU_SETUP_SHA",
-             "M4_STACK_BOTTOM"),
+             "M4_STACK_BOTTOM", "CTRL_STARTUP_SITE", "CTRL_STARTUP_LITS"),   # BE4.47: the clean-start stub is core
     "trace": ("H_INPUT_SITE", "H_SEND_SITE", "H_RING_SITE", "H_CONSUME_SITE"),
     "poly_cap": ("MSG_SEND", "POLYCAP_SEQ_ON_SITE", "POLYCAP_PAD_ON_SITE", "POLYCAP_SEQ_OFF_SITE", "POLYCAP_PAD_OFF_SITE",
                  "POLYCAP_ALL_OFF_SITE"),
@@ -565,9 +565,10 @@ def use_base(s):
     return S
 
 
+CTRL_STATE_MAGIC = "0x31534d42"   # the hold shortcuts' state line magic (M7 asm and the startup stub)
 def ctrl_symbols():
     """Template symbols of the hold shortcuts' M7 asm (group hold)."""
-    return dict(STATE=hex(CTRL_STATE), STATE_MAGIC="0x31534d42", EVENT_MAGIC="0x314d5442", EVENT_TAIL="0x31525442",
+    return dict(STATE=hex(CTRL_STATE), STATE_MAGIC=CTRL_STATE_MAGIC, EVENT_MAGIC="0x314d5442", EVENT_TAIL="0x31525442",
                 PRODUCER_GLOBAL=hex(S.PRODUCER_GLOBAL), ENQUEUE=hex(S.ENQUEUE | 1), PAD_NEXT=hex(S.PAD_NEXT | 1),
                 PAD_CHANGED=hex(S.PAD_CHANGED | 1), TRACKS_MASK="0x2000", LAUNCH_MASK="0x1000", MIXER_MASK="0x400",
                 MODIFIERS_MASK="0x3400")             # Lab: 0x3500 (incl. PROJ 0x100)
@@ -1432,6 +1433,7 @@ def build(base_img, out):
     if inc("hold"):
         with S.group("hold"):
             hold_shortcuts(base_img, img, patch, extend, sources, s4, out)
+    clean_start(base_img, patch, inc("hold"))       # BE4.47 (core): every boot starts with our RAM zeroed
 
     if inc("step"):
         with S.group("step"):
@@ -1550,6 +1552,53 @@ def note0_trampolines(base_img, patch, s7, t):
     return out
 
 
+def clean_ranges(S):
+    """BE4.47 (docs/plan-v4.47-clean-start.md): the RAM the M7 startup stub zeroes, our_ram() merged. Only AXI SRAM, which
+    the M7 reset handler itself uses (stock's .bss starts there) before any clock or MPU setup: on 1.6.8 that is all of our
+    internal RAM (RAMCHK axi, the slice, RAMCHK top). 1.6.1 keeps its slice in D2 SRAM, which is not cleared here."""
+    axi = sorted((lo, hi) for lo, hi in our_ram(S) if 0x24000000 <= lo < hi <= 0x24080000)
+    out = []
+    for lo, hi in axi:
+        if out and lo <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    if any(lo & 3 or hi & 3 for lo, hi in out):
+        raise SystemExit("clean start: a range is not word aligned")
+    return out
+
+
+def clean_start(base_img, patch, hold):
+    """BE4.47 R1 (docs/plan-v4.47-clean-start.md): the M7 reset handler, right before stock's C++ init-array loop
+    (CTRL_STARTUP_SITE, after stock's .data / .bss setup), zeroes all of our internal RAM, whatever it holds: magic words,
+    generations, pointers. Every reset of this board is a system reset (stock sets both watchdogs' reset scope to the system,
+    0x080A1000 / 0x08108542 -> RCC_GCR; faults reset with SYSRESETREQ), so the M4 starts over with it, and none of our M4
+    code runs before its UI task (long after this). Then, with the hold shortcuts, their state line's init (as before
+    BE4.47), then the two displaced literal loads and back."""
+    lit = [struct.unpack_from("<I", base_img, ((a + 4) & ~3) + (struct.unpack_from("<H", base_img, a - BASE)[0] & 0xFF) * 4 - BASE)[0]
+           for a in (S.CTRL_STARTUP_SITE, S.CTRL_STARTUP_SITE + 2)]
+    if tuple(lit) != S.CTRL_STARTUP_LITS:
+        raise SystemExit("clean start: unexpected literals at the M7 startup site")
+    src = "push.w {r0-r12, lr}; movs r1, #0; "
+    for k, (lo, hi) in enumerate(clean_ranges(S)):
+        src += f"ldr r0, ={lo:#x}; ldr r2, ={hi:#x}; clr{k}: str r1, [r0], #4; cmp r0, r2; blo clr{k}; "
+    if hold:
+        if not any(lo <= CTRL_STATE and CTRL_STATE + 32 <= hi for lo, hi in clean_ranges(S)):   # 1.6.1: in D2, as before
+            src += f"ldr r0, ={CTRL_STATE:#x}; movs r2, #8; zst: str r1, [r0], #4; subs r2, #1; bne zst; movs r1, #0; "
+        src += (f"ldr r0, ={CTRL_STATE:#x}; movs r1, #1; strb r1, [r0, #12]; movs r1, #0; "
+                "map: add.w r2, r0, #16; strb r1, [r2, r1]; adds r1, #1; cmp r1, #16; bne map; "
+                f"ldr r1, ={CTRL_STATE_MAGIC}; dsb; str r1, [r0]; ")
+    src += (f"dsb; pop.w {{r0-r12, lr}}; ldr r0, ={lit[0]:#x}; ldr r1, ={lit[1]:#x}; "      # the two displaced literal loads
+            f"push {{r0, r1}}; ldr r0, ={(S.CTRL_STARTUP_SITE + 4) | 1:#x}; str r0, [sp, #4]; pop {{r0, pc}}")
+    startup = asm(src, CTRL_STARTUP)
+    if CTRL_STARTUP + len(startup) > CTRL_STARTUP + 0x100:
+        raise SystemExit("clean start: the M7 startup stub overruns its 0x100 B slot")
+    patch(CTRL_STARTUP, startup, bytes(len(startup)),
+          "Clean start (BE4.47): M7 startup zeroes our RAM" + (", then the hold shortcuts' state line" if hold else ""))
+    patch(S.CTRL_STARTUP_SITE, asm(f"b.w {CTRL_STARTUP:#x}", S.CTRL_STARTUP_SITE), S.orig("CTRL_STARTUP_SITE"),
+          "Clean start (BE4.47): M7 startup -> our RAM zeroed")
+
+
 def hold_shortcuts(base_img, img, patch, extend, sources, s4, out):
     """Hold shortcuts (Lab K16 port): M7 pad input + startup, M4 consumer/observer/mixer render."""
     syms = ctrl_symbols()
@@ -1566,21 +1615,7 @@ def hold_shortcuts(base_img, img, patch, extend, sources, s4, out):
     patch(CTRL_INPUT, code, bytes(len(code)), "Hold shortcuts (Lab K16): M7 pad input hook")
     patch(S.CTRL_INPUT_SITE, asm(f"b.w {CTRL_INPUT:#x}", S.CTRL_INPUT_SITE), S.orig("CTRL_INPUT_SITE"),
           "Hold shortcuts (Lab K16): pad receiver -> input hook")
-    lit = [struct.unpack_from("<I", base_img, ((a + 4) & ~3) + (struct.unpack_from("<H", base_img, a - BASE)[0] & 0xFF) * 4 - BASE)[0]
-           for a in (S.CTRL_STARTUP_SITE, S.CTRL_STARTUP_SITE + 2)]
-    startup = asm(
-        f"push.w {{r0-r12, lr}}; ldr r0, ={CTRL_STATE:#x}; movs r1, #0; movs r2, #8; "
-        "zero: str r1, [r0], #4; subs r2, #1; bne zero; "
-        f"ldr r0, ={CTRL_STATE:#x}; movs r1, #1; strb r1, [r0, #12]; movs r1, #0; "
-        "map: add.w r2, r0, #16; strb r1, [r2, r1]; adds r1, #1; cmp r1, #16; bne map; "
-        f"ldr r1, ={syms['STATE_MAGIC']}; dsb; str r1, [r0]; pop.w {{r0-r12, lr}}; "
-        f"ldr r0, ={lit[0]:#x}; ldr r1, ={lit[1]:#x}; "                       # the two displaced literal loads
-        f"push {{r0, r1}}; ldr r0, ={(S.CTRL_STARTUP_SITE + 4) | 1:#x}; str r0, [sp, #4]; pop {{r0, pc}}", CTRL_STARTUP)
-    if tuple(lit) != S.CTRL_STARTUP_LITS or CTRL_STARTUP + len(startup) > CTRL_STARTUP + 0x100:
-        raise SystemExit("controls startup: unexpected literals or size")
-    patch(CTRL_STARTUP, startup, bytes(len(startup)), "Hold shortcuts (Lab K16): M7 startup inits only its own state line")
-    patch(S.CTRL_STARTUP_SITE, asm(f"b.w {CTRL_STARTUP:#x}", S.CTRL_STARTUP_SITE), S.orig("CTRL_STARTUP_SITE"),
-          "Hold shortcuts (Lab K16): M7 startup -> state init")
+    # (BE4.47: the M7 startup stub, which also inits CTRL_STATE, is core now: clean_start below)
 
     ctl_elf = compile_elf(sources("m4_controls"), "cortex_m4", HERE / "m4_controls.ld", out / "m4_controls.elf", CTRL_CODE, CTRL_LIMIT)
     vac, codec, sc = elf_load(ctl_elf, CTRL_CODE, CTRL_LIMIT)
