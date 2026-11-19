@@ -27,7 +27,7 @@
     "4.47": {
       "base": "1.6.8",
       "image_commit": "d67c62d",
-      "device_tested": false,
+      "device_tested": true,
       "bento1.bin": "538cf2187c439bb0e9db7091314bb9660febd2ded6b39bda0ec1cf890ddaf294"
     }
   }

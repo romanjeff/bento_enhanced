@@ -108,7 +108,7 @@ typedef struct {
 _Static_assert(sizeof(An4) == AN4_SLICE_END - AN4_SLICE, "the synth UI state fills its 256 B");
 #define AN4 ((volatile An4 *)SLICE(AN4_SLICE))
 
-static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
+static u32 boot_gen(void) { return BOOT_GEN(); }   /* BE4.47 review: 1 on 1.6.8 from the reset on (diag_shared.h) */
 __attribute__((unused)) static void dsb(void) { __asm volatile("dsb" ::: "memory"); }
 static u32 lock(void) { u32 p; __asm volatile("mrs %0, primask\n cpsid i" : "=r"(p)::"memory"); return p; }
 static void unlock(u32 p) { __asm volatile("msr primask, %0" ::"r"(p) : "memory"); }
@@ -337,11 +337,14 @@ __attribute__((used, retain)) u32 dr_dup(void *store, u32 type, void *parent, vo
  * there (before, the area is stock's pool memory). UI task only. Since BE4.40 the M4 publishes only the drums' knob
  * lines (Analog's settings reach the M7 as stock's own properties); the Analog CPU figures still come from the M7's
  * stats line there. */
+/* BE4.47 R1: and the M7 has taken the area this boot (SYNTH_TAKE, a slice word, zero after every reset, written by the
+ * M7 right after it zeroed and stamped the area): the boot and generation numbers are the same on every boot now, so a
+ * header the last run left in SDRAM would otherwise pass for this boot's while the area is still stock's pool memory. */
 static int ready(void) {
     volatile SaM7 *m = M7HDR;
-    u32 boot = boot_gen();
-    return boot && m->magic == SA_M7_MAGIC && m->layout == SA_LAYOUT && m->total == SYNTH_TOTAL && m->gen &&
-           m->boot == boot;
+    u32 boot = boot_gen(), take = SYNTH_TAKE;
+    return boot && (take >> 24) == SYNTH_TAKE_TAG && (take & 0xFFu) == SYNTH_TAKE_FULL && m->magic == SA_M7_MAGIC &&
+           m->layout == SA_LAYOUT && m->total == SYNTH_TOTAL && m->gen && m->boot == boot;
 }
 #if DRUMS_BUILT
 /* A drum knob line (the M4 has no data cache: the stores reach SDRAM in order, dsb between the seqlock steps; the M7

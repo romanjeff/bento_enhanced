@@ -6,9 +6,9 @@ Community firmware mods and reverse-engineering research for the [1010music Bent
 
 ## Status
 
-**Current release: [v4.46](https://github.com/romanjeff/bento_enhanced/releases/tag/v4.46)** (`BE4.46` on the boot screen), built on **stock Bento 1.6.8** and tested on hardware. **To build it for your own Bento, follow [`BUILDING.md`](BUILDING.md)**: one page, no programming needed, starting from your own download of the official 1.6.8 firmware. The build checks that your result is byte for byte the image tested on hardware.
+**Current release: [v4.47](https://github.com/romanjeff/bento_enhanced/releases/tag/v4.47)** (`BE4.47` on the boot screen), built on **stock Bento 1.6.8** and tested on hardware. It fixes a reset loop at boot that BE4.46 could get into. **To build it for your own Bento, follow [`BUILDING.md`](BUILDING.md)**: one page, no programming needed, starting from your own download of the official 1.6.8 firmware. The build checks that your result is byte for byte the image tested on hardware.
 
-**Patch in your browser:** coming soon. The web patcher (no install; your stock files never leave your computer) is described in [`docs/web-patcher.md`](docs/web-patcher.md); its page is not deployed yet.
+**Patch in your browser:** [romanjeff.github.io/bento_enhanced](https://romanjeff.github.io/bento_enhanced/). No install; your stock files never leave your computer. How it works: [`docs/web-patcher.md`](docs/web-patcher.md).
 
 The `main` branch is where development happens; always build a release from its tag, as BUILDING.md shows. (Up to [v3.40](https://github.com/romanjeff/bento_enhanced/releases/tag/v3.40), the mods were built on stock 1.6.1.)
 
@@ -23,11 +23,11 @@ The `main` branch is where development happens; always build a release from its 
 - **Aftertouch sequencing**: record per-note pad pressure in the piano roll and play it back, on External tracks (MIDI poly aftertouch or channel pressure) and on Bento's own instruments. **AT Rec** and **AT Out** (Off / Poly / Channel) are set per track and saved with the project.
 - **Live poly aftertouch** out of External tracks, with a polyphony cap of 6.
 - **Sequencer extras**: trigger conditions (`A:B`, `1ST`, `PRE` and their inverses), per-step retriggers with velocity ramps, pad defaults with per-step locks, strike velocity, and hold-to-inspect steps.
-- **Hold shortcuts** for tracks, clip launch and mixer, and an on-card **black box** for crash and stall records.
+- **Hold shortcuts** for tracks, clip launch and mixer, and an on-card **black box** for crash and stall records. Since v4.47 every boot starts clean: nothing of the mod's is carried over from an earlier run.
 
 **Coming next:** a per-track compressor and clipper in the mixer, then a Drum Synth track with its own synthesized drum engines.
 
-**Projects that use the mods' features are not supported on stock firmware:** they usually open there, but may not play correctly. The mod never touches the bootloader, so going back to stock is the normal firmware install. Release notes, features, usage and internals: [release notes](https://github.com/romanjeff/bento_enhanced/blob/v4.46/docs/release-notes-v4.46.md), [`mods/m1/`](https://github.com/romanjeff/bento_enhanced/tree/v4.46/mods/m1). Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
+**Projects that use the mods' features are not supported on stock firmware:** they usually open there, but may not play correctly. The mod never touches the bootloader, so going back to stock is the normal firmware install. Release notes, features, usage and internals: [release notes](https://github.com/romanjeff/bento_enhanced/blob/v4.47/docs/release-notes-v4.47.md), [`mods/m1/`](https://github.com/romanjeff/bento_enhanced/tree/v4.47/mods/m1). Some features are ports of [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work, credited where they appear.
 
 ## Why this exists
 

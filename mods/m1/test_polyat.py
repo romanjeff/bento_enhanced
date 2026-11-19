@@ -276,20 +276,24 @@ class RegionReservation(unittest.TestCase):
         self.assertEqual(self.take_word(), 0xA5 << 24 | 1, "SYNTH_TAKE: both taken, no Region-only take")
         b = bytes(self.u.mem_read(SA, 0x800))
         self.assertEqual(b[0x14:0x20] + b[0x40:0x200] + b[0x400:0x800], bytes(0xC + 0x1C0 + 0x400), "the M7's lines zeroed")
-        self.assertEqual(b[0x20:0x40] + b[0x200:0x400], bytes([0xA5]) * 0x220, "the M4's lines left alone")
-        self.assertEqual(bytes(self.u.mem_read(SA + 0x800, 0x7800)), bytes([0xA5]) * 0x7800, "nothing else written")
+        # BE4.47 R1: the whole area starts over at the take, the M4's lines and the drums' too (v4.46 left them as SDRAM
+        # held them, and moved the generation from the old header)
+        self.assertEqual(b[0x20:0x40] + b[0x200:0x400], bytes(0x220), "the M4's lines zeroed too")
+        self.assertEqual(bytes(self.u.mem_read(SA + 0x800, 0x7800)), bytes(0x7800), "and the rest of the area")
 
-    def test_m7_only_reset_moves_the_synth_generation(self):
+    def test_a_second_take_starts_the_area_over(self):
+        """BE4.47: every reset is a system reset, so a take is a boot's; were the pool restored anyway, the area starts over
+        (zeroed, generation 1: v4.46 moved it to 2 and kept the M4's table, its "M7-only reset" case)."""
         if not SYNTH:
             self.skipTest("no synth groups in this image")
         self.touch()
         self.u.mem_write(SA + 0x200, b"M4TABLE!")
         pool(self.u); self.touch()                  # stock's startup restored the counters: taken again
         self.assertEqual(self.state(), self.reserved())
-        self.assertEqual(self.synth_head()[:2], (0x37534542, 2), "generation 2: the M4 republishes")
-        self.assertEqual(bytes(self.u.mem_read(SA + 0x200, 8)), b"M4TABLE!", "the M4's table survives an M7-only reset")
+        self.assertEqual(self.synth_head()[:2], (0x37534542, 1), "generation 1, as every take")
+        self.assertEqual(bytes(self.u.mem_read(SA + 0x200, 8)), bytes(8), "nothing of an earlier take kept")
         self.v.on(60); self.touch()
-        self.assertEqual(self.synth_head()[1], 2, "no new generation without a new take")
+        self.assertEqual(self.synth_head()[1], 1, "no new take without the pool restored")
 
     def test_synth_reservation_keeps_a_megabyte_else_the_region_alone(self):
         """Review S1 (build): a pool with less than 1 MB to spare still gets the Region (poly cap, curves, Note Mod), as
@@ -322,13 +326,16 @@ class RegionReservation(unittest.TestCase):
         self.assertEqual((r32(u, LEFT), r32(u, REGION)), (0x2000, 0x36424D31))
         self.assertEqual(bytes(u.mem_read(SA, 8)), b"STOCK!!!")
 
-    def test_the_header_names_a_new_m4_boot(self):
-        """Review S2 (build): the M4 trusts a header only for its own boot; an M4-only reset moves the generation."""
+    def test_the_header_names_this_boot(self):
+        """Review S2 (build): the M4 trusts a header only for its own boot. BE4.47 review: on 1.6.8 that boot is 1 from
+        the reset on (diag_shared.h BOOT_GEN; every reset is a system reset that zeroes our RAM), so the header is
+        stamped 1 and a moved config generation (an M4-only reset, which no longer happens) does not restamp it."""
         if not SYNTH:
             self.skipTest("no synth groups in this image")
         self.touch()
+        self.assertEqual(self.synth_head()[1:], (1, 2, 0xC000, 1), "the take (generation 1), stamped for boot 1")
         self.new_gen(); self.touch()
-        self.assertEqual(self.synth_head()[1:], (1, 2, 0xC000, 2), "same take (generation 1), stamped for boot 2")
+        self.assertEqual(self.synth_head()[1:], (1, 2, 0xC000, 1), "still boot 1: the M4's boot_gen() reads 1 as well")
 
 
     def test_the_check_costs_two_reads_of_one_line_on_the_fast_path(self):

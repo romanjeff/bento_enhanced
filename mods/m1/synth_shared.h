@@ -11,15 +11,16 @@
  * line it writes for the M4. The M4 has no data cache. M4 table lines carry a seqlock (head, tail):
  * the M7 accepts a line only when head == tail and both are even, all from one line fill.
  *
- * Who holds the truth (review 2026-11-08): the M4's own table in our reset-surviving slice (AN4, m4_synth.c),
+ * Who holds the truth (review 2026-11-08): the M4's own table in our slice (AN4, m4_synth.c; zeroed at reset since BE4.47),
  * which needs no M7 and so takes a project load at any time, even before the M7 has taken the area. The
  * table here is its published copy for the M7, written only by the M4's UI task. The M7 takes the area as soon as
  * the M4's config line is up (h_consume, every audio block), or at the first note in a build without event tracing.
  *
  * Handshake: the area is stock pool memory until the M7 has taken the reservation. The M4 writes
  * nothing here before it has seen the M7 header (SA_M7_MAGIC) stamped for this M4 boot (boot = the config
- * line's generation). The M7 zeroes and cleans its own lines when it takes the reservation (every M7 boot,
- * also after an M7-only reset) and bumps the generation; it never writes an M4 line. A new generation or a new
+ * line's generation) and SYNTH_TAKE says the M7 took the area this boot. BE4.47 (clean start): the M7 zeroes the whole
+ * area when it takes the reservation (once per boot: every reset is a system reset), the M4's lines too, before any M4
+ * write can happen, and its generation is 1 on every boot (it bumped it from the last run's header until v4.46). A new generation or a new
  * M4 boot makes the M4 publish its whole table again (and move its serial, so the M7's per-root cache refills).
  * When the pool has less than SYNTH_POOL_MARGIN, the M7 takes the Region alone: SYNTH_TAKE says so, the header
  * is cleared while it is still free memory, and nothing is Analog this M7 boot.
@@ -33,7 +34,7 @@
 #define SYNTH_POOL_MARGIN 0x100000u                         /* taken only if the pool keeps 1 MB */
 #define SA(off) (SYNTH_AREA + (off))
 /* How the M7 took its reservation this boot: a word of its private slice line (M7_REGION_CACHE + 0x10), which it
- * cleans after writing, read by the M4's black box. [7:0] mode, [23:8] Region-only takes since the slice was new,
+ * cleans after writing, read by the M4's black box. [7:0] mode, [23:8] Region-only takes this boot (since the slice was new until v4.46),
  * [31:24] SYNTH_TAKE_TAG (anything else: never written, read as 0). */
 #define SYNTH_TAKE (*(volatile unsigned *)(S_D2_SLICE + 0x1D8u))
 #define SYNTH_TAKE_FULL 1u                                  /* Region + synth area */

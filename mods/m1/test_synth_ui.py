@@ -178,8 +178,10 @@ class Rig:
     def ms(self, t): self.w32(S.M4_TICK_MS, t)
     def now(self): return self.r32(S.M4_TICK_MS)
     def take(self, gen=1, boot=1):
-        """The M7 took the synth area: its header, stamped for M4 boot `boot`."""
+        """The M7 took the synth area: its header, stamped for M4 boot `boot`, and (BE4.47) its take word in the slice,
+        which the M4 needs before it trusts the header (m4_synth.c ready)."""
         self.u.mem_write(SA, struct.pack("<5I", M7_MAGIC, gen, 2, 0xC000, boot))
+        self.w32(TAKE, 0xA5 << 24 | 1)
     def call(self, fn, *args, count=80_000_000):
         try:
             return self.e.call(fn, *args, count=count)
@@ -1328,6 +1330,15 @@ class BlackBox(unittest.TestCase):
         self.assertIn("oscs=1", line, "the oscillators are counted from stock's model all the same")
         r = Rig(area=False); r.take(boot=7)
         self.assertIn("(header for boot 7, this boot 1)", r.black_box())
+
+    def test_a_header_the_last_run_left_is_not_this_boots(self):
+        """BE4.47 R1: the generation and boot numbers are 1 on every boot, so a header the last run left in SDRAM matches
+        them; without this boot's take word (zeroed at every reset) the M4 neither trusts it nor writes the area."""
+        r = Rig(types=(1, 0), area=False)
+        r.u.mem_write(SA, struct.pack("<5I", M7_MAGIC, 1, 2, 0xC000, 1))   # stamped "for this boot", by the last run
+        self.assertIn("ANALOG area not taken", r.black_box())
+        r.w32(TAKE, 0xA5 << 24 | 1)
+        self.assertIn("ANALOG gen=1", r.black_box(), "with the take word: ready")
 
 
 if __name__ == "__main__":

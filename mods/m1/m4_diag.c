@@ -8,26 +8,31 @@
  * (created on the first write of a boot, appended afterwards) once the pads have
  * been idle for IDLE_MS.
  *
- * Crash capture: every poll compares the stock crash counter (RTC backup
- * register 24, written by the M7/M4 fault handlers) with the value at boot, and
- * watches the M7 heartbeat. On a new crash record, or the heartbeat stopping
- * while the UI keeps running (an M7-only crash), it immediately appends the
- * crash record, the M7 counters (incl. lowest stack pointers) and the last
- * trace records, and writes the file without waiting for idle.
+ * Crash capture: every poll watches the M7 heartbeat. When it stops while the UI
+ * keeps running (an M7-only crash), it immediately appends the M7 counters (incl.
+ * lowest stack pointers) and the last trace records.
  *
- * Post-mortem: our RAM slice survives a reset, so at boot the previous boot's
- * last trace records and counters are written into the header.
+ * BE4.47 (docs/plan-v4.47-clean-start.md): every boot starts clean. The M7 startup
+ * stub (build.py clean_start) zeroes all of our RAM at every reset, so nothing of
+ * an earlier run is reused or trusted, whatever magic or generation words it held:
+ * no post-mortem of the previous run from RAM any more (the project file is what
+ * persists). The RTC and its backup registers (stock's crash record) are only
+ * printed, as untrusted hex/BCD, never used to decide anything.
  *
  * File I/O uses the stock FatFS entry points Lab's K6/K7 builds used on
  * hardware (FIL = 0x58 bytes); append mode relies on stock f_open honouring the
  * seek-end bit.
  *
- * M4-owned state: M4 header r[0] boot generation, r[1] buffer, r[2] length,
- * r[3] last poll ms, r[4] saved length, r[5] last record ms; config line r[1]
- * crash count at boot, r[2] last heartbeat, r[3] ms of last heartbeat change,
- * r[4] flags (bit0 heartbeat seen moving, bit1 stall reported).
+ * M4-owned state: M4 header r[0] boot generation (1 on every boot since BE4.47:
+ * the RAM was zeroed), r[1] buffer, r[2] length, r[3] last poll ms, r[4] saved
+ * length, r[5] last record ms; config line r[1] spare (BE4.47; was the crash count at
+ * boot), r[2] last heartbeat, r[3] ms of last heartbeat change, r[4] flags (bit0
+ * heartbeat seen moving, bit1 stall reported).
  */
 #include "diag_shared.h"
+#ifndef BE_OMIT_SYNTH
+#include "synth_shared.h"                          /* SYNTH_TAKE (counters: the Region's stats only after this boot's take) */
+#endif
 
 #define FN(a, t) ((t)((a) | 1u))
 #define TICK_MS (*(volatile u32 *)S_M4_TICK_MS)     /* native HAL tick (Lab-verified) */
@@ -42,7 +47,7 @@
 #define LOG_LIVE (*(volatile u32 *)SLICE(0x1800u))
 #define LOG_LIVE_MAGIC 0x54495257u /* "WRIT" */
 #define STALL_MS 3000u
-#define BKP ((volatile u32 *)0x58004050u)           /* RTC_BKP0R..BKP31R: stock crash record */
+#define BKP ((volatile u32 *)0x58004050u)           /* RTC_BKP0R..BKP31R: stock crash record (printed only, BE4.47 R2) */
 
 typedef void (*orig_fn)(u32, u32);
 
@@ -99,10 +104,11 @@ static void preserve_previous(u8 *scratch) {
     F_CLOSE(src);
 }
 
-/* Crash history: one line per boot (at its first log write) and one per crash
- * record that appears mid-session, appended forever to BENTO_CRASHES.log. The
- * session log only keeps two boots; this keeps every reset attributable. */
-/* RTC wall clock (BCD). Reading TR locks DR's shadow until DR is read. */
+/* Crash history: one line per boot (at its first save), and one when a save finds the
+ * file gone or empty ("fresh"), appended forever to BENTO_CRASHES.log; each line carries
+ * stock's crash record as it reads (untrusted hex), so every reset stays attributable. */
+/* RTC wall clock (BCD). Reading TR locks DR's shadow until DR is read. Untrusted (BE4.47 R2: a drained battery resets
+ * it, and it can hold anything): printed through fixed masks as hex digits only, never compared or used as a number. */
 #define RTC_TR (*(volatile u32 *)0x58004000u)
 #define RTC_DR (*(volatile u32 *)0x58004004u)
 static void rtc_print(Out *o, u32 tr, u32 dr) {
@@ -143,6 +149,20 @@ static void history(const char *why) {
  * BENTO_DIAG.log writes kept dying on a busy card, while short appends have always landed:
  * BENTO_CRASHES.log, curves.bnt. Runs right after stock's own project write. */
 static const char SAVES[] = "\\BENTO_SAVES.log";
+/* BE4.47 R3: is the file gone? An open for reading that fails (FR_NO_FILE, or any other refusal: the append after it then
+ * fails or lands the same way) counts as gone, so its writer starts it with this boot's line or header. So does an empty
+ * file (review: a full card lets the append create both files but writes 0 bytes; once space is freed the next save would
+ * otherwise find them present and start them with a bare summary): one byte read through FatFS's own sector window into
+ * the black box's SDRAM scratch (a read under a sector never goes to the SD DMA straight). */
+static int missing(const char *path) {
+    u32 file[22], got = 0;
+    zero(file, sizeof(file));
+    if (F_OPEN(file, path, FA_READ)) return 1;
+    u8 *one = (u8 *)M4H->r[1] + BUF_BYTES - SCRATCH_BYTES;   /* callers: only with the buffer up (r[1] > 1) */
+    if (F_READ(file, one, 1u, &got)) got = 0;
+    F_CLOSE(file);
+    return got == 0;
+}
 #define SD_DIRECT_BELOW 511u
 static void saves_append(u32 from, u32 to) {
     if (M4H->r[1] <= 1u) return;
@@ -222,8 +242,8 @@ static void crash_record(Out *o) {
  * 5 and 7 there. Stock's crash record (cause 5) cannot say why audio stopped,
  * so we sample those streams from the M4 every UI-loop pass: if a stream seen
  * running stops moving (NDTR unchanged >= STALL_DMA_MS, or EN cleared), we
- * snapshot its registers into M4-only RAM that survives the coming reset, log
- * an alarm and a history line, and print the snapshot again at the next boot. */
+ * snapshot its registers into M4-only RAM and log an alarm (and, live, a history
+ * line). BE4.47: boot-local; the next boot no longer prints it (its RAM is zeroed). */
 #define DMA2_BASE 0x40020400u
 #define STALL_DMA_MS 30u
 typedef struct {
@@ -231,7 +251,7 @@ typedef struct {
     u32 snap_magic, snap_gen, snap_ms, snap_why, lisr, hisr;
     u32 regs[2][6];      /* CR, NDTR, PAR, M0AR, M1AR, FCR */
     u32 periph[2][2];    /* if PAR is a SAI DR: SR (DR-8), CR1 (DR-0x1C) */
-    u32 rtc_tr, rtc_dr;  /* RTC at the last UI-loop pass (survives the reset) */
+    u32 r_[2];           /* BE4.47: was the RTC at the last UI-loop pass, for the next boot */
 } AudioMon;
 #define AMON ((volatile AudioMon *)SLICE(0x0u))   /* M4-only; start of our D2 slice (v3.16) */
 #define AMON_MAGIC 0x314E4F4Du /* "MON1" */
@@ -256,10 +276,9 @@ static void snap_print(Out *o, const char *title) {
 
 /* Returns 1 when a stall was detected on this pass. */
 static int audio_watch(Out *o, u32 now) {
-    if (AMON->magic != AMON_MAGIC || AMON->gen != M4H->r[0]) {
-        u32 keep_magic = AMON->snap_magic;      /* the snapshot must survive into the next boot */
+    if (AMON->magic != AMON_MAGIC || AMON->gen != M4H->r[0]) {   /* this boot's first pass */
         for (u32 i = 0; i < 8; i++) ((volatile u32 *)AMON)[i] = 0;
-        AMON->snap_magic = keep_magic;
+        AMON->snap_magic = 0;                   /* BE4.47: no snapshot survives into a boot (zeroed at reset anyway) */
         AMON->gen = M4H->r[0];
         AMON->magic = AMON_MAGIC;
     }
@@ -299,9 +318,9 @@ static int audio_watch(Out *o, u32 now) {
 /* Native bump allocator (0x08104C08): advance-only, so free space now is this
  * boot's minimum. Sizing data for M2's pressure-curve pool. */
 /* D2 canary (v3.16): our slice moved into D2 SRAM2 that no stock linker
- * section uses. Fill the 1.5 KB above it once with a known pattern (it
- * survives resets) and report any word that changes: nonzero = something in
- * stock uses this area after all. */
+ * section uses. Fill the 1.5 KB above it with a known pattern (BE4.47: at every
+ * boot, the reset zeroed it) and report any word that changes: nonzero = something
+ * in stock uses this area after all. */
 #define WD ((volatile u32 *)S_M4_WD_COUNTERS)
 #define MP_START 1000u
 #define MP_EVERY 100u
@@ -349,8 +368,8 @@ static void ram(Out *o) {
 /* D0 (v3.64): would the RAM the synth and FX ports want be safe to use? No linker section
  * or reference points at these three blocks, but the M4 was never emulated, so fill them
  * once with a pattern and report any word that changes: lowest and highest address show
- * how far a user reaches. The first word holds the magic; a fill survives resets, so a new
- * one means power was lost. Limit: a line the M7 holds dirty in its cache shows only once
+ * how far a user reaches. The first word holds the magic (BE4.47: armed at every boot, the reset zeroed
+ * it; v4.46 kept a fill across resets, and a new one meant power was lost). Limit: a line the M7 holds dirty in its cache shows only once
  * it is evicted. */
 typedef struct { char name[4]; u32 lo, hi; } RamBlock;
 #ifdef S_RAMCHK_D2A                                   /* 1.6.1: our slice in D2, AXI above the M7 stack free */
@@ -463,15 +482,19 @@ static void counters(Out *o) {
     puts_(o, " min_sp="); hex(o, RINGSTAT->min_sp, 8);
     puts_(o, " heartbeat="); dec(o, RINGSTAT->heartbeat);
     /* M2-2 curve playback (M7 region: read only here, the M7 cleans these lines,
-     * so they are at most one publish old, older if its main loop stalled first). In the
-     * "previous boot" print they may read 0: after a reset the M7 can take and zero the
-     * region before this runs. CFG survives resets and holds D2's
-     * power-up pattern after a cold start: follow its pointer only if the line
-     * is ours and the pointer is the one address it can be (v3.25-v3.31 checked
-     * only for non-zero: the M4 faulted here at boot, before re-initialising CFG,
-     * so every warm reset looped). */
+     * so they are at most one publish old, older if its main loop stalled first).
+     * Follow CFG's pointer only if the line is ours and the pointer is the one address
+     * it can be (v3.25-v3.31 checked only for non-zero: the M4 faulted here at boot,
+     * so every warm reset looped). BE4.47: and only once the M7 has taken (and
+     * zeroed) the region this boot (SYNTH_TAKE, a slice word the M7 writes at the
+     * take: zero after every reset), so its SDRAM is never read as the last run left it. */
     u32 rg = CFG->region;
-    if (CFG->magic == DIAG_MAGIC && rg == M1_REGION_ADDR) {
+#ifndef BE_OMIT_SYNTH
+    int taken = (SYNTH_TAKE >> 24) == SYNTH_TAKE_TAG;   /* the M7 publishes it after the Region's zeroing (m7_polyat.c) */
+#else
+    int taken = 1;                                   /* 1.6.1: the v3.70 reservation, no take word */
+#endif
+    if (CFG->magic == DIAG_MAGIC && rg == M1_REGION_ADDR && taken) {
         volatile u32 *cs = (volatile u32 *)(rg + REGION_CURVE_STATS);
         puts_(o, " | curves started="); dec(o, cs[0]); puts_(o, " sent="); dec(o, cs[1]);
         puts_(o, " late="); dec(o, cs[2]); puts_(o, " skipped="); dec(o, cs[3]);
@@ -524,54 +547,9 @@ static void ring_tail(Out *o, u32 ms) {
     }
 }
 
-/* M7 stall record (m7_stall.c), written just before a watchdog reset. */
-typedef struct {
-    u32 last, armed, gen, snapped, pad_[4];   /* M7 tracking line */
-    u32 magic, sgen, cycles, primask, basepri, faultmask, icsr, msp;
-    u32 iser[2], ispr[2], iabr[2];
-    u32 lisr, hisr, s5cr, s5ndtr, s7cr, s7ndtr;
-    u32 mux[2], sai_sr[2];
-} Stall7;
-#define ST7 ((volatile Stall7 *)SLICE(0x80u))
-#define STALL7_MAGIC 0x38544C53u /* "SLT8": layout grew (SAI status) */
-static void stall7_print(Out *o) {
-    puts_(o, "M7 audio stall record (from RAM): gen "); dec(o, ST7->sgen);
-    puts_(o, ", no audio progress for "); dec(o, ST7->cycles / 480000u); puts_(o, " ms");
-    puts_(o, "\r\n  primask="); hex(o, ST7->primask, 1); puts_(o, " basepri="); hex(o, ST7->basepri, 2);
-    puts_(o, " faultmask="); hex(o, ST7->faultmask, 1); puts_(o, " icsr="); hex(o, ST7->icsr, 8);
-    puts_(o, " msp="); hex(o, ST7->msp, 8);
-    puts_(o, "\r\n  NVIC irq32-63 en/pend/act="); hex(o, ST7->iser[0], 8); puts_(o, "/"); hex(o, ST7->ispr[0], 8);
-    puts_(o, "/"); hex(o, ST7->iabr[0], 8);
-    puts_(o, " irq64-95 en/pend/act="); hex(o, ST7->iser[1], 8); puts_(o, "/"); hex(o, ST7->ispr[1], 8);
-    puts_(o, "/"); hex(o, ST7->iabr[1], 8);
-    puts_(o, " (DMA2 S5=irq68 bit4, S7=irq70 bit6)");
-    puts_(o, "\r\n  DMA2 LISR="); hex(o, ST7->lisr, 8); puts_(o, " HISR="); hex(o, ST7->hisr, 8);
-    puts_(o, " S5 CR/NDTR="); hex(o, ST7->s5cr, 8); puts_(o, "/"); hex(o, ST7->s5ndtr, 4);
-    puts_(o, " S7 CR/NDTR="); hex(o, ST7->s7cr, 8); puts_(o, "/"); hex(o, ST7->s7ndtr, 4);
-    puts_(o, "\r\n  DMAMUX S5/S7="); hex(o, ST7->mux[0], 8); puts_(o, "/"); hex(o, ST7->mux[1], 8);
-    puts_(o, " SAI SR S5/S7="); hex(o, ST7->sai_sr[0], 8); puts_(o, "/"); hex(o, ST7->sai_sr[1], 8);
-    puts_(o, " (SR bit0 OVRUDR, 4 CNRDY, 5 AFSDET, 6 LFSDET)");
-    puts_(o, "\r\n");
-}
-
-/* M7 stall profile (m7_stall.c prof_sample): interrupted PC/LR every 20 ms of
- * a stall, and one raw stack copy (exception frame first: r0-r3 r12 lr pc xpsr). */
-static void prof_print(Out *o) {
-    u32 n = PROF->n < PROF_SAMPLES ? PROF->n : PROF_SAMPLES;
-    puts_(o, "M7 stall profile (from RAM): gen "); dec(o, PROF->gen);
-    puts_(o, ", stall #"); dec(o, PROF->stalls); puts_(o, " of that boot, idle "); dec(o, PROF->idle_ms);
-    puts_(o, " ms (SysTick)\r\n  samples ms:pc/lr");
-    for (u32 i = 0; i < n; i++) {
-        puts_(o, i % 6 ? " " : "\r\n   "); dec(o, PROF->at_ms[i]); puts_(o, ":");
-        hex(o, PROF->pc[i], 8); puts_(o, "/"); hex(o, PROF->lr[i], 8);
-    }
-    if (PROF->stack_ms) {
-        puts_(o, "\r\n  stack at "); dec(o, PROF->stack_ms); puts_(o, " ms, frame "); hex(o, PROF->frame, 8);
-        for (u32 k = 0; k < PROF_STACK_WORDS; k++) { puts_(o, k % 8 ? " " : "\r\n   "); hex(o, PROF->stack[k], 8); }
-    }
-    puts_(o, "\r\n");
-}
-
+/* (BE4.47: the M7 stall record and profile (m7_stall.c) and the M4 main-task profile below were printed by the next
+ * boot from RAM; our RAM is zeroed at every reset now, so those printers are gone. The M7 still captures; the worst
+ * main-task gaps still reach every save's counters.) */
 /* M4 main-task watchdog profile (v3.18). Stock feeds the M4 watchdog (WWDG2,
  * ~0.28 s) from a timer interrupt (IRQ30, FUN_081082F8) only while two
  * heartbeats are fresh: "Main" (wd[1], stale after 3333 ticks) and
@@ -605,26 +583,12 @@ __attribute__((used, retain)) void main_prof(const u32 *msp, const u32 *psp) {
     }
 }
 
-static void mprof_print(Out *o) {
-    volatile MProf *p = MPROF;
-    u32 n = p->n < 40 ? p->n : 40;
-    puts_(o, "M4 main-task stall (from RAM): gen "); dec(o, p->gen);
-    puts_(o, ", Main heartbeat stale "); dec(o, p->gap); puts_(o, " ticks (limit 3333)");
-    puts_(o, "\r\n  samples ticks:pc/lr");
-    for (u32 i = 0; i < n; i++) {
-        puts_(o, i % 6 ? " " : "\r\n   "); dec(o, p->at[i]); puts_(o, ":");
-        hex(o, p->pc[i], 8); puts_(o, "/"); hex(o, p->lr[i], 8);
-    }
-    if (p->stack_gap) {
-        puts_(o, "\r\n  stack at "); dec(o, p->stack_gap); puts_(o, p->from_psp ? " ticks, task frame " : " ticks, irq frame ");
-        hex(o, p->frame, 8);
-        for (u32 k = 0; k < 64; k++) { puts_(o, k % 8 ? " " : "\r\n   "); hex(o, p->stack[k], 8); }
-    }
-    puts_(o, "\r\n");
-}
-
 static void init(u32 now) {
+#ifdef S_RAMCHK_D2A                                /* 1.6.1: its slice survives a reset (not zeroed), so boots are counted */
     u32 gen = (M4H->magic == DIAG_MAGIC) ? M4H->r[0] + 1u : 1u;
+#else
+    u32 gen = BOOT_GEN();                          /* BE4.47: 1 on every boot, as every hook stamps it (diag_shared.h) */
+#endif
     u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, capb = 0;
     CAPCFG->magic = 0;                              /* M7 stops capturing until republished */
     for (u32 i = 0; i < CURVELOG_N; i++) CURVELOG[i].seq = 0;   /* curve log starts empty each boot */
@@ -649,40 +613,17 @@ static void init(u32 now) {
         puts_(&o, "BENTO black box, firmware "); version(&o);
         puts_(&o, ", boot gen "); dec(&o, gen);
         puts_(&o, ", rtc "); rtc_now(&o);
-        if (M4H->magic == DIAG_MAGIC || M4H->r[0]) {
-            puts_(&o, "\r\nprevious boot: last UI-loop pass at ms "); dec(&o, M4H->r[3]);
-            puts_(&o, ", rtc "); rtc_print(&o, AMON->rtc_tr, AMON->rtc_dr);
-        }
-        puts_(&o, "\r\nat boot (after the black box's own buffers):"); ram(&o);   /* canary as found at boot */
+        /* BE4.47 (docs/plan-v4.47-clean-start.md): no "previous boot" lines (last UI pass, its RTC, its counters and
+         * trace tail, the audio stall snapshot, the M7 stall record and profile, the M4 main-task profile, the RAM as
+         * found): our RAM was zeroed at this reset, so there is nothing of the last run to print. The canary and RAMCHK
+         * patterns are armed here for this boot. Stock's crash record (RTC backup registers) is printed as it reads. */
+        puts_(&o, "\r\nclean start (BE4.47): our RAM zeroed at reset, nothing of the last run kept");
         canary_arm();
-        puts_(&o, "\r\n");
-        puts_(&o, "as found at boot (the previous run; RAMCHK also shows what a reset touched):\r\n");
-        d0_lines(&o);
         ramchk_arm();
-        crash_record(&o);
-        if (AMON->snap_magic == SNAP_MAGIC) {     /* survives the reset the stall caused */
-            snap_print(&o, "audio stall snapshot (from RAM)");
-            AMON->snap_magic = 0;
-        }
-        if (ST7->magic == STALL7_MAGIC) {
-            stall7_print(&o);
-            ST7->magic = 0;              /* the M7 never rewrites magic until its next stall */
-        }
-        if (MPROF->magic == MPROF_MAGIC && MPROF->n) {   /* what kept the M4 UI task from checking in */
-            mprof_print(&o);
-        }
-        MPROF->magic = 0;
-        if (PROF->magic == PROF_MAGIC && PROF->n) {   /* where the M7 was while audio stalled */
-            prof_print(&o);
-            PROF->magic = 0;
-        }
-        /* Post-mortem: our RAM slice survives a reset; before anything resets it,
-         * write the previous boot's last records and counters. */
-        puts_(&o, "previous boot (from RAM): ");
-        counters(&o);                    /* includes the previous boot's worst watchdog gaps */
+        puts_(&o, "\r\nat boot (after the black box's own buffers):"); ram(&o);   /* this boot's allocator, canary just armed */
         puts_(&o, "\r\n");
+        crash_record(&o);
         MPROF->max_main = MPROF->max_pcm = 0;   /* this boot's worst gaps start here */
-        ring_tail(&o, 0);
         puts_(&o, "fields: ms cyc kind seq lr obj ev0..ev5 extra (hex except ms)\r\n"
                   "VOIC records: lr 1 = retrigger, 2 = steal, 3 = swallowed native note-off; obj = track; x = note\r\n");
         len = o.len;
@@ -693,7 +634,7 @@ static void init(u32 now) {
     CFG->region = M1_REGION_ADDR;
     CFG->region_bytes = M1_REGION_BYTES;
     CFG->r[0] = gen;
-    CFG->r[1] = BKP[24];          /* crash count at boot: a change = a new crash */
+    CFG->r[1] = 0;                /* BE4.47 R2: was the crash count at boot (a backup register), compared every poll */
     CFG->r[2] = RINGSTAT->heartbeat;
     CFG->r[3] = now;
     CFG->r[4] = 0;
@@ -720,19 +661,23 @@ static void alarm(Out *o, u32 now, const char *why) {
 static void curve_lines(Out *o);
 static void poll(void) {
     u32 now = TICK_MS;
-    if (M4H->magic != DIAG_MAGIC || now < M4H->r[3] || M4H->r[1] == 0) init(now); /* new boot */
+    /* A new boot: our RAM is zeroed at every reset (BE4.47 clean start), so the header's magic is missing exactly on
+     * this boot's first pass. v4.46 also took "the tick went backwards" (now < r[3]) as a new boot and otherwise trusted
+     * the header as the last run left it: a run that died before this boot's first-pass tick (a reset loop) kept its
+     * buffer, its capture block and its generation, and the black box wrote where this boot's allocator had not given
+     * it anything (test_clean_start). */
+#ifdef S_RAMCHK_D2A                                /* 1.6.1: its slice is in D2, not zeroed at reset (build.py clean_ranges) */
+    if (M4H->magic != DIAG_MAGIC || now < M4H->r[3] || M4H->r[1] == 0) init(now);
+#else
+    if (M4H->magic != DIAG_MAGIC || M4H->r[1] == 0) init(now);
+#endif
     M4H->r[3] = now;
     if (M4H->r[1] <= 1u) return;
     Out o = {(char *)M4H->r[1], M4H->r[2]};
-    int urgent = 0, crashed = 0;
+    int urgent = 0;
 
-    /* Watch 1: a new stock crash record while we are running (e.g. the M7
-     * faulted and parked while the UI stays alive). */
-    if (BKP[24] != CFG->r[1]) {
-        CFG->r[1] = BKP[24];
-        alarm(&o, now, "NEW CRASH RECORD");
-        urgent = crashed = 1;
-    }
+    /* (Watch 1, a new stock crash record in the backup registers, is gone since BE4.47 R2: their values decide
+     * nothing of ours. The record is printed in this boot's header and with every save.) */
     /* Watch 2: the M7 heartbeat (bumped every audio block) stops. */
     u32 hb = RINGSTAT->heartbeat;
     if (hb != CFG->r[2]) {
@@ -744,7 +689,6 @@ static void poll(void) {
     }
     /* Watch 3: the audio DMA stops (the M7 watchdog follows ~0.28 s later). */
     int stalled = audio_watch(&o, now);
-    AMON->rtc_tr = RTC_TR; AMON->rtc_dr = RTC_DR;
     if (stalled) urgent = 1;
 
     u32 n = 0;
@@ -780,7 +724,6 @@ static void poll(void) {
             puts_(&o, " at ms "); dec(&o, now); puts_(&o, "\r\n");
             M4H->r[2] = o.len;
             flush();
-            if (crashed) history("live");
             if (stalled) history("stall");
         }
         return;
@@ -789,7 +732,7 @@ static void poll(void) {
      * when f_open failed (flush() returned without recording progress) and each
      * FatFS call can re-mount the volume under stock's open files: suspected
      * cause of PROJ crashes, empty project lists and "insert microSD card".
-     * Everything stays in reset-surviving RAM until an explicit, safe dump exists. */
+     * Everything stays in RAM until stock's own project write (dump_after_save). */
     (void)now;
 }
 
@@ -852,7 +795,7 @@ static u32 encode(const volatile u8 *s, u32 n, SideOut *so) {
 /* path = the file stock just wrote; only ...\project.xml gets a sidecar. */
 static void write_sidecar(const char *path) {
     volatile CurveState *c = CURVES;
-    if (c->magic != CURVES_MAGIC || c->gen != CFG->r[0] || !c->pool || !c->table || !c->savelist || !c->wbuf || !path) return;   /* this boot only: reset-surviving pointers */
+    if (c->magic != CURVES_MAGIC || c->gen != BOOT_GEN() || !c->pool || !c->table || !c->savelist || !c->wbuf || !path) return;   /* this boot's state only */
     char name[160];
     u32 n = 0, cut = 0;
     while (path[n] && n < sizeof(name) - 12u) { name[n] = path[n]; if (path[n] == '\\' || path[n] == '/') cut = n + 1u; n++; }
@@ -943,7 +886,7 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
         puts_(&o, "\r\n");
     }
     volatile u32 *pads = (volatile u32 *)STRIKE_SET->pads;
-    if (pads && STRIKE_SET->r[2] == ~(u32)pads && pads[0] == CFG->r[0]) {   /* Sequence-page late velocity */
+    if (pads && STRIKE_SET->r[2] == ~(u32)pads && pads[0] == BOOT_GEN()) {   /* Sequence-page late velocity */
         volatile LateStats *l = (volatile LateStats *)(pads + 1);
         puts_(&o, "STRIKE-LATE queued="); dec(&o, l->queued); puts_(&o, " applied="); dec(&o, l->applied);
         puts_(&o, " skip press="); dec(&o, l->s_press); puts_(&o, " vel0="); dec(&o, l->s_vel0);
@@ -1010,10 +953,17 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
     puts_(&o, "# saved: "); counters(&o);
     puts_(&o, " at ms "); dec(&o, TICK_MS); puts_(&o, "\r\n");
     M4H->r[2] = o.len;
-    if (LOADREQ->hdr_gen != M4H->r[0] && LOADREQ->hdr_len <= summary_from) {
+    if (LOADREQ->hdr_len <= summary_from) {
+        /* BE4.47 R3: the first save of a boot writes the boot's line (BENTO_CRASHES.log) and header (BENTO_SAVES.log),
+         * and so does any later save that finds one of them gone (deleted on the card since): append mode creates a
+         * missing file (stock's f_open, FA_OPEN_APPEND on FR_NO_FILE: 0x08120776 -> 0x08120538), so a new file starts
+         * with this boot's line or header, never with a bare summary. Still the one card access: right after stock's
+         * own project write, from its task; nothing is written at boot. */
+        int first = LOADREQ->hdr_gen != M4H->r[0];
+        int hist = first || missing(HIST), head = first || missing(SAVES);
         LOADREQ->hdr_gen = M4H->r[0];
-        history("boot");                            /* one short line per boot */
-        saves_append(0, LOADREQ->hdr_len);          /* this boot's header: the previous run's figures */
+        if (hist) history(first ? "boot" : "fresh"); /* one short line per boot (and one for a new file) */
+        if (head) saves_append(0, LOADREQ->hdr_len); /* this boot's header */
     }
     saves_append(summary_from, o.len);
     /* v3.68: nothing longer. Copying the old log and writing up to 256 KB from the UI task

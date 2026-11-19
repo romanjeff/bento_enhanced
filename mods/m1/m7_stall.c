@@ -9,13 +9,14 @@
  *   stall_check     bl 0x080816C0 at 0x0808DFB4 (message pump: no progress)
  * and, once per boot, when there has been no progress for STALL_MS, record
  * the M7's own view: interrupt masking, the NVIC state of the DMA2 stream 5/7
- * interrupts (IRQ 68/70), the active/pending vector, and the DMA flags. The
- * record lives in reset-surviving RAM; the M4 prints it at the next boot.
+ * interrupts (IRQ 68/70), the active/pending vector, and the DMA flags. Until
+ * v4.46 the M4 printed the record at the next boot from reset-surviving RAM;
+ * since BE4.47 (clean start) the reset zeroes it, so it is boot-local and not
+ * printed (the stall group is off by default).
  *
  * RAM SLICE(0x080)..SLICE(0x100): line SLICE(0x080) = M7 tracking (M7 only); lines
  * SLICE(0x0A0).. = the record, written and cleaned by the M7 only when it snaps.
- * The M4 reads the record after the reset and clears its magic; the M7 never
- * dirties those lines otherwise, so a stale cached copy is never written back.
+ * The M7 never dirties those lines otherwise, so a stale cached copy is never written back.
  */
 #include "diag_shared.h"
 
@@ -29,8 +30,9 @@
 #define DMA2 ((volatile u32 *)0x40020400u)
 #define STALL_MS 100u
 /* Stock HAL tick (ms since this M7 boot; .bss, zeroed at reset). Our tracking
- * line survives resets, so without this guard the normal ~1.4 s display
- * bring-up of the NEXT boot looked like a stall (v3.1-v3.17 records). */
+ * line survived resets until v4.46, and without this guard the normal ~1.4 s
+ * display bring-up of the NEXT boot looked like a stall (v3.1-v3.17 records);
+ * kept since BE4.47 (zeroed at reset): the bring-up is no audio stall either. */
 #define UWTICK (*(volatile u32 *)S_UWTICK)
 #define BOOT_GUARD_MS 5000u
 #define MS_CYC 480000u
@@ -57,7 +59,7 @@ static void clean_all(void) {
 __attribute__((used, retain)) void stall_progress(void) {
     DCIMVAC = (u32)CFG;                      /* M4-written line: never dirty here */
     __asm volatile("dsb" ::: "memory");
-    u32 gen = CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u;
+    u32 gen = BOOT_GEN();
     if (ST->gen != gen) { ST->gen = gen; ST->snapped = 0; }
     ST->last = CYCCNT;
     ST->armed = 1;

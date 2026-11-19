@@ -527,6 +527,20 @@ class FatFsRig(unittest.TestCase):
         if self.live:
             w32(u, D2 + 0x1800, 0x54495257)               # opt into pre-v3.19 live card writes
 
+    def reboot(self):
+        """A reset as the device does it (BE4.47, docs/plan-v4.47-clean-start.md): stock's state back at its start (the UI
+        allocator, the M7 pool, the HAL ticks), then the image's M7 reset path from CTRL_STARTUP_SITE to the instruction
+        after it (the clean-start stub zeroes our RAM). Until v4.46 these tests rebooted by ticking backwards."""
+        u = self.u
+        w32(u, S.UI_BUMP_CUR, 0xC6000000); w32(u, S.UI_BUMP_END, 0xC6200000)   # addr-ok: harness heap
+        u.mem_write(S.POOL_LEFT_RAM, struct.pack("<2I", 3405824, S.EXT_POOL_END - 3405824))
+        w32(u, UWTICK, 0); w32(u, S.M4_TICK_MS, 0)
+        u.reg_write(UC_ARM_REG_SP, STACK)
+        u.emu_start(S.CTRL_STARTUP_SITE | 1, S.CTRL_STARTUP_SITE + 4, count=200000)
+        assert u.reg_read(UC_ARM_REG_PC) == S.CTRL_STARTUP_SITE + 4, "the M7 reset path returned to stock"
+        if self.live:
+            w32(u, D2 + 0x1800, 0x54495257)               # the tests' opt-in to live card writes, again
+
     @property
     def files(self):
         """Contents written to the log in each open (what each flush wrote)."""
@@ -617,16 +631,13 @@ class M4EndToEnd(FatFsRig):
         self.assertEqual(self.fs.get(PREV), old, "copied right before the first write")
         self.assertNotIn(b"before the crash", self.fs[LOG])
 
-    def test_new_crash_record_is_written_immediately(self):
+    def test_a_new_crash_record_decides_nothing(self):
+        """BE4.47 R2: the backup registers are printed, never compared (v4.46 alarmed when the count moved mid-session)."""
         self.tick(1000)                                  # baseline: count 0
         w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)  # addr-ok: harness
-        self.tick(1050)                                  # no idle wait
-        text = self.files[-1].decode()
-        self.assertIn("!!! NEW CRASH RECORD at ms 1050", text)
-        self.assertIn("count=1", text)
-        self.assertIn("pc=0808cc5a", text)
-        self.tick(1100)
-        self.assertEqual(text.count("!!!"), 1, "reported once")
+        self.tick(1050); self.tick(2700)
+        self.assertFalse(any(b"!!!" in f for f in self.files), "no alarm")
+        self.assertFalse(any(l.startswith(b"live ") for l in self.fs.get("\\BENTO_CRASHES.log", b"").splitlines()), "no live line")
 
     def test_crash_history_one_line_per_boot_appended_forever(self):
         hist = "\\BENTO_CRASHES.log"
@@ -642,20 +653,11 @@ class M4EndToEnd(FatFsRig):
         self.tick(5000)                                  # later flushes: no new history line
         self.assertEqual(len(self.fs[hist].decode().splitlines()), 2)
         w32(self.u, RTC_BKP + 4 * 24, 87)
-        self.tick(50); self.tick(1700)                   # reboot, first write of boot 2
+        self.reboot(); self.tick(1000); self.tick(2700)  # reboot, first write of boot 2
         lines = self.fs[hist].decode().splitlines()
         self.assertEqual(len(lines), 3)
-        self.assertRegex(lines[2], "^boot fw=" + FW + r" rtc=\S+ gen=2 ms=1700 count=87")
+        self.assertRegex(lines[2], "^boot fw=" + FW + r" rtc=\S+ gen=1 ms=2700 count=87", "BE4.47: every boot is gen 1")
         self.assertTrue(all(w[1] == 0x32 for w in self.writes if w[0] == hist), "append only, never truncated")
-
-    def test_crash_history_live_crash_line(self):
-        hist = "\\BENTO_CRASHES.log"
-        self.tick(1000)
-        w32(self.u, RTC_BKP + 4 * 24, 1); w32(self.u, RTC_BKP + 4 * 31, 0x0808CC5A)  # addr-ok: harness
-        self.tick(1050)
-        lines = self.fs[hist].decode().splitlines()
-        self.assertRegex(lines[-1], "^live fw=" + FW + r" rtc=\S+ gen=1 ms=1050 count=1")
-        self.assertIn("pc=0808cc5a", lines[-1])
 
     # --- audio DMA monitor (DMA2 streams 5 and 7, as stock's own main-loop check)
     S5, S7 = 0x40020488, 0x400204B8
@@ -691,11 +693,10 @@ class M4EndToEnd(FatFsRig):
         n = len(self.files); self.tick(1100); self.tick(3000)
         self.assertFalse(any(b"AUDIO DMA" in f for f in self.files[n:]), "reported once per boot")
         self.stream(self.S5, cr=0); self.stream(self.S7, cr=0)  # reset: audio not restarted yet
-        self.tick(50); self.tick(1700)                         # the watchdog reset: next boot
+        self.reboot(); self.tick(1000); self.tick(2700)        # the watchdog reset: next boot
         boot = self.files[-1].decode()
-        self.assertIn("audio stall snapshot (from RAM) at ms 1040 gen 1: stream 5 stopped advancing", boot)
-        self.tick(50); self.tick(1700)
-        self.assertNotIn("audio stall snapshot", self.files[-1].decode(), "printed once")
+        self.assertIn("BENTO black box", boot)
+        self.assertNotIn("audio stall snapshot", boot, "BE4.47: the next boot starts clean, nothing of the last run")
 
     def test_stream_disabled_after_running_is_reported(self):
         self.stream(self.S7)
@@ -717,10 +718,10 @@ class M4EndToEnd(FatFsRig):
         w32(self.u, 0x58004000, 0x00142410)
         self.tick(4000)                                  # last pass of this boot
         w32(self.u, 0x58004000, 0x00153000)
-        self.tick(50); self.tick(1700)                   # reset, next boot
+        self.reboot(); self.tick(1000); self.tick(2700)  # reset, next boot
         boot = self.files[-1].decode()
-        self.assertIn("previous boot: last UI-loop pass at ms 4000, rtc 261026-142410", boot)
-        self.assertIn("boot gen 2, rtc 261026-153000", boot)
+        self.assertNotIn("previous boot", boot, "BE4.47: no line about the last run (its RAM was zeroed)")
+        self.assertIn("boot gen 1, rtc 261026-153000", boot)
 
     def m7(self, fn, cyc):
         if r32(self.u, UWTICK) < 10000:
@@ -728,7 +729,7 @@ class M4EndToEnd(FatFsRig):
         w32(self.u, 0xE0001004, cyc)
         call(self.u, SYM7[fn], 0)
 
-    def test_m7_stall_record_written_once_and_printed_next_boot(self):
+    def test_m7_stall_record_written_once_and_gone_at_the_next_boot(self):
         self.tick(1000)                                  # M4 publishes boot gen 1
         w32(self.u, 0xE000E108, 0x50); w32(self.u, 0xE000E208, 0x40)   # IRQ 68/70 enabled, 70 pending
         w32(self.u, 0x40020404, 0x00200000)              # HISR: S7 half-transfer flag set
@@ -740,34 +741,28 @@ class M4EndToEnd(FatFsRig):
         w32(self.u, 0x40020404, 0)
         self.m7("stall_check", 1000 + 200 * 480000)      # once per boot
         self.assertEqual(r32(self.u, D2 + 0xA0 + 4 * 15), 0x00200000, "first snapshot kept (hisr)")
-        self.tick(50); self.tick(1700)                   # watchdog reset, next boot
+        self.reboot(); self.tick(1000); self.tick(2700)  # watchdog reset, next boot
         boot = self.files[-1].decode()
-        self.assertIn("M7 audio stall record (from RAM): gen 1, no audio progress for 101 ms", boot)
-        self.assertIn("irq64-95 en/pend/act=00000050/00000040/00000000", boot)
-        self.assertIn("HISR=00200000", boot)
-        self.tick(50); self.tick(1700)
-        self.assertNotIn("M7 audio stall record", self.files[-1].decode(), "printed once")
+        self.assertNotIn("M7 audio stall record", boot, "BE4.47: not printed from RAM by the next boot")
+        self.assertEqual(r32(self.u, D2 + 0xA0), 0, "zeroed at the reset")
 
     @unittest.skipIf("stall" in OFF, "stall group off in this build (SysTick not hooked)")
-    def test_stall_profile_printed_next_boot_once(self):
+    def test_stall_profile_not_printed_by_the_next_boot(self):
         self.tick(1000)                                  # M4 publishes boot gen 1
         self.m7("stall_progress", 1000)                  # armed
         frame = struct.pack("<8I", 0, 1, 2, 3, 12, 0x08055551, 0x0809ABCC, 0x01000000) + bytes(160)  # addr-ok: harness
         for _ in range(320):                             # 320 ms without audio progress
             self.u.mem_write(STACK, frame)
             call(self.u, S.SYSTICK_HANDLER)
-        self.tick(50); self.tick(1700)                   # watchdog reset, next boot
-        boot = self.files[-1].decode()
-        self.assertIn("M7 stall profile (from RAM): gen 1, stall #1 of that boot, idle 319 ms (SysTick)", boot)
-        self.assertIn("50:0809abcc/08055551", boot)
-        self.assertIn("stack at 300 ms, frame 2407f000", boot)
-        self.tick(50); self.tick(1700)
-        self.assertNotIn("M7 stall profile", self.files[-1].decode(), "printed once")
+        self.assertEqual(r32(self.u, D2 + 0x1000), 0x31464F50, "captured this boot")
+        self.reboot(); self.tick(1000); self.tick(2700)  # watchdog reset, next boot
+        self.assertNotIn("M7 stall profile", self.files[-1].decode(), "BE4.47: the next boot prints nothing of the last run")
+        self.assertEqual(r32(self.u, D2 + 0x1000), 0, "zeroed at the reset")
 
     def test_m7_progress_rearms_after_a_reboot(self):
         self.tick(1000)
         self.m7("stall_progress", 0); self.m7("stall_check", 101 * 480000)
-        self.tick(50); self.tick(1700)                   # gen 2
+        self.reboot(); self.tick(1000); self.tick(1700)  # the next boot
         self.m7("stall_progress", 0)
         self.assertEqual(r32(self.u, D2 + 0x8C), 0, "snapped flag reset for the new boot")
 
@@ -784,16 +779,16 @@ class M4EndToEnd(FatFsRig):
         n = len(self.files); self.tick(9000)
         self.assertFalse(any(b"HEARTBEAT" in f for f in self.files[n:]), "reported once")
 
-    def test_post_mortem_tail_in_next_boot_header(self):
+    def test_no_post_mortem_of_the_last_run_in_the_next_boot_header(self):
+        """BE4.47 R1: v4.46 printed the last run's final trace records (and counters) from RAM in the next boot's header."""
         self.tick(1000)
         self.send(0x5B); self.send(0x5C)
         self.tick(1100)                                  # drained (no file yet: never idle)
-        self.tick(50)                                    # reset: new boot
-        self.send(0x5D); self.tick(100); self.tick(1700)
+        self.reboot(); self.tick(1000)                   # reset: new boot
+        self.send(0x5C); self.tick(1100); self.tick(2700)
         text = self.files[-1].decode()
-        self.assertIn("previous boot (from RAM):", text)
-        tail = [l for l in text.splitlines() if l.startswith("  T ")]
-        self.assertEqual([l.split("ev=")[1][6:8] for l in tail], ["5b", "5c"], "previous boot's final records")
+        self.assertNotIn("previous boot", text)
+        self.assertEqual([l.split("ev=")[1][6:8] for l in text.splitlines() if " SEND " in l], ["5c"], "this boot's record only")
 
     def test_overflow_and_reboot(self):
         self.tick(1000)
@@ -804,8 +799,10 @@ class M4EndToEnd(FatFsRig):
         text = self.files[-1].decode()
         self.assertEqual(text.count(" SEND "), 17)
         self.assertIn("# m7 dropped=8", text)
-        self.tick(50)                                    # tick went backwards: reboot
-        self.assertEqual(r32(self.u, M4H + 8), 2, "boot generation advanced")
+        self.tick(50)                                    # the tick going backwards is no reboot (BE4.47)
+        self.assertEqual(r32(self.u, M4H + 8), 1)
+        self.reboot(); self.tick(1000)                   # a reset is
+        self.assertEqual(r32(self.u, M4H + 8), 1, "BE4.47: every boot is generation 1 (its RAM zeroed)")
         self.send(0x5B)                                  # M7 resyncs to the new generation
         self.assertEqual(r32(self.u, M7H + 8), 0)
         self.assertEqual(len(records(self.u)), 1)
@@ -993,10 +990,13 @@ class ReadinessDiagnostics(FatFsRig):
 
     def test_m4_never_writes_the_region_and_stays_inside_its_stats(self):
         reads, writes = [], []
-        def m(uc, k, a, n, v, _): (writes if k == UC_MEM_WRITE else reads).append(a)
+        def m(uc, k, a, n, v, _):
+            if uc.reg_read(UC_ARM_REG_PC) >= M4_FROM: (writes if k == UC_MEM_WRITE else reads).append(a)   # the M4's
         h = self.u.hook_add(UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE, m, begin=self.REGION, end=self.REGION + 0x3FFF)
-        self.tick(1000); self.save_text(); self.tick(2000)      # boot, publish, a save, a poll
-        self.tick(50); self.save_text()                         # a reboot: its boot print follows CFG too
+        self.u.ctl_flush_tb()
+        self.ready(); self.save_text(); self.tick(2000)         # boot, publish, the M7's take, a save, a poll
+        self.reboot(); self.tick(1000); self.save_text()        # a reboot, a save before the M7 took the region again
+        self.m7_ready(); self.hb(); self.save_text()            # and after
         self.u.hook_del(h)
         self.assertEqual(writes, [])
         self.assertTrue(reads, "the save line reads them")
@@ -1103,33 +1103,23 @@ class ReadinessDiagnostics(FatFsRig):
         self.block(0.125)
         self.assertIn("LOAD render blocks=1 avg=12.5% peak=12.5%", self.save_text())
 
-    def test_the_run_before_a_reset_is_reported_at_boot(self):
+    def test_the_run_before_a_reset_is_not_reported_at_boot(self):
+        """BE4.47 R1: v4.46 printed the last run's D0 figures "as found at boot" (from RAM that survived the reset)."""
         self.ready()
         self.block(0.5)
-        w32(self.u, M4H, 0)                              # a reset: nothing was saved
-        self.tick(2000)
-        self.assertRegex(self.save_text(), r"as found at boot[^\n]*\r\nLOAD render blocks=1 avg=50\.0%")
-
-    def test_a_warm_reset_leaves_the_previous_run_for_the_boot_print(self):
-        self.ready()
-        w32(self.u, S.AUDIO_BLOCK_STATS, 900); w32(self.u, S.AUDIO_BLOCK_STATS + 4, 7); w32(self.u, S.AUDIO_BLOCK_STATS + 0x18, 0xFFFFFF00)
-        self.block(0.5); self.hb()
-        for a in (S.AUDIO_BLOCK_STATS, S.AUDIO_BLOCK_STATS + 4, S.AUDIO_BLOCK_STATS + 0x18):   # stock's BSS is zero after the reset
-            w32(self.u, a, 0)
-        w32(self.u, S.AUDIO_BLOCK_STATS, 4)
-        self.block(0.25); self.hb()                      # the engine runs before the M4's first pass
-        w32(self.u, M4H, 0)
+        self.reboot()                                    # a reset: nothing was saved
         self.tick(2000)
         text = self.save_text()
-        self.assertRegex(text, r"as found at boot[^\n]*\r\nLOAD render blocks=1 avg=50\.0%")
-        self.assertRegex(text, r"as found at boot[^\n]*\r\n[^\n]*\r\nAUDIO blocks=900 [^\n]*wrong_half=7 head_min=-256 ")
+        self.assertNotIn("as found at boot", text)
+        self.assertNotIn("LOAD render blocks=1 avg=50.0%", text, "the last run's figures are gone")
 
     def test_new_boot_clears_it_once_the_generation_moves(self):
         self.ready()
         w32(self.u, S.AUDIO_BLOCK_STATS, 900); self.block(0.5); self.hb()
+        self.reboot()                                    # a reset (BE4.47: our RAM zeroed)
         w32(self.u, S.AUDIO_BLOCK_STATS, 4)
-        self.tick(500)                                   # a reset (the tick went back): the M4 prints it, then a new generation
-        call(self.u, SYM7["diag_put"], 1, 0, 0, 0, 0)    # first post moves GEN
+        self.tick(500)
+        call(self.u, SYM7["diag_put"], 1, 0, 0, 0, 0)    # the first post brings the M7 side up
         self.hb()
         self.assertEqual(struct.unpack("<I", self.u.mem_read(self.D0C, 4))[0], 4)
         self.assertEqual(self.load()[0], 0)
@@ -1187,7 +1177,7 @@ class ReadinessDiagnostics(FatFsRig):
         self.save_text()
         saves = self.fs["\\BENTO_SAVES.log"].decode()
         self.assertIn("BENTO black box, firmware BE", saves, "the boot header, once")
-        self.assertIn("as found at boot", saves)
+        self.assertIn("clean start (BE4.47)", saves)
         self.assertIn("LOAD render blocks=1 avg=50.0%", saves)
         self.assertIn("# saved:", saves)
         size = len(saves)
@@ -1227,9 +1217,9 @@ class ReadinessDiagnostics(FatFsRig):
         name, lo, hi = RAMCHK[1]                          # 1.6.1: d2a; 1.6.8: the block above the slice
         w32(self.u, lo + 0x100, 1); w32(self.u, hi - 4, 1)
         self.assertIn(f"{name} changed=2 low={lo + 0x100:08x} high={hi - 4:08x}", self.save_text())
-        w32(self.u, M4H, 0)                               # a reset: the fill isn't redone
-        self.tick(2000)
-        self.assertEqual(r32(self.u, lo + 0x100), 1, "no re-fill hides what happened")
+        self.reboot(); self.tick(2000)                    # BE4.47: a reset zeroes them, the next boot arms them again
+        self.assertNotEqual(r32(self.u, lo + 0x100), 1, "refilled")
+        self.assertIn("RAMCHK" + "".join(f" | {n} changed=0" for n, _, _ in RAMCHK) + "\r\n", self.save_text())
 
     def test_ranges_stay_clear_of_their_neighbours(self):
         if S.has("RAMCHK_D2A"):                           # 1.6.1: slice in D2

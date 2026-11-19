@@ -228,12 +228,15 @@ __attribute__((noinline)) static int region_reserve(void) {
     u32 p = irq_save(), left = EXT_POOL_LEFT, end = EXT_POOL_CUR + left;
     int took = end == SYNTH_AREA || end == M1_REGION_ADDR ? 0 : -1;
     if (end == EXT_POOL_END && left >= M1_REGION_RESERVE) {
-        u32 full = left >= SYNTH_TOTAL + SYNTH_POOL_MARGIN, take = SYNTH_TAKE;
-        u32 times = (take >> 24) == SYNTH_TAKE_TAG ? (take >> 8) & 0xFFFFu : 0u;
+        u32 full = left >= SYNTH_TOTAL + SYNTH_POOL_MARGIN;
         EXT_POOL_LEFT = left - (full ? SYNTH_TOTAL : M1_REGION_RESERVE);
         ((volatile u32 *)M7_REGION_CACHE)[0] = 0;
         if (full) {
-            synth_take();
+            /* BE4.47 review: under the same mask as the pool end that makes the area ours, its header's magic goes, so
+             * no render hook (dsp/ area_ok: magic and pool end) can take a header the last run left in SDRAM for this
+             * boot's. The 32 KB zeroing itself (synth_take) runs later, unmasked, from region() after the Region's. */
+            ((volatile SaM7 *)SA(SA_M7))->magic = 0;
+            __asm volatile("dsb" ::: "memory");
         } else if (left >= SYNTH_TOTAL) {
             /* Not ours, but still free pool memory (above the cursor): clear the header a previous take of this
              * M4 boot left there, so the M4 never takes it for a live area (synth_shared.h, ready rules). */
@@ -241,12 +244,7 @@ __attribute__((noinline)) static int region_reserve(void) {
             __asm volatile("dsb" ::: "memory");
             *(volatile u32 *)SA_DCCMVAC = SYNTH_AREA;
         }
-        if (!full && times < 0xFFFFu) times++;
-        SYNTH_TAKE = (SYNTH_TAKE_TAG << 24) | (times << 8) | (full ? SYNTH_TAKE_FULL : SYNTH_TAKE_REGION);
-        __asm volatile("dsb" ::: "memory");
-        *(volatile u32 *)SA_DCCMVAC = (u32)&SYNTH_TAKE;      /* the M4 prints it; the rest of the line is M7 private */
-        __asm volatile("dsb" ::: "memory");
-        took = 1;
+        took = full ? 2 : 1;                                  /* region() zeroes, then publishes SYNTH_TAKE (take_publish) */
     }
     irq_restore(p);
     return took;
@@ -286,30 +284,42 @@ static inline void stats_clean(void) {
 #endif
 
 #ifndef BE_OMIT_SYNTH
-/* The reservation was just taken (a new M7 boot, or an M7-only reset), with interrupts masked: our synth lines start
- * over and the generation moves, which tells the M4 to republish its table (synth_shared.h). The M4's lines are left
- * alone: the M7 never writes them, so no stale copy of them can be in this cache. */
+/* The reservation was just taken (once per boot: every reset is a system reset, BE4.47); region() calls this after it
+ * zeroed the Region, with interrupts enabled (the reservation already cleared the header's magic under the mask, so no
+ * render hook uses the area meanwhile). BE4.47 R1 (docs/plan-v4.47-clean-start.md): the whole area starts over, the M4's
+ * lines and the drums' run state too, whatever the SDRAM still holds from the last run (v4.46 zeroed only the M7's lines
+ * and moved the generation from the old header: with the generation now the same on every boot, a header, an M4 line or
+ * a drum run state left in SDRAM would read as this boot's). The M4 writes nothing here before SYNTH_TAKE (take_publish,
+ * after this returns) says the area is taken (m4_synth.c ready), so no M4 write can be lost to the zeroing. Every line is
+ * cleaned and invalidated, so this cache keeps no copy of an M4 line. */
 static void synth_take(void) {
-    static const u32 OURS[][2] = {{SA_M7, 0x20u}, {SA_STATS, 0x1C0u}, {0x0400u, 0x400u}};
     volatile SaM7 *h = (volatile SaM7 *)SA(SA_M7);
-    DCIMVAC = (u32)h;
-    __asm volatile("dsb" ::: "memory");
-    u32 gen = h->magic == SA_M7_MAGIC ? h->gen + 1u : 1u;
-    if (!gen) gen = 1u;
-    for (u32 k = 0; k < sizeof(OURS) / sizeof(OURS[0]); k++)
-        for (u32 a = SA(OURS[k][0]); a < SA(OURS[k][0] + OURS[k][1]); a += 4u) *(volatile u32 *)a = 0;
-    h->gen = gen; h->layout = SA_LAYOUT; h->total = SYNTH_TOTAL;
-    h->boot = CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u;     /* the M4 boot this take is for (region() restamps) */
+    for (u32 a = SYNTH_AREA; a < SYNTH_AREA + SYNTH_BYTES; a += 4u) *(volatile u32 *)a = 0;
+    h->gen = 1u; h->layout = SA_LAYOUT; h->total = SYNTH_TOTAL;
+    h->boot = BOOT_GEN();                                     /* the boot this take is for (1 on 1.6.8: diag_shared.h) */
     __asm volatile("dmb" ::: "memory");
     h->magic = SA_M7_MAGIC;
     __asm volatile("dsb" ::: "memory");
-    for (u32 k = 0; k < sizeof(OURS) / sizeof(OURS[0]); k++)
-        for (u32 a = SA(OURS[k][0]); a < SA(OURS[k][0] + OURS[k][1]); a += 32u) *(volatile u32 *)SA_DCCMVAC = a;
+    for (u32 a = SYNTH_AREA; a < SYNTH_AREA + SYNTH_BYTES; a += 32u) *(volatile u32 *)SA_DCCIMVAC = a;
     __asm volatile("dsb" ::: "memory");
 }
-/* A new M4 boot generation with the reservation unchanged (an M4-only reset, or the M7 took it while the config
- * line still named the previous boot): the header names the new boot, so the M4 attaches (it never trusts a
- * header stamped for another boot: synth_shared.h). */
+/* BE4.47 review: SYNTH_TAKE is published last, after the Region (and, full, the synth area) are zeroed and their lines
+ * the M4 reads are cleaned, so the M4 (m4_diag.c counters, m4_synth.c ready) never reads either as the last run left it.
+ * Until this review it was written inside the reservation, before region() zeroed the Region. */
+static void take_publish(int full) {
+    if (full) synth_take();
+    __asm volatile("dsb" ::: "memory");
+    for (u32 i = 0; i < REGION_STATS_BYTES; i += 32u) *(volatile u32 *)SA_DCCMVAC = M1_REGION_ADDR + i;   /* the M4's stats */
+    u32 take = SYNTH_TAKE, times = (take >> 24) == SYNTH_TAKE_TAG ? (take >> 8) & 0xFFFFu : 0u;
+    if (!full && times < 0xFFFFu) times++;
+    __asm volatile("dsb" ::: "memory");
+    SYNTH_TAKE = (SYNTH_TAKE_TAG << 24) | (times << 8) | (full ? SYNTH_TAKE_FULL : SYNTH_TAKE_REGION);
+    __asm volatile("dsb" ::: "memory");
+    *(volatile u32 *)SA_DCCMVAC = (u32)&SYNTH_TAKE;      /* the M4 prints it; the rest of the line is M7 private */
+    __asm volatile("dsb" ::: "memory");
+}
+/* Restamp the header when the config line names another boot than the take did. On 1.6.8 that cannot happen any more
+ * (BOOT_GEN is 1 from the reset on, and every reset is a system reset: BE4.47); 1.6.1's config generation counts boots. */
 static void synth_stamp(u32 boot) {
     if (EXT_POOL_CUR + EXT_POOL_LEFT != SYNTH_AREA) return;
     volatile SaM7 *h = (volatile SaM7 *)SA(SA_M7);
@@ -323,16 +333,16 @@ static void synth_stamp(u32 boot) {
 
 static volatile Region *region(void) {
     /* The config line is written only by the M4, so invalidating it is safe.
-     * Our cached pointer lives in M7-private RAM, which survives a reset: it is
-     * trusted only for the M4 boot generation it was taken in (cfg r[0]). */
+     * Our cached pointer lives in M7-private RAM (zeroed at every reset since
+     * BE4.47); it is used only for the generation it was taken in (cfg r[0]). */
     volatile u32 *cache = (volatile u32 *)M7_REGION_CACHE; /* [0] pointer, [1] generation */
     DCIMVAC = (u32)CFG;
     __asm volatile("dsb" ::: "memory");
     if (CFG->magic != DIAG_MAGIC || CFG->region != M1_REGION_ADDR) return 0;
-    /* Before the generation compare: an M7-only reset keeps the generation but restores the pool
-     * counters. This is the one check on the hot path, two loads from one cached AXI line. Being
-     * taken just now also means zeroing: that reset lost whatever of the region was still dirty
-     * in the cache, and the voices and owed Note Offs it remembers are for a stock that restarted. */
+    /* Before the generation compare: the pool end says whether the reservation is taken yet (once
+     * per boot). This is the one check on the hot path, two loads from one cached AXI line. Being
+     * taken just now also means zeroing: whatever the SDRAM holds there is the last run's (BE4.47:
+     * a reset is a system reset; until v4.46 this also covered an M7-only reset). */
     int took = 0;
 #ifndef BE_OMIT_SYNTH
     u32 end = EXT_POOL_CUR + EXT_POOL_LEFT;
@@ -359,7 +369,8 @@ static volatile Region *region(void) {
     cache[0] = M1_REGION_ADDR;
     cache[1] = CFG->r[0];
 #ifndef BE_OMIT_SYNTH
-    synth_stamp(CFG->r[0]);
+    if (took > 0) take_publish(took == 2);
+    synth_stamp(BOOT_GEN());
 #endif
     return r;
 }
