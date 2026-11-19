@@ -23,6 +23,12 @@
       "image_commit": "031edf1",
       "device_tested": true,
       "bento1.bin": "d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5"
+    },
+    "4.47": {
+      "base": "1.6.8",
+      "image_commit": "faa49a1",
+      "device_tested": false,
+      "bento1.bin": "ecc04c6abfe137727c5a7d2e1a56eb2f2eb0035739f935bac3dbfc0b13f22181"
     }
   }
 }
