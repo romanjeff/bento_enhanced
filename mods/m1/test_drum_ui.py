@@ -69,6 +69,8 @@ ENGINE_KEY, TRACK_KEY = 0x1A8, 0x1A2
 ATTRS = ["bento_drum_k%d" % (i + 1) for i in range(7)]
 POLY_MODE = 0x2E
 D0L = S.D2_SLICE + 0xFE0 if BUILT else 0
+TAKE = S.D2_SLICE + 0x1D8 if BUILT else 0   # SYNTH_TAKE (synth_shared.h): BE4.47, the M4 trusts the header only with it
+TAKE_FULL = 0xA5 << 24 | 1                  # SYNTH_TAKE_TAG, SYNTH_TAKE_FULL: the M7 took Region + synth area this boot
 DSTATS = SA + 0x80 if BUILT else 0
 # slot 13's notifications (stock's tbb at 0x081550C2, rc29/s6c2 fix/tbb.py): the cell set alone, the file select (then D5),
 # D5, the file changed (title only)
@@ -95,8 +97,9 @@ class Rig:
                 self.put(h, eng, vals, i)
         e.ctors()
         e.w(CFG, 0x31474144); e.w(CFG + 12, 1)                    # CFG: boot generation 1
-        if take:
-            self.u.mem_write(SA, struct.pack("<5I", 0x37534542, 1, 2, 0xC000, 1))   # the M7 took the area, for M4 boot 1
+        if take:                                                  # the M7 took the area, for M4 boot 1 (and, BE4.47,
+            self.u.mem_write(SA, struct.pack("<5I", 0x37534542, 1, 2, 0xC000, 1))   # its take word: m4_synth.c ready)
+            e.w(TAKE, TAKE_FULL)
         heap = [HEAP]
         def malloc(uc, a, sz, _):
             n = uc.reg_read(UC_ARM_REG_R0); p = heap[0]; heap[0] += (n + 31) & ~31
@@ -580,6 +583,9 @@ class Edits(unittest.TestCase):
         self.assertEqual(r.knobs(r.handle(p))[1][3], 12)
         self.assertEqual(r.lines(), {}, "nothing written into the area before the M7 took it")
         r.u.mem_write(SA, struct.pack("<5I", 0x37534542, 1, 2, 0xC000, 1))
+        r.call(SYM["an_tick"])
+        self.assertEqual(r.lines(), {}, "BE4.47: a header without this boot's take word may be the last run's: not trusted")
+        r.e.w(TAKE, TAKE_FULL)
         r.call(SYM["an_tick"])
         self.assertEqual(r.lines()[r.handle(p)][3][3], 12, "the tick publishes it")
 

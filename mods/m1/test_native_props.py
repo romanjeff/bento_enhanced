@@ -824,7 +824,8 @@ class DefaultImage(unittest.TestCase):
     build, a bisect, another base, a bumped version) skips. Retires itself when the version changes on purpose.
     A release in release_hashes.json with no DEFAULT_GROUPS entry fails (merge review): otherwise the guard would skip
     quietly from the next release on. Add each release's default (disabled, omitted) from its make_kit manifest."""
-    DEFAULT_GROUPS = {"4.46": (["drums", "irq30", "modtest", "mx", "stall"], ["drums", "mx"])}   # (disabled, omitted)
+    DEFAULT_GROUPS = {"4.46": (["drums", "irq30", "modtest", "mx", "stall"], ["drums", "mx"]),     # (disabled, omitted)
+                      "4.47": (["drums", "irq30", "modtest", "mx", "stall"], ["drums", "mx"])}
     def test_a_default_build_at_a_release_is_its_image(self):
         rel = json.loads((HERE.parents[1] / "tools" / "release_hashes.json").read_text())["releases"].get(MAN.get("version"))
         if not rel or MAN.get("base_label") != f"stock-{rel['base']}":

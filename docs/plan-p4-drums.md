@@ -268,6 +268,17 @@ The default build is v4.46's image byte for byte (P4-0 / P4-1 change nothing the
 5 and 8 updated to these figures; the pad entries are open decision P4-D13 and the DSP budget P4-D14 (both before P4-2);
 DrumProject also opens the project on v4.46 (BE_REF446, ~/bento/out/m1-be446, the release image byte for byte).
 
+**v4.47 merge (clean start, 2026-11-18).** The default build is v4.47's image (538cf218..., DefaultImage has its entry).
+A drums build on v4.47: image 0x18B314, 140 writes, DSP 39,132 B (unchanged: 1,508 B left, P4-D14 as above), synth UI
+23,726 B (-104), M4 code 20,528 B (-3,896: the black box no longer prints the last run), M7 C code 15,224 B of the 19,456 B
+slice (**4,232 B free**, the C-slice figure P4-D14 asked to re-measure; BE4.41: 4,088). The clean start zeroes DK4 and AN4
+at every reset. No drum path needed DK4 to outlive a reset: the first UI tick's new-boot branch resets only DK4's counters
+and keys word (drum_keys sets it again in the same tick), never its entries, so pads a boot-time load made before that tick
+stay; H1 (an_forget) still drops entries above the handle counter, which a reset no longer leaves (Rig(prior=...) keeps
+testing it). The M4 publishes knob lines only once SYNTH_TAKE says the M7 took the area this boot (m4_synth.c ready):
+test_drum_ui's rig writes the take word, and Edits checks that a header without it is not trusted (it fails on v4.46's
+image, as it should). P4-D13 is unaffected (template counts unchanged).
+
 ---
 
 ## 1. Requirements
