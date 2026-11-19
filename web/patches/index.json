@@ -14,15 +14,14 @@
   "d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5": "bento_enhanced v4.46 bento1.bin (already modded: use your stock 1.6.8 file)",
   "538cf2187c439bb0e9db7091314bb9660febd2ded6b39bda0ec1cf890ddaf294": "bento_enhanced v4.47 bento1.bin (already modded: use your stock 1.6.8 file)"
  },
- "default": "4.46",
+ "default": "4.47",
  "releases": [
   {
    "version": "4.47",
    "label": "BE4.47 (bento_enhanced v4.47 on stock 1.6.8)",
    "file": "v4.47.json",
    "output_sha256": "538cf2187c439bb0e9db7091314bb9660febd2ded6b39bda0ec1cf890ddaf294",
-   "device_tested": false,
-   "test_build": true
+   "device_tested": true
   },
   {
    "version": "4.46",

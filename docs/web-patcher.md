@@ -28,7 +28,7 @@ explicitly labelled **test build**. Nothing about it pretends to be tested:
   the newest **device-tested** release: a test build is never the default, and the exporter refuses to write
   an index with no tested release to default to.
 - The page lists test builds in their own group of the release list ("BE4.47 - TEST BUILD, not yet tested on
-  hardware"), with a note that they exist; picking one shows a warning and a checkbox ("I understand this
+  hardware", as v4.47 was listed before its hardware test), with a note that they exist; picking one shows a warning and a checkbox ("I understand this
   build is not yet tested on hardware...") that must be ticked before "Make the TEST BUILD kit" is enabled
   (`buildKit(..., {allowUntested: true})`; without it `patchImage` refuses). The opt-in is cleared whenever
   the choice changes. Even an `index.json` naming a test build as `default` does not select it.
@@ -41,8 +41,11 @@ Tested releases are unaffected: same patch, same kit, same README. When the test
 set `device_tested: true` in `release_hashes.json` and re-export it without the flag: it becomes an ordinary
 release (and the default, if newest), its kit loses `-UNTESTED`.
 
-The page also carries a static one-line note under the release list, about BE4.46's known reset loop and its
-recovery (`web/index.html`, class `known`); edit or drop it by hand.
+The page also carries a static one-line note under the release list: BE4.46's reset loop is fixed in BE4.47, and
+how to recover a Bento looping on BE4.46 (`web/index.html`, class `known`); edit or drop it by hand.
+
+v4.47 went this way: published as a test build, device-tested (2026-11-18), then re-exported without the flag; it is
+the default since, and v4.46 stays listed as a tested release.
 
 | file | what |
 |---|---|
@@ -161,7 +164,7 @@ not removed:
 |---|---|---|---|---|---|---|---|
 | 4.44 | 101,980 | 388 (4,603) | 131 (559) | 3 (24) | 13,866 | 6,692 / 1,960 / 517 / 169 | 30,988 (30.4%) |
 | 4.46 | 104,857 | 443 (5,134) | 160 (677) | 3 (24) | 13,840 | 6,888 / 2,014 / 538 / 175 | 31,927 (30.4%) |
-| 4.47 (test build) | 100,994 | 403 (4,933) | 130 (557) | 3 (24) | 17,692 | 6,614 / 1,975 / 532 / 172 | 30,895 (30.6%) |
+| 4.47 | 100,994 | 403 (4,933) | 130 (557) | 3 (24) | 17,692 | 6,614 / 1,975 / 532 / 172 | 30,895 (30.6%) |
 
 (Runs are maximal: a 6-byte run is not counted again as two 5-byte ones.)
 
