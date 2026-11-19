@@ -326,13 +326,16 @@ class RegionReservation(unittest.TestCase):
         self.assertEqual((r32(u, LEFT), r32(u, REGION)), (0x2000, 0x36424D31))
         self.assertEqual(bytes(u.mem_read(SA, 8)), b"STOCK!!!")
 
-    def test_the_header_names_a_new_m4_boot(self):
-        """Review S2 (build): the M4 trusts a header only for its own boot; an M4-only reset moves the generation."""
+    def test_the_header_names_this_boot(self):
+        """Review S2 (build): the M4 trusts a header only for its own boot. BE4.47 review: on 1.6.8 that boot is 1 from
+        the reset on (diag_shared.h BOOT_GEN; every reset is a system reset that zeroes our RAM), so the header is
+        stamped 1 and a moved config generation (an M4-only reset, which no longer happens) does not restamp it."""
         if not SYNTH:
             self.skipTest("no synth groups in this image")
         self.touch()
+        self.assertEqual(self.synth_head()[1:], (1, 2, 0xC000, 1), "the take (generation 1), stamped for boot 1")
         self.new_gen(); self.touch()
-        self.assertEqual(self.synth_head()[1:], (1, 2, 0xC000, 2), "same take (generation 1), stamped for boot 2")
+        self.assertEqual(self.synth_head()[1:], (1, 2, 0xC000, 1), "still boot 1: the M4's boot_gen() reads 1 as well")
 
 
     def test_the_check_costs_two_reads_of_one_line_on_the_fast_path(self):

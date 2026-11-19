@@ -121,7 +121,11 @@ class Decide(unittest.TestCase):
         u.mem_write(COUNTERS, b"\xab" * 0x200)              # RAM garbage from a previous boot
         call(u, SYM7["cond_loop"], SEQ)
         self.assertEqual(r32(u, COUNTERS), SEQ, "slot 0 claimed after the table was cleared")
-        w32(u, CFG + 12, 2)                                  # M4 rebooted
+        if S.has("RAMCHK_D2A"):                              # 1.6.1: M4 rebooted, same RAM, generation 2
+            w32(u, CFG + 12, 2)
+        else:                                                # BE4.47: a reboot zeroes our RAM (the clean-start stub)
+            u.mem_write(S.RAMCHK_AXI, bytes(S.D2_SLICE_END - S.RAMCHK_AXI))
+            w32(u, CFG, 0x31474144); w32(u, CFG + 12, 1)     # the new boot's config line: generation 1 again
         call(u, SYM7["cond_loop"], SEQ + 0x1000)
         self.assertEqual(r32(u, COUNTERS), SEQ + 0x1000, "table cleared again for the new generation")
 

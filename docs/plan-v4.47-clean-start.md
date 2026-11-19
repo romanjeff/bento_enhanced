@@ -27,6 +27,11 @@ Labels: **S** = source or disassembly, **M** = measured (emulated), **I** = infe
 | m7_polyat.c `synth_take` | The whole 32 KB synth area is zeroed at the take (v4.46: only the M7's lines) and its generation is 1 on every boot (v4.46: the old header's + 1). |
 | m4_synth.c `ready` | The M4 writes the synth area only once SYNTH_TAKE (a slice word the M7 writes right after the take) says the area was taken this boot. |
 | m7_diag.c | `d0_unreported_reset` (kept the last run's D0 figures for the next boot's print) is gone. |
+| diag_shared.h `BOOT_GEN()` (review) | The boot generation every hook stamps its state with is the constant 1 on 1.6.8, from the reset on (m4_step.c, m4_synth.c, m4_controls.c, m7_conditions.c, m7_stall.c, m4_diag.c, m7_polyat.c's synth header). Until the review it was the config line's r[0], 0 before the M4's first UI-loop pass: a project loaded before that pass (the boot-time autoload, section 3) was stamped 0 and dropped at the first pass. 1.6.1 keeps the config line's count. |
+| m4_step.c `load_sidecar` (review) | Makes the External / Note Mod block (`mod_cfg`) if no header render has made it yet, so a load before the first pass keeps MODS / NMOD (until the review: skipped, `mod_cfg_block` 0). |
+| m7_polyat.c `region_reserve` / `take_publish` (review) | The reservation (masked) clears the synth header's magic and returns; region() zeroes the Region, then (unmasked) the 32 KB synth area, cleans the M4's stats lines, and only then publishes SYNTH_TAKE. Until the review SYNTH_TAKE went out inside the reservation, before the Region was zeroed, and the 32 KB zeroing ran with interrupts masked. |
+| m4_diag.c `missing` (review) | An empty log file counts as missing (a full card leaves 0-byte files), so it starts with the header / line once space is free. |
+| m4_diag.c `counters` (review) | SYNTH_TAKE and its tag from synth_shared.h instead of a hard-coded slice offset. |
 | Version | BE4.47 on the boot screen, BASE_SETTINGS 4.47; default build otherwise as v4.46. |
 
 Why one zeroing stub on the M7 and none on the M4 (the choice was close):
@@ -90,7 +95,7 @@ addresses (S: grep). "v4.46" says what survived a reset and how it was trusted; 
 | price-check scratch | read and clean-invalidated only | the same |
 | black box buffer (256 KB), capture block (33 KB) | reached through M4H / CAPCFG pointers of the last run (section 3) | allocated at the M4's first pass; the capture block zeroed, the buffer written before read |
 | curve pool / table / save list / write buffer, ModCfg, PadState | reached through the last run's pointers when the generation matched | reallocated; table entries and pool written before read (S: m4_step.c), ModCfg and PadState zeroed |
-| stock's Wavetable oscillator kernel area (+0x10C..+0x1CC, our AnOsc and AnProps) | read before written | **not changed** (section 7) |
+| (not SDRAM, listed here because the first draft put it here) stock's Wavetable oscillator kernel area (+0x10C..+0x1CC, our AnOsc and AnProps) | zero at every boot: the voices live in stock's kind-2 pool, AXI .bss that stock's reset handler zeroes (section 7) | the same; checked by test_clean_start.OscillatorPool |
 
 **Reads of the RTC and its backup domain (all in m4_diag.c, S):**
 
@@ -156,7 +161,10 @@ cold boot's (everything of ours zero before the reset), and nothing may fault or
 | ResetLoop | the run dies after its first pass; three resets | fails: stock's objects get our log text | intact |
 | hooks before the first pass | DUNGEONS load before the first pass, over the last run's pool | fails: sidecar decoded into stock's objects | intact |
 | RtcUntrusted (f) | RTC / BKP all-0, all-1, random, garbage BCD, time going backwards; a new crash count mid-session | fails (alarm) | equal to cold with the same registers, log lengths aside |
-| LogsStartFresh | no log files; both deleted mid-session; a card that refuses every open | fails (a recreated SAVES starts with a bare summary) | both created with header / boot line, recreated with header / `fresh` line; refusing card: no write, no fault, black box up |
+| LogsStartFresh | no log files; both deleted mid-session; a card that refuses every open; a full card (0-byte files), then space freed (review) | fails (a recreated SAVES starts with a bare summary) | both created with header / boot line, recreated with header / `fresh` line; refusing card: no write, no fault, black box up; full card: once freed, header / `fresh` line first |
+| BootOrder (review) | after a DUNGEONS session and a reset, DUNGEONS loaded before the first pass, then the boot and a DUNGEONS save | fails (handles 0, TRKS / MODS lost) | 37 curves keep their handles; the saved TRKS / MODS / NMOD equal the loaded file's |
+| TakeOrder (review) | SDRAM all 0xA5 at the reset, a write hook on SYNTH_TAKE; a save before the M7's take after a session | the first fails (the Region still 0xA5 when SYNTH_TAKE is written) | Region and synth area zeroed when SYNTH_TAKE is written; no Region stats before the take, stats after |
+| OscillatorPool (review) | stock's code (S): WT_ROOT_CTOR's allocator kind, the allocator's kind-2 pool, the reset handler's .bss memset | passes (a fact of the base) | passes: the pool and its counter lie inside the reset-zeroed .bss |
 
 The DUNGEONS sidecar (Jeff's project, AT curves) is `mods/m1/logs/be446_DUNGEONS_curves.bnt`.
 
@@ -173,8 +181,19 @@ writes the boot line and header, and a later save that finds a file gone starts 
 card's root (no folder to create); the sidecar goes next to the project.xml stock has just written. A card that refuses
 every open is tested: no write, no fault.
 
-**Not done (a decision for Jeff):** writing the files at boot. It would make them appear without a save, but it is a card
-access outside stock's own write path, exactly what v3.19..v3.21 found unsafe. Kept as v4.46.
+Review (rev2 3): a full card let the append create both files and write 0 bytes; once space was freed, the next save found
+them present and started SAVES with a bare summary. An empty file now counts as missing (`missing` reads one byte).
+
+Also from the review (rev2 2, S): on v4.46, a save after a boot creates the files even in the skipped-init case (as a
+bare summary). So "no files after a boot" means either no save in that boot, or card writes that failed. Which one it was
+on Jeff's card is not known; checklist-v4.47 section 3 tells them apart on the device.
+
+**Not done (a decision for Jeff, open):** writing the files at boot. It would make them appear without a save. The
+nearest safe-looking point is right after stock's own boot-time project read, from the same task (our sidecar read
+already sits inside that load). But it would be a write, not a read: v3.19..v3.21 found writes outside stock's own
+write path unsafe (SD command time-outs, M4 watchdog resets, empty project lists, "insert microSD card"), and at boot stock
+may still be loading the project's samples. A card fault at boot is the one place where a fault turns into a boot loop,
+the symptom this release removes. So the logs still appear at the first save of a boot, as in every version since v3.21.
 
 ## 6. What was dropped
 
@@ -197,13 +216,25 @@ caused a reset).
 
 ## 7. Residual and open items
 
-- **Stock's oscillator kernel area (R1, not changed).** Analog's per-oscillator state lives in stock's Wavetable
-  oscillator object (+0x10C..+0x1CC, stock SDRAM). Stock's constructor leaves that area as the memory held it (M:
-  WT_OSC_CTOR on 0xA5-filled memory leaves all 192 bytes 0xA5), so after a warm reset an oscillator stock places where an
-  Analog one was can read the last run's AN_MAGIC and Type 1 until the project's push sends its Type (which resets or
-  clears the area, S: an_prop). Fuzzed: 60 runs of a voice whose kernel areas were bit-flipped or randomised with the
-  magic and Type kept, renders and note starts: no fault, no hang (M). Fixing it means zeroing the area at construction:
-  a trampoline on stock's constructor call, which changes a stock path for every Wavetable oscillator. Jeff's call.
+- **Stock's oscillator kernel area: not a hole (corrected by the review, S).** Analog's per-oscillator state (AN_MAGIC,
+  Type, the WT FM tag) lives in stock's Wavetable oscillators (+0x10C..+0x1CC). Stock's oscillator ctor does leave that
+  area as the memory held it (M: the ctor alone on 0xA5-filled memory), but that memory is never the last run's:
+  WT_OSC_CTOR's only callers are WT_ROOT_CTOR (0x0809CB5C, 0x0809CB62), which takes its 10 voices (0xB88 B each) from the
+  named allocator with kind 2 (0x0809CB44 `movs r1, #2`). Kind 2 (the allocator's tbb at 0x080A05FC -> 0x080A0720) is a
+  bump pool at 0x24001080 (counter 0x24000448, limit 0x1A000), wholly inside the .bss stock's M7 reset handler zeroes on
+  every reset (0x08040492..0x08040498: 0x240001D0..0x2401EDBC); on overflow it reports an error (0x080A07F0 ->
+  0x080A3B20), with no fallback elsewhere, and a bump pool never hands memory out twice. So every oscillator starts zeroed
+  at every boot. The first draft said "stock SDRAM" and offered hooking stock's ctor: wrong, and not done. The rig's
+  reset starts at CTRL_STARTUP_SITE, after stock's own .bss zeroing, which is why the emulation did not show it;
+  test_clean_start.OscillatorPool keeps the reading of the base checked. (The 60 fuzzed runs, no fault, stand as they were.)
+- **The take's zeroing costs the M7 one stretch of time, once per boot (I, not measured).** At its first traced event the
+  M7 zeroes the Region (9 KB) and the synth area (32 KB) and cleans them: estimated 0.1..0.2 ms of the audio loop, now with
+  interrupts enabled (review rev2 4: it was masked). If that event is the first note while a heavy project plays, one audio
+  block may come late once (a click). Accepted as low; checklist-v4.47 asks for it.
+- **A precondition for builds with drums (review rev1 4, rev2 7).** The M7 zeroes our RAM at its reset while the M4 may
+  already run its static constructors. None of our M4 code may write our RAM before its UI task. The one M4 hook there
+  is OBJ_CTOR -> an_forget (drums group; omitted on 1.6.8), which only clears or reads (a race leaves zeros or entries that
+  `dk4()` re-zeroes). Written in diag_shared.h next to BOOT_GEN.
 - **The M7 side starts at its first trace record.** h_consume (and with it the Region and synth area take) waits until
   the M7 header has its magic, which the first traced event sets (S: m7_diag.c). That is how every power-on of v4.46
   already behaved (cold RAM); after the clean start every boot behaves so. Unchanged here.
@@ -213,9 +244,24 @@ caused a reset).
 
 ## 8. Device check (BE4.47, device_tested false until done)
 
-1. Flash, boot, wait 25 s, save any project: BENTO_SAVES.log starts with "BENTO black box, firmware BE4.47, boot gen 1"
-   and "clean start (BE4.47)"; BENTO_CRASHES.log gets a `boot fw=BE4.47 ... gen=1` line.
-2. Delete both files on the card, boot, save: both come back with their header / line.
-3. Soft resets (power button off/on with USB connected; the "off on USB" path) x10, then a boot with DUNGEONS: boots
-   every time, gen=1 in every header, DUNGEONS' AT curves play.
-4. The v4.46 checklist's Analog, FM and drum-free items: unchanged (spot check).
+`docs/checklist-v4.47.txt` (the kit's DEVICE_CHECKLIST.txt): cold boot, boot after a power-down on USB, the DUNGEONS-like
+AT / FM project powered down on USB and booted again (repeated), the logs deleted and recreated, saves and loads, and the
+v4.46 items the change could touch. Release notes: `docs/release-notes-v4.47.md`.
+
+## 9. Review dispositions (two reviews of faa49a1 / cf5fd6d)
+
+| Finding | Verdict | What was done |
+|---|---|---|
+| rev1 1 / rev2 1: the oscillator kernel area trusted on its magic across a reset | rev1 holds (S, re-read: section 7); rev2's premise (the area keeps the last run's bytes) does not hold on this base | no stock hook; doc corrected; OscillatorPool test |
+| rev1 2: state made before the M4's first pass stamped generation 0, dropped at that pass | holds (S; the order "app init before the loop" is S for the code, I for when the autoload runs) | BOOT_GEN() = 1 on 1.6.8; `mod_cfg` at the load; BootOrder test (fails on faa49a1) |
+| rev1 3: SYNTH_TAKE published before the Region was zeroed | holds (S) | take_publish after the zeroing; TakeOrder test (fails on faa49a1) |
+| rev1 4 / rev2 7: "every reset is a system reset" and the M4 start-up race | holds as a precondition (I for WW1RSC timing) | written in diag_shared.h and section 7 |
+| rev1 5: comments saying our RAM survives a reset | holds | m4_controls.c, m7_conditions.c, m7_polyat.c, diag_shared.h, m4_step.c, m7_stall.c, synth_shared.h, m4_diag.c fixed |
+| rev1 6: counters() hard-codes SYNTH_TAKE | holds | synth_shared.h included |
+| rev1 7 / rev2 2: the logs appear only at a save | holds as a fact; a boot-time write is not made (section 5) | put to Jeff as an open decision; checklist tells "no save" from "writes failed" |
+| rev2 3: a full card leaves 0-byte files that never get their header | holds (M) | empty = missing; full-card test (fails on faa49a1) |
+| rev2 4: about 0.2 ms masked at the take | holds in part: the mask is gone, the time is not (the audio loop does the work either way) | unmasked; residual in section 7 and the checklist |
+| rev2 5: test compared a value with itself | holds | fixed |
+| rev2 6: the taken1 mutant survived | holds | TakeOrder.test_no_region_stats_before_this_boots_take |
+| rev2 6 (related): readyonly caught only by the synth UI rig | holds; on the default build the M4 writes no synth-area line (drums omitted), so no board-level effect exists to observe | not added |
+| rev2 7: README / BUILDING still at v4.46 | holds, intended until device-tested | unchanged |

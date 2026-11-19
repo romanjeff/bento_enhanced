@@ -73,9 +73,9 @@ typedef struct { u32 magic, gen; } Boot;
 #define BOOT_MAGIC 0x31544342u /* "BCT1" */
 _Static_assert(SLICE(0x940u) + sizeof(MixerLights) <= SLICE(0x980u), "controls state reaches the inspect-a-step state");
 
-/* Reset all controls state once per M4 boot (this RAM survives a reset). */
+/* Reset all controls state once per M4 boot (BE4.47: our RAM is zeroed at every reset; BOOT_GEN, diag_shared.h). */
 static void init(void) {
-    u32 gen = CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u;
+    u32 gen = BOOT_GEN();
     if (BOOT->magic == BOOT_MAGIC && BOOT->gen == gen) return;
     for (volatile u32 *p = (volatile u32 *)SLICE(0x8C0u); p < (volatile u32 *)SLICE(0x948u); p++) *p = 0;
     S->magic = STATE_MAGIC;

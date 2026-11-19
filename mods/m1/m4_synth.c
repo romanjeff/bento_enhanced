@@ -108,7 +108,7 @@ typedef struct {
 _Static_assert(sizeof(An4) == AN4_SLICE_END - AN4_SLICE, "the synth UI state fills its 256 B");
 #define AN4 ((volatile An4 *)SLICE(AN4_SLICE))
 
-static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
+static u32 boot_gen(void) { return BOOT_GEN(); }   /* BE4.47 review: 1 on 1.6.8 from the reset on (diag_shared.h) */
 __attribute__((unused)) static void dsb(void) { __asm volatile("dsb" ::: "memory"); }
 static u32 lock(void) { u32 p; __asm volatile("mrs %0, primask\n cpsid i" : "=r"(p)::"memory"); return p; }
 static void unlock(u32 p) { __asm volatile("msr primask, %0" ::"r"(p) : "memory"); }

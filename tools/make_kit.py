@@ -49,7 +49,8 @@ SUITES = [("test_diag.py", ""), ("test_polyat.py", "poly_cap"), ("test_condition
           ("test_analog.py", "analog"), ("test_inst_xml.py", "analog"), ("test_synth_ui.py", "analog"),
           ("test_handles.py", "analog"), ("test_note0.py", "poly_cap retrig cond_engine nmod"),
           ("test_drums.py", "drums"), ("test_drum_ui.py", "drums"),
-          ("p3_golden.py", "analog")]   # (its selftest: the two paths are ignored)
+          ("p3_golden.py", "analog"),   # (its selftest: the two paths are ignored)
+          ("test_clean_start.py", "")]  # BE4.47: clean start (docs/plan-v4.47-clean-start.md)
 
 
 def fail(msg):

@@ -30,8 +30,9 @@
 #define DMA2 ((volatile u32 *)0x40020400u)
 #define STALL_MS 100u
 /* Stock HAL tick (ms since this M7 boot; .bss, zeroed at reset). Our tracking
- * line survives resets, so without this guard the normal ~1.4 s display
- * bring-up of the NEXT boot looked like a stall (v3.1-v3.17 records). */
+ * line survived resets until v4.46, and without this guard the normal ~1.4 s
+ * display bring-up of the NEXT boot looked like a stall (v3.1-v3.17 records);
+ * kept since BE4.47 (zeroed at reset): the bring-up is no audio stall either. */
 #define UWTICK (*(volatile u32 *)S_UWTICK)
 #define BOOT_GUARD_MS 5000u
 #define MS_CYC 480000u
@@ -58,7 +59,7 @@ static void clean_all(void) {
 __attribute__((used, retain)) void stall_progress(void) {
     DCIMVAC = (u32)CFG;                      /* M4-written line: never dirty here */
     __asm volatile("dsb" ::: "memory");
-    u32 gen = CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u;
+    u32 gen = BOOT_GEN();
     if (ST->gen != gen) { ST->gen = gen; ST->snapped = 0; }
     ST->last = CYCCNT;
     ST->armed = 1;

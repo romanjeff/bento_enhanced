@@ -358,8 +358,8 @@ class LogsStartFresh(unittest.TestCase):
         self.assertTrue(b.fs[SAVES].startswith(b"BENTO black box, firmware "), "a new SAVES starts with the header again")
         self.assertIn(b"# saved:", b.fs[SAVES])
         self.assertRegex(b.fs[HIST].decode(), r"^fresh fw=\S+ rtc=\S+ gen=1 ")
-        n = len(b.fs[SAVES]); b.tick(5000); b.save()
-        self.assertEqual(b.fs[SAVES][:n], b.fs[SAVES][:n], "kept")
+        before = b.fs[SAVES]; b.tick(5000); b.save()
+        self.assertEqual(b.fs[SAVES][:len(before)], before, "kept")
         self.assertEqual(b.fs[SAVES].count(b"BENTO black box, firmware "), 1, "an existing file gets no second header")
         self.assertEqual(b.fs[HIST].decode().count("\n"), 1, "nor a second line")
 
@@ -373,6 +373,122 @@ class LogsStartFresh(unittest.TestCase):
         b.boot()
         self.assertEqual(r32(b.u, M4H), T.MAGIC, "the black box stays up")
         self.assertEqual({k: v for k, v in b.fs.items() if k != BNT and v}, {}, "nothing written")
+
+    def test_a_full_card_then_space_freed(self):
+        """A full card (review rev2 3, M): the append creates both files but writes 0 bytes. Once space is freed, the next
+        save finds two empty files: they count as missing, so they start with this boot's header / line, never with a bare
+        summary (until this review: SAVES began "LOAD render ...", CRASHES stayed empty for the boot)."""
+        from unicorn import UC_HOOK_CODE
+        b = Board()
+        b.reset(decay=lambda d: bytes(len(d)), fill=lambda n: bytes(n))
+        def full(uc, a, sz, _):                      # after the stub's f_write: undo it, FR_OK with 0 bytes (card full)
+            path, n = b.rig.writes[-1][0], uc.reg_read(UC_ARM_REG_R0 + 2)
+            b.fs[path] = b.fs[path][:len(b.fs[path]) - n]
+            w32(uc, uc.reg_read(UC_ARM_REG_R0 + 3), 0)
+        h = b.u.hook_add(UC_HOOK_CODE, full, begin=S.FS_WRITE, end=S.FS_WRITE)
+        b.u.ctl_flush_tb()
+        b.boot()
+        self.assertEqual((b.fs.get(SAVES), b.fs.get(HIST)), (b"", b""), "two empty files (a full card)")
+        b.u.hook_del(h); b.u.ctl_flush_tb()          # space freed
+        b.tick(4000); b.save()
+        self.assertTrue(b.fs[SAVES].startswith(b"BENTO black box, firmware "), "SAVES starts with the header")
+        self.assertIn(b"# saved:", b.fs[SAVES])
+        self.assertRegex(b.fs[HIST].decode(), r"^fresh fw=\S+ rtc=\S+ gen=1 ")
+        b.tick(5000); b.save()
+        self.assertEqual(b.fs[SAVES].count(b"BENTO black box, firmware "), 1, "no second header once written")
+        self.assertEqual(b.fs[HIST].decode().count("\n"), 1, "nor a second line")
+
+
+def _trailer(bnt):
+    """A sidecar's bytes after its curves: TRKS (AT Rec / Out), MODS (External modulation), NMOD (Note Mod)."""
+    count, at = struct.unpack_from("<H", bnt, 6)[0], 8
+    for _ in range(count):
+        at += 4 + struct.unpack_from("<H", bnt, at + 2)[0]
+    return bnt[at:]
+
+
+class BootOrder(unittest.TestCase):
+    """Review rev1 2: stock's app init, and with it the boot-time project load, runs before the M4's first UI-loop pass
+    (S: defaultTask 0x08114E34, vtable +4 before the loop). Until this review our hooks stamped what they made there with
+    the config line's generation, 0 before that pass, and the first pass threw it away: the autoloaded project came up
+    without its AT curves, AT settings and External / Note Mod. BOOT_GEN is 1 from the reset on (diag_shared.h)."""
+    def test_a_project_loaded_before_the_first_pass_stays_in_effect(self):
+        if not DUNGEONS.exists():
+            self.skipTest("no DUNGEONS sidecar")
+        want = DUNGEONS.read_bytes()
+        b = session()
+        b.reset()
+        b.load_dungeons()                            # the autoload: before the first pass
+        self.assertEqual((r32(b.u, D2 + 0x1E80 + 20), r32(b.u, D2 + 0x1E80 + 16)), (4, 37), "the sidecar read: 37 curves")
+        b.boot()                                     # the first passes, the M7 side, a save
+        self.assertEqual(r32(b.u, CURVES + 20) - 1, 37, "the 37 curves still have their handles after the first passes")
+        self.assertEqual(r32(b.u, CURVES + 4), 1, "stamped for this boot")
+        b.save(PROJ)                                 # DUNGEONS saved again (no curve notes in the rig: count 0)
+        self.assertEqual(_trailer(b.fs[BNT]), _trailer(want), "AT settings, External and Note Mod as loaded")
+        self.assertIn(b"MODS", _trailer(want))
+
+
+class TakeOrder(unittest.TestCase):
+    """Review rev1 3 / rev2 6: the M4 reads the Region's stats (counters) and writes the synth area (ready) only after
+    SYNTH_TAKE, which the M7 publishes after it zeroed both: until this review SYNTH_TAKE went out inside the
+    reservation, before region() zeroed the Region."""
+    def test_take_published_after_the_zeroing(self):
+        b = Board()
+        stale = lambda d: b"\xa5" * len(d)           # the last run's SDRAM, all of it
+        b.reset(decay=stale, fill=lambda n: bytes(n))
+        seen = []
+        def at_take(uc, k, a, n, v, _):
+            if a == D2 + 0x1D8 and v >> 24 == 0xA5:
+                region = bytes(uc.mem_read(REGION, REGION_USED)); synth = bytes(uc.mem_read(SYNTH, SYNTH_BYTES))
+                seen.append((b"\xa5\xa5\xa5\xa5" in region, b"\xa5\xa5\xa5\xa5" in synth))
+        h = b.u.hook_add(UC_HOOK_MEM_WRITE, at_take, begin=D2 + 0x1D8, end=D2 + 0x1DB)
+        b.u.ctl_flush_tb()
+        b.boot()
+        b.u.hook_del(h)
+        self.assertEqual(seen, [(False, False)], "one take; the Region and the synth area zeroed when it is published")
+
+    def test_no_region_stats_before_this_boots_take(self):
+        """A save before the M7's take (its first traced event) prints no Region stats: they are the last run's."""
+        b = session()
+        b.reset()
+        b.tick(1000)                                 # the black box comes up; the M7 has not taken the Region yet
+        b.save()
+        log = b.fs[SAVES][b.fs[SAVES].rindex(b"BENTO black box"):]
+        self.assertIn(b"# saved:", log)
+        self.assertNotIn(b"curves started=", log, "no Region stats before this boot's take")
+        b.first_record()
+        for n in (1, 2, 256): b.hb(n)
+        b.tick(2000); b.save()
+        self.assertIn(b"curves started=", b.fs[SAVES][b.fs[SAVES].rindex(b"# saved:"):], "and once taken, they are")
+
+
+class OscillatorPool(unittest.TestCase):
+    """Review rev1 1 (S): Analog's per-oscillator state lives in stock's Wavetable oscillators (+0x10C..+0x1CC), which
+    stock's oscillator ctor leaves as the memory held it; it starts zeroed on every boot only because WT_ROOT_CTOR takes
+    its voices from the named allocator's kind-2 pool, a bump pool (never handing memory out twice) inside the .bss that
+    the M7 reset handler zeroes on every reset; on overflow it reports an error, with no fallback elsewhere. This keeps
+    that reading of the base checked (rev2 1's "magic trusted across a reset" does not hold on it)."""
+    def test_wavetable_voices_come_from_reset_zeroed_ram(self):
+        img = T.CH10
+        h16 = lambda a: struct.unpack_from("<H", img, a - 0x08040000)[0]
+        w = lambda a: struct.unpack_from("<I", img, a - 0x08040000)[0]
+        def lit(a):
+            h = h16(a)
+            self.assertEqual(h & 0xF800, 0x4800, f"{a:#x}: a literal load")
+            return w(((a + 4) & ~3) + (h & 0xFF) * 4)
+        self.assertEqual((h16(S.WT_VOICE_ALLOC), h16(S.WT_VOICE_ALLOC + 4)), (0xF640, 0x2102), "movw r2, #0xb88; movs r1, #2")
+        table = S.NAMED_ALLOC + 0x40                 # the allocator's tbb (0x080A05FC) table: kind -> handler
+        self.assertEqual(h16(table - 4), 0xE8DF, "tbb [pc, r7]")
+        kind2 = table + 2 * img[table + 2 - 0x08040000]
+        counter, base = lit(kind2), lit(kind2 + 0xE)
+        self.assertEqual(bytes(img[kind2 + 6 - 0x08040000:kind2 + 10 - 0x08040000]), bytes.fromhex("b2f5d03f"), "limit 0x1a000")
+        reset = w(0x08040000 + 4) & ~1               # the M7 reset handler (its vector table's reset entry)
+        memset = S.CTRL_STARTUP_SITE - 0x24          # its .bss memset: ldr r0, =lo; ldr r1, =hi; movs r2, #0; bl
+        self.assertTrue(reset < memset < S.CTRL_STARTUP_SITE)
+        lo, hi = lit(memset), lit(memset + 2)
+        self.assertEqual(h16(memset + 4), 0x2200)
+        self.assertTrue(lo <= counter < hi and lo <= base and base + 0x1A000 <= hi,
+                        f"kind-2 pool {base:#x}+0x1a000, counter {counter:#x}, inside the reset .bss {lo:#x}..{hi:#x}")
 
 
 if __name__ == "__main__":

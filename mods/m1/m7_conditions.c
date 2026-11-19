@@ -35,13 +35,13 @@ typedef struct { u32 magic, gen, r[6]; } CondHead;
 #define COND_MAGIC 0x31444E43u /* "CND1" */
 _Static_assert(SLICE(0x860u) + sizeof(CondHead) <= SLICE(0x9A0u), "conditions state past the M7 stack bottom");
 
-/* Our RAM survives a reset: (re)initialise once per M4 boot generation, or on
- * first use if the M4 has not published one yet. */
+/* (Re)initialise once per boot (BE4.47: our RAM is zeroed at every reset; BOOT_GEN, diag_shared.h, is 1 from the
+ * reset on, on 1.6.1 the M4's published generation). */
 static void ensure_init(void) {
     /* The config line is written only by the M4: invalidate before reading. */
     *(volatile u32 *)0xE000EF5Cu = (u32)CFG; /* DCIMVAC */
     __asm volatile("dsb" ::: "memory");
-    u32 gen = (CFG->magic == DIAG_MAGIC) ? CFG->r[0] : 0u;
+    u32 gen = BOOT_GEN();
     if (CHEAD->magic == COND_MAGIC && CHEAD->gen == gen) return;
     volatile u32 *p = (volatile u32 *)COUNTERS;
     for (u32 i = 0; i < NCOUNTERS * sizeof(Counter) / 4; i++) p[i] = 0;

@@ -428,7 +428,12 @@ class Ours(unittest.TestCase):
         f = Fixture()
         f.w(D2 + 0x1E0, 0x31474144); f.w(D2 + 0x1E0 + 12, 1)      # boot gen 1
         f.event(175, 3)                                           # LAUNCH held
-        f.w(D2 + 0x1E0 + 12, 2)                                   # reboot: same RAM, gen 2
+        if S.has("RAMCHK_D2A"):                                   # 1.6.1: reboot = same RAM, gen 2
+            f.w(D2 + 0x1E0 + 12, 2)
+        else:                                                     # BE4.47: a reboot runs the clean-start stub
+            f.u.reg_write(UC_ARM_REG_SP, 0x24048000)  # addr-ok: harness (mapped scratch below our RAM)
+            f.u.emu_start(CTRL_STARTUP | 1, S.CTRL_STARTUP_SITE + 4, count=200000)
+            f.w(D2 + 0x1E0, 0x31474144); f.w(D2 + 0x1E0 + 12, 1)  # the new boot's config line (gen 1 again)
         f.event(0xab, 0); f.event(176, 3)
         self.assertEqual(f.page(), 30, "stale hold not acted on after reboot")
 

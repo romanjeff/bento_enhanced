@@ -94,6 +94,19 @@ typedef struct {
     u32 r[5];          /* r[0] = M4 boot generation the region belongs to */
 } Cfg; /* 32 bytes */
 #define CFG ((volatile Cfg *)SLICE(0x1E0u))
+/* BE4.47 review (docs/plan-v4.47-clean-start.md): the boot generation every hook stamps its state with. On 1.6.8 our RAM is
+ * zeroed at every reset (build.py clean_start), so "this boot" needs no counter: it is 1 from the reset on, also before the
+ * M4's first UI-loop pass. Stock's app init (and with it the boot-time project load) runs before that pass (S: defaultTask
+ * 0x08114E34, vtable +4 before the loop); with the config line's generation, still 0 there, a project read at that point
+ * was stamped 0 and thrown away by the first pass (its AT curves, AT settings and External / Note Mod lost). 1.6.1 keeps
+ * its slice in D2, not zeroed, so it keeps the config line's generation. A precondition of the clean start: none of our
+ * M4 code may write our RAM before its UI task (the M7 zeroes it while the M4 may already run its static constructors);
+ * the one M4 hook there, OBJ_CTOR -> an_forget (drums group, omitted on 1.6.8), only clears or reads (m4_synth.c). */
+#ifdef S_RAMCHK_D2A
+#define BOOT_GEN() (CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u)
+#else
+#define BOOT_GEN() 1u
+#endif
 #define M1_REGION_BYTES 0x3000u   /* 12 KB since v3.41 (8 KB since v3.25: curve players) */
 /* v3.70: the region is the top 16 KB of stock's M7 "ext" pool, so the M7 reaches it through its
  * write-back mapping (MPU R8, no write-allocate) rather than as Device memory in the M4 pool.
@@ -221,9 +234,10 @@ _Static_assert(SLICE(0x2C0u) + DIAG_RECORDS * sizeof(Rec) <= SLICE(0x600u), "rec
 /* M7 stall profile (v3.17, m7_stall.c prof_sample): the M7 SysTick (1 ms)
  * samples the interrupted PC/LR while the main audio loop has made no
  * progress for >= PROF_START_MS, every PROF_EVERY_MS, plus one raw stack copy
- * at PROF_STACK_MS. A new stall starts a new capture, so the last (fatal)
- * stall survives the reset. M7 writes and cleans; the M4 prints it at boot.
- * Lives in the D2 gap above the canary (0x3003D000.., see m4_diag.c). */
+ * at PROF_STACK_MS. A new stall starts a new capture. M7 writes and cleans.
+ * BE4.47: boot-local; our RAM is zeroed at every reset, so nothing of it reaches
+ * the next boot and no boot prints it (docs/plan-v4.47-clean-start.md, section 6).
+ * Lives in the slice above the canary (see m4_diag.c). */
 #define PROF_SAMPLES 40u
 #define PROF_STACK_WORDS 48u
 #define PROF_START_MS 50u

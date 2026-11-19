@@ -146,8 +146,11 @@ static const char *const *const CHOICES[SU_KEYS] = {COND_LABELS, HITS_LABELS, DI
                                                     RANGE_LABELS};
 static const u32 COUNTS[SU_KEYS] = {COND_N + 1u, 16u, STEP_DIVS, RAMP_N, 2u, 3u, 34u, 2u, 2u, DEST_N, 4u};
 
-static u32 boot_gen(void) { return CFG->magic == DIAG_MAGIC ? CFG->r[0] : 0u; }
+static u32 boot_gen(void) { return BOOT_GEN(); }   /* BE4.47 review: 1 on 1.6.8 from the reset on, so a project
+                                                       loaded before the M4's first UI-loop pass keeps its curves,
+                                                       AT settings and External / Note Mod (diag_shared.h) */
 static void mod_defaults(void);
+static void mod_cfg(void);
 static volatile ModCfg *mod_cfg_block(void);
 static void mod_write_begin(volatile ModCfg *m);
 static void mod_write_end(volatile ModCfg *m);
@@ -1019,7 +1022,7 @@ __attribute__((used, retain)) void curve_update(u32 *rec, u32 lr) {
     volatile CapSlot *s = 0;
     for (u32 i = 0; b && i < 16; i++) {
         volatile Bind *e = &BINDS[i];
-        if (e->pitch != pitch || e->pad >= 16u) continue;   /* the table survives resets */
+        if (e->pitch != pitch || e->pad >= 16u) continue;   /* a stale entry of this boot (BE4.47: zeroed at reset) */
         volatile CapSlot *c = &b->slot[e->pad][e->seq & 1u];
         e->pitch = 0;
         if (c->seq == e->seq && c->n) { s = c; pad = e->pad; idx = e->pad * 2u + (e->seq & 1u); }
@@ -1169,6 +1172,10 @@ static void load_sidecar(volatile LoadState *ls, volatile CurveState *c) {
         if (ch != want[i]) { ls->status = 1; return; }
     }
     for (u32 i = 0; i < sizeof(side); i++) name[cut + i] = side[i];
+    mod_cfg();                                      /* BE4.47 review: the External / Note Mod block, if no header render
+                                                       made it yet (a load before the M4's first UI-loop pass, as at
+                                                       boot): else MODS / NMOD were skipped (mod_cfg_block 0). Same
+                                                       allocator, same task as curves() just used */
     at_defaults();                                  /* a project's own settings, or the defaults */
     mod_defaults();                                 /* F2a: likewise the External modulation */
     defs_clear();                                   /* v3.57: defaults set by hand belong to the old project */

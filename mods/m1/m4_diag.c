@@ -30,6 +30,9 @@
  * heartbeat seen moving, bit1 stall reported).
  */
 #include "diag_shared.h"
+#ifndef BE_OMIT_SYNTH
+#include "synth_shared.h"                          /* SYNTH_TAKE (counters: the Region's stats only after this boot's take) */
+#endif
 
 #define FN(a, t) ((t)((a) | 1u))
 #define TICK_MS (*(volatile u32 *)S_M4_TICK_MS)     /* native HAL tick (Lab-verified) */
@@ -101,9 +104,9 @@ static void preserve_previous(u8 *scratch) {
     F_CLOSE(src);
 }
 
-/* Crash history: one line per boot (at its first log write) and one per crash
- * record that appears mid-session, appended forever to BENTO_CRASHES.log. The
- * session log only keeps two boots; this keeps every reset attributable. */
+/* Crash history: one line per boot (at its first save), and one when a save finds the
+ * file gone or empty ("fresh"), appended forever to BENTO_CRASHES.log; each line carries
+ * stock's crash record as it reads (untrusted hex), so every reset stays attributable. */
 /* RTC wall clock (BCD). Reading TR locks DR's shadow until DR is read. Untrusted (BE4.47 R2: a drained battery resets
  * it, and it can hold anything): printed through fixed masks as hex digits only, never compared or used as a number. */
 #define RTC_TR (*(volatile u32 *)0x58004000u)
@@ -147,13 +150,18 @@ static void history(const char *why) {
  * BENTO_CRASHES.log, curves.bnt. Runs right after stock's own project write. */
 static const char SAVES[] = "\\BENTO_SAVES.log";
 /* BE4.47 R3: is the file gone? An open for reading that fails (FR_NO_FILE, or any other refusal: the append after it then
- * fails or lands the same way) counts as gone, so its writer starts it with this boot's line or header. */
+ * fails or lands the same way) counts as gone, so its writer starts it with this boot's line or header. So does an empty
+ * file (review: a full card lets the append create both files but writes 0 bytes; once space is freed the next save would
+ * otherwise find them present and start them with a bare summary): one byte read through FatFS's own sector window into
+ * the black box's SDRAM scratch (a read under a sector never goes to the SD DMA straight). */
 static int missing(const char *path) {
-    u32 file[22];
+    u32 file[22], got = 0;
     zero(file, sizeof(file));
     if (F_OPEN(file, path, FA_READ)) return 1;
+    u8 *one = (u8 *)M4H->r[1] + BUF_BYTES - SCRATCH_BYTES;   /* callers: only with the buffer up (r[1] > 1) */
+    if (F_READ(file, one, 1u, &got)) got = 0;
     F_CLOSE(file);
-    return 0;
+    return got == 0;
 }
 #define SD_DIRECT_BELOW 511u
 static void saves_append(u32 from, u32 to) {
@@ -482,7 +490,7 @@ static void counters(Out *o) {
      * take: zero after every reset), so its SDRAM is never read as the last run left it. */
     u32 rg = CFG->region;
 #ifndef BE_OMIT_SYNTH
-    int taken = (*(volatile u32 *)SLICE(0x1D8u) >> 24) == 0xA5u;   /* synth_shared.h SYNTH_TAKE, SYNTH_TAKE_TAG */
+    int taken = (SYNTH_TAKE >> 24) == SYNTH_TAKE_TAG;   /* the M7 publishes it after the Region's zeroing (m7_polyat.c) */
 #else
     int taken = 1;                                   /* 1.6.1: the v3.70 reservation, no take word */
 #endif
@@ -576,7 +584,11 @@ __attribute__((used, retain)) void main_prof(const u32 *msp, const u32 *psp) {
 }
 
 static void init(u32 now) {
+#ifdef S_RAMCHK_D2A                                /* 1.6.1: its slice survives a reset (not zeroed), so boots are counted */
     u32 gen = (M4H->magic == DIAG_MAGIC) ? M4H->r[0] + 1u : 1u;
+#else
+    u32 gen = BOOT_GEN();                          /* BE4.47: 1 on every boot, as every hook stamps it (diag_shared.h) */
+#endif
     u32 cur = BUMP_CUR, end = BUMP_END, buf = 0, capb = 0;
     CAPCFG->magic = 0;                              /* M7 stops capturing until republished */
     for (u32 i = 0; i < CURVELOG_N; i++) CURVELOG[i].seq = 0;   /* curve log starts empty each boot */
@@ -720,7 +732,7 @@ static void poll(void) {
      * when f_open failed (flush() returned without recording progress) and each
      * FatFS call can re-mount the volume under stock's open files: suspected
      * cause of PROJ crashes, empty project lists and "insert microSD card".
-     * Everything stays in reset-surviving RAM until an explicit, safe dump exists. */
+     * Everything stays in RAM until stock's own project write (dump_after_save). */
     (void)now;
 }
 
@@ -783,7 +795,7 @@ static u32 encode(const volatile u8 *s, u32 n, SideOut *so) {
 /* path = the file stock just wrote; only ...\project.xml gets a sidecar. */
 static void write_sidecar(const char *path) {
     volatile CurveState *c = CURVES;
-    if (c->magic != CURVES_MAGIC || c->gen != CFG->r[0] || !c->pool || !c->table || !c->savelist || !c->wbuf || !path) return;   /* this boot only: reset-surviving pointers */
+    if (c->magic != CURVES_MAGIC || c->gen != BOOT_GEN() || !c->pool || !c->table || !c->savelist || !c->wbuf || !path) return;   /* this boot's state only */
     char name[160];
     u32 n = 0, cut = 0;
     while (path[n] && n < sizeof(name) - 12u) { name[n] = path[n]; if (path[n] == '\\' || path[n] == '/') cut = n + 1u; n++; }
@@ -874,7 +886,7 @@ __attribute__((used, retain)) void dump_after_save(const char *path) {
         puts_(&o, "\r\n");
     }
     volatile u32 *pads = (volatile u32 *)STRIKE_SET->pads;
-    if (pads && STRIKE_SET->r[2] == ~(u32)pads && pads[0] == CFG->r[0]) {   /* Sequence-page late velocity */
+    if (pads && STRIKE_SET->r[2] == ~(u32)pads && pads[0] == BOOT_GEN()) {   /* Sequence-page late velocity */
         volatile LateStats *l = (volatile LateStats *)(pads + 1);
         puts_(&o, "STRIKE-LATE queued="); dec(&o, l->queued); puts_(&o, " applied="); dec(&o, l->applied);
         puts_(&o, " skip press="); dec(&o, l->s_press); puts_(&o, " vel0="); dec(&o, l->s_vel0);

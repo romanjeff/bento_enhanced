@@ -11,7 +11,7 @@
  * line it writes for the M4. The M4 has no data cache. M4 table lines carry a seqlock (head, tail):
  * the M7 accepts a line only when head == tail and both are even, all from one line fill.
  *
- * Who holds the truth (review 2026-11-08): the M4's own table in our reset-surviving slice (AN4, m4_synth.c),
+ * Who holds the truth (review 2026-11-08): the M4's own table in our slice (AN4, m4_synth.c; zeroed at reset since BE4.47),
  * which needs no M7 and so takes a project load at any time, even before the M7 has taken the area. The
  * table here is its published copy for the M7, written only by the M4's UI task. The M7 takes the area as soon as
  * the M4's config line is up (h_consume, every audio block), or at the first note in a build without event tracing.
