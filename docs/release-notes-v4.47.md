@@ -70,8 +70,8 @@ in every save. It names what caused the last reset.
 
 - **Once per boot**, at the audio core's first traced event (usually the first note), it zeroes 41 KB of its own
   memory. This was estimated at 0.1..0.2 ms and not measured. With a heavy project already playing, that may make one
-  audio block late, once. The hardware test reported no problems, but whether a click was heard at the first note
-  (checklist item 7, a record, not a gate) is not recorded.
+  audio block late, once. On the hardware test no click was heard at the first note
+  (checklist item 7; Jeff, 2026-11-18).
 - **Open item: stock's crash counter.** Stock's own crash count (in its backup registers) rose from 525 to 532
   between the last BE4.46 log and the first BE4.47 boot, at the same audio-core instruction (`0x080659e8`) as the BE4.46
   reset loop. The logs show that count only when a project is saved, so when those resets happened is not known
