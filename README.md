@@ -6,7 +6,7 @@ Community firmware mods and reverse-engineering research for the [1010music Bent
 
 ## Status
 
-**Current release: [v4.47](https://github.com/romanjeff/bento_enhanced/releases/tag/v4.47)** (`BE4.47` on the boot screen), built on **stock Bento 1.6.8** and tested on hardware. It fixes a reset loop at boot that BE4.46 could get into. **To build it for your own Bento, follow [`BUILDING.md`](BUILDING.md)**: one page, no programming needed, starting from your own download of the official 1.6.8 firmware. The build checks that your result is byte for byte the image tested on hardware.
+**Current release: [v4.47](https://github.com/romanjeff/bento_enhanced/releases/tag/v4.47)** (`BE4.47` on the boot screen), built on **stock Bento 1.6.8** and tested on hardware. It removes the cause of a reset loop at boot that BE4.46 could get into. **To build it for your own Bento, follow [`BUILDING.md`](BUILDING.md)**: one page, no programming needed, starting from your own download of the official 1.6.8 firmware. The build checks that your result is byte for byte the image tested on hardware.
 
 **Patch in your browser:** [romanjeff.github.io/bento_enhanced](https://romanjeff.github.io/bento_enhanced/). No install; your stock files never leave your computer. How it works: [`docs/web-patcher.md`](docs/web-patcher.md).
 
