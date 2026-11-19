@@ -9,8 +9,11 @@ the exporter is re-run and must give the committed patch byte for byte, and the 
 make_kit's file for file. Without kits the committed patches are still checked against the published hashes.
 
   (a) round trip: every committed patch applied to stock gives its release's published sha256
-      (and the make_kit image, with --kit); the exporter reproduces the committed patch (with --kit);
-      every offered release is device-tested in tools/release_hashes.json;
+      (and the make_kit image, with --kit); the exporter reproduces the committed patch (with --kit, a test build
+      with --publish-untested); every offered release is device-tested in tools/release_hashes.json, or a test build
+      (device_tested false in release_hashes.json, index.json and the patch, test_build, kit ...-UNTESTED) that is
+      not the default; the default is the newest device-tested release; the exporter refuses a test build without
+      --publish-untested;
   (b) zero stock bytes: every check of export_patch.check_policy is clean for every committed patch, and mutants
       that put stock bytes back are caught: a COPY forced to WRITE (whole, split in two, split in 4-byte pieces
       out of order, scattered over distant offsets), sparse edits (7-byte WRITEs between 1-byte FILLs or COPYs),
@@ -18,7 +21,8 @@ make_kit's file for file. Without kits the committed patches are still checked a
   (c) web/patcher.js under node: the image and the kit zip, compared with make_kit's (with --kit) and with the
       stock files; the 1010music zip as input, and damaged zips. Skipped (with a message) when there is no node;
   (d) refusals: one byte flipped in bento1.bin or bento2.bin, a damaged payload, a patched payload byte, an
-      untested release.
+      untested release; a test build without the opt-in (built with it), device_tested neither true nor false
+      even with the opt-in.
 Exit 0 when everything run passed. Nothing is written outside a temporary folder.
 """
 import argparse, base64, copy, hashlib, io, json, os, shutil, subprocess, sys, tempfile, zipfile
@@ -101,13 +105,25 @@ const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 (async () => {
   const s1 = rd(cfg.stock1), s2 = rd(cfg.stock2), res = { versions: {}, refusals: {} };
   const index = JSON.parse(fs.readFileSync(cfg.index, "utf8"));
+  const when = new Date(2026, 0, 1, 12, 0, 0);
   for (const [ver, file] of Object.entries(cfg.patches)) {
     const patch = JSON.parse(fs.readFileSync(file, "utf8"));
-    const k = await BEP.buildKit(s1, s2, patch, new Date(2026, 0, 1, 12, 0, 0));
+    let noOptIn = null;                                  // a test build must be refused without the opt-in
+    try { await BEP.buildKit(s1, s2, patch, when); } catch (e) { noOptIn = String(e.message); }
+    const k = await BEP.buildKit(s1, s2, patch, when, BEP.isTestBuild(patch) ? { allowUntested: true } : undefined);
     fs.writeFileSync(cfg.out + "/bento1-" + ver + ".bin", k.image);
     fs.writeFileSync(cfg.out + "/" + k.zipName, k.zip);
-    res.versions[ver] = { imageSha: k.imageSha, zipName: k.zipName };
+    res.versions[ver] = { imageSha: k.imageSha, zipName: k.zipName, testBuild: BEP.isTestBuild(patch), noOptIn };
+    if (!BEP.isTestBuild(patch)) {                       // the opt-in changes nothing for a tested release
+      const k2 = await BEP.buildKit(s1, s2, patch, when, { allowUntested: true });
+      res.versions[ver].optInSame = eq(k2.zip, k.zip);
+    }
   }
+  const sp = BEP.splitReleases(index);
+  res.split = { tested: sp.tested.map((r) => r.version), testBuilds: sp.testBuilds.map((r) => r.version), default: sp.default };
+  const forged = JSON.parse(JSON.stringify(index));     // an index naming a test build as default: the page ignores it
+  const tb = forged.releases.find((r) => r.device_tested === false);
+  if (tb) { forged.default = tb.version; res.split.forgedDefault = BEP.splitReleases(forged).default; }
   const z = await BEP.filesFromZip(rd(cfg.stockZip));
   res.zipInput = { bento1: !!z["bento1.bin"] && eq(z["bento1.bin"], s1), bento2: !!z["bento2.bin"] && eq(z["bento2.bin"], s2) };
   res.identify = { b1: (await BEP.identify(s1, index)).role, b2: (await BEP.identify(s2, index)).role };
@@ -131,6 +147,12 @@ const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
     op_out_of_bounds: async () => { const p = JSON.parse(JSON.stringify(patch)); p.ops.push(["F", p.output_size - 2, 4, 0]);
       return BEP.buildKit(s1, s2, p); },
     untested: async () => { const p = JSON.parse(JSON.stringify(patch)); p.device_tested = false; return BEP.buildKit(s1, s2, p); },
+    untested_optin_not_true: async () => { const p = JSON.parse(JSON.stringify(patch)); p.device_tested = false;
+      return BEP.buildKit(s1, s2, p, undefined, { allowUntested: "yes" }); },
+    device_tested_missing_optin: async () => { const p = JSON.parse(JSON.stringify(patch)); delete p.device_tested;
+      return BEP.buildKit(s1, s2, p, undefined, { allowUntested: true }); },
+    device_tested_null_optin: async () => { const p = JSON.parse(JSON.stringify(patch)); p.device_tested = null;
+      return BEP.buildKit(s1, s2, p, undefined, { allowUntested: true }); },
   };
   for (const [name, f] of Object.entries(tries)) {
     try { await f(); res.refusals[name] = null; } catch (e) { res.refusals[name] = String(e.message); }
@@ -155,18 +177,33 @@ def main():
         m = json.loads((Path(k) / "manifest.json").read_text(encoding="utf-8"))
         kits[m["version"]] = Path(k)
 
-    print("== web/ holds no firmware, and offers only device-tested releases")
+    print("== web/ holds no firmware, and offers device-tested releases, plus labelled test builds (never the default)")
     other = [str(p) for p in WEB.rglob("*") if p.is_file() and p.suffix.lower() not in (".html", ".js", ".css", ".json")]
     check(not other, f"web/ holds only .html / .js / .css / .json files {other or ''}")
     fw = {sha(s1), sha(s2)} | {r["bento1.bin"] for r in db["releases"].values()} | set(idx["known_sha256"])
     check(not [p for p in WEB.rglob("*") if p.is_file() and sha(p.read_bytes()) in fw], "no file in web/ is a firmware file (by sha256)")
-    check(idx["default"] == idx["releases"][0]["version"], f"index default is the newest release (v{idx['default']})")
+    vk = ep.vkey
+    tested = [r["version"] for r in idx["releases"] if db["releases"].get(r["version"], {}).get("device_tested") is True]
+    newest_tested = max(tested, key=vk) if tested else None
+    check(idx["default"] == newest_tested, f"index default is the newest device-tested release (v{idx['default']}, "
+          f"newest tested v{newest_tested})")
+    check([r["version"] for r in idx["releases"]] == sorted(pats, key=vk, reverse=True), "index lists the releases newest first")
+    check(len(pats) == len(idx["releases"]), "no release listed twice")
     for v, p in pats.items():
         rel = db["releases"].get(v, {})
         r = next(r for r in idx["releases"] if r["version"] == v)
-        check(rel.get("device_tested") is True and p["device_tested"] is True and r["device_tested"] is True
-              and p["output_sha256"] == rel.get("bento1.bin") == r["output_sha256"],
-              f"v{v}: device-tested in release_hashes.json, the patch and index.json; sha256 is the published one")
+        same_sha = p["output_sha256"] == rel.get("bento1.bin") == r["output_sha256"]
+        if rel.get("device_tested") is True:
+            check(p["device_tested"] is True and r["device_tested"] is True and "test_build" not in r and same_sha
+                  and p["kit"]["name"] == f"bento_enhanced-v{v}",
+                  f"v{v}: device-tested in release_hashes.json, the patch and index.json; sha256 is the published one")
+        else:
+            check(rel.get("device_tested") is False and p["device_tested"] is False and r["device_tested"] is False
+                  and r.get("test_build") is True and same_sha,
+                  f"v{v}: TEST BUILD: device_tested false in release_hashes.json, the patch and index.json alike, "
+                  f"test_build in index.json; sha256 is the published one {rel.get('bento1.bin', '')[:12]}")
+            check(idx["default"] != v and p["kit"]["name"] == f"bento_enhanced-v{v}-UNTESTED",
+                  f"v{v}: test build is not the default, kit named {p['kit']['name']}")
 
     print("== (a) round trip")
     for v, p in pats.items():
@@ -176,17 +213,33 @@ def main():
         check(p["stock_sha256"] == db["stock"][p["base"]], f"v{v}: patch names the stock {p['base']} pair")
         if v in kits:
             check(out == (kits[v] / "01_TEST_FIRMWARE" / "bento1.bin").read_bytes(), f"v{v}: patch output == make_kit's 01_TEST_FIRMWARE/bento1.bin")
+            exp = lambda *args: subprocess.run([sys.executable, str(TOOLS / "export_patch.py"), a.stock, str(kits[v]), *args],
+                                               capture_output=True, text=True)   # noqa: E731
+            lf = lambda f: f.read_bytes().replace(b"\r\n", b"\n")   # noqa: E731  (a checkout with core.autocrlf)
+            test_build = rel["device_tested"] is not True
             with tempfile.TemporaryDirectory() as td:
-                r = subprocess.run([sys.executable, str(TOOLS / "export_patch.py"), a.stock, str(kits[v]), "--out", td],
-                                   capture_output=True, text=True)
-                lf = lambda f: f.read_bytes().replace(b"\r\n", b"\n")   # noqa: E731  (a checkout with core.autocrlf)
+                if test_build:                           # a test build is never the default: the folder needs a tested one
+                    shutil.copy(WEB / "patches" / "index.json", Path(td) / "index.json")
+                r = exp("--out", td, *(["--publish-untested"] if test_build else []))
                 same = r.returncode == 0 and lf(Path(td) / f"v{v}.json") == lf(WEB / "patches" / f"v{v}.json")
-                check(same, f"v{v}: export_patch.py from the make_kit image reproduces the committed patch byte for byte"
+                check(same, f"v{v}: export_patch.py{' --publish-untested' if test_build else ''} from the make_kit image "
+                      f"reproduces the committed patch byte for byte"
                       + ("" if r.returncode == 0 else f" (exit {r.returncode}: {r.stderr.strip()[-300:]})"))
-            with tempfile.TemporaryDirectory() as td:
-                r = subprocess.run([sys.executable, str(TOOLS / "export_patch.py"), a.stock, str(kits[v]), "--allow-untested"],
-                                   capture_output=True, text=True)
-                check(r.returncode != 0 and "outside web/" in r.stderr, f"v{v}: export --allow-untested into web/ is refused")
+                if test_build:
+                    ti = json.loads((Path(td) / "index.json").read_text(encoding="utf-8"))
+                    check(ti["default"] == idx["default"] and ti["releases"] == idx["releases"],
+                          f"v{v}: the exporter's index.json lists it as a test build, default stays v{ti['default']}")
+            r = exp("--allow-untested")
+            check(r.returncode != 0 and "outside web/" in r.stderr, f"v{v}: export --allow-untested into web/ is refused")
+            if test_build:
+                with tempfile.TemporaryDirectory() as td:
+                    r = exp("--out", td)
+                    check(r.returncode != 0 and "not device_tested" in r.stderr and not any(Path(td).iterdir()),
+                          f"v{v}: export of the test build without --publish-untested is refused, nothing written")
+                    r = exp("--out", td, "--publish-untested")
+                    check(r.returncode != 0 and "at least one device-tested" in r.stderr and not any(Path(td).iterdir()),
+                          f"v{v}: --publish-untested into a folder with no device-tested release (it would be the "
+                          f"default) is refused, nothing written")
         else:
             print(f"  skip  v{v}: no --kit for it, exporter determinism and make_kit comparison not run")
 
@@ -309,9 +362,28 @@ def main():
                 mn = res["identify"]["moddedNote"]
                 check("already modded" in mn and "not stock" not in mn, f"an already-modded image is named once ({mn})")
                 check("exactly" in res["identify"]["otherNote"], f"an unknown file's refusal says what is needed ({res['identify']['otherNote']})")
+                spl = res["split"]
+                want_tb = [r["version"] for r in idx["releases"] if r["device_tested"] is False]
+                check(spl["default"] == idx["default"] == newest_tested and spl["testBuilds"] == want_tb
+                      and spl["tested"] == tested and not set(spl["tested"]) & set(spl["testBuilds"]),
+                      f"patcher.js splitReleases: default v{spl['default']}, tested {spl['tested']}, test builds {spl['testBuilds']}")
+                if "forgedDefault" in spl:
+                    check(spl["forgedDefault"] == newest_tested,
+                          f"an index naming a test build as default: the page still selects v{spl['forgedDefault']}")
                 for v, p in pats.items():
                     img = (td / "out" / f"bento1-{v}.bin").read_bytes()
-                    check(sha(img) == db["releases"][v]["bento1.bin"] == res["versions"][v]["imageSha"], f"v{v}: patcher.js image has the published sha256")
+                    rv = res["versions"][v]
+                    tbuild = p["device_tested"] is False
+                    check(sha(img) == db["releases"][v]["bento1.bin"] == rv["imageSha"],
+                          f"v{v}: patcher.js image has the published sha256 {db['releases'][v]['bento1.bin'][:12]}"
+                          + (" (test build, built with the opt-in)" if tbuild else ""))
+                    if tbuild:
+                        check(rv["testBuild"] is True and rv["noOptIn"] is not None and "not marked tested" in rv["noOptIn"],
+                              f"v{v}: test build refused without the opt-in ({rv['noOptIn']})")
+                        check("UNTESTED" in rv["zipName"], f"v{v}: zip name says UNTESTED ({rv['zipName']})")
+                    else:
+                        check(rv["noOptIn"] is None and rv.get("optInSame") is True,
+                              f"v{v}: tested release builds without an opt-in, and the opt-in changes nothing")
                     if v in kits:
                         check(img == (kits[v] / "01_TEST_FIRMWARE" / "bento1.bin").read_bytes(), f"v{v}: patcher.js image == make_kit's, byte for byte")
                     zp = td / "out" / res["versions"][v]["zipName"]
@@ -330,6 +402,10 @@ def main():
                         cl = rd("DEVICE_CHECKLIST.txt").decode()
                         check(cl.endswith(p["kit"]["checklist"]) and cl.startswith("This is the author's device checklist"),
                               f"v{v}: DEVICE_CHECKLIST.txt is the patch's checklist under a preface for kit users")
+                        pre = cl[:len(cl) - len(p["kit"]["checklist"])]
+                        check(("NOT been run on hardware" in pre and "passed on hardware" not in pre) if tbuild
+                              else ("passed on hardware" in pre and "NOT" not in pre),
+                              f"v{v}: the checklist preface says it {'has NOT been run' if tbuild else 'passed'} on hardware")
                         sums = rd("SHA256SUMS.txt").decode()
                         lines = sums.splitlines()
                         ok = all(sha(rd(l.split("  ./", 1)[1])) == l.split("  ", 1)[0] for l in lines)
@@ -341,6 +417,14 @@ def main():
                                                         "Not affiliated with 1010music", "bootloader", "NO WARRANTY",
                                                         "Don't switch the Bento off")) and "always works" not in readme,
                               f"v{v}: README has the install steps, the way back and the disclaimers")
+                        if tbuild:
+                            check(readme.startswith("*****") and "TEST BUILD: NOT YET TESTED ON HARDWARE" in readme[:300]
+                                  and "the one the author tested" not in readme and "hold power past the bootloader" in readme,
+                                  f"v{v}: README opens with the TEST BUILD / not yet tested warning, never claims tested")
+                        else:
+                            check(readme.startswith(root[:-1] + ": flashing kit") and "TEST BUILD" not in readme
+                                  and "NOT" not in readme and "the one the author tested on hardware" in readme,
+                                  f"v{v}: README of a tested release is as before (no test-build warning)")
                         if v in kits:
                             kd = kits[v]
                             same = all(rd(f) == (kd / f).read_bytes() for f in ("01_TEST_FIRMWARE/bento1.bin", "01_TEST_FIRMWARE/bento2.bin",
@@ -360,7 +444,9 @@ def main():
                 for name, words in (("bento1_flipped", "not the official stock"), ("bento2_flipped", "not the official stock"),
                                     ("swapped", "not the official stock"), ("payload_damaged", "damaged"),
                                     ("payload_byte_changed", "not the published"), ("op_out_of_bounds", "bad FILL op"),
-                                    ("untested", "not marked tested")):
+                                    ("untested", "not marked tested"), ("untested_optin_not_true", "not marked tested"),
+                                    ("device_tested_missing_optin", "not marked tested"),
+                                    ("device_tested_null_optin", "not marked tested")):
                     check(ref[name] is not None and words in ref[name], f"refused: {name} ({ref[name]})")
     if not node:
         print("== (d) refusals (python reference only: no node)")

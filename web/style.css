@@ -60,3 +60,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 a { color: var(--accent); }
 ol { padding-left: 1.3rem; }
 footer { color: var(--muted); font-size: .88rem; margin-top: 1.5rem; }
+.known { margin: .8rem 0 0; font-size: .92rem; color: var(--muted); }
+.testbuild { margin: .8rem 0 0; padding: .6rem .8rem; border: 1px solid var(--notice-line); border-radius: 8px; background: var(--notice); }
+.testbuild p { margin: .2rem 0; }
+.testbuild.warn { border: 2px solid var(--bad); }
+.testbuild.warn strong { color: var(--bad); }
+label.check { display: flex; gap: .5rem; align-items: flex-start; color: var(--fg); margin: .5rem 0 .2rem; cursor: pointer; }
+label.check input { width: 1.2rem; height: 1.2rem; margin: .15rem 0 0; flex: none; }
+[hidden] { display: none !important; }

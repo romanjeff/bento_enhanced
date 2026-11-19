@@ -28,7 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Refuse to publish firmware, or an untested release
+      # A release not yet device_tested is allowed only as a labelled test build: device_tested false in
+      # release_hashes.json, index.json and its patch alike, test_build in index.json, kit name ...-UNTESTED,
+      # and never the default (which must be a device-tested release).
+      - name: Refuse to publish firmware, or an untested release that is not a labelled test build
         run: |
           python3 - <<'PY'
           import hashlib, json, pathlib, sys
@@ -49,17 +52,34 @@ jobs:
               if hashlib.sha256(p.read_bytes()).hexdigest() in firmware: sys.exit(f"{p} is a firmware file")
           assert idx["format"] == "bento_enhanced-webpatch", "index format"
           assert idx["stock_sha256"] == db["stock"][idx["base"]], "index stock hashes != tools/release_hashes.json"
+          tested = [r["version"] for r in idx["releases"] if db["releases"].get(r["version"], {}).get("device_tested") is True]
+          assert idx["default"] in tested, f"index default v{idx['default']} is not a device-tested release"
+          listed = set()
           for r in idx["releases"]:
+              v = r["version"]
+              assert v not in listed, f"v{v} listed twice"
+              listed.add(v)
               p = json.loads((d / r["file"]).read_text())
-              rel = db["releases"].get(r["version"])
-              assert rel is not None, f"v{r['version']} not in tools/release_hashes.json"
-              assert rel.get("device_tested") is True, f"v{r['version']} is not device_tested in release_hashes.json"
-              assert r.get("device_tested") is True and p.get("device_tested") is True, f"v{r['version']}: not device_tested"
+              rel = db["releases"].get(v)
+              assert rel is not None, f"v{v} not in tools/release_hashes.json"
+              t = rel.get("device_tested")
+              if t is True:
+                  assert r.get("device_tested") is True and p.get("device_tested") is True, f"v{v}: not device_tested"
+                  assert "test_build" not in r, f"v{v}: device-tested but marked test_build"
+              elif t is False:
+                  assert r.get("device_tested") is False and p.get("device_tested") is False, \
+                      f"v{v}: release_hashes.json, index.json and the patch disagree on device_tested"
+                  assert r.get("test_build") is True, f"v{v}: untested but not marked test_build in index.json"
+                  assert idx["default"] != v, f"v{v}: an untested test build is the default"
+                  assert p["kit"]["name"].endswith("-UNTESTED"), f"v{v}: test build kit name lacks -UNTESTED"
+              else:
+                  sys.exit(f"v{v}: device_tested in release_hashes.json is neither true nor false ({t!r})")
               assert p["format"] == "bento_enhanced-webpatch" and p["version"] == r["version"], r
               assert p["output_sha256"] == r["output_sha256"] == rel["bento1.bin"], f"v{r['version']}: sha != published"
               assert p["min_copy"] >= 8, "zero-stock-bytes N below the documented policy"
               assert {op[0] for op in p["ops"]} <= {"W", "C", "D", "F"}, "unknown op"
-          print("patches:", [r["version"] for r in idx["releases"]])
+          print("patches:", [r["version"] + ("" if r["device_tested"] is True else " (TEST BUILD)") for r in idx["releases"]],
+                "default:", idx["default"])
           PY
 
       - uses: actions/configure-pages@v5

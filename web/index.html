@@ -49,6 +49,21 @@
   <label for="release">bento_enhanced version</label>
   <select id="release"><option>loading...</option></select>
   <p id="load-status" class="status" aria-live="polite">Loading the release list...</p>
+  <p class="known"><strong>Known issue in BE4.46:</strong> it can sometimes reset-loop before the boot screen. To
+  recover: unplug USB, hold power past the bootloader screen until the Bento switches off, leave it off a while,
+  then power on.</p>
+  <div id="test-builds" class="testbuild" hidden>
+    <p><strong>Test builds:</strong> <span id="test-builds-list"></span>, in the list under "Test builds".
+    A test build is published <strong>before</strong> it has been tested on hardware, so that it can be tested.
+    It is never the default: pick it only if you want to help test it.</p>
+  </div>
+  <div id="test-warn" class="testbuild warn" hidden>
+    <p><strong><span id="test-warn-version"></span> is a TEST BUILD, not yet tested on hardware.</strong>
+    It may not work, may crash or may misbehave. Back up your SD card first and keep the kit's
+    <code>03_RESTORE_STOCK</code> files (or a tested release's kit) at hand to go back.</p>
+    <label class="check"><input id="test-ok" type="checkbox"> I understand this build is not yet tested on
+    hardware, and I want to make it anyway.</label>
+  </div>
 </section>
 
 <section>

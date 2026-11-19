@@ -89,10 +89,26 @@
     return out;
   }
 
+  // A test build: a release published before it was tested on hardware, device_tested exactly false (anything
+  // else that is not true is refused outright). It is built only on an explicit opt-in.
+  const isTestBuild = (patch) => patch.device_tested === false;
+  const UNTESTED_TAG = "-UNTESTED";
+
+  // The kit's folder name: a test build's always says UNTESTED (the exporter names it so; this makes sure).
+  function kitName(patch) {
+    const n = patch.kit.name;
+    return isTestBuild(patch) && n.indexOf(UNTESTED_TAG) < 0 ? n + UNTESTED_TAG : n;
+  }
+
   // Stock in, verified image out, or an Error that says why. Nothing is produced unless every hash matches,
-  // and only for a release marked tested on hardware.
-  async function patchImage(stock1, patch, stock2) {
-    if (patch.device_tested !== true) throw new Error("v" + patch.version + " is not marked tested on hardware: refused");
+  // and only for a release marked tested on hardware, or a test build with opts.allowUntested === true.
+  async function patchImage(stock1, patch, stock2, opts) {
+    if (patch.device_tested !== true) {
+      if (!isTestBuild(patch)) throw new Error("v" + patch.version + " is not marked tested on hardware: refused");
+      if (!(opts && opts.allowUntested === true))
+        throw new Error("v" + patch.version + " is not marked tested on hardware (a test build): refused unless " +
+          "you tick the box that you know it is untested");
+    }
     const want = patch.stock_sha256["bento1.bin"];
     const got = await sha256(stock1);
     if (got !== want) throw new Error("bento1.bin is not the official stock " + patch.base + " file (sha256 " + got + ")");
@@ -108,10 +124,21 @@
   // ------------------------------------------------------------------ the kit
 
   function readme(patch, imageSha) {
-    const v = patch.version, base = patch.base, kit = patch.kit.name;
-    return [
+    const v = patch.version, base = patch.base, kit = kitName(patch), test = isTestBuild(patch);
+    const warn = !test ? [] : [
+      "**********************************************************************************************",
+      "  TEST BUILD: NOT YET TESTED ON HARDWARE.",
+      "  v" + v + " was published before the author ran its device checklist on a real Bento. It may not",
+      "  work, may crash or may misbehave. Use it only if you want to help test it, keep your SD card",
+      "  backed up, and keep 03_RESTORE_STOCK (or a tested release's kit) at hand to go back.",
+      "  If the Bento keeps resetting before the boot screen: unplug USB, hold power past the bootloader",
+      "  screen until it switches off, leave it off a while, then power on and install a tested release.",
+      "**********************************************************************************************",
+      "",
+    ];
+    return warn.concat([
       kit + ": flashing kit made in your browser",
-      patch.label,
+      patch.label + (test ? " - TEST BUILD, not yet tested on hardware" : ""),
       "",
       "This kit was made on your own device from your own copy of 1010music's official Bento firmware " + base + ".",
       "It CONTAINS 1010music's firmware: it is for your own Bento only. Keep it private: never share, upload,",
@@ -123,7 +150,8 @@
       "Please don't ask 1010music support about it.",
       "",
       "01_TEST_FIRMWARE/bento1.bin sha256 " + imageSha,
-      "  byte for byte the published v" + v + " image, the one the author tested on hardware.",
+      test ? "  byte for byte the published v" + v + " test build image. It has NOT been tested on hardware yet."
+        : "  byte for byte the published v" + v + " image, the one the author tested on hardware.",
       "",
       "WHAT'S IN IT",
       "  01_TEST_FIRMWARE/      bento1.bin (bento_enhanced v" + v + ") + bento2.bin (stock " + base + ", unchanged): what you install",
@@ -147,14 +175,16 @@
       "",
       "More: https://github.com/romanjeff/bento_enhanced (BUILDING.md builds the same kit from source).",
       "",
-    ].join("\n");
+    ]).join("\n");
   }
 
   // The checklist as the repository keeps it, with a preface: it was written for the developer's kit.
   function checklistText(patch) {
     return [
       "This is the author's device checklist for bento_enhanced v" + patch.version + ", as kept in the source",
-      "repository (docs/checklist-v" + patch.version + ".txt). It passed on hardware before the release was published.",
+      "repository (docs/checklist-v" + patch.version + ".txt). " + (isTestBuild(patch)
+        ? "It has NOT been run on hardware yet: this is a TEST BUILD, published to be tested."
+        : "It passed on hardware before the release was published."),
       "It was written for the developer kit that tools/make_kit.py builds: the folder names, Windows paths,",
       "manifest.json and docs\\... files it mentions are that kit's and the repository's, not this kit's",
       "(https://github.com/romanjeff/bento_enhanced). \"Measured in the emulator\" notes date from before the",
@@ -218,14 +248,16 @@
   }
 
   // Stock pair + patch in; verified image, kit files and the kit zip out.
-  async function buildKit(stock1, stock2, patch, date) {
+  // opts.allowUntested === true: the user opted in to a test build (refused without it).
+  async function buildKit(stock1, stock2, patch, date, opts) {
     const want2 = patch.stock_sha256["bento2.bin"];
     const got2 = await sha256(stock2);
     if (got2 !== want2) throw new Error("bento2.bin is not the official stock " + patch.base + " file (sha256 " + got2 + ")");
-    const { image, sha256: imageSha } = await patchImage(stock1, patch, stock2);
+    const { image, sha256: imageSha } = await patchImage(stock1, patch, stock2, opts);
     const files = await kitFiles(patch, image, imageSha, stock1, stock2);
-    const zip = makeZip(files.map((f) => ({ name: patch.kit.name + "/" + f.path, data: f.data })), date);
-    return { image, imageSha, files, zip, zipName: patch.kit.name + "-kit.zip" };
+    const name = kitName(patch);
+    const zip = makeZip(files.map((f) => ({ name: name + "/" + f.path, data: f.data })), date);
+    return { image, imageSha, files, zip, zipName: name + "-kit.zip" };
   }
 
   // ------------------------------------------------------------------ reading the user's files
@@ -291,8 +323,17 @@
     return { role: null, sha, note };
   }
 
+  // The index's releases, split: tested (offered as before, the default among them) and test builds (device_tested
+  // exactly false and test_build true; never the default). Anything else is not offered at all.
+  function splitReleases(index) {
+    const tested = index.releases.filter((r) => r.device_tested === true);
+    const testBuilds = index.releases.filter((r) => r.device_tested === false && r.test_build === true);
+    const def = tested.some((r) => r.version === index.default) ? index.default : (tested[0] ? tested[0].version : null);
+    return { tested, testBuilds, default: def };
+  }
+
   Object.assign(BEP, { FORMAT, FORMAT_VERSION, hex, sha256, b64decode, crc32, applyPatch, patchImage, readme,
-    checklistText, kitFiles, makeZip, buildKit, filesFromZip, identify });
+    checklistText, kitFiles, makeZip, buildKit, filesFromZip, identify, isTestBuild, kitName, splitReleases });
 
   if (typeof module === "object" && module.exports) module.exports = BEP;
   else root.BEPatcher = BEP;
@@ -330,14 +371,29 @@
     }
     const sel = $("release");
     sel.textContent = "";
-    const offered = state.index.releases.filter((rel) => rel.device_tested === true);   // tested on hardware only
-    for (const rel of offered) {
-      const o = document.createElement("option");
-      o.value = rel.version;
-      o.textContent = "v" + rel.version + (rel === offered[0] ? " (latest)" : "");
-      sel.appendChild(o);
-    }
-    if (offered.some((r) => r.version === state.index.default)) sel.value = state.index.default;
+    const split = splitReleases(state.index);
+    const offered = split.tested.concat(split.testBuilds);
+    // Tested releases first, as before; test builds in their own group, labelled as such, never the default.
+    const group = (label, rels, text) => {
+      if (!rels.length) return;
+      const g = document.createElement("optgroup");
+      g.label = label;
+      for (const rel of rels) {
+        const o = document.createElement("option");
+        o.value = rel.version;
+        o.textContent = text(rel);
+        g.appendChild(o);
+      }
+      sel.appendChild(g);
+    };
+    const latest = split.testBuilds.length ? " (latest tested)" : " (latest)";
+    group("Tested on hardware", split.tested, (rel) => "v" + rel.version + (rel === split.tested[0] ? latest : ""));
+    group("Test builds: NOT yet tested on hardware", split.testBuilds,
+      (rel) => "BE" + rel.version + " - TEST BUILD, not yet tested on hardware");
+    if (split.default) sel.value = split.default;
+    const tb = $("test-builds");
+    tb.hidden = !split.testBuilds.length;
+    $("test-builds-list").textContent = split.testBuilds.map((r) => "BE" + r.version).join(", ");
     $("base-version").textContent = state.index.base;
     // Fetch every patch now, so the page keeps working offline once loaded.
     let ok = 0;
@@ -346,7 +402,7 @@
         const r = await fetch("patches/" + rel.file, { cache: "no-cache" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const p = await r.json();
-        if (p.version !== rel.version || p.output_sha256 !== rel.output_sha256 || p.device_tested !== true)
+        if (p.version !== rel.version || p.output_sha256 !== rel.output_sha256 || p.device_tested !== rel.device_tested)
           throw new Error("patch does not match the list");
         state.patches[rel.version] = p;
         ok++;
@@ -413,8 +469,13 @@
     $("have-1").textContent = have1 ? "bento1.bin: stock, OK" : "bento1.bin: not yet";
     $("have-2").className = have2 ? "ok" : "";
     $("have-2").textContent = have2 ? "bento2.bin: stock, OK" : "bento2.bin: not yet";
-    const v = $("release").value;
-    $("make").disabled = state.busy || !(have1 && have2 && state.patches[v]);
+    const v = $("release").value, p = state.patches[v];
+    const test = !!p && isTestBuild(p);
+    $("test-warn").hidden = !test;
+    if (test) $("test-warn-version").textContent = "BE" + p.version;
+    $("test-ok").disabled = state.busy;
+    $("make").textContent = test ? "Make the TEST BUILD kit" : "Make the kit";
+    $("make").disabled = state.busy || !(have1 && have2 && p) || (test && !$("test-ok").checked);
     $("release").disabled = state.busy;
     $("reset").disabled = state.busy;
   }
@@ -438,17 +499,22 @@
     clearResult();
     const st = $("make-status");
     const version = $("release").value, patch = state.patches[version];
+    const test = isTestBuild(patch), optIn = test && $("test-ok").checked === true;
     state.busy = true;                                 // the release and the files can't change mid-build
     update();
     setStatus(st, "Patching and checking...", "");
     try {
-      const k = await buildKit(state.stock["bento1.bin"], state.stock["bento2.bin"], patch);
+      const k = await buildKit(state.stock["bento1.bin"], state.stock["bento2.bin"], patch, undefined,
+        { allowUntested: optIn });
       if ($("release").value !== version) return;      // (defensive: the select is disabled while building)
       link("dl-zip", k.zip, k.zipName);
       $("dl-zip-name").textContent = k.zipName + " (" + fmtSize(k.zip.length) + ")";
       $("out-sha").textContent = k.imageSha;
-      setStatus(st, "Done. The result is byte for byte the published " + patch.label +
-        " image, the one tested on hardware.", "ok");
+      setStatus(st, test
+        ? "Done. The result is byte for byte the published " + patch.label + " TEST BUILD image. It is NOT yet " +
+          "tested on hardware: see the warning at the top of the kit's README.txt."
+        : "Done. The result is byte for byte the published " + patch.label + " image, the one tested on hardware.",
+      test ? "" : "ok");
       $("downloads").hidden = false;
     } catch (e) {
       setStatus(st, "Stopped: " + e.message, "bad");
@@ -474,11 +540,16 @@
       e.preventDefault();
       if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
     });
-    $("release").addEventListener("change", () => { clearResult(); setStatus($("make-status"), "", ""); update(); });
+    $("release").addEventListener("change", () => {
+      $("test-ok").checked = false;                    // the opt-in is per choice: picking again asks again
+      clearResult(); setStatus($("make-status"), "", ""); update();
+    });
+    $("test-ok").addEventListener("change", () => { clearResult(); setStatus($("make-status"), "", ""); update(); });
     $("make").addEventListener("click", make);
     $("reset").addEventListener("click", () => {
       if (state.busy) return;
       state.stock = {};
+      $("test-ok").checked = false;
       $("files").textContent = "";
       clearResult();
       setStatus($("make-status"), "", "");

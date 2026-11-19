@@ -15,8 +15,11 @@ equal to stock bytes the release overwrote (a stock instruction relocated out of
 FILL ops. See docs/web-patcher.md.
 
 The patch is self-verified before it is written: applying it to stock must give the release's sha256, and every
-zero-stock-bytes check (check_policy) must find nothing. Only device-tested releases go to web/ (--allow-untested
-writes elsewhere only). Never writes or commits any firmware.
+zero-stock-bytes check (check_policy) must find nothing. Only device-tested releases go to web/ by default
+(--allow-untested writes elsewhere only). --publish-untested puts a release that is not yet device_tested on the site
+as a TEST BUILD: it keeps device_tested false in the patch and index.json, is marked test_build in index.json, its
+kit is named ...-UNTESTED, and it is never the default (the default is the newest device-tested release).
+Never writes or commits any firmware.
 """
 import argparse, base64, hashlib, json, sys
 from collections import Counter
@@ -492,7 +495,21 @@ def load_release(path):
     return img.read_bytes(), (json.loads(man.read_text(encoding="utf-8")) if man.is_file() else None)
 
 
-def update_index(db, patch, path):
+UNTESTED_TAG = "-UNTESTED"   # in a test build's kit name (and so its zip's folder and file name)
+
+
+def kit_name(version, tested):
+    return f"bento_enhanced-v{version}" + ("" if tested else UNTESTED_TAG)
+
+
+def vkey(v):
+    return [int(x) if x.isdigit() else x for x in v.split(".")]
+
+
+def update_index(db, patch, path, untested_ok=False):
+    """(path/index.json, its new content with the patch added); main writes it. A device-tested release as before;
+    one with device_tested false only with untested_ok (--publish-untested), as a test build (test_build true),
+    never the default."""
     idx_path = path / "index.json"
     idx = json.loads(idx_path.read_text(encoding="utf-8")) if idx_path.is_file() else {}
     base = db["base"]
@@ -503,19 +520,24 @@ def update_index(db, patch, path):
     known = {s: f"stock {' / '.join(v)} {name}" for (s, name), v in vers.items()}
     for v, r in db["releases"].items():
         known[r["bento1.bin"]] = f"bento_enhanced v{v} bento1.bin (already modded: use your stock {base} file)"
-    if patch["device_tested"] is not True:
-        sys.exit("ERROR: index.json lists device-tested releases only")
+    tested = patch["device_tested"]
+    if tested is not True and not (tested is False and untested_ok):
+        sys.exit("ERROR: index.json lists device-tested releases only (--publish-untested: as a test build)")
     rels = {r["version"]: r for r in idx.get("releases", [])}
-    rels[patch["version"]] = {"version": patch["version"], "label": patch["label"],
-                              "file": f"v{patch['version']}.json", "output_sha256": patch["output_sha256"],
-                              "device_tested": patch["device_tested"]}
-    order = sorted(rels.values(), key=lambda r: [int(x) if x.isdigit() else x for x in r["version"].split(".")],
-                   reverse=True)
+    entry = {"version": patch["version"], "label": patch["label"],
+             "file": f"v{patch['version']}.json", "output_sha256": patch["output_sha256"],
+             "device_tested": tested}
+    if tested is not True:
+        entry["test_build"] = True
+    rels[patch["version"]] = entry
+    order = sorted(rels.values(), key=lambda r: vkey(r["version"]), reverse=True)
+    default = next((r["version"] for r in order if r["device_tested"] is True), None)
+    if default is None:
+        sys.exit("ERROR: index.json needs at least one device-tested release (the default); a test build is never it")
     idx = {"format": FORMAT, "format_version": FORMAT_VERSION, "base": base,
            "stock_sha256": dict(db["stock"][base]), "known_sha256": known,
-           "default": order[0]["version"], "releases": order}
-    idx_path.write_text(json.dumps(idx, indent=1) + "\n", encoding="utf-8", newline="\n")
-    return idx_path
+           "default": default, "releases": order}
+    return idx_path, idx
 
 
 def main():
@@ -531,11 +553,17 @@ def main():
     ap.add_argument("--survey", action="store_true", help="print patch size against N (4..16) and exit")
     ap.add_argument("--allow-untested", action="store_true",
                     help="export a release not yet device_tested, to an --out outside web/ only (never published)")
+    ap.add_argument("--publish-untested", action="store_true",
+                    help="put a release not yet device_tested on the site as a TEST BUILD (device_tested stays false, "
+                         "test_build in index.json, kit ...-UNTESTED, never the default)")
     a = ap.parse_args()
+    if a.allow_untested and a.publish_untested:
+        sys.exit("ERROR: --allow-untested (outside web/, a look) and --publish-untested (the site) are exclusive")
     if a.allow_untested and not a.survey:
         o = Path(a.out).resolve()
         if o == WEB.resolve() or WEB.resolve() in o.parents:
-            sys.exit("ERROR: --allow-untested writes only outside web/ (the site offers device-tested releases only)")
+            sys.exit("ERROR: --allow-untested writes only outside web/ (to put it on the site as a labelled test "
+                     "build: --publish-untested)")
 
     db = json.loads(HASHES.read_text(encoding="utf-8"))
     base = db["base"]
@@ -552,8 +580,12 @@ def main():
         sys.exit(f"ERROR: no release {version!r} in tools/release_hashes.json (sha256 {h})")
     if rel["bento1.bin"] != h:
         sys.exit(f"ERROR: {a.release}: sha256 {h} is not v{version}'s published {rel['bento1.bin']}")
-    if rel.get("device_tested") is not True and not a.allow_untested:
-        sys.exit(f"ERROR: v{version} is not device_tested in release_hashes.json (--allow-untested to export anyway)")
+    tested = rel.get("device_tested")
+    if tested not in (True, False):
+        sys.exit(f"ERROR: v{version}: device_tested in release_hashes.json must be true or false, not {tested!r}")
+    if tested is not True and not (a.allow_untested or a.publish_untested):
+        sys.exit(f"ERROR: v{version} is not device_tested in release_hashes.json (--allow-untested to export it "
+                 f"outside web/; --publish-untested to put it on the site as a test build)")
     label = (man or {}).get("label") or f"BE{version} (bento_enhanced v{version} on stock {base})"
     extra = {"base": base, "image_commit": rel.get("image_commit"), "device_tested": rel.get("device_tested")}
 
@@ -567,7 +599,7 @@ def main():
 
     patch, stats = build_patch(stock, out, version, a.min_copy, label, extra)
     cl = Path(a.checklist) if a.checklist else REPO / "docs" / f"checklist-v{version}.txt"
-    patch["kit"] = {"name": f"bento_enhanced-v{version}",
+    patch["kit"] = {"name": kit_name(version, tested is True),
                     "checklist": cl.read_bytes().replace(b"\r\n", b"\n").decode("utf-8") if cl.is_file() else None}
 
     # Self-verification: the patch reproduces the release, and publishes no stock run.
@@ -582,11 +614,19 @@ def main():
     patch["stats"] = stats
 
     dest = Path(a.out)
+    look = tested is not True and a.allow_untested       # a look outside web/: the patch only, no index.json
+    if not look:
+        idx, idx_new = update_index(db, patch, dest, untested_ok=a.publish_untested)   # may refuse: before writing
     dest.mkdir(parents=True, exist_ok=True)
     f = dest / f"v{version}.json"
     f.write_text(json.dumps(patch, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
-    idx = update_index(db, patch, dest)
-    print(f"v{version}: {label}")
+    if look:
+        idx = "no index.json (--allow-untested)"
+    else:
+        idx.write_text(json.dumps(idx_new, indent=1) + "\n", encoding="utf-8", newline="\n")
+    print(f"v{version}: {label}" + ("" if tested is True else
+          f"  ** TEST BUILD: device_tested false, kit {patch['kit']['name']}" +
+          ("" if look else f", not the default (default v{idx_new['default']})") + " **"))
     print(f"  output {patch['output_size']} bytes sha256 {h}: reproduced from stock by the patch (verified)")
     print(f"  N={a.min_copy}: {stats['write_ops']} WRITE ops / {stats['write_bytes']} bytes ours, "
           f"{stats['copy_ops']} COPY ops / {stats['copy_bytes']} bytes from stock bento1, "

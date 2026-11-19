@@ -11,10 +11,19 @@
   "8100906327093463fb58f531ee28583423a9881ea3a7d5b77874a7700735e99d": "stock 1.6.1 / 1.6.8 bento2.bin",
   "cb8f830ec3ab45a92d120ae9688e380573b24ad88710a3ad3d21af6ffb3c8d0d": "stock 1.6.8 bento1.bin",
   "fc1c3232a27036d49a1ea82af3988a6b14865e0b59b0c3882978e38accab1cff": "bento_enhanced v4.44 bento1.bin (already modded: use your stock 1.6.8 file)",
-  "d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5": "bento_enhanced v4.46 bento1.bin (already modded: use your stock 1.6.8 file)"
+  "d09bcff574e3e13225626fe543e6b9d43f58f0437536f277b6319666ca1430b5": "bento_enhanced v4.46 bento1.bin (already modded: use your stock 1.6.8 file)",
+  "538cf2187c439bb0e9db7091314bb9660febd2ded6b39bda0ec1cf890ddaf294": "bento_enhanced v4.47 bento1.bin (already modded: use your stock 1.6.8 file)"
  },
  "default": "4.46",
  "releases": [
+  {
+   "version": "4.47",
+   "label": "BE4.47 (bento_enhanced v4.47 on stock 1.6.8)",
+   "file": "v4.47.json",
+   "output_sha256": "538cf2187c439bb0e9db7091314bb9660febd2ded6b39bda0ec1cf890ddaf294",
+   "device_tested": false,
+   "test_build": true
+  },
   {
    "version": "4.46",
    "label": "BE4.46 (bento_enhanced v4.46 on stock 1.6.8)",
