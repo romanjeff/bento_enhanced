@@ -1,12 +1,12 @@
 # Roadmap
 
-Status as of 2026-11-18, **release [v4.46](https://github.com/romanjeff/bento_enhanced/releases/tag/v4.46)**.
+Status as of 2026-11-18, **release [v4.47](https://github.com/romanjeff/bento_enhanced/releases/tag/v4.47)**.
 **Target firmware: stock Bento 1.6.8** (since 2026-11-07; up to v3.40 the builds sat on stock 1.6.1).
 Our builds patch your own copy of the official firmware; nothing here ever touches the bootloader.
 Several features are ports of
 [bento-community-lab](https://github.com/t4kbsv99sn-source/bento-community-lab)'s work.
-Build it yourself with [`BUILDING.md`](https://github.com/romanjeff/bento_enhanced/blob/v4.46/BUILDING.md); details of
-everything below are in [`mods/m1/`](https://github.com/romanjeff/bento_enhanced/tree/v4.46/mods/m1).
+Build it yourself with [`BUILDING.md`](https://github.com/romanjeff/bento_enhanced/blob/v4.47/BUILDING.md); details of
+everything below are in [`mods/m1/`](https://github.com/romanjeff/bento_enhanced/tree/v4.47/mods/m1).
 
 ## Done (on hardware)
 
@@ -25,7 +25,8 @@ everything below are in [`mods/m1/`](https://github.com/romanjeff/bento_enhanced
 - **Sequencer:** trigger conditions; per-step retriggers (hits, division, ramp); pad defaults with per-step locks; strike
   velocity; hold-to-inspect steps.
 - **UI:** hold shortcuts (TRACKS / LAUNCH / MIXER / INST).
-- **Diagnostics:** black box on the SD card (crash records, audio stall records).
+- **Diagnostics:** black box on the SD card (crash records, audio stall records). **Clean start** on every boot (v4.47):
+  nothing of ours is carried over in RAM from an earlier run, which fixed BE4.46's boot loop.
 - **Build it yourself:** one command builds a kit from your own stock 1.6.8 and checks it is byte for byte the image
   tested on hardware.
 
