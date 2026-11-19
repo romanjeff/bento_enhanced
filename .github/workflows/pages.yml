@@ -78,6 +78,12 @@ jobs:
               assert p["output_sha256"] == r["output_sha256"] == rel["bento1.bin"], f"v{r['version']}: sha != published"
               assert p["min_copy"] >= 8, "zero-stock-bytes N below the documented policy"
               assert {op[0] for op in p["ops"]} <= {"W", "C", "D", "F"}, "unknown op"
+          # Every patch file deployed is one checked above: no stray (unlisted) patch, no .json outside web/patches.
+          on_disk = sorted(str(p.relative_to(d)) for p in files if d in p.parents)
+          want = sorted(["index.json"] + [r["file"] for r in idx["releases"]])
+          assert on_disk == want, f"web/patches must hold exactly index.json and the patches it lists: {on_disk} != {want}"
+          strays = [str(p) for p in files if p.suffix.lower() == ".json" and p.parent != d]
+          assert not strays, f".json files outside web/patches: {strays}"
           print("patches:", [r["version"] + ("" if r["device_tested"] is True else " (TEST BUILD)") for r in idx["releases"]],
                 "default:", idx["default"])
           PY

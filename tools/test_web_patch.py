@@ -22,7 +22,10 @@ make_kit's file for file. Without kits the committed patches are still checked a
       stock files; the 1010music zip as input, and damaged zips. Skipped (with a message) when there is no node;
   (d) refusals: one byte flipped in bento1.bin or bento2.bin, a damaged payload, a patched payload byte, an
       untested release; a test build without the opt-in (built with it), device_tested neither true nor false
-      even with the opt-in.
+      even with the opt-in;
+  (e) the deploy guard (the Python in .github/workflows/pages.yml, run as is): passes on this tree and refuses
+      broken copies (a test build as default or claimed tested anywhere, test_build or -UNTESTED missing, a stray
+      or delisted patch file, a firmware file renamed .json).
 Exit 0 when everything run passed. Nothing is written outside a temporary folder.
 """
 import argparse, base64, copy, hashlib, io, json, os, shutil, subprocess, sys, tempfile, zipfile
@@ -79,6 +82,53 @@ def with_ops(patch, i_op, new_ops, data=b""):
     return p
 
 
+def guard_script():
+    """The deploy guard's Python, taken from .github/workflows/pages.yml as it is."""
+    y = (REPO / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8").splitlines()
+    i = next(n for n, l in enumerate(y) if l.strip() == "python3 - <<'PY'")
+    j = next(n for n in range(i + 1, len(y)) if y[n].strip() == "PY")
+    body = y[i + 1:j]
+    ind = min(len(l) - len(l.lstrip()) for l in body if l.strip())
+    return "\n".join(l[ind:] for l in body) + "\n"
+
+
+def guard_cases(idx, stock1):
+    """name -> function(tree) that breaks a copy of web/ + tools/release_hashes.json; None = must pass."""
+    rj = lambda p: json.loads(p.read_text(encoding="utf-8"))   # noqa: E731
+    wj = lambda p, o: p.write_text(json.dumps(o), encoding="utf-8")   # noqa: E731
+    tb = next((r for r in idx["releases"] if r.get("device_tested") is False), None)
+    def ix(f):
+        def g(t):
+            i = rj(t / "web/patches/index.json"); f(i); wj(t / "web/patches/index.json", i)
+        return g
+    def pt(v, f):
+        def g(t):
+            q = t / "web/patches" / f"v{v}.json"; o = rj(q); f(o); wj(q, o)
+        return g
+    def stray(t):
+        o = rj(t / "web/patches" / idx["releases"][-1]["file"]); o["version"] = "9.99"; wj(t / "web/patches/v9.99.json", o)
+    c = {"this tree": None, "a stray unlisted patch v9.99.json": stray,
+         "stock bento1.bin renamed web/fw.json": lambda t: (t / "web/fw.json").write_bytes(stock1),
+         "default names an unlisted release": ix(lambda i: i.__setitem__("default", "0.0"))}
+    if tb:
+        v = tb["version"]
+        def hashes_tested(t):
+            h = rj(t / "tools/release_hashes.json"); h["releases"][v]["device_tested"] = True; wj(t / "tools/release_hashes.json", h)
+        c.update({
+            f"test build v{v} as the default": ix(lambda i: i.__setitem__("default", v)),
+            f"v{v} claimed tested in release_hashes.json only": hashes_tested,
+            f"v{v} claimed tested in index.json only": ix(lambda i: next(r for r in i["releases"] if r["version"] == v)
+                                                         .__setitem__("device_tested", True)),
+            f"v{v} claimed tested in the patch only": pt(v, lambda o: o.__setitem__("device_tested", True)),
+            f"v{v} patch device_tested is the string 'false'": pt(v, lambda o: o.__setitem__("device_tested", "false")),
+            f"v{v} test_build missing": ix(lambda i: next(r for r in i["releases"] if r["version"] == v).pop("test_build")),
+            f"v{v} kit name without -UNTESTED": pt(v, lambda o: o["kit"].__setitem__("name", f"bento_enhanced-v{v}")),
+            f"v{v} delisted, its patch file left in web/patches": ix(lambda i: i.__setitem__(
+                "releases", [r for r in i["releases"] if r["version"] != v])),
+        })
+    return c
+
+
 def find_node():
     """[node command], path converter: node in PATH, node.exe through WSL interop, or the nodejs-bin package."""
     n = shutil.which("node")
@@ -124,6 +174,25 @@ const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
   const forged = JSON.parse(JSON.stringify(index));     // an index naming a test build as default: the page ignores it
   const tb = forged.releases.find((r) => r.device_tested === false);
   if (tb) { forged.default = tb.version; res.split.forgedDefault = BEP.splitReleases(forged).default; }
+  if (tb) {                                             // an untested entry without test_build: not offered at all
+    const nt = JSON.parse(JSON.stringify(index));
+    delete nt.releases.find((r) => r.version === tb.version).test_build;
+    const s2p = BEP.splitReleases(nt);
+    res.split.noTestBuildFlag = s2p.testBuilds.concat(s2p.tested).some((r) => r.version === tb.version);
+  }
+  res.match = {};                                       // the page's check of a fetched patch against its index entry
+  for (const [ver, file] of Object.entries(cfg.patches)) {
+    const patch = JSON.parse(fs.readFileSync(file, "utf8")), rel = index.releases.find((r) => r.version === ver);
+    const flipped = Object.assign({}, rel, { device_tested: !rel.device_tested });
+    const other = Object.assign({}, rel, { output_sha256: "0".repeat(64) });
+    res.match[ver] = { same: BEP.patchMatchesRelease(rel, patch), flipped: BEP.patchMatchesRelease(flipped, patch),
+                       otherSha: BEP.patchMatchesRelease(other, patch) };
+    if (BEP.isTestBuild(patch)) {                       // a test build whose patch forgot -UNTESTED: the kit still says it
+      const p = JSON.parse(JSON.stringify(patch));
+      p.kit.name = p.kit.name.replace("-UNTESTED", "");
+      res.versions[ver].forcedName = (await BEP.buildKit(s1, s2, p, when, { allowUntested: true })).zipName;
+    }
+  }
   const z = await BEP.filesFromZip(rd(cfg.stockZip));
   res.zipInput = { bento1: !!z["bento1.bin"] && eq(z["bento1.bin"], s1), bento2: !!z["bento2.bin"] && eq(z["bento2.bin"], s2) };
   res.identify = { b1: (await BEP.identify(s1, index)).role, b2: (await BEP.identify(s2, index)).role };
@@ -189,6 +258,11 @@ def main():
           f"newest tested v{newest_tested})")
     check([r["version"] for r in idx["releases"]] == sorted(pats, key=vk, reverse=True), "index lists the releases newest first")
     check(len(pats) == len(idx["releases"]), "no release listed twice")
+    on_disk = sorted(p.name for p in (WEB / "patches").iterdir())
+    listed = sorted(["index.json"] + [r["file"] for r in idx["releases"]])
+    check(on_disk == listed, f"web/patches holds exactly index.json and the patches it lists (no unchecked strays: {on_disk})")
+    strays = [str(p) for p in WEB.rglob("*.json") if p.parent != WEB / "patches"]
+    check(not strays, f"no .json outside web/patches {strays or ''}")
     for v, p in pats.items():
         rel = db["releases"].get(v, {})
         r = next(r for r in idx["releases"] if r["version"] == v)
@@ -370,6 +444,12 @@ def main():
                 if "forgedDefault" in spl:
                     check(spl["forgedDefault"] == newest_tested,
                           f"an index naming a test build as default: the page still selects v{spl['forgedDefault']}")
+                if "noTestBuildFlag" in spl:
+                    check(spl["noTestBuildFlag"] is False,
+                          "an index entry with device_tested false but no test_build is not offered at all")
+                for v, m in res["match"].items():
+                    check(m == {"same": True, "flipped": False, "otherSha": False},
+                          f"v{v}: the page accepts its patch only against its own index entry (device_tested and sha256) ({m})")
                 for v, p in pats.items():
                     img = (td / "out" / f"bento1-{v}.bin").read_bytes()
                     rv = res["versions"][v]
@@ -381,6 +461,8 @@ def main():
                         check(rv["testBuild"] is True and rv["noOptIn"] is not None and "not marked tested" in rv["noOptIn"],
                               f"v{v}: test build refused without the opt-in ({rv['noOptIn']})")
                         check("UNTESTED" in rv["zipName"], f"v{v}: zip name says UNTESTED ({rv['zipName']})")
+                        check(rv.get("forcedName") == f"bento_enhanced-v{v}-UNTESTED-kit.zip",
+                              f"v{v}: a test-build patch whose kit name lacks -UNTESTED still gets it ({rv.get('forcedName')})")
                     else:
                         check(rv["noOptIn"] is None and rv.get("optInSame") is True,
                               f"v{v}: tested release builds without an opt-in, and the opt-in changes nothing")
@@ -454,6 +536,21 @@ def main():
     b[0x1000] ^= 1
     check(sha(ep.apply_patch(bytes(b), pats[idx["default"]], s2)) != pats[idx["default"]]["output_sha256"],
           "python apply on stock with one bit flipped does not give the release sha256")
+
+    print("== (e) deploy guard (pages.yml)")
+    gs = guard_script()
+    for name, broken in guard_cases(idx, s1).items():
+        with tempfile.TemporaryDirectory() as td:
+            t = Path(td)
+            shutil.copytree(WEB, t / "web")
+            (t / "tools").mkdir()
+            shutil.copy(TOOLS / "release_hashes.json", t / "tools")
+            if broken:
+                broken(t)
+            r = subprocess.run([sys.executable, "-"], input=gs, cwd=t, capture_output=True, text=True)
+            last = ((r.stdout + r.stderr).strip().splitlines() or [""])[-1][:160]
+            check((r.returncode == 0) if broken is None else (r.returncode != 0),
+                  f"guard {'passes' if broken is None else 'refuses'}: {name} ({last})")
 
     print(f"\n{len(FAILS)} failed" + (": " + "; ".join(FAILS) if FAILS else ", all passed"))
     sys.exit(1 if FAILS else 0)

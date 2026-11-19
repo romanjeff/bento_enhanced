@@ -132,7 +132,7 @@
       "  work, may crash or may misbehave. Use it only if you want to help test it, keep your SD card",
       "  backed up, and keep 03_RESTORE_STOCK (or a tested release's kit) at hand to go back.",
       "  If the Bento keeps resetting before the boot screen: unplug USB, hold power past the bootloader",
-      "  screen until it switches off, leave it off a while, then power on and install a tested release.",
+      "  screen until it switches off, leave it off a while, then power on and put 03_RESTORE_STOCK (stock) back.",
       "**********************************************************************************************",
       "",
     ];
@@ -332,8 +332,12 @@
     return { tested, testBuilds, default: def };
   }
 
+  // A fetched patch must be the one its index entry names: version, image hash and device_tested alike.
+  const patchMatchesRelease = (rel, p) =>
+    p.version === rel.version && p.output_sha256 === rel.output_sha256 && p.device_tested === rel.device_tested;
+
   Object.assign(BEP, { FORMAT, FORMAT_VERSION, hex, sha256, b64decode, crc32, applyPatch, patchImage, readme,
-    checklistText, kitFiles, makeZip, buildKit, filesFromZip, identify, isTestBuild, kitName, splitReleases });
+    checklistText, kitFiles, makeZip, buildKit, filesFromZip, identify, isTestBuild, kitName, splitReleases, patchMatchesRelease });
 
   if (typeof module === "object" && module.exports) module.exports = BEP;
   else root.BEPatcher = BEP;
@@ -402,8 +406,7 @@
         const r = await fetch("patches/" + rel.file, { cache: "no-cache" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const p = await r.json();
-        if (p.version !== rel.version || p.output_sha256 !== rel.output_sha256 || p.device_tested !== rel.device_tested)
-          throw new Error("patch does not match the list");
+        if (!patchMatchesRelease(rel, p)) throw new Error("patch does not match the list");
         state.patches[rel.version] = p;
         ok++;
       } catch (e) {
@@ -526,19 +529,19 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     const drop = $("drop"), input = $("pick");
-    input.addEventListener("change", () => { addFiles(input.files); input.value = ""; });
+    input.addEventListener("change", () => { addFiles(Array.from(input.files)); input.value = ""; });
     drop.addEventListener("click", () => input.click());
     drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
     drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
     drop.addEventListener("dragleave", () => drop.classList.remove("over"));
     drop.addEventListener("drop", (e) => {
-      e.preventDefault(); e.stopPropagation(); drop.classList.remove("over"); addFiles(e.dataTransfer.files);
+      e.preventDefault(); e.stopPropagation(); drop.classList.remove("over"); addFiles(Array.from(e.dataTransfer.files));
     });
     // A file dropped next to the drop zone would make the browser open (or download) it and leave the page.
     document.addEventListener("dragover", (e) => e.preventDefault());
     document.addEventListener("drop", (e) => {
       e.preventDefault();
-      if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+      if (e.dataTransfer && e.dataTransfer.files.length) addFiles(Array.from(e.dataTransfer.files));
     });
     $("release").addEventListener("change", () => {
       $("test-ok").checked = false;                    // the opt-in is per choice: picking again asks again

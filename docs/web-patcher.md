@@ -222,12 +222,17 @@ and the page refuses everything else.
 - `web/` holds only `.html` / `.js` / `.css` / `.json` files, none of them a firmware file by hash, and every
   release offered is device-tested in `release_hashes.json`, the patch and `index.json`, or a test build
   (`false` in all three, `test_build`, kit `...-UNTESTED`, not the default), with the published hash; the
-  default is the newest device-tested release; the index is newest first, no release twice;
+  default is the newest device-tested release; the index is newest first, no release twice; `web/patches`
+  holds exactly `index.json` and the patches it lists (a stray patch file would skip every check), and there
+  is no `.json` elsewhere in `web/`;
 - a test build: re-exporting with `--publish-untested` gives the committed patch and index byte for byte;
   without the flag the export is refused and nothing is written; with it into a folder with no tested release
   (it would be the default) likewise; under node it is refused without the opt-in and gives the published
   hash with it, its zip is named `...-UNTESTED`, its README opens with the warning and its checklist preface
-  says it has not been run; `splitReleases` keeps the tested default even if `index.json` names a test build;
+  says it has not been run (and a test-build patch whose kit name lacks `-UNTESTED` still gets it);
+  `splitReleases` keeps the tested default even if `index.json` names a test build, and does not offer an
+  untested entry without `test_build` at all; the page accepts a fetched patch only if its version, hash and
+  `device_tested` equal its index entry's (`patchMatchesRelease`);
   a tested release builds the same zip with or without the opt-in, and its README has no warning;
 - (a) every committed patch applied to stock gives its published SHA-256 and, with `--kit`, make_kit's
   image; re-exporting from the kit gives the committed patch byte for byte; `--allow-untested` into `web/` is
@@ -245,11 +250,20 @@ and the page refuses everything else.
 - (d) refusals: one bit flipped in `bento1.bin` or `bento2.bin`, the files swapped, a damaged payload,
   a changed payload byte (with a matching payload hash: caught by the output hash), an op out of bounds,
   a release not marked device-tested (without the opt-in, or with an opt-in that is not `true`), and
-  `device_tested` missing or `null` even with the opt-in.
+  `device_tested` missing or `null` even with the opt-in;
+- (e) the deploy guard: the Python in `pages.yml`, taken from the workflow as it is, passes on this tree and
+  refuses broken copies of it: a test build as default, a default not listed, a test build claimed tested in
+  any one of the three files, `device_tested` the string `"false"`, `test_build` missing, kit name without
+  `-UNTESTED`, a stray `v9.99.json`, a delisted release whose patch file stays, stock `bento1.bin` renamed
+  `.json`.
 
-The node run covers `patcher.js`'s logic, not the page wiring (drag and drop, the secure-context check,
-the busy state while building): no automated test covers that part. It has been checked only by loading the
-page in headless Edge (it reaches "Ready"); drop, make and download have not been run by hand in a browser.
+The node run covers `patcher.js`'s logic, not the page wiring (the file picker and drag and drop, the
+secure-context check, the busy state while building, and the test-build checkbox and button): no automated
+test covers that part. `buildKit` itself refuses a test build without the opt-in, so a broken checkbox can
+only fail closed, but check the wiring by hand before a deploy (Deploying). It was checked for v4.47 in
+headless Edge: both stock files picked at once are both read (they were not before: the live `FileList` was
+cleared after the first file), the button stays disabled until the box is ticked, the build is refused
+without the tick even with the button forced on, and with it the zip is `...-UNTESTED` with the published hash.
 
 ## Deploying
 
@@ -267,7 +281,13 @@ SHA-256 is a firmware file's (stock, known or released); `index.json`'s stock ha
 `release_hashes.json`'s; the default is a device-tested release; every release offered is `device_tested`
 in `release_hashes.json`, `index.json` and its patch, or a test build that all three agree is `false`, marked
 `test_build`, not the default, kit `...-UNTESTED`; its `output_sha256` is the published one; N >= 8; only
-known op kinds.
+known op kinds; `web/patches` holds exactly `index.json` and the patches it lists, and no `.json` lies
+elsewhere in `web/`. `tools/test_web_patch.py` (e) runs this guard against broken copies.
+
+**And click through the page by hand** (`cd web && python3 -m http.server`, <http://localhost:8000/>): pick
+`bento1.bin` and `bento2.bin` together, make the default kit; if a test build is listed, pick it, check that
+the button stays disabled until the box is ticked, that changing release or Start over clears the tick, and
+that its zip is `...-UNTESTED-kit.zip` with the warning at the top of `README.txt`.
 
 There is deliberately no deploy on push or on a release: a push to `main` would publish whatever
 `web/patches` holds before anyone ran the local check, and a release runs on a tag, which the
