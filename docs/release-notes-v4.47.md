@@ -1,8 +1,9 @@
 # bento_enhanced v4.47 (stock 1.6.8): clean start on every boot
 
-BE4.47 fixes the boot. On BE4.46 the Bento could get stuck in a reset loop before the boot screen. The cause was our
-code trusting memory that an earlier run had left behind. BE4.47 starts every boot from scratch. Everything a project
-does is unchanged from BE4.46.
+BE4.47 removes the cause of BE4.46's boot loop that the emulator found. On BE4.46 the Bento could get stuck in a reset
+loop before the boot screen. The cause found was our code trusting memory that an earlier run had left behind. BE4.47
+starts every boot from scratch, and no loop or reset has been seen on it since (one unit, two sessions; see the open
+item under Known limits). Everything a project does is unchanged from BE4.46.
 
 Plan, measurements and review: `docs/plan-v4.47-clean-start.md`. Device checklist: `docs/checklist-v4.47.txt`,
 passed on hardware (2026-11-18): the unit boots, sessions on two projects played and saved, and the black-box logs
@@ -24,12 +25,13 @@ stock 1.6.8 (the kit's `03_RESTORE_STOCK/`), boot stock once, then install the B
   internal RAM (12.8 KB). Nothing of ours is reused from an earlier run, whatever magic words or counters it holds. Our
   SDRAM areas start over the same way at their first use in a boot. What persists from one session to the next is the
   project file: save the project.
-- **Why that fixes the loop (reproduced in the emulator).** RAM keeps its contents across a reset and in the
-  "off on USB" state. BE4.46 decided "is this a new boot?" from that RAM. A run that reset early in its boot left
+- **Why that should end the loop (the cause, reproduced in the emulator).** RAM keeps its contents across a reset
+  and in the "off on USB" state. BE4.46 decided "is this a new boot?" from that RAM. A run that reset early in its boot left
   memory that looked like the new boot's own. The black box then kept the last run's buffers and wrote its log text into
   memory that stock had just been given for its own objects. Boots are deterministic, so every reset repeated it, and
   only a power cut (which loses the RAM) ended it. The emulator reproduces the corruption on the v4.46 image and shows it
-  gone on 4.47. The exact stock crash that followed on the device was not measured.
+  gone on 4.47. The device's crash records name stock's audio-core instruction `0x080659e8`; how the corruption
+  leads there is not yet decoded.
 - **The clock and the backup registers decide nothing.** The RTC date and time, and the backup registers (where stock
   keeps its crash record), can hold anything after the clock battery drains. They are only printed in the logs, as hex.
   BE4.46 also compared stock's crash count during a session; that is gone.
@@ -68,10 +70,11 @@ in every save. It names what caused the last reset.
 
 - **Once per boot**, at the audio core's first traced event (usually the first note), it zeroes 41 KB of its own
   memory. This was estimated at 0.1..0.2 ms and not measured. With a heavy project already playing, that may make one
-  audio block late, once. The checklist asks for it.
+  audio block late, once. The hardware test reported no problems, but whether a click was heard at the first note
+  (checklist item 7, a record, not a gate) is not recorded.
 - **Open item: stock's crash counter.** Stock's own crash count (in its backup registers) rose from 525 to 532
   between the last BE4.46 log and the first BE4.47 boot, at the same audio-core instruction (`0x080659e8`) as the BE4.46
   reset loop. The logs show that count only when a project is saved, so when those resets happened is not known
-  yet. No crash or reboot has been seen on BE4.47. A decode of that instruction is in progress; if it points at
-  something still in BE4.47, a fix follows.
+  yet; they may be the BE4.46 loop itself, before the update. No crash or reboot has been seen on BE4.47. A decode
+  of that instruction is in progress; if it points at something still in BE4.47, a fix follows.
 - **1.6.1 builds** (legacy) do not get the clean start; nothing ships on 1.6.1.

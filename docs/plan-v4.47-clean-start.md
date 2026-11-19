@@ -137,7 +137,8 @@ a USB power-path glitch during boot, the "off on USB" path, a crash right after 
 USB. It ends with a power cut (RAM lost, magic gone). A stock session in between helps only if the next BE boot lands its
 first pass earlier, or if the stock session ended with a power loss; both are possible, neither is proven. The emulation
 does not show a fault inside our code with these inputs (it has no stock objects at those addresses to break), so the
-exact crash that followed the corruption on the device is not known.
+exact crash that followed the corruption on the device is not known. On the device (2026-11-18), stock's crash records
+name its audio-core instruction 0x080659e8; how the corruption leads there is not yet decoded.
 
 Not reproduced: a fault from RTC or backup register values (none of our code used them for anything but printing and the
 one comparison); a fault from decayed SDRAM in the DSP (fuzzed, section 7).

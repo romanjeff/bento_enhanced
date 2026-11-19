@@ -5,7 +5,7 @@ the official Bento firmware**. You don't need to know how to program. Follow it 
 type the commands exactly as shown, changing only what's in `<angle brackets>`.
 
 **Not affiliated with 1010music.** Installing modified firmware is at your own risk. The mod never
-touches the Bento's bootloader, so the official way back to stock always works (step 8).
+touches the Bento's bootloader, which is what keeps the official way back to stock working (step 8).
 
 ## What you need
 
@@ -165,7 +165,7 @@ the firmware).
    the SD card (not in a folder), replacing any there. On Windows, eject the card (right-click it in
    Explorer, *Eject*) before you take it out.
 3. Put the card in the Bento. **Long-press power** to start the bootloader, then press **REC** to
-   install.
+   install. Don't switch the Bento off while it installs.
 4. The boot screen shows **BE4.47**. Then go through `DEVICE_CHECKLIST.txt` if you like.
 
 ## 8. Going back to stock
@@ -220,7 +220,7 @@ mod's features behave as they always did.
   install -r requirements.txt` and `arch -x86_64 ~/be-venv/bin/python tools/make_kit.py ...`.
 - **Native Windows (without WSL)**: see the note below. If anything misbehaves there, use WSL.
 - **The Bento doesn't boot, or behaves oddly**: install `03_RESTORE_STOCK` (step 8). The bootloader
-  is never touched, so that always works.
+  is never touched, so that way back should always work.
 
 ### Native Windows (without WSL)
 

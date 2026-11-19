@@ -6,7 +6,7 @@ Community firmware research and (eventually) mods for the [1010music Bento](http
 
 ## Status
 
-**Current version: v4.47** (`BE4.47` on the boot screen), a set of firmware mods for **stock Bento 1.6.8** that run on hardware ([release notes](docs/release-notes-v4.47.md); v4.47 fixes a reset loop at boot that BE4.46 could get into). **To build it for your own Bento, follow [`BUILDING.md`](BUILDING.md)**: one page, no programming needed, starting from your own download of the official 1.6.8 firmware. (Until v3.40, the last published 1.6.1 release, the mods were built on stock 1.6.1.) Highlights:
+**Current version: v4.47** (`BE4.47` on the boot screen), a set of firmware mods for **stock Bento 1.6.8** that run on hardware ([release notes](docs/release-notes-v4.47.md); v4.47 removes the cause of a reset loop at boot that BE4.46 could get into). **To build it for your own Bento, follow [`BUILDING.md`](BUILDING.md)**: one page, no programming needed, starting from your own download of the official 1.6.8 firmware. (Until v3.40, the last published 1.6.1 release, the mods were built on stock 1.6.1.) Highlights:
 
 - **Aftertouch sequencing**: record per-note pad pressure in the piano roll and play it back. It works on External tracks (MIDI poly aftertouch or channel pressure) and on Bento's own instruments. **AT Rec** and **AT Out** (Off / Poly / Channel) are set per track and saved with the project.
 - **Live poly aftertouch** out of External tracks, with a polyphony cap of 6.
